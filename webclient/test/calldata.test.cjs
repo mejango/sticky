@@ -195,7 +195,7 @@ test('a launch shows every deployStickyFor argument decoded, and a tampered laun
   assert.equal(rows.LOCKS, `${A} (CPN)`);
   assert.equal(rows['STICKINESS BONUS'], '5% (cash out tax. Part of each unstick stays with the holders who remain)');
   assert.equal(rows['TRUSTED SENDERS'], `${A}, ${B} (AutoStick, each holder opts in)`);
-  assert.equal(rows.TRANSFERS, 'Unlocked. Transfers restart the stickiness clock.');
+  assert.equal(rows.TRANSFERS, 'Unlocked. Transferred tokens count as newly stuck.');
   assert.equal(rows.LISTING, 'Sticky launch abc on chains 84532, 11155420');
   // Drop AutoStick from the granters in the calldata only: the review still says it is there.
   const other = c.launchDeployTx({ ...target, granters: [A] }, { token: A, tokenSymbol: 'CPN', name: 'Sticky CPN', symbol: 'STICKYCPN', projectUri: URI, reward: 500n, soulbound: false });

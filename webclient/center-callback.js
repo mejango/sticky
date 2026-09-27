@@ -54,7 +54,8 @@
       complete({ url, win, config: win.STICKY_CONFIG?.centerWallet || null, load: () => import("/center-connect.js") })
         .then((route) => {
           if (route !== null) return win.location.replace(route);
-          if (framed) { title.textContent = "All done."; status.textContent = ""; }
+          // The page that framed this one still exchanges the sign-in, then closes the frame itself.
+          if (framed) { title.textContent = "Signing you in…"; status.textContent = ""; }
           else status.textContent = "Done. You can close this window.";
           main.classList.add("ready");
         }, (error) => {
