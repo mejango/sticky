@@ -53,6 +53,16 @@ test('freezes reviewed bytes and persists intent before wallet submission',async
  const result=await f.engine.run({review,sessionId:session.id});
  assert.equal(result.session.steps[0].tx.data,'0x1234'); assert.equal(result.session.steps[0].state,'confirmed'); assert.equal(f.sends,1);
 });
+test('pads the gas estimate by 30% and omits gas when estimation fails',async()=>{
+ const sent=[];
+ const f=fixture({rpc:async(_plan,method)=>method==='eth_estimateGas'?'0x64':undefined});
+ const orig=f.wallet.request;f.wallet.request=async args=>{if(args.method==='eth_sendTransaction')sent.push(args.params[0]);return orig(args);};
+ await f.engine.prepare('Stick',[tx]);await f.engine.run({review});
+ assert.equal(sent[0].gas,'0x82');
+ const g=fixture();const gorig=g.wallet.request;g.wallet.request=async args=>{if(args.method==='eth_sendTransaction')sent.push(args.params[0]);return gorig(args);};
+ await g.engine.prepare('Stick',[tx]);await g.engine.run({review});
+ assert.equal('gas' in sent[1],false);
+});
 test('cancelled review never submits and remains recoverable',async()=>{
  const f=fixture();await f.engine.prepare('Stick',[tx]);const result=await f.engine.run({review:async()=>false});
  assert.equal(result.cancelled,true);assert.equal(f.sends,0);assert.equal(f.engine.load().steps[0].state,'ready');

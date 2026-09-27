@@ -311,9 +311,12 @@
       if (tx.data.startsWith("0x095ea7b3") && simulation !== "0x" && !/^0x0{63}1$/i.test(simulation)) {
         throw new Error("The token did not accept this approval. No transaction was sent.");
       }
-      const [blockNumber, nonce, code] = await Promise.all([
+      const [blockNumber, nonce, code, gas] = await Promise.all([
         rpc(tx, "eth_blockNumber", []), rpc(tx, "eth_getTransactionCount", [tx.from, "pending"]),
         rpc(tx, "eth_getCode", [tx.from, "latest"]),
+        // Estimates run in the latest block's context, where a blocknumber-clock votes checkpoint written this block
+        // updates in place; the mined transaction pushes a new one (~45k more on Sticky shares), so pad by 30%.
+        rpc(tx, "eth_estimateGas", [wire]).then((g) => quantity((BigInt(g) * 13n) / 10n), () => undefined),
       ]);
       // Recheck immediately before opening the wallet, after asynchronous simulation and RPC reads.
       options.authorize?.(tx);
@@ -331,7 +334,7 @@
       save(session); // Write ahead: a reload or any ambiguous wallet error must never resend this attempt.
       let result;
       try {
-        result = await provider.request({ method: "eth_sendTransaction", params: [{ ...wire, chainId: quantity(tx.chainId) }] });
+        result = await provider.request({ method: "eth_sendTransaction", params: [{ ...wire, ...(gas && { gas }), chainId: quantity(tx.chainId) }] });
       } catch (error) {
         step.state = error?.code === 4001 ? "rejected" : "unknown";
         save(session);
