@@ -2626,9 +2626,9 @@ const CHAIN_ICON_SVG = {
 };
 const ORIGINS = [
   { key: "ethereum", chainId: 1, label: "ETHEREUM", name: "Ethereum", icon: "eth", environment: "production", rpcUrl: "https://ethereum-rpc.publicnode.com", explorer: "https://etherscan.io" },
-  { key: "optimism", chainId: 10, label: "OPTIMISM", name: "OP Mainnet", icon: "op", environment: "production", rpcUrl: "https://mainnet.optimism.io", explorer: "https://optimistic.etherscan.io" },
+  { key: "optimism", chainId: 10, label: "OPTIMISM", name: "Optimism", icon: "op", environment: "production", rpcUrl: "https://mainnet.optimism.io", explorer: "https://optimistic.etherscan.io" },
   { key: "base", chainId: 8453, label: "BASE", name: "Base", icon: "base", environment: "production", rpcUrl: "https://mainnet.base.org", explorer: "https://basescan.org" },
-  { key: "arbitrum", chainId: 42_161, label: "ARBITRUM", name: "Arbitrum One", icon: "arb", environment: "production", rpcUrl: "https://arb1.arbitrum.io/rpc", explorer: "https://arbiscan.io" },
+  { key: "arbitrum", chainId: 42_161, label: "ARBITRUM", name: "Arbitrum", icon: "arb", environment: "production", rpcUrl: "https://arb1.arbitrum.io/rpc", explorer: "https://arbiscan.io" },
   { key: "ethereum-sepolia", chainId: 11_155_111, label: "ETH SEPOLIA", name: "Ethereum Sepolia", icon: "eth", environment: "testnet", rpcUrl: "https://ethereum-sepolia-rpc.publicnode.com", explorer: "https://sepolia.etherscan.io" },
   { key: "optimism-sepolia", chainId: 11_155_420, label: "OP SEPOLIA", name: "OP Sepolia", icon: "op", environment: "testnet", rpcUrl: "https://sepolia.optimism.io", explorer: "https://sepolia-optimism.etherscan.io" },
   { key: "base-sepolia", chainId: 84_532, label: "BASE SEPOLIA", name: "Base Sepolia", icon: "base", environment: "testnet", rpcUrl: "https://sepolia.base.org", explorer: "https://sepolia.basescan.org" },
@@ -5070,6 +5070,8 @@ function appendViewAsItem(menu) {
   }));
 }
 async function appendWalletBalances(menu, address) {
+  // Balances are per chain; the multi-chain home has none in view.
+  if (ctx.currentId === null) return;
   const panel = document.createElement("div");
   panel.className = "wallet-menu-balances";
   panel.textContent = "Loading balances…";
@@ -5087,7 +5089,7 @@ async function appendWalletBalances(menu, address) {
     panel.innerHTML = rows.map(([label, value]) =>
       `<div class="wallet-menu-balance-row"><span class="mut">${esc(label)}</span><strong>${esc(value)}</strong></div>`).join("");
   } catch {
-    if (panel.isConnected) panel.textContent = "Balances unavailable";
+    panel.remove();
   }
 }
 // ------------------------------------------------ Signa sign-in and the chooser (Homerun's dynamic)
@@ -5234,7 +5236,7 @@ function openWalletMenu() {
   if (walletKind === "signa" && !viewAs) {
     const note = document.createElement("div");
     note.className = "wallet-menu-note";
-    note.textContent = "Signa account. Connect a wallet to stick, unstick or claim.";
+    note.textContent = "Connect a wallet to stick, unstick or claim.";
     menu.appendChild(note);
   }
   if (shown) appendWalletBalances(menu, shown);
@@ -5266,11 +5268,17 @@ function openWalletMenu() {
   appendViewAsItem(menu);
   mountWalletMenu();
 }
+// Signed in reads like juicebox.money: the state as the headline, the account (ENS name or short address) beneath.
 function updateConnectButton() {
   const btn = $("connect-btn");
-  btn.textContent = viewAs
-    ? `Viewing as ${shortAddr(viewAs)}`
-    : walletAccount ? shortAddr(walletAccount) : "Sign in";
+  if (viewAs) btn.textContent = `Viewing as ${shortAddr(viewAs)}`;
+  else if (walletAccount) {
+    const account = walletAccount;
+    btn.innerHTML = `<span class="signed-in"><span class="signed-in-dot"></span>Signed in</span><span class="signed-in-account">${esc(shortAddr(account))}</span>`;
+    reverseEns(account).then(name => {
+      if (name && walletAccount === account && !viewAs) btn.querySelector(".signed-in-account").textContent = name;
+    });
+  } else btn.textContent = "Sign in";
   btn.classList.toggle("connected", !!walletAccount && !viewAs);
   btn.classList.toggle("viewing-as", !!viewAs);
   btn.title = viewAs || (walletKind === "signa" ? `Signa account ${walletAccount}` : walletAccount) || "Sign in, connect a wallet or view as another account";

@@ -100,7 +100,7 @@ test('the page starts in the loading state with the chart caption hidden and no 
   assert.match(html, /\.home-secured-chart:empty/);
   assert.doesNotMatch(html, /id="site-chain"/);
   assert.match(html, /<button class="connect-btn" id="connect-btn">Sign in<\/button>/);
-  assert.match(source, /walletAccount \? shortAddr\(walletAccount\) : "Sign in";/);
+  assert.match(source, /else btn.textContent = "Sign in";/);
 });
 
 test('home reads every configured chain of the environment its link names', () => {
