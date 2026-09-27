@@ -4402,7 +4402,7 @@ function launchDeployTx(target, { token, tokenSymbol, name, symbol, projectUri, 
       ["SYMBOL", bind("symbol", symbol)],
       ["STICKINESS BONUS", bind("cashOutTaxRate", reward, { kind: "bps", zero: "None", note: "cash out tax. Part of each unstick stays with the holders who remain" })],
       ["TRUSTED SENDERS", bind("granters", granters, { names: named([target.autoStickAdapter, "AutoStick, each holder opts in"]) })],
-      ["TRANSFERS", bind("soulbound", soulbound, { yes: "Locked. The token can never change hands.", no: "Unlocked. Transfers restart the stickiness clock." })],
+      ["TRANSFERS", bind("soulbound", soulbound, { yes: "Locked. The token can never change hands.", no: "Unlocked. Transferred tokens count as newly stuck." })],
       ["LISTING", bind("projectUri", projectUri, { kind: "uri" })],
     ],
     value: `0x${target.fee.toString(16)}`,
@@ -5586,7 +5586,7 @@ function renderBonusSplit(r, o = {}) {
 const soulboundHint = () => {
   $("d-soulbound-hint").textContent = $("d-soulbound").value === "1"
     ? "Sticky tokens can't be transferred."
-    : "Holders can transfer sticky tokens, which restarts the moved tokens' stickiness clock.";
+    : "Holders can transfer sticky tokens. Moved tokens count as newly stuck for whoever receives them.";
 };
 $("d-soulbound").onchange = soulboundHint;
 $("d-custom-name").onchange = () => {
