@@ -5233,12 +5233,6 @@ async function openWalletChooser({ walletsOnly = false } = {}) {
 function openWalletMenu() {
   const menu = newWalletMenu();
   const shown = viewAs || walletAccount;
-  if (walletKind === "signa" && !viewAs) {
-    const note = document.createElement("div");
-    note.className = "wallet-menu-note";
-    note.textContent = "Connect a wallet to stick, unstick or claim.";
-    menu.appendChild(note);
-  }
   if (shown) appendWalletBalances(menu, shown);
   menu.appendChild(menuItem("Account", () => {
     closeWalletMenu();
