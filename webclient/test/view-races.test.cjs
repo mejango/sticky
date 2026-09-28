@@ -124,7 +124,7 @@ test('a superseded auto-stick render leaves the card hidden, never half drawn', 
   c.unlockScheduleSentence = () => '';
   c.vestableRewardGroups = async () => [];
   c.stickyLabel = (info) => `Sticky ${info.symbol}`;
-  c.formatUnits = String; c.formatDuration = String; c.esc = String; c.asStatusLine = () => '';
+  c.formatUnits = String; c.formatAmount = String; c.formatDuration = String; c.esc = String; c.asStatusLine = () => '';
   const rendering = c.renderAutoStick();
   await new Promise(setImmediate);
   c.route();

@@ -149,7 +149,7 @@ function homeContext({ fetch, chains = { 1: DEPLOYER, 42161: DEPLOYER, 84532: DE
     backingUsdPrices: async () => new Map(),
     autoStickAdapterOn: () => '0x' + '5'.repeat(40),
     account: () => null,
-    tokenLogo: () => '', esc: String, formatUnits: (value) => String(value), ago: () => 'now', shortAddr: (value) => value,
+    tokenLogo: () => '', esc: String, formatUnits: (value) => String(value), formatAmount: (value) => String(value), ago: () => 'now', shortAddr: (value) => value,
     addressLabel: (value) => value, pct: String, stickyLabel: (info) => info.stSymbol, CHAIN_ICON_SVG: {},
     $: (id) => { if (!elements.has(id)) elements.set(id, element(id)); return elements.get(id); },
     status() {}, clearHomeSecuredChart() {}, mountHomeSecuredChart() {}, homeSecuredSeries: () => ({}), hydrateLogos: async () => {},
