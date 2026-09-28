@@ -89,6 +89,9 @@ const TOPIC = {
   SetTrustedSender: "0x19cb6ea1a683846f033314fc7883a280ffee4abf9e75f0c699a947575f182e69",
   Transfer: "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
   Fund: "0x171d1972970e548ead487a3a60cfbdfffd130a21513e44dfcd8778965935ddf2",
+  // JBMultiTerminal's, for what a stick paid in and an unstick paid out.
+  Pay: "0x133161f1c9161488f777ab9a26aae91d47c0d9a3fafb398960f138db02c73797",
+  CashOutTokens: "0xfaf1d4bf1b08470c7ed8c351c5065f51af70b36b237723173f898453b9724142",
 };
 
 // ---------------------------------------------------------------- abi codec
@@ -1078,11 +1081,59 @@ async function verifyHolderPage(projectId, rows) {
   }));
 }
 
-// Decode hook logs into activity cards, newest first. Each card carries the stuck token's logo.
+// What each stick paid in and each unstick paid out, in the underlying token: the terminal's Pay or
+// CashOutTokens in the same transaction as the hook's Staked or Unstaked, for the same holder and share count.
+// A transfer between holders has no terminal event, and a failed read leaves share counts.
+function moveKey(txHash, kind, projectId, holder, count) {
+  return `${String(txHash).toLowerCase()}:${kind}:${BigInt(projectId)}:${String(holder).toLowerCase()}:${BigInt(count)}`;
+}
+async function terminalMoves(logs, reader) {
+  const moves = new Map();
+  const shown = logs.filter((log) => log.topics[0] === TOPIC.Staked || log.topics[0] === TOPIC.Unstaked);
+  if (!shown.length || !reader.terminal) return moves;
+  const from = shown.reduce((low, log) => (BigInt(log.blockNumber) < low ? BigInt(log.blockNumber) : low), BigInt(shown[0].blockNumber));
+  const ids = [...new Set(shown.map((log) => log.topics[1].toLowerCase()))];
+  let found;
+  try {
+    found = await getLogsOn(reader, reader.terminal, [[TOPIC.Pay, TOPIC.CashOutTokens], null, null, ids], `0x${from.toString(16)}`);
+  } catch (error) {
+    console.warn("Could not read stick and unstick amounts; showing Sticky token counts.", error);
+    return moves;
+  }
+  for (const log of Array.isArray(found) ? found : []) {
+    if (!log?.transactionHash || !Array.isArray(log.topics) || log.topics.length < 4) continue;
+    try {
+      const projectId = decUint(log.topics[3]);
+      if (log.topics[0] === TOPIC.Pay) {
+        moves.set(moveKey(log.transactionHash, "stick", projectId, decAddress(log.data, 1), decUint(log.data, 3)), decUint(log.data, 2));
+      } else if (log.topics[0] === TOPIC.CashOutTokens) {
+        moves.set(moveKey(log.transactionHash, "unstick", projectId, decAddress(log.data, 0), decUint(log.data, 2)), decUint(log.data, 4));
+      }
+    } catch {}
+  }
+  return moves;
+}
+function underlyingAmount(amount, info) {
+  return `${formatAmount(amount, info.decimals ?? 18)} ${esc(info.symbol)}`;
+}
+function shareAmount(count, info) {
+  return `${formatAmount(count, 18)} ${esc(info.stSymbol)}`;
+}
+// A Staked or Unstaked log's terminal amount, or undefined when it moved no underlying tokens.
+function logMove(moves, log) {
+  const stick = log.topics[0] === TOPIC.Staked;
+  const count = decUint(log.data, stick ? 1 : 0);
+  return moves.get(moveKey(log.transactionHash || "", stick ? "stick" : "unstick", decUint(log.topics[1]), decAddress(log.topics[2]), count));
+}
+
+// Decode hook logs into activity cards, newest first. Each card carries the stuck token's logo. Sticks and
+// unsticks show the underlying tokens that came in or went out; transfers show the Sticky tokens moved.
 async function activityItems(logs, includeProject, reader = pageReader()) {
   const items = [];
   const adapter = (autoStickAdapterOn(reader.chainId) || "").toLowerCase();
-  for (const log of logs.slice(-40)) {
+  const recent = logs.slice(-40);
+  const moves = await terminalMoves(recent, reader);
+  for (const log of recent) {
     const id = decUint(log.topics[1]);
     let info;
     try {
@@ -1096,14 +1147,16 @@ async function activityItems(logs, includeProject, reader = pageReader()) {
       const payer = decAddress(log.data, 0);
       const autoStuck = payer.toLowerCase() === adapter;
       const self = payer.toLowerCase() === decAddress(log.topics[2]).toLowerCase();
-      row.amount = `${formatAmount(decUint(log.data, 1), 18)} ${esc(info.stSymbol)}`;
+      const paid = logMove(moves, log);
+      row.amount = paid === undefined ? shareAmount(decUint(log.data, 1), info) : underlyingAmount(paid, info);
       row.direction = "in";
       row.line = autoStuck ? `auto-stuck by ${holder}` : self ? `stuck by ${holder}` : `to ${holder} from ${addressLabel(payer)}`;
     } else if (log.topics[0] === TOPIC.Unstaked) {
-      // Burns and outgoing transfers reduce the position too; this event does not prove an underlying payout.
-      row.amount = `${formatAmount(decUint(log.data, 0), 18)} ${esc(info.stSymbol)}`;
+      // Burns and outgoing transfers reduce the position too; only a cash out in the same transaction pays out.
+      const reclaimed = logMove(moves, log);
+      row.amount = reclaimed === undefined ? shareAmount(decUint(log.data, 0), info) : underlyingAmount(reclaimed, info);
       row.direction = "out";
-      row.line = `removed by ${holder}`;
+      row.line = reclaimed === undefined ? `removed by ${holder}` : `unstuck by ${holder}`;
     } else if (log.topics[0] === TOPIC.StreakStarted) {
       row.lead = `<span>${holder} got sticky</span>`;
     } else {
@@ -1119,6 +1172,7 @@ async function airdropItems(logs, reader = pageReader()) {
   const items = [];
   const adapter = (autoStickAdapterOn(reader.chainId) || "").toLowerCase();
   const staked = logs.filter((log) => log.topics[0] === TOPIC.Staked).slice(-40);
+  const moves = await terminalMoves(staked, reader);
   for (const log of staked) {
     const holder = decAddress(log.topics[2]);
     const payer = decAddress(log.data, 0);
@@ -1133,11 +1187,12 @@ async function airdropItems(logs, reader = pageReader()) {
       continue;
     }
     const self = holder.toLowerCase() === account().toLowerCase() ? " (you)" : "";
+    const paid = logMove(moves, log);
     items.push({
       ts: log.ts,
       html: feedCard({
         info, chainId: reader.chainId, projectId: id, ts: log.ts, direction: "in",
-        amount: `${formatAmount(decUint(log.data, 1), 18)} ${esc(info.stSymbol)}`,
+        amount: paid === undefined ? shareAmount(decUint(log.data, 1), info) : underlyingAmount(paid, info),
         line: `to ${addressLabel(holder)}${self} from ${addressLabel(payer)}`,
       }),
     });
@@ -1145,8 +1200,8 @@ async function airdropItems(logs, reader = pageReader()) {
   return items.reverse();
 }
 
-// Home feeds from Bendystraw's events. A stick is a pay and an unstick a cash out; amounts are the Sticky
-// tokens minted or burned. Stuck tokens paid for someone else are an airdrop.
+// Home feeds from Bendystraw's events. A stick is a pay and an unstick a cash out; amounts are the underlying
+// tokens paid in or reclaimed. Stuck tokens paid for someone else are an airdrop.
 async function indexedActivityItems(events, reader) {
   const adapter = (autoStickAdapterOn(reader.chainId) || "").toLowerCase();
   const items = [];
@@ -1163,7 +1218,7 @@ async function indexedActivityItems(events, reader) {
       ts: event.ts,
       html: feedCard({
         info, chainId: reader.chainId, projectId: event.projectId, ts: event.ts, direction: unstick ? "out" : "in",
-        amount: `${formatAmount(event.tokens, 18)} ${esc(info.stSymbol)}`,
+        amount: underlyingAmount(event.amount, info),
         line: `${verb} by ${addressLabel(event.holder)}`,
       }),
     });
@@ -1186,7 +1241,7 @@ async function indexedAirdropItems(events, reader) {
       ts: event.ts,
       html: feedCard({
         info, chainId: reader.chainId, projectId: event.projectId, ts: event.ts, direction: "in",
-        amount: `${formatAmount(event.tokens, 18)} ${esc(info.stSymbol)}`,
+        amount: underlyingAmount(event.amount, info),
         line: `to ${addressLabel(event.holder)}${self} from ${addressLabel(event.payer)}`,
       }),
     });
@@ -2028,22 +2083,100 @@ async function renderHome() {
 }
 
 // ------------------------------------------------------------------- project
+// The chain this page's project, account and handle routes read, known before the deployment loads.
+function pageChainId() {
+  return Number(new URL(location.href).searchParams.get("chain") || window.STICKY_CONFIG?.defaultChainId || 1);
+}
+// The last summary this browser saw of a project: public onchain facts only, never a wallet's position.
+function projectCache() {
+  return window.__DEMO_RPC ? null : window.StickyRouteBoot || null;
+}
+
+// Shows the project view before its reads land: the cached summary when this browser has one, placeholders
+// otherwise. Re-entering the project already on screen keeps it; a different project never shows the last
+// one's header, details, board or feed while its own load.
+let shownProject = null;
+function enterProjectView(projectId) {
+  $("view-home").classList.add("hide");
+  $("view-account").classList.add("hide");
+  $("view-project").classList.remove("hide");
+  const key = projectId === null ? null : `${pageChainId()}:${projectId}`;
+  if (key !== null && key === shownProject) return;
+  shownProject = key;
+  const view = $("view-project");
+  view.dataset.state = "loading";
+  view.setAttribute("aria-busy", "true");
+  $("p-details-card").classList.add("hide");
+  $("p-chains-card").classList.add("hide");
+  $("p-bonus-card").classList.add("hide");
+  for (const id of ["p-logo", "chart", "token-info", "p-activity", "leaderboard", "pie"]) $(id).innerHTML = "";
+  for (const id of ["h-symbol", "h-name", "stake-symbol", "gift-symbol"]) $(id).textContent = "";
+  for (const id of ["h-staked", "h-streakers", "h-average", "h-top"]) $(id).textContent = "–";
+  $("stake-title").textContent = "Stick";
+  renderProjectChains([]);
+  const cached = key === null ? null : projectCache()?.readProject(pageChainId(), projectId);
+  if (cached) paintCachedProject(projectId, cached);
+}
+function paintCachedProject(projectId, cached) {
+  const info = { ...cached.info, reward: BigInt(cached.info.reward) };
+  renderProjectLabels(projectId, info, cached.header.title);
+  $("h-staked").textContent = cached.header.stuck;
+  $("h-streakers").textContent = cached.header.sticks;
+  $("h-average").textContent = cached.header.average;
+  $("h-top").textContent = cached.header.top;
+  renderProjectChains(cached.chains);
+  if (cached.details) {
+    const pool = { sigma: BigInt(cached.details.sigma), supply: BigInt(cached.details.supply), orphaned: BigInt(cached.details.orphaned) };
+    renderDetails(info, pool, cached.details.trusted, cached.details.hook);
+    $("token-info").setAttribute("aria-busy", "true");
+  }
+  $("view-project").dataset.state = "cached";
+}
+function cacheProjectSummary(projectId, info, pool, trusted, chains) {
+  projectCache()?.writeProject(ctx.chainId, projectId, {
+    info: {
+      stakedToken: info.stakedToken, stToken: info.stToken, symbol: info.symbol, name: info.name, stSymbol: info.stSymbol,
+      stName: info.stName, decimals: info.decimals, reward: info.reward.toString(), soulbound: Boolean(info.soulbound),
+    },
+    header: {
+      title: $("h-name").textContent, stuck: $("h-staked").textContent, sticks: $("h-streakers").textContent,
+      average: $("h-average").textContent, top: $("h-top").textContent,
+    },
+    chains: [...new Set(chains.map(Number))],
+    details: { sigma: pool.sigma.toString(), supply: pool.supply.toString(), orphaned: pool.orphaned.toString(), trusted, hook: ctx.hook },
+  });
+}
+function projectFailed(error) {
+  status(error?.message || String(error), "err");
+  const view = $("view-project");
+  if (view.dataset.state === "loading") view.dataset.state = "error";
+  view.removeAttribute("aria-busy");
+}
+
+// Names and units that come from the project's tokens alone.
+function renderProjectLabels(projectId, info, title = null) {
+  $("p-logo").innerHTML = tokenLogo(info.stakedToken, info.symbol, 104);
+  $("h-symbol").textContent = stickyLabel(info);
+  $("h-name").textContent = title ?? (window.STICKY_CONFIG?.projectNameOverrides?.[String(projectId)] || info.stName);
+  $("tranches-amount-head").textContent = `AMOUNT (${info.stSymbol})`;
+  $("stake-title").textContent = `Stick ${info.symbol}`;
+  $("stake-symbol").textContent = info.symbol;
+  $("gift-symbol").textContent = info.symbol;
+  $("transfer-symbol").textContent = info.stSymbol;
+  $("unstake-symbol").textContent = info.stSymbol;
+  $("unstake-hint").textContent = info.reward > 0n
+    ? `Newest tokens unstick first, and up to ${pct(info.reward)} stays behind for remaining holders.`
+    : "Newest tokens unstick first.";
+}
+
 async function renderProject(projectId) {
+  enterProjectView(projectId);
   if (!ctx.loaded) return;
   ++viewSequence;
   clearHomeSecuredChart();
-  const changed = ctx.currentId !== projectId;
   ctx.currentId = projectId;
   ctx.pool = null;
   const current = currentView();
-  // A different project never shows the last one's details, board, or feed while its own load.
-  if (changed) {
-    $("p-details-card").classList.add("hide");
-    $("p-chains-card").classList.add("hide");
-    for (const id of ["token-info", "p-activity", "leaderboard", "pie"]) $(id).innerHTML = "";
-  }
-  $("view-home").classList.add("hide");
-  $("view-project").classList.remove("hide");
   // A verified handle stays in the address bar while tabs change and across post-transaction refreshes.
   const projectRoute = ctx.alias ? `#/${ctx.alias}` : `#/project/${projectId}`;
   $("tab-btn-overview").href = projectRoute;
@@ -2055,18 +2188,7 @@ async function renderProject(projectId) {
   if (!current()) return;
   syncTransferSticky(info);
   renderEmptyPosition(info);
-  $("p-logo").innerHTML = tokenLogo(info.stakedToken, info.symbol, 104);
-  $("h-symbol").textContent = stickyLabel(info);
-  $("h-name").textContent = window.STICKY_CONFIG?.projectNameOverrides?.[String(projectId)] || info.stName;
-  $("tranches-amount-head").textContent = `AMOUNT (${info.stSymbol})`;
-  $("stake-title").textContent = `Stick ${info.symbol}`;
-  $("stake-symbol").textContent = info.symbol;
-  $("gift-symbol").textContent = info.symbol;
-  $("transfer-symbol").textContent = info.stSymbol;
-  $("unstake-symbol").textContent = info.stSymbol;
-  $("unstake-hint").textContent = info.reward > 0n
-    ? `Newest tokens unstick first, and up to ${pct(info.reward)} stays behind for remaining holders.`
-    : "Newest tokens unstick first.";
+  renderProjectLabels(projectId, info);
 
   ctx.projectLogs = null;
   const scanned = await projectLogs(projectId);
@@ -2097,9 +2219,12 @@ async function renderProject(projectId) {
     });
   }
   const active = rows.filter((row) => row.staked > 0n).sort((a, b) => (b.staked > a.staked ? 1 : -1));
-  $("h-staked").textContent = `${formatAmount(totalStaked, 18)} ${info.stSymbol}`;
+  // Stuck is the underlying tokens the Sticky tokens are backed by, not the Sticky token supply.
+  $("h-staked").textContent = `${formatAmount(pool.sigma, info.decimals)} ${info.symbol}`;
   $("h-streakers").textContent = active.length;
   renderHeaderAges(rows, pin.timestamp);
+  $("view-project").dataset.state = "ready";
+  $("view-project").removeAttribute("aria-busy");
   const projectChains = await projectChainIds(projectId);
   if (!current()) return;
   renderProjectChains(projectChains);
@@ -2116,18 +2241,12 @@ async function renderProject(projectId) {
   const granters = [...new Set(scanned.all.filter((log) => log.topics[0] === TOPIC.SetGranter).map((log) => decAddress(log.topics[2])))];
   // The auto-stick adapter is its own pre-approval, not a trusted sender.
   const humanGranters = granters.filter((g) => g.toLowerCase() !== (autoStickAdapter() || "").toLowerCase());
-  $("p-details-card").classList.remove("hide");
-  $("token-info").innerHTML = detailsHtml(info, pool, totalStaked, humanGranters.length);
-  for (const copy of $("token-info").querySelectorAll("[data-copy-address]")) {
-    copy.onclick = guard(async () => {
-      await navigator.clipboard.writeText(copy.dataset.copyAddress);
-      inlineStatus(copy, `${copy.dataset.copyLabel} address copied.`, "ok");
-    });
-  }
+  renderDetails(info, pool, humanGranters.length);
+  cacheProjectSummary(projectId, info, pool, humanGranters.length, projectChains);
 
   const pie = pieSvg(active, info.stSymbol, totalStaked);
   $("pie").innerHTML = pie.svg;
-  ctx.board = { rows: active, symbol: info.stSymbol, total: totalStaked, projectId, page: 0 };
+  ctx.board = { rows: active, info, pool, total: totalStaked, projectId, page: 0 };
   renderBoard();
   pie.bind?.($("pie"));
 
@@ -2141,12 +2260,12 @@ async function renderProject(projectId) {
 
 // The Details card: one short label and value per row, then the rules and contracts behind a disclosure.
 // Values never wrap mid-word; only the contract addresses may break.
-function detailsHtml(info, pool, totalStaked, trustedCount) {
+function detailsHtml(info, pool, trustedCount, hook = ctx.hook) {
   const row = (label, text, title = text) => `<dt>${esc(label)}</dt><dd title="${esc(title)}">${esc(text)}</dd>`;
   const rows = [
     row("Token", `${info.stName} (${info.stSymbol})`),
     row("Sticks", `${info.name} (${info.symbol})`),
-    row("Supply", `${formatAmount(totalStaked, 18)} ${info.stSymbol}`),
+    row("Supply", `${formatAmount(pool.supply, 18)} ${info.stSymbol}`),
     row("Backing", `${formatAmount(pool.sigma, info.decimals)} ${info.symbol}`),
     pool.supply > 0n ? row("Backing per token", `${formatAmount((pool.sigma * 10n ** 18n) / pool.supply, info.decimals)} ${info.symbol}`) : "",
     pool.orphaned > 0n
@@ -2167,14 +2286,26 @@ function detailsHtml(info, pool, totalStaked, trustedCount) {
     + `<ul class="details-rules">${rules.map((rule) => `<li>${esc(rule)}</li>`).join("")}</ul>`
     + `<dl class="details-list details-contracts">`
     + contract(`${info.stSymbol} token`, info.stToken) + contract(`${info.symbol} token`, info.stakedToken)
-    + contract("Stick accounting", ctx.hook)
+    + contract("Stick accounting", hook)
     + `</dl></details>`;
+}
+function renderDetails(info, pool, trustedCount, hook = ctx.hook) {
+  $("p-details-card").classList.remove("hide");
+  $("token-info").removeAttribute("aria-busy");
+  $("token-info").innerHTML = detailsHtml(info, pool, trustedCount, hook);
+  for (const copy of $("token-info").querySelectorAll("[data-copy-address]")) {
+    copy.onclick = guard(async () => {
+      await navigator.clipboard.writeText(copy.dataset.copyAddress);
+      inlineStatus(copy, `${copy.dataset.copyLabel} address copied.`, "ok");
+    });
+  }
 }
 
 // Signed out, the position is empty rather than unknown: zero, in each stat's unit.
 function renderEmptyPosition(info) {
   if (account()) return;
-  $("p-balance").textContent = `0 ${info.stSymbol}`;
+  $("p-balance").textContent = `0 ${info.symbol}`;
+  $("p-balance").removeAttribute("title");
   $("p-current").textContent = formatDuration(0);
   $("p-longest").textContent = formatDuration(0);
 }
@@ -2191,12 +2322,13 @@ async function refreshPosition() {
   const args = word(projectId) + encAddress(holder);
   const pin = await pinnedBlock();
   const at = (to, data) => rpc("eth_call", [{ to, data }, pin.tag]);
-  const [staked, streakStart, longest, wallet, tranchePage] = await Promise.all([
+  const [staked, streakStart, longest, wallet, tranchePage, pool] = await Promise.all([
     at(info.stToken, SEL.balanceOf + encAddress(holder)).then(decUint),
     at(ctx.hook, SEL.streakStartOf + args).then(decUint),
     at(ctx.hook, SEL.longestStreakOf + args).then(decUint),
     at(info.stakedToken, SEL.balanceOf + encAddress(holder)).then(decUint),
     readTranchePage(projectId, holder, ctx.tranchePage, pin.tag),
+    ctx.pool || poolBacking(projectId, info),
   ]);
   if (request !== positionSequence || ctx.currentId !== projectId || ctx.chainId !== chainId || account() !== holder) return;
   const { tranches, total, page, start } = tranchePage;
@@ -2205,7 +2337,9 @@ async function refreshPosition() {
   const current = streakStart === 0n ? 0n : BigInt(Math.max(0, now - Number(streakStart)));
   const header = ctx.streakRows;
   if (header?.chainId === chainId && header.projectId === projectId) renderHeaderAges(header.rows, now);
-  $("p-balance").textContent = `${formatAmount(staked, 18)} ${info.stSymbol}`;
+  // Stuck is the position's share of the backing, in the underlying token; the Sticky tokens are in the title.
+  $("p-balance").textContent = `${formatAmount(backingOfShares(staked, pool), info.decimals)} ${info.symbol}`;
+  $("p-balance").title = `${formatAmount(staked, 18)} ${info.stSymbol}`;
   $("p-current").textContent = formatDuration(current);
   $("p-longest").textContent = formatDuration(longest > current ? longest : current);
   $("p-wallet").textContent = `${formatAmount(wallet, info.decimals)} ${info.symbol}`;
@@ -4407,6 +4541,10 @@ async function poolBacking(projectId, info, reader = pageReader()) {
     sigma, supply, rawBacking, orphaned, reward: info.reward, decimals: info.decimals, symbol: info.symbol, stSymbol: info.stSymbol,
   };
 }
+// Sticky tokens' share of the backing, in the underlying token: what a position has stuck.
+function backingOfShares(shares, pool) {
+  return pool.supply > 0n ? (shares * pool.sigma) / pool.supply : 0n;
+}
 
 // Read the same core preview used by the adapter, including hook pricing, decimal rounding, and payer trust.
 // JBRuleset has nine static ABI words; the beneficiary count follows it. Sticky reserves no tokens.
@@ -5477,14 +5615,16 @@ async function renderAccount(address) {
       ]);
       if (!current()) return;
       if (staked === 0n && longest === 0n) continue;
-      const current = streakStart === 0n ? 0 : Math.max(0, Math.floor(Date.now() / 1000) - Number(streakStart));
+      const pool = staked > 0n ? await poolBacking(id, info) : { supply: 0n, sigma: 0n };
+      if (!current()) return;
+      const age = streakStart === 0n ? 0 : Math.max(0, Math.floor(Date.now() / 1000) - Number(streakStart));
       rows.push(
         `<a class="card-item pickc" href="#/project/${id}"><div class="card-head">` +
         `${tokenLogo(info.stakedToken, info.symbol, 26)}<div style="flex:1;min-width:0">` +
         `<div style="font-weight:700">${esc(stickyLabel(info))} <span class="mut">#${id}</span></div>` +
-        `<div class="kv"><span class="mut">Stuck:</span> ${formatAmount(staked, 18)} ${esc(info.stSymbol)}</div>` +
-        `<div class="kv"><span class="mut">Time:</span> ${formatDuration(current)}</div>` +
-        `<div class="kv"><span class="mut">Longest:</span> ${formatDuration(Math.max(Number(longest), current))}</div>` +
+        `<div class="kv"><span class="mut">Stuck:</span> ${underlyingAmount(backingOfShares(staked, pool), info)}</div>` +
+        `<div class="kv"><span class="mut">Time:</span> ${formatDuration(age)}</div>` +
+        `<div class="kv"><span class="mut">Longest:</span> ${formatDuration(Math.max(Number(longest), age))}</div>` +
         `</div></div></a>`,
       );
     } catch {}
@@ -5497,6 +5637,10 @@ async function renderAccount(address) {
 }
 
 // -------------------------------------------------------------------- router
+// The view was named before first paint (route-boot.js); keep it in step so CSS never shows another view.
+function syncRouteView() {
+  document.documentElement.dataset.route = window.StickyRouteBoot?.routeKind(location.hash) ?? (isHomeRoute() ? "home" : "project");
+}
 function route() {
   const PROJECT_TABS = { overview: "overview", tokens: "owners", airdrops: "rewards", latest: "activity" };
   const sequence = ++viewSequence;
@@ -5510,26 +5654,33 @@ function route() {
   try { $("autostick-dialog").close(); } catch {}
   confirmReturnTo = [];
   if (confirmResolve) settleConfirm(false);
-  // The home page reads its chains itself; every other route needs the page's chain loaded first.
-  if (!ctx.loaded && !isHomeRoute()) return;
+  syncRouteView();
+  // The home page reads its chains itself; every other route needs the page's chain loaded first, and shows
+  // its own view, cached or loading, until then.
   const accountMatch = location.hash.match(/^#\/account\/(0x[0-9a-fA-F]{40})$/);
   if (accountMatch) {
     ctx.currentId = null;
+    shownProject = null;
     renderAccount(accountMatch[1]).catch((e) => status(e.message, "err"));
     return;
   }
   $("view-account").classList.add("hide");
   const handleMatch = location.hash.match(/^#\/@([^/]+)(?:\/(overview|tokens|airdrops|latest))?\/?$/);
   if (handleMatch) {
-    const handle = decodeURIComponent(handleMatch[1]);
+    let handle;
+    try { handle = decodeURIComponent(handleMatch[1]); } catch { handle = handleMatch[1]; }
     const tab = PROJECT_TABS[handleMatch[2] || "overview"];
     setTab(tab);
+    const cachedId = projectCache()?.readHandle(pageChainId(), handle);
+    enterProjectView(cachedId ? BigInt(cachedId) : null);
+    if (!ctx.loaded) return;
     projectIdForHandle(handle).then((projectId) => {
       if (sequence !== viewSequence) return;
       if (projectId === null) throw new Error(`no sticky token is published at @${handle}`);
       ctx.alias = `@${handle}`;
+      projectCache()?.writeHandle(ctx.chainId, handle, projectId);
       return renderProject(projectId);
-    }).catch((e) => status(e.message, "err"));
+    }).catch(projectFailed);
     return;
   }
   const match = location.hash.match(/^#\/project\/(\d+)(?:\/(overview|tokens|airdrops|latest))?\/?$/);
@@ -5538,10 +5689,11 @@ function route() {
     const tab = PROJECT_TABS[match[2] || "overview"];
     setTab(tab);
     ctx.alias = null;
-    renderProject(projectId).catch((e) => status(e.message, "err"));
+    renderProject(projectId).catch(projectFailed);
   }
   else {
     ctx.currentId = null;
+    shownProject = null;
     renderHome().catch(homeFailed);
   }
 }
@@ -5852,7 +6004,7 @@ let boardSequence = 0;
 function renderBoard() {
   if (!ctx.board) return;
   const sequence = ++boardSequence;
-  const { rows, symbol, total, projectId } = ctx.board;
+  const { rows, info, pool, total, projectId } = ctx.board;
   const ranked = [...rows].sort((a, b) => boardSort === "largest"
     ? (b.staked > a.staked ? 1 : b.staked < a.staked ? -1 : b.current - a.current)
     : (b.current - a.current || (b.staked > a.staked ? 1 : -1)));
@@ -5866,7 +6018,7 @@ function renderBoard() {
           const self = row.holder.toLowerCase() === (account() || "").toLowerCase() ? " (you)" : "";
           const share = total > 0n ? Number(row.staked * 10_000n / total) / 100 : 0;
           return `<tr data-owner="${esc(row.holder.toLowerCase())}"><td>${page * BOARD_PAGE + i + 1}</td><td class="addr">${addressLabel(row.holder)}${self}</td>` +
-            `<td>${share.toFixed(1)}%</td><td>${formatAmount(row.staked, 18)} ${esc(symbol)}</td>` +
+            `<td>${share.toFixed(1)}%</td><td title="${esc(`${formatAmount(row.staked, 18)} ${info.stSymbol}`)}">${underlyingAmount(backingOfShares(row.staked, pool), info)}</td>` +
             `<td>${formatDuration(row.current)}</td></tr>`;
         }).join("")
       : `<tr><td colspan="5" class="mut">Nobody is stuck yet.</td></tr>`;
@@ -6207,9 +6359,10 @@ if (config.demoMode) {
   $("deployer").value = chainConfig.deployer || "";
   if (config.account && config.localMode === true && ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)) $("account").value = config.account;
   // The home page lists the whole environment; the page's own chain serves project, account and handle routes.
-  if (isHomeRoute()) route();
-  if (selected && $("deployer").value) loadDeployer().catch((error) => isHomeRoute() ? console.error(error) : homeFailed(error));
-  else if (!isHomeRoute()) status(selected ? "Sticky is not configured on this chain yet." : "This chain is not supported.", "err");
+  // Other routes show their own view now, cached or loading, and render once the chain loads.
+  route();
+  if (selected && $("deployer").value) loadDeployer().catch((error) => isHomeRoute() ? console.error(error) : projectFailed(error));
+  else if (!isHomeRoute()) projectFailed(new Error(selected ? "Sticky is not configured on this chain yet." : "This chain is not supported."));
 }
 setInterval(() => refreshPosition().catch(() => {}), 15_000);
 

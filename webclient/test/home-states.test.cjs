@@ -73,6 +73,7 @@ function fixture({ chain = null, deployed = [1, 10, 8453, 84532, 11155420], hash
     account: () => null,
     status: (message, cls) => statuses.push([message, cls]),
     clearHomeSecuredChart() {}, setTab() {}, closeWalletMenu() {},
+    syncRouteView() {}, enterProjectView() {}, projectFailed() {}, projectCache: () => null, pageChainId: () => 1,
     configuredStickiestCards: () => [], configuredAirdropItems: async () => [],
     mountHomeSecuredChart() {}, homeSecuredSeries: () => ({}), hydrateLogos: async () => {},
     tokenLogo: () => '', esc: String, stickyLabel: info => info.stSymbol, formatUnits: value => String(value), formatAmount: value => String(value), pct: String,
@@ -330,7 +331,7 @@ test('a chain whose projects all fail to read is an error for that chain', async
   await assert.rejects(c.scannedHomeChainData(8453), /Could not read any Sticky token on Base/);
 });
 
-test('boot starts the home page without waiting for the page chain', () => {
-  assert.match(source, /if \(isHomeRoute\(\)\) route\(\);\n  if \(selected && \$\("deployer"\)\.value\) loadDeployer\(\)\.catch/);
+test('boot starts the home page, or the route\'s own view, without waiting for the page chain', () => {
+  assert.match(source, /\n  route\(\);\n  if \(selected && \$\("deployer"\)\.value\) loadDeployer\(\)\.catch/);
   assert.match(functionSource('loadDeployer'), /if \(!isHomeRoute\(\) \|\| window\.__DEMO_RPC\) route\(\);/);
 });

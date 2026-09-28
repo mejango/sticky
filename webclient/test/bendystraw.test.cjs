@@ -164,7 +164,7 @@ function homeContext({ fetch, chains = { 1: DEPLOYER, 42161: DEPLOYER, 84532: DE
     const startBlockCache = new Map();
     ${['bendystrawUrl', 'INDEX_TTL', 'indexCache', 'deployedCache', 'eventMoves', 'feedCard', 'isHomeRoute', 'projectHref'].map(constSource).join('\n')}
     ${['stickyIndexFor', 'indexedChain', 'deployedProjectsOn', 'rememberStartBlock', 'parseStickyProjectUri', 'homeChainData', 'scannedHomeChainData',
-      'homeCards', 'indexedHolderCount', 'indexedActivityItems', 'indexedAirdropItems', 'logMoves', 'homeEnvironment', 'homeChains', 'chainIcons',
+      'homeCards', 'indexedHolderCount', 'indexedActivityItems', 'indexedAirdropItems', 'underlyingAmount', 'logMoves', 'homeEnvironment', 'homeChains', 'chainIcons',
       'setHomeState', 'groupHomeCards', 'stickiestCardHtml', 'renderHome'].map(functionSource).join('\n')}`, c);
   c.calls = calls;
   c.home = () => c.$('view-home');
@@ -194,13 +194,14 @@ test('with Bendystraw, the home page lists projects and activity without scannin
   assert.deepEqual(Array.from(base.cards, (card) => [card.key, card.sticks]), [['84532:37', 2]], 'two holders still hold tokens');
   assert.deepEqual(Array.from(base.moves, (move) => move.delta), [50n, 10n, 10n, -10n]);
   assert.equal(base.activity.length, 4);
-  assert.match(base.activity[0].html, /<b>10 stUSDC<\/b><span class="feed-tag out">out<\/span>/);
+  // Amounts are the underlying tokens: what each pay brought in and each cash out reclaimed, not Sticky tokens.
+  assert.match(base.activity[0].html, /<b>1 USDC<\/b><span class="feed-tag out">out<\/span>/);
   assert.match(base.activity[0].html, new RegExp(`unstuck by ${OTHER}`));
-  assert.match(base.activity[3].html, /<b>50 stUSDC<\/b><span class="feed-tag in">in<\/span>/);
+  assert.match(base.activity[3].html, /<b>5 USDC<\/b><span class="feed-tag in">in<\/span>/);
   assert.match(base.activity[3].html, new RegExp(`>stuck by ${HOLDER}`));
   assert.doesNotMatch(base.activity[3].html, /data-token-logo/, 'feed rows carry no token images');
   assert.equal(base.airdrops.length, 1, 'a stick paid for someone else is an airdrop');
-  assert.match(base.airdrops[0].html, /<b>10 stUSDC<\/b><span class="feed-tag in">in<\/span>/);
+  assert.match(base.airdrops[0].html, /<b>1 USDC<\/b><span class="feed-tag in">in<\/span>/);
   assert.match(base.airdrops[0].html, new RegExp(`to ${OTHER.replace('b', 'c')} from ${OTHER}`));
   assert.equal(op.cards.length, 0);
   // Only the unindexed tail is scanned for launches: from the indexed block, never the deployment block.

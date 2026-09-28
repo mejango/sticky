@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parent
 PUBLIC_ASSETS = frozenset({
     "index.html", "config.js", "app.js", "runtime.js", "calldata.js", "tx-engine.js", "tx-safe.js",
     "relayr.js", "launch-session.js", "launch-plan.js", "center-intents.js", "bridge.js", "llms.txt",
-    "wallet-chooser.js", "center-connect.js", "center-callback.js", "center-callback.html",
+    "wallet-chooser.js", "center-connect.js", "center-callback.js", "center-callback.html", "route-boot.js",
     "Beatrice-Medium.woff2", "Beatrice-Regular.woff2", "PPAgrandir-WideBold.woff2",
     "artizen.jpg", "banny.png", "cone.png", "donut.png", "drip-corner.png", "drip-round.png",
     "drip-wide.png", "goo.png", "goo2.png", "hero-donut.png", "hero.png", "jar.png", "juicebox.png",
