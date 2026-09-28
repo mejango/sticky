@@ -39,6 +39,13 @@ HTTPS_ORIGIN = re.compile(r"https://[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::[1
 ZERO_ADDRESS = "0x" + "0" * 40
 # Juicebox Center lists launches (project intents). Its API is served from the site origin.
 CENTER_URL = "https://juicebox.center"
+# Contract addresses and scan start blocks, generated from the repository's deployment records. Railway builds
+# from this directory only, so the records under ../deployments are copied here by `--sync-deployments`.
+DEPLOYMENTS = Path(__file__).resolve().with_name("deployments.json")
+RECORDS = Path(__file__).resolve().parents[1] / "deployments"
+# Config field -> verified.json field.
+RECORD_FIELDS = {"deployer": "deployer", "distributor": "distributor",
+                 "rewardReceiverFactory": "rewardReceiverFactory", "autoStickAdapter": "autoStick"}
 
 
 def address(value, name):
@@ -103,7 +110,25 @@ def center_wallet(env):
             "maximumNetworkFee": fee}
 
 
-def build_config(environ):
+def deployments_from_records(root=RECORDS):
+    """Each supported chain's addresses and deployer creation block, read from the verified deployment records."""
+    result = {}
+    for manifest in Path(root).glob("*/verified.json"):
+        record = json.loads(manifest.read_text(encoding="utf-8"))
+        chain_id = int(record["chainId"])
+        if chain_id not in PUBLIC_RPC:
+            continue
+        deployer = json.loads((manifest.parent / "StickyDeployer.json").read_text(encoding="utf-8"))
+        if deployer["address"].lower() != record["deployer"].lower():
+            raise ValueError(f"{manifest.parent.name}: StickyDeployer.json and verified.json disagree")
+        entry = {field: address(record[key], f"{manifest.parent.name} {key}") for field, key in RECORD_FIELDS.items()}
+        # Projects can only exist from the deployer's creation, so scans start there.
+        entry["fromBlock"] = str(int(deployer["receipt"]["blockNumber"], 16))
+        result[str(chain_id)] = entry
+    return dict(sorted(result.items(), key=lambda item: int(item[0])))
+
+
+def build_config(environ, deployments=None):
     def env(*names, default=""):
         return next((environ[name].strip() for name in names if environ.get(name, "").strip()), default)
 
@@ -137,18 +162,21 @@ def build_config(environ):
     chains = {}
     for chain_id in PUBLIC_RPC:
         entry = {"rpcUrl": rpc_for(chain_id)}
+        # Environment variables override the recorded deployment, for a local chain or a staged redeploy.
+        recorded = (deployments or {}).get(str(chain_id), {})
         for field, variable in contract_fields.items():
             specific = f"{variable}_{chain_id}"
-            value = address(env(specific, variable), specific)
+            value = address(env(specific, variable, default=recorded.get(field, "")), specific)
             if value:
                 entry[field] = value
         block_var = f"STICKY_FROM_BLOCK_{chain_id}"
-        entry["fromBlock"] = block_number(env(block_var, "STICKY_FROM_BLOCK", default="earliest"), block_var)
+        entry["fromBlock"] = block_number(
+            env(block_var, "STICKY_FROM_BLOCK", default=recorded.get("fromBlock", "earliest")), block_var)
         chains[str(chain_id)] = entry
 
     selected = chains[str(default_chain)]
     if not demo_mode and not selected.get("deployer"):
-        raise ValueError("Live mode requires STICKY_DEPLOYER or STICKY_DEPLOYER_<defaultChainId>; "
+        raise ValueError("Live mode requires deployments.json, STICKY_DEPLOYER or STICKY_DEPLOYER_<defaultChainId>; "
                          "set STICKY_DEMO=true only for an explicit demo")
 
     return {
@@ -183,9 +211,24 @@ def write_config(config, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path(__file__).resolve().with_name("config.js"))
+    parser.add_argument("--sync-deployments", action="store_true", help="rewrite deployments.json from ../deployments")
+    parser.add_argument("--check-deployments", action="store_true", help="fail if deployments.json is out of date")
     args = parser.parse_args()
+    if args.sync_deployments or args.check_deployments:
+        try:
+            expected = json.dumps(deployments_from_records(), indent=2) + "\n"
+            current = DEPLOYMENTS.read_text(encoding="utf-8") if DEPLOYMENTS.exists() else ""
+        except (ValueError, OSError, KeyError) as error:
+            parser.exit(1, f"Reading deployment records failed: {error}\n")
+        if args.check_deployments:
+            if current != expected:
+                parser.exit(1, "webclient/deployments.json is out of date; run build-config.py --sync-deployments\n")
+            parser.exit(0, "webclient/deployments.json matches the deployment records\n")
+        DEPLOYMENTS.write_text(expected, encoding="utf-8")
+        parser.exit(0, f"webclient/deployments.json written for {len(json.loads(expected))} chains\n")
     try:
-        config = build_config(os.environ)
+        deployments = json.loads(DEPLOYMENTS.read_text(encoding="utf-8")) if DEPLOYMENTS.exists() else {}
+        config = build_config(os.environ, deployments)
         write_config(config, args.output)
     except (ValueError, OSError) as error:
         parser.exit(1, f"Configuration failed: {error}\n")

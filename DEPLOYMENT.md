@@ -126,7 +126,7 @@ sources on Etherscan and writes `deployments/<network>/StickyDeployer.json`,
 `StickyRewardReceiverFactory.json`
 and `StickyAutoStick.json` in the `sphinx-sol-ct-artifact-1` layout the other V6
 repositories keep: address, ABI, constructor arguments, creation receipt, bytecode,
-metadata and source revision. The constructor arguments come from the bindings the
+metadata and source revision. It finally regenerates `webclient/deployments.json`, the addresses and scan start blocks sticky.center builds from, so a redeploy reaches the site when its records merge. The constructor arguments come from the bindings the
 verified manifest recorded, and for every factory-deployed contract the explorer's
 creation bytecode must equal the compiled creation code followed by those
 arguments; the hook is created by the deployer's constructor, so its receipt is the
