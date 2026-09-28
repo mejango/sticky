@@ -29,16 +29,7 @@ OPERATIONS = json.loads((ROOT / "bendystraw-operations.json").read_text(encoding
 OPERATION = {document.split("(")[0].split()[1]: operation for operation, document in OPERATIONS.items()}
 DEPLOYER = "0x" + "12" * 20
 OTHER = "0x" + "34" * 20
-# The 8-chain deployment shape. Addresses change on redeploy; these tests check shape only.
-FROM_BLOCKS = {1: "26057164", 10: "157386536", 8453: "51791252", 42161: "508887149",
-               11155111: "11781859", 11155420: "49284433", 84532: "47301559", 421614: "312706619"}
-LIVE_ENV = {
-    "STICKY_DEPLOYER": "0xdA38Ec48B5b1d186B02BA99F297e95153BEE33a9",
-    "STICKY_DISTRIBUTOR": "0xc62b3fED668Cd8a3879ba34890a67C48a52b1Bb8",
-    "STICKY_REWARD_RECEIVER_FACTORY": "0x41AEC7AacEa4759F2c8AaBD68D4a4C1574A6A737",
-    "STICKY_AUTOSTICK_ADAPTER": "0x9B091e21d25c424De67751F4b6Ae8494351218C5",
-    **{f"STICKY_FROM_BLOCK_{chain_id}": block for chain_id, block in FROM_BLOCKS.items()},
-}
+DEPLOYMENTS = json.loads(build.DEPLOYMENTS.read_text(encoding="utf-8"))
 SIGNA_ENV = {
     "STICKY_CENTER_WALLET_ENABLED": "true",
     "STICKY_CENTER_WALLET_MANIFEST_ID": "base-wallet:v1",
@@ -74,19 +65,24 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config[field], config["chains"]["8453"][field])
         self.assertNotIn("deployer", config["chains"]["1"])
 
-    def test_live_configuration_covers_all_eight_chains_without_fixtures(self):
-        config = build.build_config(LIVE_ENV)
+    def test_deployments_json_matches_the_deployment_records(self):
+        self.assertEqual(DEPLOYMENTS, build.deployments_from_records())
+        self.assertEqual(set(DEPLOYMENTS), {str(chain_id) for chain_id in build.PUBLIC_RPC})
+
+    def test_recorded_deployments_configure_all_eight_chains_without_variables(self):
+        config = build.build_config({}, DEPLOYMENTS)
         self.assertIs(config["demoMode"], False)
-        self.assertEqual(set(config["chains"]), {str(chain_id) for chain_id in FROM_BLOCKS})
-        for chain_id, block in FROM_BLOCKS.items():
-            entry = config["chains"][str(chain_id)]
+        self.assertEqual(set(config["chains"]), set(DEPLOYMENTS))
+        for chain_id, recorded in DEPLOYMENTS.items():
             with self.subTest(chain=chain_id):
-                self.assertEqual(entry["fromBlock"], block)
-                for field, variable in (("deployer", "STICKY_DEPLOYER"), ("distributor", "STICKY_DISTRIBUTOR"),
-                                        ("rewardReceiverFactory", "STICKY_REWARD_RECEIVER_FACTORY"),
-                                        ("autoStickAdapter", "STICKY_AUTOSTICK_ADAPTER")):
-                    self.assertEqual(entry[field], LIVE_ENV[variable])
+                self.assertEqual({field: config["chains"][chain_id][field] for field in recorded}, recorded)
         self.assertFalse([key for key in config if key != "demoMode" and (key.startswith("demo") or key.endswith("Overrides"))])
+
+    def test_variables_override_recorded_deployments(self):
+        config = build.build_config({"STICKY_REWARD_RECEIVER_FACTORY_8453": OTHER, "STICKY_FROM_BLOCK": "7"}, DEPLOYMENTS)
+        self.assertEqual(config["chains"]["8453"]["rewardReceiverFactory"], OTHER)
+        self.assertEqual(config["chains"]["1"]["rewardReceiverFactory"], DEPLOYMENTS["1"]["rewardReceiverFactory"])
+        self.assertTrue(all(entry["fromBlock"] == "7" for entry in config["chains"].values()))
 
     def test_app_fallback_rpcs_match_build_config(self):
         source = (ROOT / "app.js").read_text(encoding="utf-8")
@@ -141,7 +137,7 @@ class ConfigTests(unittest.TestCase):
             target = Path(directory) / "config.js"
             target.write_text("existing")
             result = subprocess.run([sys.executable, str(ROOT / "build-config.py"), "--output", str(target)],
-                                    env={}, capture_output=True, text=True)
+                                    env={"STICKY_DEFAULT_CHAIN": "999"}, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(target.read_text(), "existing")
 

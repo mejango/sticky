@@ -36,34 +36,34 @@ local default binds only to loopback. `/healthz` is the readiness endpoint and
 includes the Railway Git revision when available. A service without a valid
 configuration or any referenced script refuses to start in production.
 
-`STICKY_DEMO` defaults to false. A live build requires a verified deployer for
-`STICKY_DEFAULT_CHAIN` (default: Ethereum mainnet). Use the per-chain address
-variables unless every supported chain has the same verified deployment. Global
+`STICKY_DEMO` defaults to false. Contract addresses and each chain's scan start
+block come from `deployments.json`, which `build-config.py --sync-deployments`
+generates from the repository's verified deployment records (`deployments/<network>/`).
+The `deploy:post:*` scripts regenerate it, and CI fails when it drifts from the
+records, so a redeploy needs no Railway variable changes. The address variables
+below still override it, for a local chain or a staged redeploy. A live build
+requires a deployer for `STICKY_DEFAULT_CHAIN` (default: Ethereum mainnet). Global
 fields in the generated config are resolved from the selected default network.
 All eight mainnet/Sepolia RPC entries are emitted; configuring an RPC alone does
 not mean Sticky contracts are deployed there. Runtime transaction checks validate
 the destination chain and deployed contracts.
 
-Set `STICKY_FROM_BLOCK_<chainId>` to each deployment's actual block and provide
+`STICKY_FROM_BLOCK_<chainId>` overrides a chain's recorded scan start block. Provide
 reliable RPCs that support historical logs. Explicit `STICKY_RPC_<chainId>` values
 override the shared Dwellir key. Every value in `config.js`, including RPC URL keys,
 is public: use keys intended for browser access and restrict them to your domain.
 The service never publishes `.env`, Python source, examples, tests, or directory
 listings. Configuration is not cached; scripts and HTML must revalidate.
 
-Contract deployments are a separate prerequisite. This repository currently has
-no tracked production deployment manifest, and its ignored local configuration
-is not evidence of a live deployment. Configure verified Sticky deployer,
-distributor, reward receiver factory, and auto-stick addresses on each intended network
-before selecting it for a production launch. Set optional extension addresses
-only where those extensions are deployed. A successful health check verifies the
+Contract deployments are a separate prerequisite; `deployments.json` lists only
+chains with verified deployment records. A successful health check verifies the
 site's build and configuration, not on-chain contract deployment or RPC uptime.
 
 `StickyRewardReceiver` holds arriving ERC-20 rewards for one Sticky token and
 reward group until they are settled into the distributor. `StickyRewardReceiverFactory`
 predicts and deploys those receivers, so each project and group has its own
-destination address even before its receiver is deployed. Configure the factory address using
-`STICKY_REWARD_RECEIVER_FACTORY_<chainId>` (or the global
+destination address even before its receiver is deployed. Its address comes from
+`deployments.json` (override: `STICKY_REWARD_RECEIVER_FACTORY_<chainId>` or the global
 `STICKY_REWARD_RECEIVER_FACTORY`); generated and hand-written configurations use
 `rewardReceiverFactory`. The client derives the individual receiver address with
 `predictReceiverOf(address,uint256)` and settles arrivals through the factory's
