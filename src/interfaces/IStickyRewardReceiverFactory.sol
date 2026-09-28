@@ -44,7 +44,9 @@ interface IStickyRewardReceiverFactory {
     /// @notice The deterministic receiver address for a sticky token and reward group, whether or not it has been
     /// deployed.
     /// @dev Matches across chains only when the factory address, sticky token address and group all match. Reverts for
-    /// a group the distributor cannot fund. @param stickyToken The sticky token to predict the receiver of.
+    /// the zero sticky token or a group the distributor cannot fund. A tenure group's receiver settles only once its
+    /// sticky token is registered with the Sticky hook.
+    /// @param stickyToken The sticky token to predict the receiver of.
     /// @param groupId The reward group the receiver funds (0 = the default group).
     /// @return receiver The predicted receiver address.
     function predictReceiverOf(address stickyToken, uint256 groupId) external view returns (address receiver);
@@ -57,7 +59,7 @@ interface IStickyRewardReceiverFactory {
     function receiverOf(address stickyToken, uint256 groupId) external view returns (address receiver);
 
     /// @notice Deploys the receiver for a sticky token and reward group at its deterministic address.
-    /// @dev Reverts for a group the distributor cannot fund.
+    /// @dev Reverts for the zero sticky token or a group the distributor cannot fund.
     /// @param stickyToken The sticky token the receiver collects rewards for.
     /// @param groupId The reward group the receiver funds (0 = the default group).
     /// @return receiver The deployed receiver.

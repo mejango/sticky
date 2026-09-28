@@ -26,6 +26,9 @@ contract StickyRewardReceiverFactory is IStickyRewardReceiverFactory {
     /// @notice Thrown when a receiver is requested for a group the distributor cannot fund.
     error StickyRewardReceiverFactory_InvalidGroupId(uint256 groupId);
 
+    /// @notice Thrown when a receiver is requested for the zero sticky token, which no receiver can be bound to.
+    error StickyRewardReceiverFactory_InvalidStickyToken(address stickyToken);
+
     //*********************************************************************//
     // --------------- public immutable stored properties ---------------- //
     //*********************************************************************//
@@ -89,8 +92,9 @@ contract StickyRewardReceiverFactory is IStickyRewardReceiverFactory {
     /// @param groupId The reward group the receiver funds (0 = the default group).
     /// @return receiver The predicted receiver address.
     function predictReceiverOf(address stickyToken, uint256 groupId) external view override returns (address receiver) {
-        // Never predict an address whose receiver could not be deployed, so nothing is bridged to a dead end.
-        _requireValidGroupId(groupId);
+        // Never predict an address no receiver can be deployed at. A tenure group's receiver still settles only once
+        // its sticky token is registered with the Sticky hook, which may happen after tokens arrive.
+        _requireDeployable({stickyToken: stickyToken, groupId: groupId});
 
         // Reproduce the clone address so funders can route tokens before the receiver exists.
         return Clones.predictDeterministicAddress({
@@ -113,8 +117,8 @@ contract StickyRewardReceiverFactory is IStickyRewardReceiverFactory {
         // Reuse a deployed receiver so repeated settlement never attempts to deploy over existing code.
         if (receiver != address(0)) return receiver;
 
-        // A receiver for a group the distributor rejects could never settle.
-        _requireValidGroupId(groupId);
+        // Reject pairs the clone could never be initialized with or the distributor could never fund.
+        _requireDeployable({stickyToken: stickyToken, groupId: groupId});
 
         // Match the predicted salt so tokens already sent to that address become usable.
         receiver = Clones.cloneDeterministic({
@@ -150,9 +154,13 @@ contract StickyRewardReceiverFactory is IStickyRewardReceiverFactory {
     // ----------------------- internal views ---------------------------- //
     //*********************************************************************//
 
-    /// @notice Reverts unless the distributor can fund the reward group.
+    /// @notice Reverts unless a receiver can be deployed for the sticky token and reward group.
+    /// @param stickyToken The sticky token to validate.
     /// @param groupId The reward group to validate.
-    function _requireValidGroupId(uint256 groupId) internal view {
+    function _requireDeployable(address stickyToken, uint256 groupId) internal view {
+        // The receiver rejects the zero sticky token at initialization, so its address could never hold code.
+        if (stickyToken == address(0)) revert StickyRewardReceiverFactory_InvalidStickyToken(stickyToken);
+
         // Defer to the distributor so the factory never encodes a group rule of its own.
         if (!DISTRIBUTOR.isValidGroupId(groupId)) revert StickyRewardReceiverFactory_InvalidGroupId(groupId);
     }

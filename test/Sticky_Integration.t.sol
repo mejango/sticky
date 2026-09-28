@@ -718,6 +718,20 @@ contract StickyIntegrationTest is TestBaseWorkflow {
             )
         );
         implementation.initialize({initialStickyToken: address(this), initialGroupId: 0});
+
+        // No receiver can be bound to the zero sticky token, so the factory neither predicts nor deploys one.
+        bytes memory zeroToken = abi.encodeWithSelector(
+            StickyRewardReceiverFactory.StickyRewardReceiverFactory_InvalidStickyToken.selector, address(0)
+        );
+        vm.expectRevert(zeroToken);
+        // forge-lint: disable-next-line(unused-return)
+        receiverFactory.predictReceiverOf({stickyToken: address(0), groupId: 0});
+        vm.expectRevert(zeroToken);
+        // forge-lint: disable-next-line(unused-return)
+        receiverFactory.deployReceiverFor({stickyToken: address(0), groupId: 0});
+        vm.expectRevert(zeroToken);
+        // forge-lint: disable-next-line(unused-return)
+        receiverFactory.settleFor({stickyToken: address(0), groupId: 0, token: IERC20(address(_art))});
         (
             uint208 defaultPot,,,,
             uint208 defaultStake
