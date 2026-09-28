@@ -26,6 +26,7 @@ function fixture(names = []) {
     location: { hash: '#/' },
     confirmResolve: null,
     closeWalletMenu() {}, clearHomeSecuredChart() {}, setTab() {}, status() {},
+    syncRouteView() {}, enterProjectView() {}, projectFailed() {}, projectCache: () => null, pageChainId: () => 1,
     homeFailed() {}, setHomeState() {}, configuredStickiestCards: () => [],
     window: {}, homeChains: () => [1], homeEnvironment: () => 'production', configuredAirdropItems: async () => [],
     $: id => {

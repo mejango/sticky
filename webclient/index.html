@@ -16,6 +16,8 @@
 <meta name="twitter:description" content="Stick a Juicebox token, hold your streak, and share the bonus left behind by everyone who unsticks.">
 <meta name="twitter:image" content="hero.png">
 <link rel="icon" type="image/png" href="drip-corner.png">
+<!-- Names the route's view on <html data-route> before first paint, so a project link never shows home first. -->
+<script src="route-boot.js?v=133"></script>
 <style>
   @font-face {
     font-family: "Beatrice"; src: url("Beatrice-Regular.woff2") format("woff2");
@@ -358,6 +360,35 @@
     opacity: .75;
   }
   #view-home:is([data-state="empty"], [data-state="error"]) :is(.home-secured, .home-list-panel, .home-mobile-tabs, .home-ranking-tabs) { display: none !important; }
+  /* The route's view, named before first paint by route-boot.js and kept current by app.js: a project or
+     account link never shows home while it loads. */
+  html:is([data-route="project"], [data-route="account"]) #view-home { display: none; }
+  html[data-route="project"] #view-project.hide, html[data-route="account"] #view-account.hide { display: block; }
+  /* Project loading: placeholder header, chart and feed until the first reads land. A cached summary shows
+     at once and stays faded until the chain confirms it, as on juicebox.money. */
+  #view-project[data-state="loading"] #p-logo:empty, #view-project[data-state="error"] #p-logo:empty { background: var(--line); }
+  #view-project[data-state="loading"] #h-symbol:empty::before {
+    content: ""; display: inline-block; width: min(220px, 50vw); height: 16px; border-radius: 4px; background: var(--line); vertical-align: -2px;
+  }
+  #view-project[data-state="loading"] .meta-pair b { display: inline-block; min-width: 3.5em; color: transparent; background: var(--line); border-radius: 4px; line-height: 1.1; }
+  #view-project[data-state="loading"] #h-chains-wrap { display: none; }
+  #view-project[data-state="loading"] #stake-title { color: transparent; background: var(--line); border-radius: 4px; width: 120px; }
+  #view-project[data-state="loading"] #stake { opacity: .5; pointer-events: none; }
+  #view-project:is([data-state="loading"], [data-state="cached"]) #chart:empty {
+    height: 220px; border-radius: 4px; background: linear-gradient(to top, color-mix(in srgb, var(--line) 45%, transparent), transparent 70%);
+  }
+  #view-project:is([data-state="loading"], [data-state="cached"]) #p-activity:empty {
+    height: 204px;
+    background:
+      linear-gradient(var(--line) 0 0) 0 16px / 62% 10px no-repeat,
+      linear-gradient(var(--line) 0 0) 0 36px / 38% 8px no-repeat,
+      linear-gradient(var(--line) 0 0) 0 84px / 70% 10px no-repeat,
+      linear-gradient(var(--line) 0 0) 0 104px / 30% 8px no-repeat,
+      linear-gradient(var(--line) 0 0) 0 152px / 54% 10px no-repeat,
+      linear-gradient(var(--line) 0 0) 0 172px / 42% 8px no-repeat;
+    opacity: .75;
+  }
+  #view-project[data-state="cached"] .proj-head .headline, #token-info[aria-busy="true"] { opacity: .55; transition: opacity 180ms ease-out; }
   #view-home:is([data-state="empty"], [data-state="error"]) .cols3 { display: block; }
   #view-home:is([data-state="empty"], [data-state="error"]) .hero-col { max-width: 560px; margin: 0 auto; border-left: none; padding-left: 0; }
   .home-steps { display: none; }
@@ -814,12 +845,12 @@
   </div>
 
   <!-- ========================================================= PROJECT -->
-  <div id="view-project" class="hide">
+  <div id="view-project" class="hide" data-state="loading" aria-busy="true">
     <div class="proj-head" style="margin-bottom:18px">
       <div class="logo" id="p-logo" style="width:104px;height:104px"></div>
       <div>
         <h2><span id="h-symbol"></span> <span class="mut" id="h-name"></span></h2>
-        <div class="headline meta-row"><div class="meta-line"><span class="meta-pair"><span class="headline-key">Stuck:</span> <b id="h-staked">–</b></span><span class="meta-pair"><span class="headline-key">Sticks:</span> <b id="h-streakers">–</b></span><span class="meta-pair"><span class="headline-key">Average active stick:</span> <b id="h-average">–</b></span><span class="meta-pair"><span class="headline-key">Longest active stick:</span> <b id="h-top">–</b></span><span class="meta-pair" id="h-chains-wrap" title="Chains chosen at launch."><span class="headline-key">Chains:</span> <span class="project-chains" id="h-chains"></span></span></div></div>
+        <div class="headline meta-row"><div class="meta-line"><span class="meta-pair"><span class="headline-key">Stuck:</span> <b id="h-staked">–</b></span><span class="meta-pair"><span class="headline-key">Sticks:</span> <b id="h-streakers">–</b></span><span class="meta-pair" id="h-chains-wrap" title="Chains chosen at launch."><span class="headline-key">On:</span> <span class="project-chains" id="h-chains"></span></span><span class="meta-pair"><span class="headline-key">Average active stick:</span> <b id="h-average">–</b></span><span class="meta-pair"><span class="headline-key">Longest active stick:</span> <b id="h-top">–</b></span></div></div>
       </div>
     </div>
 
@@ -1262,17 +1293,17 @@
   <span id="tx-status-message"></span>
 </div>
 <div id="address-tooltip" class="address-tooltip hide" role="tooltip"></div>
-<script src="config.js?v=132"></script>
-<script src="runtime.js?v=132"></script>
-<script src="calldata.js?v=132"></script>
-<script src="tx-safe.js?v=132"></script>
-<script src="tx-engine.js?v=132"></script>
-<script src="relayr.js?v=132"></script>
-<script src="launch-plan.js?v=132"></script>
-<script src="center-intents.js?v=132"></script>
-<script src="launch-session.js?v=132"></script>
-<script src="bridge.js?v=132"></script>
-<script src="wallet-chooser.js?v=132"></script>
-<script src="app.js?v=132"></script>
+<script src="config.js?v=133"></script>
+<script src="runtime.js?v=133"></script>
+<script src="calldata.js?v=133"></script>
+<script src="tx-safe.js?v=133"></script>
+<script src="tx-engine.js?v=133"></script>
+<script src="relayr.js?v=133"></script>
+<script src="launch-plan.js?v=133"></script>
+<script src="center-intents.js?v=133"></script>
+<script src="launch-session.js?v=133"></script>
+<script src="bridge.js?v=133"></script>
+<script src="wallet-chooser.js?v=133"></script>
+<script src="app.js?v=133"></script>
 </body>
 </html>
