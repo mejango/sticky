@@ -2,7 +2,7 @@
 pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {Create2} from "@openzeppelin/contracts/utils/Create2.sol";
+import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 
 import {StickyRewardReceiver} from "./StickyRewardReceiver.sol";
 
@@ -12,9 +12,9 @@ import {IStickyRewardReceiverFactory} from "./interfaces/IStickyRewardReceiverFa
 /// @notice Creates and locates a separate reward receiver for each Sticky token and reward group, and forwards
 /// settlement requests.
 /// @dev Funds arrive at the per-(token, group) receiver, whose address identifies the rewarded holder pool and how
-/// it is weighed. This factory predicts that address before deployment and deploys its immutable settlement logic
-/// when needed. A funder can bridge sucker-mapped reward tokens to the receiver without adding suckers to the Sticky
-/// project itself.
+/// it is weighed. This factory deploys one receiver implementation and, when needed, a minimal clone of it at the
+/// pair's deterministic address, which it predicts before deployment. A funder can bridge sucker-mapped reward tokens
+/// to the receiver without adding suckers to the Sticky project itself.
 /// @dev Receivers settle ERC-20 balances only. Project-token credits minted by a sucker claim, which is what a
 /// destination project without an ERC-20 receives, and native ETH cannot be settled and stay in the receiver.
 /// Funders must bridge only to chains where the reward project has an ERC-20 and must not send ETH.
@@ -33,6 +33,9 @@ contract StickyRewardReceiverFactory is IStickyRewardReceiverFactory {
     /// @notice The distributor receivers settle rewards into.
     IStickyDistributor public immutable override DISTRIBUTOR;
 
+    /// @notice The receiver implementation every receiver is cloned from.
+    StickyRewardReceiver public immutable override RECEIVER;
+
     //*********************************************************************//
     // --------------------- public stored properties -------------------- //
     //*********************************************************************//
@@ -50,8 +53,11 @@ contract StickyRewardReceiverFactory is IStickyRewardReceiverFactory {
     /// @notice Initializes the factory's rewards distributor.
     /// @param distributor The distributor receivers settle rewards into.
     constructor(IStickyDistributor distributor) {
-        // Give every receiver the same immutable settlement destination, which also enters its CREATE2 address.
+        // Give every receiver the same immutable settlement destination.
         DISTRIBUTOR = distributor;
+
+        // Deploy the shared implementation; its address, and so every clone's, follows from this factory's address.
+        RECEIVER = new StickyRewardReceiver(distributor);
     }
 
     //*********************************************************************//
@@ -78,8 +84,7 @@ contract StickyRewardReceiverFactory is IStickyRewardReceiverFactory {
 
     /// @notice The deterministic receiver address for a sticky token and reward group, whether or not it has been
     /// deployed.
-    /// @dev Matches across chains only when the factory address, distributor address, receiver creation code, sticky
-    /// token address and group all match.
+    /// @dev Matches across chains only when the factory address, sticky token address and group all match.
     /// @param stickyToken The sticky token to predict the receiver of.
     /// @param groupId The reward group the receiver funds (0 = the default group).
     /// @return receiver The predicted receiver address.
@@ -87,13 +92,9 @@ contract StickyRewardReceiverFactory is IStickyRewardReceiverFactory {
         // Never predict an address whose receiver could not be deployed, so nothing is bridged to a dead end.
         _requireValidGroupId(groupId);
 
-        // Reproduce this factory's deployment address so funders can route tokens before the receiver exists.
-        return Create2.computeAddress({
-            salt: _saltOf({stickyToken: stickyToken, groupId: groupId}),
-            // Include the constructor arguments because they permanently select the distributor, holders and group.
-            bytecodeHash: keccak256(
-                bytes.concat(type(StickyRewardReceiver).creationCode, abi.encode(DISTRIBUTOR, stickyToken, groupId))
-            )
+        // Reproduce the clone address so funders can route tokens before the receiver exists.
+        return Clones.predictDeterministicAddress({
+            implementation: address(RECEIVER), salt: _saltOf({stickyToken: stickyToken, groupId: groupId})
         });
     }
 
@@ -115,18 +116,19 @@ contract StickyRewardReceiverFactory is IStickyRewardReceiverFactory {
         // A receiver for a group the distributor rejects could never settle.
         _requireValidGroupId(groupId);
 
-        // Match the predicted salt and constructor arguments so tokens already sent to that address become usable.
-        receiver = address(
-            new StickyRewardReceiver{salt: _saltOf({stickyToken: stickyToken, groupId: groupId})}({
-                distributor: DISTRIBUTOR, stickyToken: stickyToken, groupId: groupId
-            })
-        );
+        // Match the predicted salt so tokens already sent to that address become usable.
+        receiver = Clones.cloneDeterministic({
+            implementation: address(RECEIVER), salt: _saltOf({stickyToken: stickyToken, groupId: groupId})
+        });
 
         // Record the deployed receiver so subsequent settlement calls reuse the same destination.
         receiverOf[stickyToken][groupId] = receiver;
 
-        // Publish the destination for funders and indexers. The receiver constructor only validates and sets
-        // immutables, so it cannot call back into this factory before the deployment is recorded.
+        // Fix the clone's holder pool and group in the same call, so no one else can initialize it.
+        StickyRewardReceiver(receiver).initialize({initialStickyToken: stickyToken, initialGroupId: groupId});
+
+        // Publish the destination for funders and indexers. Initialization only validates and stores the pair, so it
+        // cannot call back into this factory.
         // forge-lint: disable-next-line(reentrancy-events)
         emit DeployReceiver({stickyToken: stickyToken, groupId: groupId, receiver: receiver, caller: msg.sender});
     }

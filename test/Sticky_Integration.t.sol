@@ -696,9 +696,29 @@ contract StickyIntegrationTest is TestBaseWorkflow {
         // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(receiverFactory.receiverOf({stickyToken: address(_token), groupId: 1000}), tenureReceiver);
         // forge-lint: disable-next-line(literal-instead-of-constant)
-        assertEq(StickyRewardReceiver(tenureReceiver).GROUP_ID(), 1000);
-        assertEq(StickyRewardReceiver(tenureReceiver).STICKY_TOKEN(), address(_token));
+        assertEq(StickyRewardReceiver(tenureReceiver).groupId(), 1000);
+        assertEq(StickyRewardReceiver(tenureReceiver).stickyToken(), address(_token));
         assertEq(address(StickyRewardReceiver(tenureReceiver).DISTRIBUTOR()), address(distributor));
+
+        // Receivers are ERC-1167 clones of the factory's implementation, and only the factory initializes them, once.
+        assertEq(tenureReceiver.code.length, 45);
+        assertEq(StickyRewardReceiver(tenureReceiver).FACTORY(), address(receiverFactory));
+        vm.expectRevert(
+            abi.encodeWithSelector(StickyRewardReceiver.StickyRewardReceiver_Unauthorized.selector, address(this))
+        );
+        StickyRewardReceiver(tenureReceiver).initialize({initialStickyToken: address(this), initialGroupId: 0});
+        vm.prank(address(receiverFactory));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickyRewardReceiver.StickyRewardReceiver_Unauthorized.selector, address(receiverFactory)
+            )
+        );
+        StickyRewardReceiver(tenureReceiver).initialize({initialStickyToken: address(this), initialGroupId: 0});
+        StickyRewardReceiver implementation = receiverFactory.RECEIVER();
+        vm.expectRevert(
+            abi.encodeWithSelector(StickyRewardReceiver.StickyRewardReceiver_Unauthorized.selector, address(this))
+        );
+        implementation.initialize({initialStickyToken: address(this), initialGroupId: 0});
         (
             uint208 defaultPot,,,,
             uint208 defaultStake

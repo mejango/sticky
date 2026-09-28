@@ -38,7 +38,7 @@ See [INVARIANTS.md](./INVARIANTS.md) for the complete verification checklist and
 | `StickyDistributor` | Round-based reward distribution with linear vesting; group 0 weighs vote checkpoints at the round's snapshot block, tenure groups weigh the stake held in tranches created within a week window before the round started | Subclass of `JBDistributor` bound to the hook; loans disabled; splits carry the group in `split.projectId`; 20,515-byte runtime |
 | `StickyAutoStick` | Opt-in, keeper-executable compounding of a holder's vested underlying-token rewards from the caller's chosen reward groups back into the same position | Immutable; nothing caller-provided beyond project, holder, and groups; quotes the terminal and enforces the quoted minimum |
 | `StickyRewardReceiverFactory` | Predicts and deploys one deterministic reward receiver per Sticky token and reward group; `settleFor` deploys it if needed and settles its balance | A shared deployment entrypoint bound to one distributor; rejects groups the distributor rejects |
-| `StickyRewardReceiver` | Holds arriving reward tokens for one Sticky token and group and settles them permissionlessly into its bound distributor | Attribution by receiver address; no deposit ledger or ordered queue; can receive tokens before deployment |
+| `StickyRewardReceiver` | Holds arriving reward tokens for one Sticky token and group and settles them permissionlessly into its bound distributor | Attribution by receiver address; minimal clone of one implementation; no deposit ledger or ordered queue; can receive tokens before deployment |
 
 ### Why a receiver and a factory?
 
@@ -71,7 +71,7 @@ Decimals: tranche amounts, staked balances, and cash out counts are all in the s
 - `allowSetCustomToken` and `allowAddPriceFeed` stay enabled in the eternal ruleset because the launch transaction needs them; both core calls are owner-gated and the owner is the deployer, which exposes no later call to either.
 - Any project can point its own ruleset's `dataHook` at `StickyHook`; the accounting is keyed by project ID and requires a registered token, so a rogue project can only revert its own pays.
 - The underlying token is trusted for standard ERC-20 behavior. Fee-on-transfer and rebasing tokens are unsupported; the adapter rejects an unexpected holder-to-adapter transfer delta. A successful factory launch does not certify a token's transfer behavior.
-- Reward receiver address parity across chains requires matching factory and distributor addresses, creation code, destination Sticky-token address, and group. Read the destination factory's prediction before bridging; no source-chain deployment is required to receive at that destination address.
+- Reward receiver address parity across chains requires a matching factory address, destination Sticky-token address, and group; receivers are clones of the implementation the factory deploys, so the factory address fixes it. Read the destination factory's prediction before bridging; no source-chain deployment is required to receive at that destination address.
 - Tenure groups trust the hook's tranche and bucket accounting, which only the registered token and the project's terminals can move. A split beneficiary the hook does not track falls back to group 0, and a direct tenure funding for such a token reverts.
 
 ## Testing
