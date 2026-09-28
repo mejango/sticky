@@ -3,13 +3,15 @@ pragma solidity ^0.8.0;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
+import {StickyRewardReceiver} from "../StickyRewardReceiver.sol";
+
 import {IStickyDistributor} from "./IStickyDistributor.sol";
 
 /// @notice Creates and locates per-(Sticky token, reward group) reward receivers and forwards settlement requests.
 /// @dev Each receiver address identifies its rewarded holder pool and group when a bridge delivers plain ERC-20
 /// tokens. A receiver's address can be used as a sucker-bridge beneficiary before the receiver is deployed.
-/// @dev Receiver addresses match across chains only when the factory address, distributor address, receiver creation
-/// code, sticky token address and group all match. ERC-20 tokens arriving in a receiver can be settled as rewards
+/// @dev Receivers are minimal clones of one implementation. Their addresses match across chains only when the factory
+/// address, sticky token address and group all match. ERC-20 tokens arriving in a receiver can be settled as rewards
 /// for its holders. Project-token credits minted by a sucker claim (a destination project without an ERC-20) and
 /// native ETH cannot be settled, so funders must bridge only to chains where the reward project has an ERC-20 and
 /// must not send ETH.
@@ -35,10 +37,15 @@ interface IStickyRewardReceiverFactory {
     /// @return distributor The distributor receivers settle rewards into.
     function DISTRIBUTOR() external view returns (IStickyDistributor distributor);
 
+    /// @notice The receiver implementation every receiver is cloned from.
+    /// @return receiver The receiver implementation.
+    function RECEIVER() external view returns (StickyRewardReceiver receiver);
+
     /// @notice The deterministic receiver address for a sticky token and reward group, whether or not it has been
     /// deployed.
-    /// @dev Matches across chains only when the factory address, distributor address, receiver creation code, sticky
-    /// token address and group all match. Reverts for a group the distributor cannot fund.
+    /// @dev Matches across chains only when the factory address, sticky token address and group all match. Reverts for
+    /// the zero sticky token or a group the distributor cannot fund. A tenure group's receiver settles only once its
+    /// sticky token is registered with the Sticky hook.
     /// @param stickyToken The sticky token to predict the receiver of.
     /// @param groupId The reward group the receiver funds (0 = the default group).
     /// @return receiver The predicted receiver address.
@@ -52,7 +59,7 @@ interface IStickyRewardReceiverFactory {
     function receiverOf(address stickyToken, uint256 groupId) external view returns (address receiver);
 
     /// @notice Deploys the receiver for a sticky token and reward group at its deterministic address.
-    /// @dev Reverts for a group the distributor cannot fund.
+    /// @dev Reverts for the zero sticky token or a group the distributor cannot fund.
     /// @param stickyToken The sticky token the receiver collects rewards for.
     /// @param groupId The reward group the receiver funds (0 = the default group).
     /// @return receiver The deployed receiver.

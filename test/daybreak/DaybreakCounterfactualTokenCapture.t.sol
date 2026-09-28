@@ -9,6 +9,7 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 
 import {StickyDeployer} from "../../src/StickyDeployer.sol";
 import {StickyDistributor} from "../../src/StickyDistributor.sol";
+import {StickyRewardReceiver} from "../../src/StickyRewardReceiver.sol";
 import {StickyRewardReceiverFactory} from "../../src/StickyRewardReceiverFactory.sol";
 
 /// @notice A freely mintable ERC-20 standing in for a reward or staked asset.
@@ -78,7 +79,7 @@ contract DaybreakCounterfactualTokenCaptureTest is TestBaseWorkflow {
             initialVestingRounds: 1,
             initialClaimDuration: 30 days
         });
-        _receiverFactory = new StickyRewardReceiverFactory(_distributor);
+        _receiverFactory = new StickyRewardReceiverFactory(new StickyRewardReceiver(_distributor));
         _rewardToken = new DaybreakMintableToken("Victim reward", "RWD");
         _underlying = new DaybreakMintableToken("Shared asset", "AST");
         _fee = jbProjects().creationFee();

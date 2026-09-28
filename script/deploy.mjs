@@ -61,7 +61,7 @@ export function preflight(group, env = process.env, read = readFileSync) {
 }
 
 // The manifest fields every chain of a group must predict identically; the core binds the same addresses everywhere.
-export const suite = ['deployer', 'hook', 'distributor', 'rewardReceiverFactory', 'autoStick'];
+export const suite = ['deployer', 'hook', 'distributor', 'rewardReceiver', 'rewardReceiverFactory', 'autoStick'];
 
 // Every chain of a group must predict one suite.
 export function requireOneAddressPerGroup(group, kind, read = readFileSync) {

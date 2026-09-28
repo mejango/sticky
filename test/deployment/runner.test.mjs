@@ -147,7 +147,7 @@ test('proposal rejects a missing lock, wrong organization, or unregistered proje
 
 test('every compiled source root is pinned: linked checkouts by revision, packages by the lockfile', () => {
   const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
-  for (const name of ['StickyDeployer', 'StickyHook', 'StickyDistributor', 'StickyRewardReceiverFactory', 'StickyAutoStick']) {
+  for (const name of ['StickyDeployer', 'StickyHook', 'StickyDistributor', 'StickyRewardReceiver', 'StickyRewardReceiverFactory', 'StickyAutoStick']) {
     const artifact = JSON.parse(readFileSync(`out/${name}.sol/${name}.json`, 'utf8'));
     for (const source of Object.keys(artifact.metadata.sources)) {
       if (/^(src|script)\//.test(source)) continue;

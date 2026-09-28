@@ -33,7 +33,7 @@ Read [ARCHITECTURE.md](./ARCHITECTURE.md), [INVARIANTS.md](./INVARIANTS.md), [RI
 - Compare cash outs at zero, intermediate, and maximum tax for a partial holder exit and the whole supply. Include a feeless beneficiary, fee-free surplus, a failed fee route, and low-decimal rounding. Compare gross preview with net receipt.
 - Acquire shares for one block, call `poke()`, exit, and fund both pinned group-0 rounds. Repeat with transferable shares returned to their source, and repeat against a tenure group, which must pay that position nothing.
 - Begin vesting, permissionlessly collect to the holder, and attempt a later compound. Fail each approval, transfer, preview, and payment step to check atomicity and that unrelated wallet funds are untouched.
-- Fund a predicted receiver before deployment, settle across a round boundary, and compare predictions across different factories, distributors, destination tokens, groups, and compiled creation code.
+- Fund a predicted receiver before deployment, settle across a round boundary, and compare predictions across different factories, destination tokens, and groups; confirm only the factory can initialize a clone, once, and that the implementation stays uninitialized.
 - Change the connected account or chain during a multi-step client action; reject a signature, lose the RPC response after submission, and resume after reload. Verify destination, minimums, canonical receipts, and whether a retry would duplicate value movement.
 - Rehearse clean, partial, repeated, and mismatched deployments on both network groups. Treat foreign code, immutable mismatches, stale manifests, and unverified privileged core bindings as distinct failures.
 

@@ -397,7 +397,8 @@ contract StickyIntegrationTest is TestBaseWorkflow {
             // forge-lint: disable-next-line(literal-instead-of-constant)
             initialClaimDuration: 30 days
         });
-        StickyRewardReceiverFactory receiverFactory = new StickyRewardReceiverFactory(distributor);
+        StickyRewardReceiverFactory receiverFactory =
+            new StickyRewardReceiverFactory(new StickyRewardReceiver(distributor));
 
         // Two streakers: 30 and 10 ART locked.
         // forge-lint: disable-next-line(literal-instead-of-constant)
@@ -639,7 +640,8 @@ contract StickyIntegrationTest is TestBaseWorkflow {
             // forge-lint: disable-next-line(literal-instead-of-constant)
             initialClaimDuration: 30 days
         });
-        StickyRewardReceiverFactory receiverFactory = new StickyRewardReceiverFactory(distributor);
+        StickyRewardReceiverFactory receiverFactory =
+            new StickyRewardReceiverFactory(new StickyRewardReceiver(distributor));
 
         // A holder stakes, then two weeks pass so their tranche is old enough for a one-week tenure window.
         // forge-lint: disable-next-line(literal-instead-of-constant)
@@ -696,9 +698,40 @@ contract StickyIntegrationTest is TestBaseWorkflow {
         // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(receiverFactory.receiverOf({stickyToken: address(_token), groupId: 1000}), tenureReceiver);
         // forge-lint: disable-next-line(literal-instead-of-constant)
-        assertEq(StickyRewardReceiver(tenureReceiver).GROUP_ID(), 1000);
-        assertEq(StickyRewardReceiver(tenureReceiver).STICKY_TOKEN(), address(_token));
+        assertEq(StickyRewardReceiver(tenureReceiver).groupId(), 1000);
+        assertEq(StickyRewardReceiver(tenureReceiver).stickyToken(), address(_token));
         assertEq(address(StickyRewardReceiver(tenureReceiver).DISTRIBUTOR()), address(distributor));
+
+        // Receivers are ERC-1167 clones of the implementation, initialized once; the implementation never is.
+        assertEq(tenureReceiver.code.length, 45);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickyRewardReceiver.StickyRewardReceiver_AlreadyInitialized.selector, address(_token)
+            )
+        );
+        StickyRewardReceiver(tenureReceiver).initialize({initialStickyToken: address(this), initialGroupId: 0});
+        StickyRewardReceiver implementation = receiverFactory.RECEIVER();
+        assertEq(implementation.stickyToken(), address(implementation));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickyRewardReceiver.StickyRewardReceiver_AlreadyInitialized.selector, address(implementation)
+            )
+        );
+        implementation.initialize({initialStickyToken: address(this), initialGroupId: 0});
+
+        // No receiver can be bound to the zero sticky token, so the factory neither predicts nor deploys one.
+        bytes memory zeroToken = abi.encodeWithSelector(
+            StickyRewardReceiverFactory.StickyRewardReceiverFactory_InvalidStickyToken.selector, address(0)
+        );
+        vm.expectRevert(zeroToken);
+        // forge-lint: disable-next-line(unused-return)
+        receiverFactory.predictReceiverOf({stickyToken: address(0), groupId: 0});
+        vm.expectRevert(zeroToken);
+        // forge-lint: disable-next-line(unused-return)
+        receiverFactory.deployReceiverFor({stickyToken: address(0), groupId: 0});
+        vm.expectRevert(zeroToken);
+        // forge-lint: disable-next-line(unused-return)
+        receiverFactory.settleFor({stickyToken: address(0), groupId: 0, token: IERC20(address(_art))});
         (
             uint208 defaultPot,,,,
             uint208 defaultStake
