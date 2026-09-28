@@ -89,8 +89,9 @@ abstract contract StickyDeployment is Script {
             name: "StickyDistributor", salt: STICKY_SALT, args: _distributorArgs({core: core, hook: deployed.hook})
         });
         _verifyDistributor({core: core, deployed: deployed});
+        _deployIfNeeded({name: "StickyRewardReceiver", salt: STICKY_SALT, args: abi.encode(deployed.distributor)});
         _deployIfNeeded({
-            name: "StickyRewardReceiverFactory", salt: STICKY_SALT, args: abi.encode(deployed.distributor)
+            name: "StickyRewardReceiverFactory", salt: STICKY_SALT, args: abi.encode(deployed.rewardReceiver)
         });
         _deployIfNeeded({
             name: "StickyAutoStick", salt: AUTO_STICK_SALT, args: abi.encode(deployed.deployer, deployed.distributor)
@@ -171,6 +172,7 @@ abstract contract StickyDeployment is Script {
         _serializeContract({key: key, name: "deployer", target: deployed.deployer});
         _serializeContract({key: key, name: "hook", target: deployed.hook});
         _serializeContract({key: key, name: "distributor", target: deployed.distributor});
+        _serializeContract({key: key, name: "rewardReceiver", target: deployed.rewardReceiver});
         _serializeContract({key: key, name: "rewardReceiverFactory", target: deployed.rewardReceiverFactory});
         _serializeContract({key: key, name: "autoStick", target: deployed.autoStick});
         // forge-lint: disable-next-line(unused-return)
@@ -246,8 +248,10 @@ abstract contract StickyDeployment is Script {
         deployed.distributor = _predictContract({
             name: "StickyDistributor", salt: STICKY_SALT, args: _distributorArgs({core: core, hook: deployed.hook})
         });
+        deployed.rewardReceiver =
+            _predictContract({name: "StickyRewardReceiver", salt: STICKY_SALT, args: abi.encode(deployed.distributor)});
         deployed.rewardReceiverFactory = _predictContract({
-            name: "StickyRewardReceiverFactory", salt: STICKY_SALT, args: abi.encode(deployed.distributor)
+            name: "StickyRewardReceiverFactory", salt: STICKY_SALT, args: abi.encode(deployed.rewardReceiver)
         });
         deployed.autoStick = _predictContract({
             name: "StickyAutoStick", salt: AUTO_STICK_SALT, args: abi.encode(deployed.deployer, deployed.distributor)
@@ -265,16 +269,15 @@ abstract contract StickyDeployment is Script {
         }
         _verifyDeployer({core: core, deployed: deployed});
         _verifyDistributor({core: core, deployed: deployed});
+        _verifyRuntime({name: "StickyRewardReceiver", target: deployed.rewardReceiver});
         _verifyRuntime({name: "StickyRewardReceiverFactory", target: deployed.rewardReceiverFactory});
         _verifyRuntime({name: "StickyAutoStick", target: deployed.autoStick});
+        StickyRewardReceiver receiver = StickyRewardReceiver(deployed.rewardReceiver);
         StickyRewardReceiverFactory receiverFactory = StickyRewardReceiverFactory(deployed.rewardReceiverFactory);
-        address receiver = vm.computeCreateAddress({deployer: deployed.rewardReceiverFactory, nonce: 1});
-        _verifyRuntime({name: "StickyRewardReceiver", target: receiver});
         if (
-            address(receiverFactory.DISTRIBUTOR()) != deployed.distributor
-                || address(receiverFactory.RECEIVER()) != receiver
-                || address(StickyRewardReceiver(receiver).DISTRIBUTOR()) != deployed.distributor
-                || StickyRewardReceiver(receiver).FACTORY() != deployed.rewardReceiverFactory
+            address(receiver.DISTRIBUTOR()) != deployed.distributor || receiver.stickyToken() != deployed.rewardReceiver
+                || address(receiverFactory.RECEIVER()) != deployed.rewardReceiver
+                || address(receiverFactory.DISTRIBUTOR()) != deployed.distributor
         ) {
             revert StickyDeployment_BindingMismatch({
                 target: deployed.rewardReceiverFactory, binding: "receiver implementation"
@@ -424,8 +427,7 @@ abstract contract StickyDeployment is Script {
         if (nameHash == keccak256("StickyDistributor")) return 10;
         // forge-lint: disable-next-line(literal-instead-of-constant)
         if (nameHash == keccak256("StickyRewardReceiverFactory")) return 2;
-        // forge-lint: disable-next-line(literal-instead-of-constant)
-        if (nameHash == keccak256("StickyRewardReceiver")) return 2;
+        if (nameHash == keccak256("StickyRewardReceiver")) return 1;
         if (nameHash == keccak256("StickyAutoStick")) return 6;
         revert StickyDeployment_InvalidArtifact(name);
     }

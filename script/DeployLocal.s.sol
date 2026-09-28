@@ -9,6 +9,7 @@ import {console2} from "forge-std/console2.sol";
 import {StickyAutoStick} from "../src/StickyAutoStick.sol";
 import {StickyDeployer} from "../src/StickyDeployer.sol";
 import {StickyDistributor} from "../src/StickyDistributor.sol";
+import {StickyRewardReceiver} from "../src/StickyRewardReceiver.sol";
 import {StickyRewardReceiverFactory} from "../src/StickyRewardReceiverFactory.sol";
 
 import {StickyDeployment} from "./helpers/StickyDeployment.sol";
@@ -61,7 +62,8 @@ contract DeployLocal is StickyDeployment {
         });
 
         StickyAutoStick autoStick = new StickyAutoStick({deployer: deployer, distributor: distributor});
-        StickyRewardReceiverFactory rewardReceiverFactory = new StickyRewardReceiverFactory(distributor);
+        StickyRewardReceiverFactory rewardReceiverFactory =
+            new StickyRewardReceiverFactory(new StickyRewardReceiver(distributor));
 
         // The immutable adapter is available to every holder from launch. This does not enable auto-stick or grant a
         // token allowance for anyone; each holder still opts in and approves their own underlying token.

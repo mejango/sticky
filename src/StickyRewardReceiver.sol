@@ -10,7 +10,7 @@ import {IStickyDistributor} from "./interfaces/IStickyDistributor.sol";
 /// the rewards distributor.
 /// @dev Each (Sticky token, group) pair has its own receiver address so plain ERC-20 arrivals identify both the
 /// rewarded holder pool and how it is weighed, without bridge-specific metadata or a shared deposit ledger. The
-/// factory deploys one implementation and gives each pair a minimal clone of it, initialized with the pair; each
+/// factory gives each pair a minimal clone of one implementation, initialized with the pair in the same call; each
 /// receiver settles its full token balance, without ordering individual arrivals. The receiver's deterministic address
 /// can receive tokens before deployment. Its address matches across chains only when the factory address, sticky
 /// token address and group all match.
@@ -26,9 +26,9 @@ contract StickyRewardReceiver {
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
 
-    /// @notice Thrown when a receiver is initialized twice, or by anyone other than its factory.
-    /// @param caller The address that attempted the initialization.
-    error StickyRewardReceiver_Unauthorized(address caller);
+    /// @notice Thrown when a receiver, or the implementation, is initialized again.
+    /// @param stickyToken The sticky token the receiver is already bound to.
+    error StickyRewardReceiver_AlreadyInitialized(address stickyToken);
 
     /// @notice Thrown when the distributor is the zero address, since the immutable settlement destination cannot be
     /// corrected after deployment.
@@ -46,9 +46,6 @@ contract StickyRewardReceiver {
     /// @notice The distributor rewards are settled into, shared by every clone of this implementation.
     IStickyDistributor public immutable DISTRIBUTOR;
 
-    /// @notice The factory that deployed this implementation and is the only address allowed to initialize clones.
-    address public immutable FACTORY;
-
     //*********************************************************************//
     // --------------------- public stored properties -------------------- //
     //*********************************************************************//
@@ -56,14 +53,14 @@ contract StickyRewardReceiver {
     /// @notice The reward group settlements fund (0 = the default group).
     uint256 public groupId;
 
-    /// @notice The sticky token whose holders this receiver rewards. Zero until the factory initializes the clone.
+    /// @notice The sticky token whose holders this receiver rewards. Zero only on a clone awaiting initialization.
     address public stickyToken;
 
     //*********************************************************************//
     // -------------------------- constructor ---------------------------- //
     //*********************************************************************//
 
-    /// @notice Initializes the implementation's distributor and factory, which its clones share.
+    /// @notice Initializes the implementation's distributor, which its clones share.
     /// @param distributor The distributor rewards are settled into.
     constructor(IStickyDistributor distributor) {
         // Require a settlement destination because the immutable distributor cannot be corrected after deployment.
@@ -72,8 +69,8 @@ contract StickyRewardReceiver {
         // Fix the destination so permissionless callers cannot redirect the receiver's rewards.
         DISTRIBUTOR = distributor;
 
-        // Only the deploying factory initializes clones, and it never initializes this implementation.
-        FACTORY = msg.sender;
+        // Bind the implementation to itself so it can never be initialized; clones start with empty storage.
+        stickyToken = address(this);
     }
 
     //*********************************************************************//
@@ -81,13 +78,13 @@ contract StickyRewardReceiver {
     //*********************************************************************//
 
     /// @notice Fixes a clone's sticky token and reward group.
-    /// @dev Only the factory can initialize, once, in the same call that deploys the clone.
+    /// @dev Callable once. The factory initializes each clone in the call that deploys it, so no one else can.
     /// @param initialStickyToken The sticky token whose holders this receiver rewards.
     /// @param initialGroupId The reward group settlements fund; the factory only creates receivers for groups the
     /// distributor accepts.
     function initialize(address initialStickyToken, uint256 initialGroupId) external {
-        // Reject re-initialization and any caller that could point a clone at a different holder pool.
-        if (msg.sender != FACTORY || stickyToken != address(0)) revert StickyRewardReceiver_Unauthorized(msg.sender);
+        // Reject re-initialization, which could point the receiver at a different holder pool.
+        if (stickyToken != address(0)) revert StickyRewardReceiver_AlreadyInitialized(stickyToken);
 
         // Require a reward-bearing token so arrivals cannot be assigned to an empty holder identity.
         if (initialStickyToken == address(0)) revert StickyRewardReceiver_InvalidStickyToken(initialStickyToken);

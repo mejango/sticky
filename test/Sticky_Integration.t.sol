@@ -397,7 +397,8 @@ contract StickyIntegrationTest is TestBaseWorkflow {
             // forge-lint: disable-next-line(literal-instead-of-constant)
             initialClaimDuration: 30 days
         });
-        StickyRewardReceiverFactory receiverFactory = new StickyRewardReceiverFactory(distributor);
+        StickyRewardReceiverFactory receiverFactory =
+            new StickyRewardReceiverFactory(new StickyRewardReceiver(distributor));
 
         // Two streakers: 30 and 10 ART locked.
         // forge-lint: disable-next-line(literal-instead-of-constant)
@@ -639,7 +640,8 @@ contract StickyIntegrationTest is TestBaseWorkflow {
             // forge-lint: disable-next-line(literal-instead-of-constant)
             initialClaimDuration: 30 days
         });
-        StickyRewardReceiverFactory receiverFactory = new StickyRewardReceiverFactory(distributor);
+        StickyRewardReceiverFactory receiverFactory =
+            new StickyRewardReceiverFactory(new StickyRewardReceiver(distributor));
 
         // A holder stakes, then two weeks pass so their tranche is old enough for a one-week tenure window.
         // forge-lint: disable-next-line(literal-instead-of-constant)
@@ -700,23 +702,20 @@ contract StickyIntegrationTest is TestBaseWorkflow {
         assertEq(StickyRewardReceiver(tenureReceiver).stickyToken(), address(_token));
         assertEq(address(StickyRewardReceiver(tenureReceiver).DISTRIBUTOR()), address(distributor));
 
-        // Receivers are ERC-1167 clones of the factory's implementation, and only the factory initializes them, once.
+        // Receivers are ERC-1167 clones of the implementation, initialized once; the implementation never is.
         assertEq(tenureReceiver.code.length, 45);
-        assertEq(StickyRewardReceiver(tenureReceiver).FACTORY(), address(receiverFactory));
-        vm.expectRevert(
-            abi.encodeWithSelector(StickyRewardReceiver.StickyRewardReceiver_Unauthorized.selector, address(this))
-        );
-        StickyRewardReceiver(tenureReceiver).initialize({initialStickyToken: address(this), initialGroupId: 0});
-        vm.prank(address(receiverFactory));
         vm.expectRevert(
             abi.encodeWithSelector(
-                StickyRewardReceiver.StickyRewardReceiver_Unauthorized.selector, address(receiverFactory)
+                StickyRewardReceiver.StickyRewardReceiver_AlreadyInitialized.selector, address(_token)
             )
         );
         StickyRewardReceiver(tenureReceiver).initialize({initialStickyToken: address(this), initialGroupId: 0});
         StickyRewardReceiver implementation = receiverFactory.RECEIVER();
+        assertEq(implementation.stickyToken(), address(implementation));
         vm.expectRevert(
-            abi.encodeWithSelector(StickyRewardReceiver.StickyRewardReceiver_Unauthorized.selector, address(this))
+            abi.encodeWithSelector(
+                StickyRewardReceiver.StickyRewardReceiver_AlreadyInitialized.selector, address(implementation)
+            )
         );
         implementation.initialize({initialStickyToken: address(this), initialGroupId: 0});
         (

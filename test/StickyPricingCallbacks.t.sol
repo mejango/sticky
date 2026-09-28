@@ -11,6 +11,7 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {StickyDeployer} from "../src/StickyDeployer.sol";
 import {StickyDistributor} from "../src/StickyDistributor.sol";
 import {StickyHook} from "../src/StickyHook.sol";
+import {StickyRewardReceiver} from "../src/StickyRewardReceiver.sol";
 import {StickyRewardReceiverFactory} from "../src/StickyRewardReceiverFactory.sol";
 
 import {IStickyDistributor} from "../src/interfaces/IStickyDistributor.sol";
@@ -97,7 +98,7 @@ contract StickyPricingCallbacksTest is TestBaseWorkflow {
             initialVestingRounds: 1,
             initialClaimDuration: 30 days
         });
-        _receiverFactory = new StickyRewardReceiverFactory(_distributor);
+        _receiverFactory = new StickyRewardReceiverFactory(new StickyRewardReceiver(_distributor));
         _reward = new StickyCallbackToken();
         // forge-lint: disable-next-line(literal-instead-of-constant)
         _underlying.mint({beneficiary: address(_underlying), amount: 100e18});

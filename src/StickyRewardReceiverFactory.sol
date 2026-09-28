@@ -12,8 +12,8 @@ import {IStickyRewardReceiverFactory} from "./interfaces/IStickyRewardReceiverFa
 /// @notice Creates and locates a separate reward receiver for each Sticky token and reward group, and forwards
 /// settlement requests.
 /// @dev Funds arrive at the per-(token, group) receiver, whose address identifies the rewarded holder pool and how
-/// it is weighed. This factory deploys one receiver implementation and, when needed, a minimal clone of it at the
-/// pair's deterministic address, which it predicts before deployment. A funder can bridge sucker-mapped reward tokens
+/// it is weighed. When needed, this factory deploys a minimal clone of the receiver implementation at the pair's
+/// deterministic address, which it predicts before deployment. A funder can bridge sucker-mapped reward tokens
 /// to the receiver without adding suckers to the Sticky project itself.
 /// @dev Receivers settle ERC-20 balances only. Project-token credits minted by a sucker claim, which is what a
 /// destination project without an ERC-20 receives, and native ETH cannot be settled and stay in the receiver.
@@ -50,14 +50,14 @@ contract StickyRewardReceiverFactory is IStickyRewardReceiverFactory {
     // -------------------------- constructor ---------------------------- //
     //*********************************************************************//
 
-    /// @notice Initializes the factory's rewards distributor.
-    /// @param distributor The distributor receivers settle rewards into.
-    constructor(IStickyDistributor distributor) {
-        // Give every receiver the same immutable settlement destination.
-        DISTRIBUTOR = distributor;
+    /// @notice Initializes the factory's receiver implementation.
+    /// @param receiver The receiver implementation every receiver is cloned from.
+    constructor(StickyRewardReceiver receiver) {
+        // Clone this implementation; its address, with the pair's salt, determines every receiver's address.
+        RECEIVER = receiver;
 
-        // Deploy the shared implementation; its address, and so every clone's, follows from this factory's address.
-        RECEIVER = new StickyRewardReceiver(distributor);
+        // Read the distributor from the implementation so the factory and its clones cannot disagree.
+        DISTRIBUTOR = receiver.DISTRIBUTOR();
     }
 
     //*********************************************************************//

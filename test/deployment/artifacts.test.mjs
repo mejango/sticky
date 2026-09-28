@@ -8,14 +8,15 @@ const code = '0x6080604052';
 const addresses = {
   controller: '0x' + '11'.repeat(20), directory: '0x' + '22'.repeat(20), terminal: '0x' + '33'.repeat(20),
   deployer: '0x' + 'a1'.repeat(20), hook: '0x' + 'a2'.repeat(20), distributor: '0x' + 'a3'.repeat(20),
-  rewardReceiverFactory: '0x' + 'a4'.repeat(20), autoStick: '0x' + 'a5'.repeat(20),
+  rewardReceiver: '0x' + 'a6'.repeat(20), rewardReceiverFactory: '0x' + 'a4'.repeat(20), autoStick: '0x' + 'a5'.repeat(20),
 };
 const word = value => BigInt(value).toString(16).padStart(64, '0');
 const expectedArgs = {
   StickyDeployer: [addresses.controller, addresses.terminal],
   StickyHook: [addresses.directory, addresses.deployer, trustedForwarder],
   StickyDistributor: [addresses.controller, addresses.directory, addresses.hook, '604800', '4', '63072000'],
-  StickyRewardReceiverFactory: [addresses.distributor],
+  StickyRewardReceiver: [addresses.distributor],
+  StickyRewardReceiverFactory: [addresses.rewardReceiver],
   StickyAutoStick: [addresses.deployer, addresses.distributor],
 };
 

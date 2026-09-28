@@ -20,7 +20,8 @@ export const contracts = [
   // The deployer's constructor creates the hook, so the explorer attributes it to the deployer's creation transaction.
   { name: 'StickyHook', field: 'hook', args: ['directory', 'deployer', trustedForwarder], child: true },
   { name: 'StickyDistributor', field: 'distributor', args: ['controller', 'directory', 'hook', 7n * 86_400n, 4n, 2n * 365n * 86_400n] },
-  { name: 'StickyRewardReceiverFactory', field: 'rewardReceiverFactory', args: ['distributor'] },
+  { name: 'StickyRewardReceiver', field: 'rewardReceiver', args: ['distributor'] },
+  { name: 'StickyRewardReceiverFactory', field: 'rewardReceiverFactory', args: ['rewardReceiver'] },
   { name: 'StickyAutoStick', field: 'autoStick', args: ['deployer', 'distributor'] },
 ];
 

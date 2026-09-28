@@ -108,7 +108,7 @@ simulates fresh deployment and restart on every destination. It reads a canonica
 RPC block header and pins Forge to that height; the header number and hash are
 recorded separately from the EVM block height. After the group's rehearsals the
 runner requires every chain to have predicted the same deployer, hook, distributor,
-reward receiver factory and adapter; the core binds the same addresses on all eight
+reward receiver implementation, reward receiver factory and adapter; the core binds the same addresses on all eight
 chains, so mainnets and testnets predict one suite.
 Proposal commands require Sphinx credentials, the public project lock, and clean
 core/distributor checkouts at the reviewed commits recorded in `script/deploy.mjs`,
@@ -120,9 +120,10 @@ a separate step.
 
 `deploy:post:*` runs `deploy:verify:*`, which verifies the group on live RPCs,
 requires the same agreement, and writes `deployments/<network>/verified.json`; it
-then runs `deploy:artifacts:*` (`script/artifacts.mjs`), which verifies the five
+then runs `deploy:artifacts:*` (`script/artifacts.mjs`), which verifies the six
 sources on Etherscan and writes `deployments/<network>/StickyDeployer.json`,
-`StickyHook.json`, `StickyDistributor.json`, `StickyRewardReceiverFactory.json`
+`StickyHook.json`, `StickyDistributor.json`, `StickyRewardReceiver.json`,
+`StickyRewardReceiverFactory.json`
 and `StickyAutoStick.json` in the `sphinx-sol-ct-artifact-1` layout the other V6
 repositories keep: address, ABI, constructor arguments, creation receipt, bytecode,
 metadata and source revision. The constructor arguments come from the bindings the
@@ -158,8 +159,9 @@ The script keeps the original `StickyDeployerV6` and `StickyAutoStickV6` salts a
 
 1. `StickyDeployer`, which creates its accounting hook in its constructor.
 2. `StickyDistributor`, bound to that deployer's hook, with 7-day rounds, 4-round vesting, a 2-year claim window, and loans disabled.
-3. `StickyRewardReceiverFactory`, bound to that distributor.
-4. `StickyAutoStick`, bound to that deployer and distributor.
+3. `StickyRewardReceiver`, the implementation every reward receiver is cloned from, bound to that distributor.
+4. `StickyRewardReceiverFactory`, bound to that implementation, which clones and initializes one receiver per Sticky token and reward group.
+5. `StickyAutoStick`, bound to that deployer and distributor.
 
 ```sh
 npm run deploy:testnets
