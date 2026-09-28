@@ -89,9 +89,12 @@ const TOPIC = {
   SetTrustedSender: "0x19cb6ea1a683846f033314fc7883a280ffee4abf9e75f0c699a947575f182e69",
   Transfer: "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
   Fund: "0x171d1972970e548ead487a3a60cfbdfffd130a21513e44dfcd8778965935ddf2",
-  // JBMultiTerminal's, for what a stick paid in and an unstick paid out.
+  ExcludeOrphanedBalance: "0xa0b9b2db99d31a6b0fbb43cedfc627f78ae7c1b1f39d286ed7c61b5c9bba83fa",
+  // JBMultiTerminal's, for what a stick paid in and an unstick paid out, and what else moved the backing.
   Pay: "0x133161f1c9161488f777ab9a26aae91d47c0d9a3fafb398960f138db02c73797",
   CashOutTokens: "0xfaf1d4bf1b08470c7ed8c351c5065f51af70b36b237723173f898453b9724142",
+  ProcessFee: "0xb514e730b3f8ad3aa94b6857bcc5ff4a46954bdcf8c4b0346705b1d0ac7a4325",
+  AddToBalance: "0x9ecaf7fc3dfffd6867c175d6e684b1f1e3aef019398ba8db2c1ffab4a09db253",
 };
 
 // ---------------------------------------------------------------- abi codec
@@ -1028,11 +1031,13 @@ async function holderLogs(ids, holder) {
 // all indexed by project. Timestamps are attached to position events only. Kept for the view's lifetime
 // so the 15-second position refresh never rescans history.
 async function projectLogs(projectId) {
-  const all = await getLogs(ctx.hook, [[...POSITION_TOPICS, TOPIC.SetGranter, TOPIC.SetTrustedSender], "0x" + word(projectId)],
+  const all = await getLogs(ctx.hook,
+    [[...POSITION_TOPICS, TOPIC.SetGranter, TOPIC.SetTrustedSender, TOPIC.ExcludeOrphanedBalance], "0x" + word(projectId)],
     await projectStartBlock(ctx.chainId, projectId));
   const position = all.filter((log) => POSITION_TOPICS.includes(log.topics[0]));
-  await attachTimestamps(position);
-  ctx.projectLogs = { chainId: ctx.chainId, projectId: BigInt(projectId), all, position };
+  const orphans = all.filter((log) => log.topics[0] === TOPIC.ExcludeOrphanedBalance);
+  await attachTimestamps([...position, ...orphans]);
+  ctx.projectLogs = { chainId: ctx.chainId, projectId: BigInt(projectId), all, position, orphans };
   return ctx.projectLogs;
 }
 const cachedProjectLogs = (projectId) => ctx.projectLogs?.chainId === ctx.chainId && ctx.projectLogs.projectId === BigInt(projectId) ? ctx.projectLogs : null;
@@ -1124,6 +1129,32 @@ function logMove(moves, log) {
   const stick = log.topics[0] === TOPIC.Staked;
   const count = decUint(log.data, stick ? 1 : 0);
   return moves.get(moveKey(log.transactionHash || "", stick ? "stick" : "unstick", decUint(log.topics[1]), decAddress(log.topics[2]), count));
+}
+
+// Every change to a project's balance on its terminal, in the underlying token, oldest first: a pay adds its
+// amount, an add to balance its amount and any held fees it returned, a cash out removes what the holder got,
+// and a processed fee removes the fee that left with it (CashOutTokens reports the amount after the fee). A fee
+// that fails to process is credited back, so it emits no ProcessFee and nets out. Throws when a read fails.
+async function backingFlows(projectId, from, reader = pageReader()) {
+  const id = "0x" + word(projectId);
+  const [moves, others] = await Promise.all([
+    getLogsOn(reader, reader.terminal, [[TOPIC.Pay, TOPIC.CashOutTokens], null, null, id], from),
+    getLogsOn(reader, reader.terminal, [[TOPIC.ProcessFee, TOPIC.AddToBalance], id], from),
+  ]);
+  if (!Array.isArray(moves) || !Array.isArray(others)) throw new Error("The RPC returned invalid terminal logs.");
+  const flows = [];
+  for (const log of [...moves, ...others]) {
+    const topic = log.topics[0];
+    let delta = 0n;
+    if (topic === TOPIC.Pay) delta = decUint(log.data, 2);
+    else if (topic === TOPIC.CashOutTokens) delta = -decUint(log.data, 4);
+    else if (topic === TOPIC.AddToBalance) delta = decUint(log.data, 0) + decUint(log.data, 1);
+    // A held fee left the balance when it was held; processing it later moves nothing.
+    else if (topic === TOPIC.ProcessFee && decUint(log.data, 0) === 0n) delta = -decUint(log.topics[3]);
+    if (delta !== 0n) flows.push({ log, delta });
+  }
+  await attachTimestamps(flows.map((flow) => flow.log), 6, reader);
+  return flows.map(({ log, delta }) => ({ ts: log.ts, delta })).sort((a, b) => a.ts - b.ts);
 }
 
 // Decode hook logs into activity cards, newest first. Each card carries the stuck token's logo. Sticks and
@@ -1609,7 +1640,7 @@ function mountHomeSecuredChart(series) {
 }
 
 // ----------------------------------------------------------------- svg chart
-// Two stepped series over time: active streak count and total staked, each normalized to its own
+// Two stepped series over time: active streak count and total stuck, each normalized to its own
 // max so both trends read on one panel.
 function configuredChartPoints(now, projectId) {
   const history = window.STICKY_CONFIG?.demoChartHistory;
@@ -1631,9 +1662,34 @@ function configuredChartPoints(now, projectId) {
   }
 }
 
-function chartSvg(logs, info, projectId) {
+// Total stuck at each share-supply point, in the underlying token, reconstructed backward from today's backing:
+// the terminal balance at t is today's less every flow after t, less the orphaned funds excluded at t (today's,
+// until an ExcludeOrphanedBalance after t says otherwise). With no Sticky tokens, all of it is orphaned. The
+// latest point is the header's Stuck exactly; a flow the logs miss only shifts older points. Never below zero.
+function backingSeries(points, { flows, orphans = [], rawBacking, savedOrphaned }) {
+  const newestFlows = [...flows].sort((a, b) => b.ts - a.ts);
+  const newestOrphans = [...orphans].sort((a, b) => b.ts - a.ts);
+  const series = new Array(points.length);
+  let raw = rawBacking;
+  let flow = 0;
+  let orphan = 0;
+  for (let k = points.length - 1; k >= 0; k--) {
+    const point = points[k];
+    while (flow < newestFlows.length && newestFlows[flow].ts > point.ts) raw -= newestFlows[flow++].delta;
+    while (orphan < newestOrphans.length && newestOrphans[orphan].ts > point.ts) orphan++;
+    const excluded = orphan === 0 ? savedOrphaned : newestOrphans[orphan]?.amount ?? 0n;
+    const stuck = raw - excluded;
+    series[k] = { ...point, value: point.staked > 0n && stuck > 0n ? stuck : 0n };
+  }
+  return series;
+}
+
+// `backing` ({ flows, orphans, rawBacking, savedOrphaned }) plots Total stuck in the underlying token; without it
+// the line falls back to the Sticky token supply, labeled in the Sticky symbol.
+function chartSvg(logs, info, projectId, backing = null) {
   const now = Math.floor(Date.now() / 1000);
   let points = configuredChartPoints(now, projectId);
+  const underlying = Boolean(backing) && !points;
   const events = logs
     .map((log) => {
       if (log.topics[0] === TOPIC.StreakStarted) return { ts: log.ts, streaks: 1, staked: 0n };
@@ -1663,8 +1719,10 @@ function chartSvg(logs, info, projectId) {
     }
     points.push({ ts: now, streaks, staked });
   }
+  points = underlying ? backingSeries(points, backing) : points.map((point) => ({ ...point, value: point.staked }));
+  const unit = underlying ? { decimals: info.decimals ?? 18, symbol: info.symbol } : { decimals: 18, symbol: info.stSymbol };
   const maxStreaks = Math.max(...points.map((p) => p.streaks), 1);
-  const maxStaked = points.reduce((m, p) => (p.staked > m ? p.staked : m), 1n);
+  const maxStaked = points.reduce((m, p) => (p.value > m ? p.value : m), 1n);
   const yStreaks = (v) => H - 24 - (v / maxStreaks) * (H - 44);
   const yStaked = (v) => H - 24 - Number((v * 1000n) / maxStaked) / 1000 * (H - 44);
 
@@ -1694,10 +1752,10 @@ function chartSvg(logs, info, projectId) {
     <line x1="${PAD}" y1="${(20 + H - 24) / 2}" x2="${W - 10}" y2="${(20 + H - 24) / 2}" stroke="#d8e7eb" stroke-dasharray="2 4"/>
     <line x1="${PAD}" y1="${H - 24}" x2="${W - 10}" y2="${H - 24}" stroke="#e2d7bd"/>
     <line x1="${PAD}" y1="20" x2="${PAD}" y2="${H - 24}" stroke="#e2d7bd"/>
-    <path d="${path(yStaked, "staked")}" fill="none" stroke="#1c2d33" stroke-width="1.3" opacity="0.75"/>
+    <path d="${path(yStaked, "value")}" fill="none" stroke="#1c2d33" stroke-width="1.3" opacity="0.75"/>
     <path d="${path(yStreaks, "streaks")}" fill="none" stroke="#2fb3c7" stroke-width="2"/>
     <text x="${PAD}" y="14" fill="#1a8fa1" font-size="10" font-weight="600">Peak: ${maxStreaks} active stick${maxStreaks === 1 ? "" : "s"}</text>
-    <text x="${W - 10}" y="14" fill="#1c2d33" font-size="10" font-weight="600" text-anchor="end">Peak: ${formatAmount(maxStaked, 18, 2)} ${esc(info.stSymbol)} stuck</text>
+    <text x="${W - 10}" y="14" fill="#1c2d33" font-size="10" font-weight="600" text-anchor="end">Peak: ${formatAmount(maxStaked, unit.decimals, 2)} ${esc(unit.symbol)} stuck</text>
     <text x="${PAD - 6}" y="${H - 21}" fill="#64808a" font-size="10" text-anchor="end">0</text>
     <text x="${PAD}" y="${H - 8}" fill="#64808a" font-size="10">${date(t0)}</text>
     <text x="${W - 10}" y="${H - 8}" fill="#64808a" font-size="10" text-anchor="end">now</text>
@@ -1740,7 +1798,7 @@ function chartSvg(logs, info, projectId) {
         }
 
         const streakY = yStreaks(point.streaks);
-        const lockedY = yStaked(point.staked);
+        const lockedY = yStaked(point.value);
         line.setAttribute("x1", cx); line.setAttribute("x2", cx);
         streakDot.setAttribute("cx", cx); streakDot.setAttribute("cy", streakY);
         lockedDot.setAttribute("cx", cx); lockedDot.setAttribute("cy", lockedY);
@@ -1749,7 +1807,7 @@ function chartSvg(logs, info, projectId) {
         card.setAttribute("transform", `translate(${cardX} 25)`);
         dateLabel.textContent = date(ts);
         streaksLabel.textContent = `${point.streaks} active stick${point.streaks === 1 ? "" : "s"}`;
-        lockedLabel.textContent = `${formatAmount(point.staked, 18, 2)} ${info.stSymbol}`;
+        lockedLabel.textContent = `${formatAmount(point.value, unit.decimals, 2)} ${unit.symbol}`;
         chart.setAttribute("aria-label", `${date(ts)}: ${streaksLabel.textContent}; ${lockedLabel.textContent}`);
         hover.style.display = "";
       };
@@ -2194,6 +2252,11 @@ async function renderProject(projectId) {
   const scanned = await projectLogs(projectId);
   if (!current()) return;
   const logs = scanned.position;
+  // The chart's Total stuck in the underlying token; a failed read plots the Sticky token supply instead.
+  const flowsRead = projectStartBlock(ctx.chainId, projectId).then((from) => backingFlows(projectId, from)).catch((error) => {
+    console.warn("Could not read the project's balance history; charting Sticky token supply.", error);
+    return null;
+  });
   const pin = await pinnedBlock();
   if (!current()) return;
   const rows = holderRows(projectId, logs, pin.timestamp);
@@ -2231,7 +2294,11 @@ async function renderProject(projectId) {
   renderSiblings(projectId, info, current).catch(() => {});
 
   // OVERVIEW: chart + my position.
-  const chart = chartSvg(logs, info, projectId);
+  const flows = await flowsRead;
+  if (!current()) return;
+  const orphans = scanned.orphans.map((log) => ({ ts: log.ts, amount: decUint(log.data, 0) }));
+  const chart = chartSvg(logs, info, projectId,
+    flows && { flows, orphans, rawBacking: pool.rawBacking, savedOrphaned: pool.savedOrphaned });
   $("chart").innerHTML = chart.svg;
   chart.bind?.($("chart"));
   // The holder's position loads on its own; Details, the board and Latest never wait on it.
@@ -4538,7 +4605,7 @@ async function poolBacking(projectId, info, reader = pageReader()) {
   const orphaned = supply === 0n ? rawBacking : savedOrphaned;
   const sigma = rawBacking - orphaned;
   return {
-    sigma, supply, rawBacking, orphaned, reward: info.reward, decimals: info.decimals, symbol: info.symbol, stSymbol: info.stSymbol,
+    sigma, supply, rawBacking, orphaned, savedOrphaned, reward: info.reward, decimals: info.decimals, symbol: info.symbol, stSymbol: info.stSymbol,
   };
 }
 // Sticky tokens' share of the backing, in the underlying token: what a position has stuck.
