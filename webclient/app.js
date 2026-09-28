@@ -65,6 +65,7 @@ const SEL = {
   stakedBalanceThroughEpochOf: "0x0fdcc877",
   DISTRIBUTOR: "0x9c26149f",
   predictReceiverOf: "0x330b5eea",
+  deployReceiverFor: "0x18d82376",
   settleFor: "0xa4b4e8bf",
   ensReverseWithGateways: "0xb7d6ca64",
   handleOf: "0xd9b0da2d",
@@ -1976,7 +1977,7 @@ async function renderHome() {
     $("projects").innerHTML = groups.map((group, i) => stickiestCardHtml(group, i + 1)).join("");
     const newest = (items) => items.sort((a, b) => b.ts - a.ts).slice(0, 40);
     renderFeed($("activity"), newest(loaded.flatMap((result) => result.activity)));
-    renderFeed($("airdrops"), [...newest(loaded.flatMap((result) => result.airdrops)), ...demoAirdrops], "no airdrops yet");
+    renderFeed($("airdrops"), [...newest(loaded.flatMap((result) => result.airdrops)), ...demoAirdrops], "no gifts yet");
     setHomeState("ready", failedNote, failed.length > 0);
     hydrateLogos().catch(() => {});
   };
@@ -2088,7 +2089,7 @@ async function renderProject(projectId) {
   const humanGranters = granters.filter((g) => g.toLowerCase() !== (autoStickAdapter() || "").toLowerCase());
   const senderRule = "Anyone can stick for themselves. "
     + (humanGranters.length
-      ? `${humanGranters.length} permanent airdrop sender${humanGranters.length === 1 ? " is" : "s are"} approved for every holder. `
+      ? `${humanGranters.length} trusted sender${humanGranters.length === 1 ? " can" : "s can"} stick for every holder. `
       : "")
     + (adapterGranter ? "Auto-stick is available. Holders turn it on with an allowance and settings. " : "")
     + "Holders can also approve trusted senders to stick for them.";
@@ -3502,6 +3503,8 @@ async function renderRewards() {
   $("rr-hook").textContent = distributor();
   $("rr-beneficiary").textContent = info.stToken;
   renderRecipeGroup();
+  await renderRewardAddress();
+  if (!current()) return;
   let schedule = null;
   try { schedule = await rewardSchedule(); } catch (error) { console.error("reward schedule failed", error); }
   if (!current()) return;
@@ -3559,8 +3562,69 @@ async function renderRewards() {
 
 function renderRecipeGroup() {
   const { groupId, text } = groupNote($("rr-min-weeks").value, $("rr-max-weeks").value);
-  $("rr-group").textContent = groupId === null ? "–" : `${groupId} (${groupLabel(groupId)})`;
+  $("rr-group").textContent = groupId === null ? "–" : `${groupId} (reward group: ${groupLabel(groupId).toLowerCase()})`;
   $("rr-group-note").textContent = text;
+}
+
+// The reward address: one receiver per (Sticky token, group) that turns plain transfers, like a launchpad's fee
+// payouts, into airdrops. Its address is fixed before it exists, so it can be used as a recipient right away.
+async function renderRewardAddress() {
+  const factory = stickyDeploymentFor(ctx.chainId).rewardReceiverFactory;
+  $("ra-details").classList.toggle("hide", !factory);
+  if (!factory || ctx.currentId === null) return;
+  const current = currentView();
+  const { groupId, text } = groupNote($("ra-min-weeks").value, $("ra-max-weeks").value);
+  $("ra-group-note").textContent = text;
+  for (const id of ["ra-addr", "ra-status"]) $(id).textContent = "–";
+  $("ra-pending").textContent = "";
+  $("ra-create").classList.add("hide");
+  if (groupId === null || !isValidGroupId(groupId)) return;
+  const info = await projectInfo(ctx.currentId);
+  const receiver = decAddress(await view(factory, SEL.predictReceiverOf, encAddress(info.stToken) + word(groupId)));
+  const code = await rpc("eth_getCode", [receiver, "latest"]);
+  if (!current()) return;
+  const created = code && code !== "0x";
+  $("ra-addr").textContent = receiver;
+  $("ra-status").textContent = created ? "Created" : "Not created yet. Tokens sent here are safe and settle later.";
+  $("ra-create").classList.toggle("hide", created);
+  const tokenValue = $("ra-token").value.trim();
+  if (!tokenValue) return;
+  try {
+    const tokenAddr = rewardTokenAddress(tokenValue, info.stakedToken);
+    if (tokenAddr.toLowerCase() === NATIVE_REWARD_TOKEN) throw new Error("ETH");
+    const meta = await rewardTokenMeta(tokenAddr);
+    const pending = decUint(await view(tokenAddr, SEL.balanceOf, encAddress(receiver)));
+    if (!current()) return;
+    $("ra-pending").textContent = `${formatAmount(pending, meta.decimals)} ${meta.symbol} waiting to settle`;
+  } catch {
+    if (!current()) return;
+    $("ra-pending").textContent = "Enter an ERC-20 token address";
+  }
+}
+
+async function createRewardAddress() {
+  const action = beginAction();
+  const { holder } = action;
+  const info = await projectInfo(ctx.currentId);
+  const factory = actionAddress(stickyDeploymentFor(ctx.chainId).rewardReceiverFactory, "reward receiver factory address");
+  const groupId = groupIdFromWeeks($("ra-min-weeks").value, $("ra-max-weeks").value);
+  if (!isValidGroupId(groupId)) throw new Error("this stake-age window is not a valid reward group");
+  const receiver = decAddress(await view(factory, SEL.predictReceiverOf, encAddress(info.stToken) + word(groupId)));
+  const txs = [{
+    label: "Create reward address",
+    to: factory,
+    fn: "deployReceiverFor(address stickyToken, uint256 groupId)",
+    args: [
+      ["STUCK IN", bind("stickyToken", info.stToken, { names: named([info.stToken, stickyLabel(info)]) })],
+      ["WHO", bind("groupId", groupId, { kind: "group" })],
+      ["REWARD ADDRESS", receiver],
+    ],
+    data: SEL.deployReceiverFor + encode(["address", "uint256"], [info.stToken, groupId]),
+  }];
+  await actionCall(factory, txs[0].data, holder);
+  if (!(await reviewAction(action, "Create reward address", txs))) return;
+  txStatus("Reward address created", "ok");
+  await renderRewardAddress();
 }
 
 function renderFundGroupNote() {
@@ -4064,15 +4128,16 @@ async function claimAndStick() {
   await renderProject(ctx.currentId);
 }
 
-async function settleArrivals() {
+// The fund dialog settles bridged arrivals for its own group; the reward address panel passes its group and token.
+async function settleArrivals({ groupId: chosenGroup, tokenValue, fromDialog = true } = {}) {
   const action = beginAction();
   const { holder } = action;
   const info = await projectInfo(ctx.currentId);
   const receiverFactoryAddr = actionAddress(stickyDeploymentFor(ctx.chainId).rewardReceiverFactory, "reward receiver factory address");
-  const tokenAddr = rewardTokenAddress($("bridge-reward-token")?.value || $("r-token").value, info.stakedToken);
+  const tokenAddr = rewardTokenAddress(tokenValue ?? ($("bridge-reward-token")?.value || $("r-token").value), info.stakedToken);
   if (tokenAddr.toLowerCase() === NATIVE_REWARD_TOKEN) throw new Error("reward receivers settle ERC-20 tokens; fund ETH rewards directly");
   const meta = await rewardTokenMeta(tokenAddr);
-  const groupId = fundGroupId();
+  const groupId = chosenGroup ?? fundGroupId();
   if (!isValidGroupId(groupId)) throw new Error("this stake-age window is not a valid reward group");
   const configuredDistributor = decAddress(await view(receiverFactoryAddr, SEL.DISTRIBUTOR));
   if (configuredDistributor.toLowerCase() !== distributor()?.toLowerCase()) {
@@ -4096,8 +4161,8 @@ async function settleArrivals() {
     data: SEL.settleFor + encode(["address", "uint256", "address"], [info.stToken, groupId, tokenAddr]),
   }];
   await actionCall(receiverFactoryAddr, txs[0].data, holder);
-  if (!(await reviewAction(action, "Settle cross-chain arrivals", txs))) return;
-  try { $("fund-dialog").close(); } catch {}
+  if (!(await reviewAction(action, fromDialog ? "Settle cross-chain arrivals" : "Settle into airdrops", txs))) return;
+  if (fromDialog) try { $("fund-dialog").close(); } catch {}
   txStatus("Arrivals settled into rewards", "ok");
   (rewardTokens[ctx.currentId.toString()] ??= new Set()).add(tokenAddr.toLowerCase());
   await renderRewards();
@@ -5403,7 +5468,20 @@ $("trust").onclick = guard(async () => {
   try { $("trust-dialog").close(); } catch {}
 });
 $("fund").onclick = guard(fundRewards);
-$("settle").onclick = guard(settleArrivals);
+$("settle").onclick = guard(() => settleArrivals());
+$("ra-min-weeks").oninput = $("ra-max-weeks").oninput = $("ra-token").oninput = guard(renderRewardAddress);
+$("ra-create").onclick = guard(createRewardAddress);
+$("ra-settle").onclick = guard(() => settleArrivals({
+  groupId: groupIdFromWeeks($("ra-min-weeks").value, $("ra-max-weeks").value),
+  tokenValue: $("ra-token").value,
+  fromDialog: false,
+}));
+$("ra-copy").onclick = guard(async () => {
+  const address = $("ra-addr").textContent;
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new Error("choose a valid stake-age window first");
+  await navigator.clipboard.writeText(address);
+  inlineStatus($("ra-copy"), "Reward address copied.", "ok");
+});
 $("rr-copy-hook").onclick = guard(async () => {
   await navigator.clipboard.writeText($("rr-hook").textContent);
   inlineStatus($("rr-copy-hook"), "Split hook address copied.", "ok");
