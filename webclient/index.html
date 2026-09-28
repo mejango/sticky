@@ -609,11 +609,11 @@
       <div class="home-mobile-tabs" role="tablist" aria-label="Homepage lists">
         <button class="home-mobile-tab on" id="home-tab-latest" type="button" role="tab" aria-selected="true" aria-controls="home-panel-latest">LATEST</button>
         <button class="home-mobile-tab" id="home-tab-stickiest" type="button" role="tab" aria-selected="false" aria-controls="home-panel-stickiest">STICKIEST</button>
-        <button class="home-mobile-tab" id="home-tab-airdrops" type="button" role="tab" aria-selected="false" aria-controls="home-panel-airdrops">AIRDROPS</button>
+        <button class="home-mobile-tab" id="home-tab-airdrops" type="button" role="tab" aria-selected="false" aria-controls="home-panel-airdrops">GIFTS</button>
       </div>
       <div class="home-ranking-tabs" role="tablist" aria-label="Sticky rankings">
         <button class="home-ranking-tab on" id="home-rank-stickiest" type="button" role="tab" aria-selected="true" aria-controls="home-panel-stickiest">STICKIEST</button>
-        <button class="home-ranking-tab" id="home-rank-airdrops" type="button" role="tab" aria-selected="false" aria-controls="home-panel-airdrops">AIRDROPS</button>
+        <button class="home-ranking-tab" id="home-rank-airdrops" type="button" role="tab" aria-selected="false" aria-controls="home-panel-airdrops">GIFTS</button>
       </div>
       <div class="home-secured" id="home-secured">
         <div class="home-secured-head">
@@ -638,7 +638,7 @@
         <div class="list-card" id="projects"></div>
       </div>
       <div class="home-list-panel" id="home-panel-airdrops" role="tabpanel" aria-labelledby="home-tab-airdrops home-rank-airdrops">
-        <h2 class="colhead">Airdrops</h2>
+        <h2 class="colhead">Gifts</h2>
         <div class="list-card" id="airdrops"></div>
       </div>
       <div class="hero-col">
@@ -817,6 +817,28 @@
                 <button id="rr-copy-beneficiary" class="ghost" style="flex:0 1 auto">Copy beneficiary address</button>
               </div>
             </details>
+            <details class="token-contracts" id="ra-details" style="margin-top:10px">
+              <summary>Reward address for fee payouts and transfers</summary>
+              <p class="mut" style="margin:10px 0 6px">Tokens sent here become airdrops once anyone settles them. Use it as a launchpad's fee recipient.</p>
+              <div class="row">
+                <div><label for="ra-min-weeks">MINIMUM STAKE AGE (WEEKS)</label><input id="ra-min-weeks" placeholder="0" inputmode="numeric"></div>
+                <div><label for="ra-max-weeks">MAXIMUM STAKE AGE (WEEKS)</label><input id="ra-max-weeks" placeholder="no limit" inputmode="numeric"></div>
+              </div>
+              <p class="mut" id="ra-group-note" style="margin:6px 0"></p>
+              <table><tbody>
+                <tr><th style="width:140px">REWARD ADDRESS</th><td style="word-break:break-all" id="ra-addr">–</td></tr>
+                <tr><th>STATUS</th><td id="ra-status">–</td></tr>
+              </tbody></table>
+              <div class="row" style="gap:8px">
+                <button id="ra-copy" class="ghost" style="flex:0 1 auto">Copy reward address</button>
+                <button id="ra-create" class="ghost hide" style="flex:0 1 auto">Create onchain</button>
+              </div>
+              <div class="row">
+                <div><label for="ra-token">TOKEN TO SETTLE</label><input id="ra-token" placeholder="0x…" autocomplete="off"></div>
+              </div>
+              <p class="mut" id="ra-pending" style="margin:6px 0"></p>
+              <button id="ra-settle" class="ghost">Settle into airdrops</button>
+            </details>
           </section>
           <section>
             <h2>Your rewards</h2>
@@ -955,7 +977,7 @@
     <details id="d-extras" style="margin-top:14px">
       <summary style="cursor:pointer;color:var(--muted);font-size:12px;letter-spacing:.5px">Extras</summary>
       <label class="check" style="margin-top:10px"><input type="checkbox" id="d-add-granters"> Add trusted senders</label>
-      <p class="mut hint hide option-detail" id="d-granters-hint">Addresses that can send the token and stick it straight into any holder's account, like a grant or prize bot. Set once at launch, and no one can change them later.</p>
+      <p class="mut hint hide option-detail" id="d-granters-hint">Addresses that can stick tokens into any holder's position, like a grant bot. Not needed to send airdrops.</p>
       <div class="row hide option-detail" id="d-granters-row">
         <div><label for="d-granters">TRUSTED SENDERS (COMMA-SEPARATED)</label><input id="d-granters" placeholder="0x…, 0x…"></div>
       </div>
