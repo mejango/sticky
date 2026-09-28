@@ -1977,7 +1977,7 @@ async function renderHome() {
     $("projects").innerHTML = groups.map((group, i) => stickiestCardHtml(group, i + 1)).join("");
     const newest = (items) => items.sort((a, b) => b.ts - a.ts).slice(0, 40);
     renderFeed($("activity"), newest(loaded.flatMap((result) => result.activity)));
-    renderFeed($("airdrops"), [...newest(loaded.flatMap((result) => result.airdrops)), ...demoAirdrops], "no gifts yet");
+    renderFeed($("airdrops"), [...newest(loaded.flatMap((result) => result.airdrops)), ...demoAirdrops], "no airdrops yet");
     setHomeState("ready", failedNote, failed.length > 0);
     hydrateLogos().catch(() => {});
   };
