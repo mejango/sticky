@@ -74,8 +74,8 @@
   }
   .link { color: var(--accent); cursor: pointer; text-decoration: underline; text-decoration-color: var(--amber); }
   .mut { color: var(--muted); }
-  section { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; margin-bottom: 14px; position: relative; }
-  section h2 { font-size: 13px; letter-spacing: 1.5px; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin-bottom: 20px; position: relative; }
+  section h2 { font: 700 16px/1.3 "Agrandir", "Beatrice", sans-serif; letter-spacing: 0; color: var(--text); margin: 0 0 14px; }
   section.glow {
     border: 2px solid var(--accent);
     box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 10%, transparent), 0 4px 20px -4px color-mix(in srgb, var(--accent) 25%, transparent);
@@ -93,8 +93,8 @@
   }
   select:focus { outline: none; border-color: var(--amber); }
   button {
-    background: var(--teal); color: var(--ink); border: none; border-radius: 4px; font: inherit;
-    font-weight: 700; letter-spacing: 1px; padding: 8px 15px; cursor: pointer; margin-top: 10px;
+    background: var(--teal); color: var(--ink); border: none; border-radius: 8px; font: inherit;
+    font-weight: 600; letter-spacing: 0; padding: 9px 16px; cursor: pointer; margin-top: 10px;
   }
   button.ghost { background: transparent; color: var(--text); border: 1px solid var(--ink); }
   button.danger { background: transparent; color: var(--err); border: 1px solid var(--err); }
@@ -108,13 +108,38 @@
   tr.pick { cursor: pointer; }
   tr.pick:hover td { color: var(--accent); }
   .feed { list-style: none; margin: 0; padding: 0; }
-  .feed li { padding: 5px 0; border-bottom: 1px solid var(--line); }
-  .feed .when { color: var(--muted); }
-  .feed .verb { color: var(--accent); font-weight: 600; }
-  .feed .verb.out { color: var(--out); }
+  /* Activity rows, like juicebox.money's ActivityList: amount and direction, then time and chain, then who. */
+  .feed-row { display: block; padding: 14px 0; border-bottom: 1px solid var(--line); text-align: left; }
+  .feed-row:last-child { border-bottom: none; }
+  .feed-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12px; }
+  .feed-amount { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 14px; }
+  .feed-amount b { overflow: hidden; color: var(--text); font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+  .feed-tag {
+    display: inline-flex; flex: none; align-items: center; justify-content: center; height: 20px; min-width: 28px;
+    padding: 0 6px; border: 1px solid var(--line); color: var(--muted); font-size: 10px; font-weight: 500; line-height: 1;
+  }
+  .feed-tag.in { border-color: var(--accent); color: var(--accent); }
+  .feed-tag.out { border-color: var(--out); color: var(--out); }
+  .feed-when { display: inline-flex; flex: none; align-items: center; gap: 6px; white-space: nowrap; }
+  .feed-when .chain-icons { margin-left: 0; }
+  .feed-project { margin-top: 4px; overflow: hidden; font-size: 14px; font-weight: 500; white-space: nowrap; text-overflow: ellipsis; }
+  .feed-project a { color: var(--accent); text-decoration: none; }
+  .feed-project a:hover { text-decoration: underline; }
+  .feed-line { margin-top: 4px; color: var(--muted); font-size: 12px; }
+  .feed-line .addr { color: var(--text); }
+  .feed-empty { padding: 14px 0; color: var(--muted); font-size: 14px; }
+  .feed-panel { margin-bottom: 20px; }
+  .feed-head { display: flex; align-items: center; gap: 8px; margin: 4px 0; color: var(--text); font: 700 14px/1.3 "Agrandir", "Beatrice", sans-serif; }
+  #p-activity { max-height: max(780px, 82vh); overflow-y: auto; padding-right: 4px; }
+  /* A label/value meta row: each pair stays on one line, and the pipe that would start a wrapped line is
+     clipped off the left edge, so no line leads with a separator. */
+  .meta-row { overflow: hidden; }
+  .meta-line { display: flex; flex-wrap: wrap; align-items: baseline; margin-left: -21px; }
+  .meta-pair { white-space: nowrap; }
+  .meta-pair::before { content: "|"; content: "|" / ""; display: inline-block; width: 21px; color: #cfe2e7; text-align: center; }
   .addr { color: var(--muted); }
   .tok { display: inline-flex; align-items: center; gap: 6px; vertical-align: middle; }
-  .colhead { font-size: 15px; font-weight: 700; letter-spacing: 0; color: var(--text); margin: 4px 0 12px; font-family: "Agrandir", "Beatrice", sans-serif; }
+  .colhead { font-size: 20px; font-weight: 700; letter-spacing: 0; color: var(--text); margin: 4px 0 8px; font-family: "Agrandir", "Beatrice", sans-serif; }
   .list-card { background: transparent; border: none; border-radius: 0; overflow: hidden; }
   .card-item { padding: 12px 14px; border-bottom: 1px solid var(--line); }
   .card-item:last-child { border-bottom: none; }
@@ -129,9 +154,9 @@
   .pie-table #pie { flex: none; }
   .owner-pie-chart { width: 260px; max-width: 100%; line-height: 0; text-align: center; }
   .owner-pie-chart svg { display: block; width: 190px; height: auto; margin: 0 auto; overflow: visible; }
-  .owner-pie-total { margin-top: 10px; color: var(--muted); font-size: 13px; line-height: 1.3; overflow-wrap: anywhere; }
+  .owner-pie-total { margin-top: 10px; color: var(--muted); font-size: 13px; line-height: 1.4; }
+  .owner-pie-total > div { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .owner-pie-total b { color: var(--text); font-weight: 600; }
-  .owner-pie-separator { margin: 0 4px; color: var(--line); }
   .owner-pie-track { stroke: var(--line); }
   .owner-pie-slice {
     cursor: pointer; opacity: .88; transition: opacity 120ms ease, stroke-width 120ms ease;
@@ -154,15 +179,25 @@
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
     clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
   }
-  .token-summary { display: flex; flex-direction: column; gap: 12px; }
-  .token-meta-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 0; }
-  .token-meta {
-    display: inline-flex; align-items: baseline; gap: 7px;
-    margin-right: 16px; padding-right: 16px; border-right: 1px solid var(--line);
+  /* Details: one label/value per row. Values never wrap mid-word; only addresses may break. */
+  .details-list { display: grid; grid-template-columns: max-content minmax(0, 1fr); margin: 0; font-size: 14px; }
+  .details-list dt, .details-list dd { margin: 0; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .details-list dt { padding-right: 16px; color: var(--muted); white-space: nowrap; }
+  .details-list dd { overflow: hidden; text-align: right; white-space: nowrap; text-overflow: ellipsis; }
+  .details-list dt:last-of-type, .details-list dd:last-of-type { border-bottom: none; }
+  .details-rules { margin: 12px 0 14px; padding-left: 18px; color: var(--text); font-size: 14px; }
+  .details-rules li { margin: 4px 0; }
+  .details-contracts dd { white-space: normal; text-align: left; }
+  .addr-break { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+  button.copy-btn {
+    margin: 0 0 0 8px; padding: 0; border: 0; background: none; color: var(--accent); font-size: 12px; font-weight: 500;
+    text-decoration: underline; text-decoration-color: var(--amber);
   }
-  .token-meta:last-child { margin-right: 0; padding-right: 0; border-right: none; }
-  .token-meta b { color: var(--muted); font-size: 12px; letter-spacing: 1px; font-weight: 600; }
-  .token-meta-address { font-variant-numeric: tabular-nums; }
+  @media (max-width: 560px) {
+    .details-list { grid-template-columns: minmax(0, 1fr); }
+    .details-list dt { padding-bottom: 0; border-bottom: none; font-size: 12px; }
+    .details-list dd { padding-top: 2px; text-align: left; }
+  }
   .token-copy {
     position: relative; display: inline; margin: 0; padding: 0; border: 0; border-radius: 0;
     background: none; color: var(--accent); font: inherit; font-weight: inherit; letter-spacing: inherit;
@@ -175,17 +210,12 @@
     opacity: 0; pointer-events: none; transform: translateX(-50%); transition: opacity 100ms ease;
   }
   .token-copy:hover::after, .token-copy:focus-visible::after { opacity: 1; }
-  .token-contracts { margin-top: 3px; font-size: 13px; }
-  .token-contracts summary { width: max-content; color: var(--accent); cursor: pointer; text-decoration: underline; text-decoration-color: var(--amber); }
-  .token-contract-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 22px; margin-top: 12px; }
-  .token-contract-grid > div:last-child { grid-column: 1 / -1; }
-  .token-contract-grid b { display: block; margin-bottom: 2px; color: var(--muted); font-size: 11px; letter-spacing: 1px; font-weight: 600; }
-  .token-contract-grid span { word-break: break-all; }
-  @media (max-width: 560px) {
-    .token-meta { margin-right: 10px; padding-right: 10px; }
-    .token-contract-grid { grid-template-columns: 1fr; }
-    .token-contract-grid > div:last-child { grid-column: auto; }
-  }
+  .token-contracts { margin-top: 10px; font-size: 13px; }
+  .token-contracts summary { width: max-content; max-width: 100%; color: var(--accent); }
+  summary { list-style: none; cursor: pointer; }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: "▸"; display: inline-block; width: 1.1em; }
+  details[open] > summary::before { content: "▾"; }
   .kv .mut { letter-spacing: 1px; }
 
   /* JBM-style home dashboard: protocol chart over the first two feeds. */
@@ -281,15 +311,16 @@
     .home-secured-plot { height: 210px; }
     .home-secured-bars { left: 42px; }
     .home-secured-x-start { left: 42px; }
+    /* juicebox.money's phone home: the lists are equal-width tabs, and Latest is one of them. */
     .home-mobile-tabs {
-      display: flex; order: -1; width: 100%; gap: 18px; border-bottom: 1px solid var(--line); margin: 4px 0 14px;
+      display: flex; order: -1; width: 100%; gap: 0; border-bottom: 1px solid var(--line); margin: 4px 0 6px;
     }
     .home-mobile-tab {
-      flex: 1; min-width: 0; margin: 0; padding: 8px 2px 10px; background: transparent; border: 0;
+      flex: 1; min-width: 0; min-height: 44px; margin: 0; padding: 0 2px; background: transparent; border: 0;
       border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted);
-      font: inherit; font-size: 13px; font-weight: 600; letter-spacing: 1.5px;
+      font-size: 20px; letter-spacing: 0;
     }
-    .home-mobile-tab.on { color: var(--text); border-bottom-color: var(--amber); }
+    .home-mobile-tab.on { color: var(--accent); border-bottom-color: var(--accent); }
     .home-list-panel { display: none; order: 1; grid-column: auto !important; grid-row: auto !important; border-left: none !important; padding-left: 0 !important; }
     .home-list-panel.on { display: block; }
     .home-list-panel > .colhead { display: none; }
@@ -297,6 +328,7 @@
   .home-ranking-tab, .home-mobile-tab {
     font-family: "Agrandir", "Beatrice", sans-serif;
     font-weight: 700;
+    white-space: nowrap;
   }
   .hero { text-align: center; padding: 46px 22px 26px; position: relative; background: transparent; border: none; }
   .drip { position: absolute; top: -2px; pointer-events: none; z-index: 1; }
@@ -350,22 +382,64 @@
   .proj-head h2 .mut { font-weight: 400; }
   .headline { font-size: 16px; margin: 3px 0; }
   .headline-key { color: var(--muted); }
-  .pip { color: #cfe2e7; margin: 0 10px; }
   .headline b { color: var(--text); font-weight: 500; }
-  .proj-grid { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 14px; align-items: start; }
+  .proj-grid { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 20px; align-items: start; }
   .proj-grid > * { min-width: 0; }
-  @media (max-width: 820px) { .proj-grid { grid-template-columns: minmax(0, 1fr); } }
-  .tabs { display: flex; gap: 22px; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
-  .tab {
-    padding: 6px 2px 8px; cursor: pointer; letter-spacing: 0; font-size: 15px; font-weight: 700;
-    font-family: "Agrandir", "Beatrice", sans-serif; color: var(--muted); border-bottom: 2px solid transparent;
-    text-decoration: none;
+  /* Project tabs, like juicebox.money's: icon and label, ink underline on the active tab. */
+  .tabs {
+    display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid var(--line);
+    overflow-x: auto; scrollbar-width: none;
   }
+  .tab {
+    display: inline-flex; flex: none; align-items: center; gap: 8px; min-height: 44px; padding: 0 14px;
+    border-bottom: 2px solid transparent; color: var(--muted); cursor: pointer; white-space: nowrap;
+    font: 700 14px/1 "Agrandir", "Beatrice", sans-serif; letter-spacing: 0; text-decoration: none;
+  }
+  .tab:hover, .tab.on { color: var(--text); }
+  .tab.on { border-bottom-color: var(--ink); }
+  .tab-icon { flex: none; }
   button.tab { background: transparent; margin: 0; border-radius: 0; }
-  .tab.on { color: var(--text); border-bottom-color: var(--amber); }
+  .subtabs { gap: 24px; margin-bottom: 12px; }
+  .subtabs .tab { min-height: 40px; padding: 0 4px; }
+  .tab-mobile-only { display: none; }
+  /* Phones: one column of stick card, tabs, then the tab's content. Latest becomes a tab, as on juicebox.money. */
+  @media (max-width: 820px) {
+    .proj-grid { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
+    .proj-side { display: contents; }
+    #stick-card { order: 0; }
+    .proj-main { order: 1; }
+    #p-latest { order: 2; display: none; }
+    .proj-grid[data-tab="activity"] #p-latest { display: block; }
+    .proj-grid[data-tab="activity"] #p-latest .feed-head { display: none; }
+    .tab-mobile-only { display: inline-flex; }
+    #p-activity { max-height: none; overflow: visible; }
+  }
+  @media (max-width: 480px) {
+    .project-tabs { gap: 0; }
+    .project-tabs .tab { gap: 4px; padding: 0 5px; font-size: 12px; }
+    .project-tabs .tab-icon { width: 16px; height: 16px; }
+  }
+  @media (min-width: 821px) {
+    .proj-grid[data-tab="activity"] #tab-overview.hide { display: block; }
+    .proj-grid[data-tab="activity"] #tab-btn-overview { color: var(--text); border-bottom-color: var(--ink); }
+  }
+  .stick-input-row { display: flex; gap: 8px; align-items: stretch; }
+  .stick-input-row button { flex: none; margin-top: 0; }
+  .amount-field { position: relative; flex: 1; min-width: 0; }
+  .amount-field input { height: 100%; padding-right: 70px; }
+  .amount-unit { position: absolute; top: 50%; right: 10px; transform: translateY(-50%); max-width: 60%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .stick-quote { margin-top: 8px; }
+  .nowrap { white-space: nowrap; }
+  div:has(> #stake-balance:empty) { display: none; }
+  .stick-quote:empty { display: none; }
+  .field-foot { margin-top: 3px; font-size: 12px; }
+  .field-foot .text-button { font-size: 12px; }
+  .action-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+  .action-row button { margin: 0; }
   .chip { display: inline-block; border: 1px solid var(--line); border-radius: 3px; padding: 2px 8px; font-size: 13px; margin-right: 8px; background: #fdffff; }
   .chip i { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 1px; }
-  .position-summary { display: flex; align-items: flex-end; gap: 34px; flex-wrap: wrap; margin: 4px 0 20px; }
+  .position-summary { display: flex; align-items: flex-end; gap: 12px 34px; flex-wrap: wrap; margin: 4px 0 20px; }
+  .position-summary b { white-space: nowrap; }
   .position-total { min-width: 150px; }
   .position-total b { display: block; color: var(--text); font: 700 24px/1.2 "Agrandir", "Beatrice", sans-serif; }
   .position-total span, .position-metric span, .position-stakes-title {
@@ -375,7 +449,7 @@
   .position-stakes-title { margin: 0 0 5px; }
   .table-scroll { width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; -webkit-overflow-scrolling: touch; }
   .position-table { min-width: 520px; }
-  .leaderboard-table { min-width: 520px; }
+  .leaderboard-table { min-width: 400px; }
   .address-label {
     display: inline-block; white-space: nowrap; cursor: help;
     text-decoration: underline dotted color-mix(in srgb, var(--muted) 55%, transparent);
@@ -447,8 +521,8 @@
   dialog h2.cd-title { font: 700 22px/1.2 "Agrandir", "Beatrice", sans-serif; color: var(--text); letter-spacing: 0; margin: 4px 0 14px; }
   .cd-summary:not(:empty) { margin: 0 0 14px; }
   .cd-summary-row { display: flex; justify-content: space-between; gap: 18px; padding: 3px 0; }
-  .cd-summary-row .k { color: var(--muted); }
-  .cd-summary-row .v { font-weight: 600; text-align: right; }
+  .cd-summary-row .k { flex: none; color: var(--muted); }
+  .cd-summary-row .v { min-width: 0; font-weight: 600; text-align: right; }
   .hexv { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
   .cd-steps { border: 1px solid var(--line); border-radius: 6px; background: #fdffff; padding: 12px 14px; margin-bottom: 12px; }
   .cd-steps p { margin: 0 0 8px; color: var(--muted); font-size: 13px; }
@@ -481,13 +555,28 @@
   .cd-warn.err { border: 2px solid #eccfc6; background: #fdf1ec; color: var(--err); font-weight: 600; }
   .cd-block { margin: 6px 0; padding: 8px 10px; border-left: 3px solid var(--err); color: var(--err); font-size: 13px; overflow-wrap: anywhere; }
   .cd-chain { font-size: 11px; letter-spacing: 1.5px; color: var(--muted); font-weight: 700; }
-  .cd-contract { font-size: 12px; color: var(--muted); word-break: break-all; margin: 1px 0 4px; }
+  .cd-contract { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; margin: 1px 0 4px; }
   .cd-contract b { color: var(--text); font-weight: 600; }
   .txstep h3 { font-size: 15px; margin: 2px 0 6px; letter-spacing: 0; }
   .cd-raw { margin-top: 8px; font-size: 13px; }
   .cd-raw summary { color: var(--accent); cursor: pointer; width: max-content; }
   .cd-raw .rawbox { margin-top: 6px; }
-  .cd-audit-row { text-align: right; margin: 4px 0 2px; font-size: 13px; }
+  .cd-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 12px 0 4px; }
+  .cd-view { display: inline-flex; padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: #fdffff; }
+  button.cd-view-btn {
+    margin: 0; padding: 5px 12px; border-radius: 6px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 600;
+  }
+  button.cd-view-btn.on { background: var(--ink); color: #f0f7f9; }
+  button.cd-audit { margin: 0; padding: 6px 12px; font-size: 13px; }
+  .cd-rawlist { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 8px 0 0; font-size: 12px; }
+  .cd-rawlist dt { color: var(--muted); }
+  .cd-rawlist dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+  .cd-rawlist dd small { color: var(--muted); }
+  .cd-rawargs { margin: 2px 0 0; padding-left: 0; list-style: none; }
+  .cd-rawargs li { margin: 2px 0; }
+  .cd-rawjson { margin-top: 10px; padding: 12px; border-radius: 8px; background: var(--ink); color: #f0f7f9; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-all; max-height: 28rem; overflow: auto; }
+  #confirm-dialog[data-view="pretty"] .cd-raw-view, #confirm-dialog[data-view="raw"] .cd-pretty-view { display: none; }
+
   .dlg-actions { display: flex; gap: 10px; }
   .dlg-actions button { flex: 1; }
   .fund-direct { display: flex; align-items: flex-end; gap: 10px; margin-top: 10px; }
@@ -607,13 +696,13 @@
   <div id="view-home" data-state="loading" aria-busy="true">
     <div class="cols3">
       <div class="home-mobile-tabs" role="tablist" aria-label="Homepage lists">
-        <button class="home-mobile-tab on" id="home-tab-latest" type="button" role="tab" aria-selected="true" aria-controls="home-panel-latest">LATEST</button>
-        <button class="home-mobile-tab" id="home-tab-stickiest" type="button" role="tab" aria-selected="false" aria-controls="home-panel-stickiest">STICKIEST</button>
-        <button class="home-mobile-tab" id="home-tab-airdrops" type="button" role="tab" aria-selected="false" aria-controls="home-panel-airdrops">AIRDROPS</button>
+        <button class="home-mobile-tab on" id="home-tab-latest" type="button" role="tab" aria-selected="true" aria-controls="home-panel-latest">Latest</button>
+        <button class="home-mobile-tab" id="home-tab-stickiest" type="button" role="tab" aria-selected="false" aria-controls="home-panel-stickiest">Stickiest</button>
+        <button class="home-mobile-tab" id="home-tab-airdrops" type="button" role="tab" aria-selected="false" aria-controls="home-panel-airdrops">Airdrops</button>
       </div>
       <div class="home-ranking-tabs" role="tablist" aria-label="Sticky rankings">
-        <button class="home-ranking-tab on" id="home-rank-stickiest" type="button" role="tab" aria-selected="true" aria-controls="home-panel-stickiest">STICKIEST</button>
-        <button class="home-ranking-tab" id="home-rank-airdrops" type="button" role="tab" aria-selected="false" aria-controls="home-panel-airdrops">AIRDROPS</button>
+        <button class="home-ranking-tab on" id="home-rank-stickiest" type="button" role="tab" aria-selected="true" aria-controls="home-panel-stickiest">Stickiest</button>
+        <button class="home-ranking-tab" id="home-rank-airdrops" type="button" role="tab" aria-selected="false" aria-controls="home-panel-airdrops">Airdrops</button>
       </div>
       <div class="home-secured" id="home-secured">
         <div class="home-secured-head">
@@ -721,13 +810,13 @@
       <div class="logo" id="p-logo" style="width:104px;height:104px"></div>
       <div>
         <h2><span id="h-symbol"></span> <span class="mut" id="h-name"></span></h2>
-        <div class="headline"><span class="headline-key">Stuck:</span> <b id="h-staked">–</b><span class="pip">|</span><span class="headline-key">Sticks:</span> <b id="h-streakers">–</b><span class="pip">|</span><span class="headline-key">Average active stick:</span> <b id="h-average">–</b><span class="pip">|</span><span class="headline-key">Longest active stick:</span> <b id="h-top">–</b><span id="h-chains-wrap" title="These chains were selected at launch. Each chain's deployment must be confirmed separately."><span class="pip">|</span><span class="headline-key">Chains:</span> <span class="project-chains" id="h-chains"></span></span></div>
+        <div class="headline meta-row"><div class="meta-line"><span class="meta-pair"><span class="headline-key">Stuck:</span> <b id="h-staked">–</b></span><span class="meta-pair"><span class="headline-key">Sticks:</span> <b id="h-streakers">–</b></span><span class="meta-pair"><span class="headline-key">Average active stick:</span> <b id="h-average">–</b></span><span class="meta-pair"><span class="headline-key">Longest active stick:</span> <b id="h-top">–</b></span><span class="meta-pair" id="h-chains-wrap" title="Chains chosen at launch."><span class="headline-key">Chains:</span> <span class="project-chains" id="h-chains"></span></span></div></div>
       </div>
     </div>
 
-    <div class="proj-grid">
-      <div>
-        <section class="glow">
+    <div class="proj-grid" data-tab="overview">
+      <div class="proj-side">
+        <section class="glow" id="stick-card">
           <h2 id="stake-title">Stick</h2>
           <div>
             <div style="display:flex;gap:8px;align-items:stretch">
@@ -742,35 +831,21 @@
               <span id="stake-balance-label"></span>
             </div>
           </div>
-          <div class="mut" style="margin-top:8px" id="stake-quote"></div>
-          <details style="margin-top:12px">
-            <summary class="mut">Stick for someone else</summary>
-            <label for="stake-beneficiary">Recipient</label>
-            <input id="stake-beneficiary" placeholder="0x… (blank uses your wallet)" autocomplete="off">
-            <p class="mut hint">Works only if the recipient trusts your wallet or you are a trusted sender for this project.</p>
-          </details>
-          <details id="transfer-sticky" class="hide" style="margin-top:12px">
-            <summary class="mut">Transfer sticky tokens</summary>
-            <label for="transfer-recipient">Recipient</label>
-            <input id="transfer-recipient" placeholder="0x…" autocomplete="off">
-            <label for="transfer-amount">Sticky token amount</label>
-            <input id="transfer-amount" placeholder="0" inputmode="decimal">
-            <p class="mut hint">Moved tokens start fresh for the recipient, and your remaining tokens keep their age.</p>
-            <button id="transfer-send" type="button">Review transfer</button>
-          </details>
+          <div class="mut stick-quote" id="stake-quote"></div>
         </section>
-        <section>
-          <h2>Latest</h2>
-          <ul class="feed" id="p-activity"></ul>
-        </section>
+        <div class="feed-panel" id="p-latest">
+          <h2 class="feed-head"><svg class="tab-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7.5H13.5M12 10.5H13.5M6 13.5H13.5M6 16.5H13.5M16.5 7.5H19.875C20.4963 7.5 21 8.00368 21 8.625V18C21 19.2426 19.9926 20.25 18.75 20.25M16.5 7.5V18C16.5 19.2426 17.5074 20.25 18.75 20.25M16.5 7.5V4.875C16.5 4.25368 15.9963 3.75 15.375 3.75H4.125C3.50368 3.75 3 4.25368 3 4.875V18C3 19.2426 4.00736 20.25 5.25 20.25H18.75M6 7.5H9V10.5H6V7.5Z"/></svg>Latest</h2>
+          <div class="feed" id="p-activity"></div>
+        </div>
       </div>
 
-      <div>
-        <div class="tabs">
-          <a class="tab on" id="tab-btn-overview" href="#/">Overview</a>
-          <a class="tab" id="tab-btn-owners" href="#/">Tokens</a>
-          <a class="tab" id="tab-btn-rewards" href="#/">Airdrops</a>
-        </div>
+      <div class="proj-main">
+        <nav class="tabs project-tabs" aria-label="Project">
+          <a class="tab tab-mobile-only" id="tab-btn-activity" href="#/"><svg class="tab-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7.5H13.5M12 10.5H13.5M6 13.5H13.5M6 16.5H13.5M16.5 7.5H19.875C20.4963 7.5 21 8.00368 21 8.625V18C21 19.2426 19.9926 20.25 18.75 20.25M16.5 7.5V18C16.5 19.2426 17.5074 20.25 18.75 20.25M16.5 7.5V4.875C16.5 4.25368 15.9963 3.75 15.375 3.75H4.125C3.50368 3.75 3 4.25368 3 4.875V18C3 19.2426 4.00736 20.25 5.25 20.25H18.75M6 7.5H9V10.5H6V7.5Z"/></svg>Latest</a>
+          <a class="tab on" id="tab-btn-overview" href="#/"><svg class="tab-icon" viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="M12 2.25C6.61522 2.25 2.25 6.61522 2.25 12C2.25 17.3848 6.61522 21.75 12 21.75C17.3848 21.75 21.75 17.3848 21.75 12C21.75 6.61522 17.3848 2.25 12 2.25ZM6.26197 6.0723C4.71293 7.57208 3.75 9.67359 3.75 12C3.75 16.5563 7.44365 20.25 12 20.25C16.5563 20.25 20.25 16.5563 20.25 12C20.25 9.24461 18.8992 6.80472 16.8237 5.3064C16.4863 5.84545 16.0374 6.30831 15.5056 6.66289L14.2499 7.5L14.4145 7.82918C14.6835 8.3671 14.2923 9 13.6909 9C13.5653 9 13.4414 8.97076 13.3291 8.91459L12.7252 8.61262C12.2921 8.39607 11.769 8.48095 11.4266 8.82336L11.2954 8.9545C10.8561 9.39384 10.8561 10.1062 11.2954 10.5455L11.5905 10.8406C11.8474 11.0975 12.2126 11.2146 12.571 11.1548L13.7411 10.9598C14.0641 10.906 14.3946 10.9956 14.6462 11.2053L15.9755 12.313C16.2962 12.5802 16.4356 13.0073 16.3344 13.4122C15.9519 14.9419 15.1609 16.339 14.046 17.4539L13.3233 18.1766C12.9809 18.519 12.4578 18.6039 12.0247 18.3874L11.8718 18.3109C11.4907 18.1204 11.2499 17.7308 11.2499 17.3047V16.216C11.2499 15.9176 11.1314 15.6315 10.9204 15.4205L9.57328 14.0734C9.23087 13.731 9.14599 13.2079 9.36254 12.7747L9.74992 12L8.10954 10.3596C7.22527 9.47535 6.6394 8.33689 6.43381 7.10337L6.26197 6.0723Z"/></svg>Overview</a>
+          <a class="tab" id="tab-btn-owners" href="#/"><svg class="tab-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.25 6.375C20.25 8.65317 16.5563 10.5 12 10.5C7.44365 10.5 3.75 8.65317 3.75 6.375M20.25 6.375C20.25 4.09683 16.5563 2.25 12 2.25C7.44365 2.25 3.75 4.09683 3.75 6.375M20.25 6.375V17.625C20.25 19.9032 16.5563 21.75 12 21.75C7.44365 21.75 3.75 19.9032 3.75 17.625V6.375M20.25 6.375V10.125M3.75 6.375V10.125M20.25 10.125V13.875C20.25 16.1532 16.5563 18 12 18C7.44365 18 3.75 16.1532 3.75 13.875V10.125M20.25 10.125C20.25 12.4032 16.5563 14.25 12 14.25C7.44365 14.25 3.75 12.4032 3.75 10.125"/></svg>Tokens</a>
+          <a class="tab" id="tab-btn-rewards" href="#/"><svg class="tab-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.25 18.75C7.71719 18.75 13.0136 19.4812 18.0468 20.8512C18.7738 21.0491 19.5 20.5086 19.5 19.7551V18.75M3.75 4.5V5.25C3.75 5.66421 3.41421 6 3 6H2.25M2.25 6V5.625C2.25 5.00368 2.75368 4.5 3.375 4.5H20.25M2.25 6V15M20.25 4.5V5.25C20.25 5.66421 20.5858 6 21 6H21.75M20.25 4.5H20.625C21.2463 4.5 21.75 5.00368 21.75 5.625V15.375C21.75 15.9963 21.2463 16.5 20.625 16.5H20.25M21.75 15H21C20.5858 15 20.25 15.3358 20.25 15.75V16.5M20.25 16.5H3.75M3.75 16.5H3.375C2.75368 16.5 2.25 15.9963 2.25 15.375V15M3.75 16.5V15.75C3.75 15.3358 3.41421 15 3 15H2.25M15 10.5C15 12.1569 13.6569 13.5 12 13.5C10.3431 13.5 9 12.1569 9 10.5C9 8.84315 10.3431 7.5 12 7.5C13.6569 7.5 15 8.84315 15 10.5ZM18 10.5H18.0075V10.5075H18V10.5ZM6 10.5H6.0075V10.5075H6V10.5Z"/></svg>Airdrops</a>
+        </nav>
 
         <div id="tab-overview">
           <section>
@@ -795,6 +870,21 @@
         </div>
 
         <div id="tab-rewards" class="hide">
+          <section id="gift-card">
+            <h2>Stick for someone else</h2>
+            <p class="mut hint">They must trust your wallet, unless you are a trusted sender.</p>
+            <label for="stake-beneficiary">RECIPIENT</label>
+            <input id="stake-beneficiary" placeholder="0x…" autocomplete="off">
+            <label for="gift-amount">AMOUNT</label>
+            <div class="stick-input-row">
+              <div class="amount-field">
+                <input inputmode="decimal" id="gift-amount" placeholder="10">
+                <span id="gift-symbol" class="mut amount-unit"></span>
+              </div>
+              <button id="gift-stake" type="button">Review stick</button>
+            </div>
+            <div class="mut stick-quote" id="gift-quote"></div>
+          </section>
           <section>
             <h2>Send airdrop rewards</h2>
             <p class="mut">Reward everyone stuck, or only stakes held for a minimum number of weeks.</p>
@@ -890,16 +980,19 @@
               <button id="tranches-older" class="ghost" type="button">Older</button>
               <button id="tranches-newer" class="ghost" type="button">Newer</button>
             </div>
-            <button id="open-unstick" class="ghost" style="margin-top:12px">Unstick</button>
+            <div class="action-row">
+              <button id="open-unstick" type="button">Unstick</button>
+              <button id="open-transfer" type="button" class="ghost hide">Transfer</button>
+            </div>
           </section>
           <section>
             <h2>All</h2>
             <div class="pie-table">
               <div id="pie"></div>
               <div style="flex:1 1 300px;min-width:0">
-                <div class="tabs" style="margin-bottom:10px">
-                  <button type="button" class="tab on" id="sort-longest" aria-pressed="true">OLDEST</button>
-                  <button type="button" class="tab" id="sort-largest" aria-pressed="false">BIGGEST</button>
+                <div class="tabs subtabs">
+                  <button type="button" class="tab on" id="sort-longest" aria-pressed="true">Oldest</button>
+                  <button type="button" class="tab" id="sort-largest" aria-pressed="false">Biggest</button>
                 </div>
                 <div class="table-scroll">
                   <table class="leaderboard-table">
@@ -1068,6 +1161,23 @@
   </div>
 </dialog>
 
+<dialog id="transfer-dialog" aria-labelledby="transfer-title">
+  <button id="transfer-close" class="dlg-x" aria-label="Close">✕</button>
+  <h2 id="transfer-title">Transfer</h2>
+  <label for="transfer-recipient">RECIPIENT</label>
+  <input id="transfer-recipient" placeholder="0x…" autocomplete="off">
+  <label for="transfer-amount">AMOUNT</label>
+  <div class="amount-field">
+    <input id="transfer-amount" placeholder="0" inputmode="decimal">
+    <span id="transfer-symbol" class="mut amount-unit"></span>
+  </div>
+  <div class="field-foot"><button type="button" class="text-button" id="transfer-max">max</button></div>
+  <p class="mut hint">Moved tokens start a new stick for the recipient.</p>
+  <div class="dlg-actions">
+    <button id="transfer-send" type="button">Review transfer</button>
+  </div>
+</dialog>
+
 <dialog id="trust-dialog" aria-labelledby="trust-title">
   <button id="trust-close" class="dlg-x" aria-label="Close">✕</button>
   <h2 id="trust-title">Trust a sender</h2>
@@ -1113,15 +1223,21 @@
   <div id="wallet-body"></div>
 </dialog>
 
-<dialog id="confirm-dialog" aria-labelledby="cd-title">
+<dialog id="confirm-dialog" aria-labelledby="cd-title" data-view="pretty">
   <button id="cd-close" class="dlg-x" aria-label="Close">✕</button>
   <div class="cd-eyebrow">Transaction sequence</div>
   <h2 id="cd-title" class="cd-title">Confirm</h2>
   <div id="cd-summary" class="cd-summary"></div>
   <div id="cd-steps" class="cd-steps hide"></div>
   <div id="cd-warn" class="cd-warn"></div>
+  <div class="cd-toolbar">
+    <div class="cd-view" role="group" aria-label="Review view">
+      <button type="button" class="cd-view-btn on" id="cd-view-pretty" aria-pressed="true">Pretty</button>
+      <button type="button" class="cd-view-btn" id="cd-view-raw" aria-pressed="false">Raw</button>
+    </div>
+    <button type="button" class="ghost cd-audit" id="cd-audit">Copy audit prompt</button>
+  </div>
   <div id="cd-body"></div>
-  <div class="cd-audit-row"><button type="button" class="link text-button" id="cd-audit">Copy transaction audit prompt</button></div>
   <div class="dlg-actions">
     <button id="cd-cancel" class="ghost">Cancel</button>
     <button id="cd-confirm">Confirm & send</button>

@@ -194,10 +194,14 @@ test('with Bendystraw, the home page lists projects and activity without scannin
   assert.deepEqual(Array.from(base.cards, (card) => [card.key, card.sticks]), [['84532:37', 2]], 'two holders still hold tokens');
   assert.deepEqual(Array.from(base.moves, (move) => move.delta), [50n, 10n, 10n, -10n]);
   assert.equal(base.activity.length, 4);
-  assert.match(base.activity[0].html, /unstuck<\/span> 10 stUSDC/);
-  assert.match(base.activity[3].html, /"verb">stuck<\/span> 50 stUSDC/);
+  assert.match(base.activity[0].html, /<b>10 stUSDC<\/b><span class="feed-tag out">out<\/span>/);
+  assert.match(base.activity[0].html, new RegExp(`unstuck by ${OTHER}`));
+  assert.match(base.activity[3].html, /<b>50 stUSDC<\/b><span class="feed-tag in">in<\/span>/);
+  assert.match(base.activity[3].html, new RegExp(`>stuck by ${HOLDER}`));
+  assert.doesNotMatch(base.activity[3].html, /data-token-logo/, 'feed rows carry no token images');
   assert.equal(base.airdrops.length, 1, 'a stick paid for someone else is an airdrop');
-  assert.match(base.airdrops[0].html, new RegExp(`${OTHER.replace('b', 'c')}</span> received 10 stUSDC from <span class="addr">${OTHER}`));
+  assert.match(base.airdrops[0].html, /<b>10 stUSDC<\/b><span class="feed-tag in">in<\/span>/);
+  assert.match(base.airdrops[0].html, new RegExp(`to ${OTHER.replace('b', 'c')} from ${OTHER}`));
   assert.equal(op.cards.length, 0);
   // Only the unindexed tail is scanned for launches: from the indexed block, never the deployment block.
   assert.deepEqual(c.calls.filter((call) => call[0] === 'logs'), [['logs', DEPLOYER, '0x3e9'], ['logs', DEPLOYER, '0x7d1']]);

@@ -32,6 +32,7 @@ const EXPECTED = {
   beginVestingFor: [12n, B, [4008n]],
   setTrustedSenderFor: [12n, C, true],
   settleFor: [C, 1004n, A],
+  deployReceiverFor: [C, 4000n],
   prepayment: ['0x7c4b8a1e000040008000000000000001', 1_790_360_000n],
   prepare: [5n * 10n ** 18n, BW, 4_900_000n, A, M],
   toRemote: [A],
@@ -54,6 +55,32 @@ test('every write the site sends decodes from independently encoded calldata', (
     assert.equal(decoded.name, name);
     assert.deepEqual(decoded.params.map((param) => param.value), EXPECTED[name], name);
   }
+});
+
+test('every function the site builds is registered, so no transaction is blocked as unknown at review', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const registered = new Set(Calldata.ABIS.map(([, signature]) => Calldata.parseSignature(signature).canonical));
+  for (const file of ['app.js', 'bridge.js']) {
+    const text = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+    for (const [, signature] of text.matchAll(/fn: "([A-Za-z_][A-Za-z0-9_]*\([^"]*\))"/g)) {
+      assert.ok(registered.has(Calldata.parseSignature(signature).canonical), `${file}: ${signature}`);
+    }
+  }
+});
+
+test('the raw review lists every argument with its type and exact value', () => {
+  const args = Calldata.rawArgs(Calldata.decode(FIXTURES.fund));
+  assert.deepEqual(args, [
+    { name: 'hook', type: 'address', value: C },
+    { name: 'token', type: 'address', value: NATIVE },
+    { name: 'amount', type: 'uint256', value: String(10n ** 18n) },
+    { name: 'groupId', type: 'uint256', value: '4008' },
+  ]);
+  assert.deepEqual(Calldata.rawArgs(Calldata.decode(FIXTURES.pay)).slice(-2), [
+    { name: 'memo', type: 'string', value: '""' },
+    { name: 'metadata', type: 'bytes', value: '0x' },
+  ]);
 });
 
 test('an unknown selector is refused with a plain message', () => {
@@ -154,7 +181,7 @@ test('display hints cover groups, holders, allowances, durations, receivers, cla
     const param = Calldata.decode(FIXTURES[name]).params[index];
     return Calldata.formatValue(param.value, param.type, fmt);
   };
-  assert.equal(show('fund', 3, { kind: 'group' }), 'Staked 4–8 weeks (group 4008)');
+  assert.equal(show('fund', 3, { kind: 'group' }), 'Staked 4–8 weeks', 'the pretty review names the group, never its number');
   assert.equal(show('compoundFor', 2, { kind: 'groups' }), 'Everyone, Staked 4+ weeks');
   assert.equal(show('collectVestedRewards', 2, { kind: 'holders' }), B);
   assert.equal(show('approve', 1, { kind: 'units', unlimited: true, decimals: 6, symbol: 'ART' }), 'unlimited');

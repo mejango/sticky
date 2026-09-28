@@ -44,3 +44,13 @@ test('exact values for inputs stay full precision and ungrouped', () => {
   const raw = units('32577559.305605237523530572');
   assert.equal(c.formatUnits(raw, 18, 18), '32577559.305605237523530572');
 });
+
+test('an empty duration reads as zero days, and fresh activity reads as now, like juicebox.money', () => {
+  const d = vm.createContext({ Date });
+  vm.runInContext(`${functionSource('formatDuration')}\n${functionSource('ago')}`, d);
+  assert.equal(d.formatDuration(0), '0d');
+  assert.equal(d.formatDuration(90_000), '1d 1h');
+  const now = Math.floor(Date.now() / 1000);
+  assert.equal(d.ago(now - 5), 'now');
+  assert.equal(d.ago(now - 7200), '2h ago');
+});
