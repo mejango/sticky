@@ -97,7 +97,7 @@ function fixture(overrides = {}) {
   const selectors = source.slice(selectorsStart, source.indexOf('\n};', selectorsStart) + 3);
   const codec = source.slice(source.indexOf('const strip ='), source.indexOf('// ------------------------------------------------------------- rpc plumbing'));
   const topics = source.slice(source.indexOf('const TOPIC ='), source.indexOf('\n};', source.indexOf('const TOPIC =')) + 3);
-  vm.runInContext(`${selectors}\n${topics}\n${codec}\nconst NATIVE_REWARD_TOKEN = '${NATIVE}';\nconst UNLIMITED = (1n << 256n) - 1n;\nconst MAX_TAX = 10000n;\nconst CRITERIA_BASE = 1000n;\nconst MAX_CRITERIA_WEEKS = 520n;\nlet stickQuoteSequence = 0;\nlet unstickQuoteSequence = 0;\nconst AS_STATUS = { READY: 0, DISABLED: 1, INVALID_PROJECT: 2, INSUFFICIENT_ALLOWANCE: 6, ZERO_ISSUANCE: 7 };\n${names.map(functionSource).join('\n')}`, context);
+  vm.runInContext(`${selectors}\n${topics}\n${codec}\nconst NATIVE_REWARD_TOKEN = '${NATIVE}';\nconst UNLIMITED = (1n << 256n) - 1n;\nconst MAX_TAX = 10000n;\nconst CRITERIA_BASE = 1000n;\nconst MAX_CRITERIA_WEEKS = 520n;\nconst stickQuoteSequences = { self: 0, gift: 0 };\nlet unstickQuoteSequence = 0;\nconst AS_STATUS = { READY: 0, DISABLED: 1, INVALID_PROJECT: 2, INSUFFICIENT_ALLOWANCE: 6, ZERO_ISSUANCE: 7 };\n${names.map(functionSource).join('\n')}`, context);
   context.readAutoStickState = context.autoStickState;
   context.autoStickState = async () => null;
   Object.assign(context, overrides);
@@ -165,19 +165,19 @@ test('a stale asynchronous mint estimate cannot replace a newer amount or projec
   await second;
   pending[0](1n * 10n ** 18n);
   await first;
-  assert.match(c.$('stake-quote').textContent, /Estimated mint: 2 STICKYART/);
+  assert.match(c.$('stake-quote').textContent, /At least 2 STICKYART/);
   const third = c.renderStickQuote();
   await new Promise(setImmediate);
   c.ctx.currentId = 99n;
   pending[2](3n * 10n ** 18n);
   await third;
-  assert.doesNotMatch(c.$('stake-quote').textContent, /Estimated mint: 3/);
+  assert.doesNotMatch(c.$('stake-quote').textContent, /At least 3/);
   const fourth = c.renderStickQuote();
   await new Promise(setImmediate);
   c.account = () => OTHER;
   pending[3](4n * 10n ** 18n);
   await fourth;
-  assert.doesNotMatch(c.$('stake-quote').textContent, /Estimated mint: 4/);
+  assert.doesNotMatch(c.$('stake-quote').textContent, /At least 4/);
 });
 
 test('tranche pages stay bounded under a million dust entries and pin count and slice to one block', async () => {
@@ -294,14 +294,20 @@ test('stake reviews the exact canonical mint minimum, beneficiary, and payer', a
 
 test('grants require holder trust or launch granter status before approval', async () => {
   const { context: c, plans } = fixture();
-  c.$('stake-amount').value = '1';
+  // The Airdrops tab's form sticks for someone else; the Stick card always sticks for the holder.
+  c.$('gift-amount').value = '1';
   c.$('stake-beneficiary').value = OTHER;
-  await assert.rejects(c.stake(), /must trust/);
+  await assert.rejects(c.stake(true), /must trust/);
   assert.equal(plans.length, 0);
+  c.$('stake-amount').value = '1';
+  await c.stake();
+  assert.equal(arg(plans[0].txs.at(-1).data, 3), BigInt(HOLDER), 'the Stick card ignores the Airdrops recipient');
   const baseView = c.view;
   c.view = async (to, selector, args) => selector === '0xb9f2a2ba' ? uint(1) : baseView(to, selector, args);
-  await c.stake();
-  assert.equal(arg(plans[0].txs.at(-1).data, 3), BigInt(OTHER));
+  await c.stake(true);
+  assert.equal(arg(plans[1].txs.at(-1).data, 3), BigInt(OTHER));
+  c.$('stake-beneficiary').value = '';
+  await assert.rejects(c.stake(true), /recipient address/);
 });
 
 test('stake rejects zero, tiny normalized amounts, and insufficient balances', async () => {
@@ -604,7 +610,7 @@ test('funding passes the chosen group, describes it, and rejects windows the dis
   assert.equal(arg(tx.data, 1), BigInt(TOKEN));
   assert.equal(arg(tx.data, 2), 5000000n);
   assert.equal(arg(tx.data, 3), 4008n);
-  assert.ok(shown(tx).some(([label, value]) => label === 'WHO' && value === 'Staked 4–8 weeks (group 4008)'));
+  assert.ok(shown(tx).some(([label, value]) => label === 'WHO' && value === 'Staked 4–8 weeks'));
   assert.ok(plans[0].summary.some(([label, value]) => label === 'How' && /between 4 weeks and 8 weeks old/.test(value)));
   c.$('r-min-weeks').value = '0';
   c.$('r-max-weeks').value = '4';
@@ -635,7 +641,7 @@ test('receiver prediction and settlement are per group', async () => {
   assert.equal(arg(plans[0].txs[0].data, 0), BigInt(STICKY));
   assert.equal(arg(plans[0].txs[0].data, 1), 4000n);
   assert.equal(arg(plans[0].txs[0].data, 2), BigInt(OTHER));
-  assert.ok(shown(plans[0].txs[0]).some(([label, value]) => label === 'WHO' && value === 'Staked 4+ weeks (group 4000)'));
+  assert.ok(shown(plans[0].txs[0]).some(([label, value]) => label === 'WHO' && value === 'Staked 4+ weeks'));
   c.$('r-min-weeks').value = '0';
   c.$('r-max-weeks').value = '4';
   await assert.rejects(c.settleArrivals(), /minimum of at least 1/);
@@ -656,7 +662,7 @@ test('per-group claims collect from that group and warn that exiting forfeits a 
   assert.equal(arg(tx.data, 0), BigInt(STICKY));
   assert.equal(arg(tx.data, 1), 4008n);
   assert.equal(arg(tx.data, 4), BigInt(HOLDER));
-  assert.ok(shown(tx).some(([label, value]) => label === 'GROUP' && value === 'Staked 4–8 weeks (group 4008)'));
+  assert.ok(shown(tx).some(([label, value]) => label === 'WHO' && value === 'Staked 4–8 weeks'));
   assert.ok(tx.args.some(([label, value]) => label === 'FORFEIT' && /still hold/.test(value)));
 });
 
@@ -731,7 +737,7 @@ test('auto-stick status, compounding, and vesting pass the groups holding underl
   await c.autoStickNow();
   const compound = plans.at(-1).txs[0];
   assert.equal(compound.data, `0x8244fb99${c.encode(['uint256', 'address', 'uint256[]'], [12n, HOLDER, [4000n, 4008n]])}`);
-  assert.ok(shown(compound).some(([label, value]) => label === 'GROUPS' && value === 'Staked 4+ weeks, Staked 4–8 weeks'));
+  assert.ok(shown(compound).some(([label, value]) => label === 'WHO' && value === 'Staked 4+ weeks, Staked 4–8 weeks'));
   await c.claimAndStick();
   const stick = plans.at(-1).txs.at(-1);
   assert.equal(stick.data, `0x40b5a05d${c.encode(['uint256', 'uint256[]'], [12n, [4000n, 4008n]])}`);

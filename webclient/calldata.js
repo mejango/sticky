@@ -24,6 +24,7 @@
     ["0xa15557e8", "beginVestingFor(uint256 projectId, address holder, uint256[] groupIds)"],
     ["0x3a799596", "setTrustedSenderFor(uint256 projectId, address sender, bool trusted)"],
     ["0xa4b4e8bf", "settleFor(address stickyToken, uint256 groupId, address token)"],
+    ["0x18d82376", "deployReceiverFor(address stickyToken, uint256 groupId)"],
     ["0x103903a7", "prepayment(bytes16 bundle, uint40 deadline)"],
     ["0xaf629bbb", "prepare(uint256 projectTokenCount, bytes32 beneficiary, uint256 minTokensReclaimed, address token, bytes32 metadata)"],
     ["0xb71c1179", "toRemote(address token)"],
@@ -241,7 +242,7 @@
       return noted(`${formatUnits(value, Number(fmt.decimals ?? 18))} ${fmt.symbol || ""}`.trim(), fmt.note);
     }
     if (kind === "bps") return value === 0n && fmt.zero ? fmt.zero : noted(`${Number(value) / 100}%`, fmt.note);
-    if (kind === "group") return `${groupLabel(value)} (group ${value})`;
+    if (kind === "group") return groupLabel(value);
     if (kind === "groups") return value.length ? value.map(groupLabel).join(", ") : "none";
     if (kind === "holders") return value.map((id) => name("0x" + id.toString(16).padStart(40, "0"))).join(", ") || "none";
     if (kind === "duration") return duration(value);
@@ -301,8 +302,18 @@
     return { rows, decoded };
   }
 
+  // Every decoded argument as its name, canonical type, and exact value, for the raw review and the audit prompt.
+  function rawValue(value) {
+    if (Array.isArray(value)) return `[${value.map(rawValue).join(", ")}]`;
+    if (typeof value === "bigint") return value.toString();
+    if (typeof value === "boolean") return value ? "true" : "false";
+    const text = String(value);
+    return /^0x[0-9a-fA-F]*$/.test(text) ? text.toLowerCase() : JSON.stringify(text);
+  }
+  const rawArgs = (decoded) => decoded.params.map((param) => ({ name: param.name, type: canonicalType(param.type), value: rawValue(param.value) }));
+
   // A row bound to a calldata argument, for builders.
   const arg = (param, expect, fmt) => ({ param, expect: canon(expect), ...(fmt ? { fmt } : {}) });
 
-  return Object.freeze({ ABIS, CalldataError, parseSignature, decode, review, formatValue, arg, isBound, canon, groupLabel });
+  return Object.freeze({ ABIS, CalldataError, parseSignature, decode, review, formatValue, rawArgs, arg, isBound, canon, groupLabel });
 });

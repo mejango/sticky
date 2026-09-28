@@ -421,7 +421,7 @@ function parseUnits(str, decimals) {
 }
 function formatDuration(seconds) {
   const s = Number(seconds);
-  if (s === 0) return "0";
+  if (s === 0) return "0d";
   const d = Math.floor(s / 86_400);
   const h = Math.floor((s % 86_400) / 3600);
   const m = Math.floor((s % 3600) / 60);
@@ -878,7 +878,7 @@ document.addEventListener("focusout", (event) => {
 });
 function ago(ts) {
   const s = Math.max(0, Math.floor(Date.now() / 1000) - ts);
-  if (s < 60) return `${s}s ago`;
+  if (s < 60) return "now";
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86_400) return `${Math.floor(s / 3600)}h ago`;
   return `${Math.floor(s / 86_400)}d ago`;
@@ -1090,28 +1090,26 @@ async function activityItems(logs, includeProject, reader = pageReader()) {
     } catch {
       continue; // a project from another deployer sharing the hook
     }
-    const holder = shortAddr(decAddress(log.topics[2]));
-    let html;
+    const holder = addressLabel(decAddress(log.topics[2]));
+    const row = { info, chainId: reader.chainId, projectId: includeProject ? id : undefined, ts: log.ts };
     if (log.topics[0] === TOPIC.Staked) {
-      const autoStuck = decAddress(log.data, 0).toLowerCase() === adapter;
-      html = `<span class="addr">${holder}</span> <span class="verb">${autoStuck ? "auto-stuck" : "received"}</span> ${formatAmount(decUint(log.data, 1), 18)} ${esc(info.stSymbol)}`;
+      const payer = decAddress(log.data, 0);
+      const autoStuck = payer.toLowerCase() === adapter;
+      const self = payer.toLowerCase() === decAddress(log.topics[2]).toLowerCase();
+      row.amount = `${formatAmount(decUint(log.data, 1), 18)} ${esc(info.stSymbol)}`;
+      row.direction = "in";
+      row.line = autoStuck ? `auto-stuck by ${holder}` : self ? `stuck by ${holder}` : `to ${holder} from ${addressLabel(payer)}`;
     } else if (log.topics[0] === TOPIC.Unstaked) {
       // Burns and outgoing transfers reduce the position too; this event does not prove an underlying payout.
-      html = `<span class="addr">${holder}</span> <span class="verb out">removed</span> ${formatAmount(decUint(log.data, 0), 18)} ${esc(info.stSymbol)} from their position`;
+      row.amount = `${formatAmount(decUint(log.data, 0), 18)} ${esc(info.stSymbol)}`;
+      row.direction = "out";
+      row.line = `removed by ${holder}`;
     } else if (log.topics[0] === TOPIC.StreakStarted) {
-      html = `<span class="addr">${holder}</span> <span class="verb">got sticky</span>`;
+      row.lead = `<span>${holder} got sticky</span>`;
     } else {
-      html = `<span class="addr">${holder}</span> <span class="verb out">came unstuck after ${formatDuration(decUint(log.data, 0))}</span>`;
+      row.lead = `<span>${holder} came unstuck after <span class="nowrap">${formatDuration(decUint(log.data, 0))}</span></span>`;
     }
-    const nameLine = includeProject
-      ? `<div><a class="link" href="${projectHref(reader.chainId, id)}">${esc(stickyLabel(info))}</a> ${chainIcons([reader.chainId])}</div>`
-      : "";
-    items.push({
-      ts: log.ts,
-      html: `<div class="card-item"><div class="card-head">${tokenLogo(info.stakedToken, info.symbol, 22, reader.chainId)}` +
-        `<div style="flex:1;min-width:0"><div class="mut" style="font-size:11px">${ago(log.ts)}</div>` +
-        `${nameLine}<div>${html}</div></div></div></div>`,
-    });
+    items.push({ ts: log.ts, html: feedCard(row) });
   }
   return items.reverse();
 }
@@ -1134,15 +1132,14 @@ async function airdropItems(logs, reader = pageReader()) {
     } catch {
       continue;
     }
-    const amount = formatAmount(decUint(log.data, 1), 18);
     const self = holder.toLowerCase() === account().toLowerCase() ? " (you)" : "";
     items.push({
       ts: log.ts,
-      html: `<div class="card-item"><div class="card-head">${tokenLogo(info.stakedToken, info.symbol, 22, reader.chainId)}`
-        + `<div style="flex:1;min-width:0"><div class="mut" style="font-size:11px">${ago(log.ts)}</div>`
-        + `<div><a class="link" href="${projectHref(reader.chainId, id)}">${esc(stickyLabel(info))}</a> ${chainIcons([reader.chainId])}</div>`
-        + `<div><span class="addr">${addressLabel(holder)}${self}</span> received ${amount} ${esc(info.stSymbol)}`
-        + ` from <span class="addr">${addressLabel(payer)}</span></div></div></div></div>`,
+      html: feedCard({
+        info, chainId: reader.chainId, projectId: id, ts: log.ts, direction: "in",
+        amount: `${formatAmount(decUint(log.data, 1), 18)} ${esc(info.stSymbol)}`,
+        line: `to ${addressLabel(holder)}${self} from ${addressLabel(payer)}`,
+      }),
     });
   }
   return items.reverse();
@@ -1160,12 +1157,15 @@ async function indexedActivityItems(events, reader) {
     } catch {
       continue;
     }
-    const verb = event.kind === "unstick" ? `<span class="verb out">unstuck</span>`
-      : `<span class="verb">${event.payer === adapter ? "auto-stuck" : "stuck"}</span>`;
+    const unstick = event.kind === "unstick";
+    const verb = unstick ? "unstuck" : event.payer === adapter ? "auto-stuck" : "stuck";
     items.push({
       ts: event.ts,
-      html: feedCard(info, reader, event.projectId, event.ts,
-        `<span class="addr">${shortAddr(event.holder)}</span> ${verb} ${formatAmount(event.tokens, 18)} ${esc(info.stSymbol)}`),
+      html: feedCard({
+        info, chainId: reader.chainId, projectId: event.projectId, ts: event.ts, direction: unstick ? "out" : "in",
+        amount: `${formatAmount(event.tokens, 18)} ${esc(info.stSymbol)}`,
+        line: `${verb} by ${addressLabel(event.holder)}`,
+      }),
     });
   }
   return items.reverse();
@@ -1184,17 +1184,27 @@ async function indexedAirdropItems(events, reader) {
     const self = event.holder === (account() || "").toLowerCase() ? " (you)" : "";
     items.push({
       ts: event.ts,
-      html: feedCard(info, reader, event.projectId, event.ts,
-        `<span class="addr">${addressLabel(event.holder)}${self}</span> received ${formatAmount(event.tokens, 18)} ${esc(info.stSymbol)}`
-        + ` from <span class="addr">${addressLabel(event.payer)}</span>`),
+      html: feedCard({
+        info, chainId: reader.chainId, projectId: event.projectId, ts: event.ts, direction: "in",
+        amount: `${formatAmount(event.tokens, 18)} ${esc(info.stSymbol)}`,
+        line: `to ${addressLabel(event.holder)}${self} from ${addressLabel(event.payer)}`,
+      }),
     });
   }
   return items.reverse();
 }
-const feedCard = (info, reader, projectId, ts, line) => `<div class="card-item"><div class="card-head">${tokenLogo(info.stakedToken, info.symbol, 22, reader.chainId)}`
-  + `<div style="flex:1;min-width:0"><div class="mut" style="font-size:11px">${ago(ts)}</div>`
-  + `<div><a class="link" href="${projectHref(reader.chainId, projectId)}">${esc(stickyLabel(info))}</a> ${chainIcons([reader.chainId])}</div>`
-  + `<div>${line}</div></div></div></div>`;
+// One activity row, laid out like juicebox.money's ActivityList: the amount and its direction (or what
+// happened, when nothing moved), the time and chain, the project on the home feeds, then who.
+const feedCard = ({ info, chainId, projectId, ts, amount, direction, lead = "", line = "" }) => {
+  const head = amount ? `<b>${amount}</b><span class="feed-tag ${direction}">${direction}</span>` : lead;
+  const when = `<span title="${esc(new Date(ts * 1000).toLocaleString())}">${ago(ts)}</span>`;
+  return `<div class="feed-row"><div class="feed-top"><span class="feed-amount">${head}</span>`
+    + `<span class="feed-when">${when}${chainId ? chainIcons([chainId]) : ""}</span></div>`
+    + (projectId !== undefined && projectId !== null
+      ? `<div class="feed-project"><a href="${projectHref(chainId, projectId)}">${esc(stickyLabel(info))}</a></div>` : "")
+    + (line ? `<div class="feed-line">${line}</div>` : "")
+    + `</div>`;
+};
 
 function configuredStickiestCards() {
   return (window.STICKY_CONFIG?.demoHomeStickiest || []).flatMap((row) => {
@@ -1227,19 +1237,17 @@ async function configuredAirdropItems() {
       continue;
     }
     const self = row.holder.toLowerCase() === account().toLowerCase() ? " (you)" : "";
-    items.push(
-      `<div class="card-item"><div class="card-head">${tokenLogo(info.stakedToken, info.symbol, 22)}`
-      + `<div style="flex:1;min-width:0"><div class="mut" style="font-size:11px">${ago(now - Number(row.hoursAgo) * 3600)}</div>`
-      + `<div><a class="link" href="#/project/${esc(row.projectId)}">${esc(stickyLabel(info))}</a></div>`
-      + `<div><span class="addr">${addressLabel(row.holder)}${self}</span> received ${esc(String(row.amount))} ${esc(info.symbol)}`
-      + ` from <span class="addr">${addressLabel(row.payer)}</span></div></div></div></div>`,
-    );
+    items.push(feedCard({
+      info, chainId: ctx.chainId, projectId: BigInt(row.projectId), ts: now - Number(row.hoursAgo) * 3600, direction: "in",
+      amount: `${esc(String(row.amount))} ${esc(info.symbol)}`,
+      line: `to ${addressLabel(row.holder)}${self} from ${addressLabel(row.payer)}`,
+    }));
   }
   return items;
 }
 
-const renderFeed = (el, items, empty = "no activity yet") => {
-  el.innerHTML = items.length ? items.map((item) => item.html ?? item).join("") : `<div class="card-item mut">${esc(empty)}</div>`;
+const renderFeed = (el, items, empty = "No activity yet") => {
+  el.innerHTML = items.length ? items.map((item) => item.html ?? item).join("") : `<div class="feed-empty">${esc(empty)}</div>`;
   hydrateEns(el).catch(() => {});
 };
 
@@ -1703,6 +1711,26 @@ function chartSvg(logs, info, projectId) {
 }
 
 // ------------------------------------------------------------------ svg pie
+// Keeps a centre label inside the donut's hole, in viewBox units: shrink to 6px, then end it with an ellipsis.
+// Measured on a canvas, so it also fits while the Tokens tab is hidden.
+let pieMeasure = null;
+function fitPieLabel(label, maxWidth) {
+  label.style.fontSize = "";
+  pieMeasure ||= document.createElement("canvas").getContext("2d");
+  if (!pieMeasure) return;
+  const style = getComputedStyle(label);
+  let size = parseFloat(style.fontSize) || 9;
+  const width = (text) => {
+    pieMeasure.font = `${style.fontWeight} ${size}px ${style.fontFamily}`;
+    return pieMeasure.measureText(text).width;
+  };
+  const full = label.textContent;
+  while (width(full) > maxWidth && size > 6) size -= 0.5;
+  label.style.fontSize = `${size}px`;
+  let text = full;
+  for (let keep = full.length - 1; keep > 1 && width(text) > maxWidth; keep--) text = `${full.slice(0, keep)}…`;
+  label.textContent = text;
+}
 function pieSvg(active, symbol, tokenSupply) {
   const total = active.reduce((sum, row) => sum + row.staked, 0n);
   if (total === 0n) return { svg: `<p class="mut">nobody is stuck yet</p>` };
@@ -1730,8 +1758,8 @@ function pieSvg(active, symbol, tokenSupply) {
       <text class="owner-pie-wallet" x="70" y="60"></text>
       <text class="owner-pie-balance" x="70" y="77"></text>
       <text class="owner-pie-percent" x="70" y="94"></text>
-    </g></svg><div class="owner-pie-total"><b>${formatAmount(total, 18)}</b> ${esc(symbol)}
-      <span class="owner-pie-separator" aria-hidden="true">|</span> <b>${totalPercent.toFixed(2)}%</b> of all ${esc(symbol)}</div>
+    </g></svg><div class="owner-pie-total">`
+      + `<div><b>${formatAmount(total, 18)}</b> ${esc(symbol)}</div><div><b>${totalPercent.toFixed(2)}%</b> of all ${esc(symbol)}</div></div>
     <span class="sr-only owner-pie-live" aria-live="polite"></span></div>`;
 
   return {
@@ -1752,6 +1780,10 @@ function pieSvg(active, symbol, tokenSupply) {
         walletLabel.textContent = `${shortAddr(row.holder)}${self}`;
         balanceLabel.textContent = amount;
         percentLabel.textContent = `${percent.toFixed(2)}%`;
+        // Each line fits the hole's chord at its height: shrink first, then truncate.
+        fitPieLabel(walletLabel, 72);
+        fitPieLabel(balanceLabel, 78);
+        fitPieLabel(percentLabel, 66);
         live.textContent = `${shortAddr(row.holder)}${self}, ${amount}, ${percent.toFixed(2)} percent`;
         slices.forEach((slice, index) => slice.classList.toggle("active", index === i));
         for (const tableRow of document.querySelectorAll("#leaderboard tr[data-owner]")) {
@@ -1977,7 +2009,7 @@ async function renderHome() {
     $("projects").innerHTML = groups.map((group, i) => stickiestCardHtml(group, i + 1)).join("");
     const newest = (items) => items.sort((a, b) => b.ts - a.ts).slice(0, 40);
     renderFeed($("activity"), newest(loaded.flatMap((result) => result.activity)));
-    renderFeed($("airdrops"), [...newest(loaded.flatMap((result) => result.airdrops)), ...demoAirdrops], "no airdrops yet");
+    renderFeed($("airdrops"), [...newest(loaded.flatMap((result) => result.airdrops)), ...demoAirdrops], "No airdrops yet");
     setHomeState("ready", failedNote, failed.length > 0);
     hydrateLogos().catch(() => {});
   };
@@ -2017,16 +2049,20 @@ async function renderProject(projectId) {
   $("tab-btn-overview").href = projectRoute;
   $("tab-btn-owners").href = `${projectRoute}/tokens`;
   $("tab-btn-rewards").href = `${projectRoute}/airdrops`;
+  $("tab-btn-activity").href = `${projectRoute}/latest`;
 
   const info = await projectInfo(projectId);
   if (!current()) return;
   syncTransferSticky(info);
+  renderEmptyPosition(info);
   $("p-logo").innerHTML = tokenLogo(info.stakedToken, info.symbol, 104);
   $("h-symbol").textContent = stickyLabel(info);
   $("h-name").textContent = window.STICKY_CONFIG?.projectNameOverrides?.[String(projectId)] || info.stName;
   $("tranches-amount-head").textContent = `AMOUNT (${info.stSymbol})`;
   $("stake-title").textContent = `Stick ${info.symbol}`;
   $("stake-symbol").textContent = info.symbol;
+  $("gift-symbol").textContent = info.symbol;
+  $("transfer-symbol").textContent = info.stSymbol;
   $("unstake-symbol").textContent = info.stSymbol;
   $("unstake-hint").textContent = info.reward > 0n
     ? `Newest tokens unstick first, and up to ${pct(info.reward)} stays behind for remaining holders.`
@@ -2046,6 +2082,7 @@ async function renderProject(projectId) {
   ctx.pool = pool;
   renderUnstickQuote();
   renderStickQuote();
+  renderStickQuote(true);
   $("p-bonus-card").classList.toggle("hide", info.reward === 0n);
   if (info.reward > 0n) {
     const rho0 = pool.supply > 0n ? Number((pool.sigma * 10n ** 18n) / pool.supply) / 10 ** info.decimals : 1;
@@ -2077,61 +2114,14 @@ async function renderProject(projectId) {
 
   // OWNERS: token info, pie, leaderboard.
   const granters = [...new Set(scanned.all.filter((log) => log.topics[0] === TOPIC.SetGranter).map((log) => decAddress(log.topics[2])))];
-  const transferMode = info.soulbound ? "No" : "Yes";
-  const transferRule = info.soulbound
-    ? "Transfers are disabled. Sticky tokens are minted by sticking. Unsticking burns them; a voluntary burn returns no backing."
-    : "Transfers move the sender's newest tranches first. The recipient receives a fresh tranche; existing streaks keep running unless the sender transfers everything.";
-  const bonusRule = info.reward > 0n
-    ? `Cash out tax is ${pct(info.reward)}. The reclaim depends on pool backing and the portion of total supply unstuck.`
-    : "Unsticking returns your proportional share of the backing with no cash out tax. Any applicable terminal fees are included in the final quote.";
-  // The auto-stick adapter is presented as its own pre-approval, not as a generic airdrop sender.
-  const adapterGranter = granters.some((g) => g.toLowerCase() === (autoStickAdapter() || "").toLowerCase());
+  // The auto-stick adapter is its own pre-approval, not a trusted sender.
   const humanGranters = granters.filter((g) => g.toLowerCase() !== (autoStickAdapter() || "").toLowerCase());
-  const senderRule = "Anyone can stick for themselves. "
-    + (humanGranters.length
-      ? `${humanGranters.length} trusted sender${humanGranters.length === 1 ? " can" : "s can"} stick for every holder. `
-      : "")
-    + (adapterGranter ? "Auto-stick is available. Holders turn it on with an allowance and settings. " : "")
-    + "Holders can also approve trusted senders to stick for them.";
-  const meta = (label, value, title = "") =>
-    `<span class="token-meta"${title ? ` title="${esc(title)}"` : ""}><b>${label}:</b><span>${value}</span></span>`;
-  const copySymbol = (symbol, address) =>
-    `<button type="button" class="token-copy" data-address="${address}" data-copy-address="${address}" `
-      + `aria-label="Copy ${esc(symbol)} token address">${esc(symbol)}</button>`;
   $("p-details-card").classList.remove("hide");
-  $("token-info").innerHTML =
-    `<div class="token-meta-row">`
-      + meta("Token", `${esc(info.stName)} (${copySymbol(info.stSymbol, info.stToken)})`)
-      + `</div>`
-    + `<div class="token-meta-row">`
-      + meta("Sticks", `${esc(info.name)} (${copySymbol(info.symbol, info.stakedToken)})`)
-      + meta("Sticky supply", `${formatAmount(totalStaked, 18)} ${copySymbol(info.stSymbol, info.stToken)}`)
-      + meta("Pool backing", `${formatAmount(pool.sigma, info.decimals)} ${copySymbol(info.symbol, info.stakedToken)}`)
-      + (pool.orphaned > 0n ? meta("Unowned backing", `${formatAmount(pool.orphaned, info.decimals)} ${esc(info.symbol)}`,
-        "Funds left when no Sticky shares existed are excluded from issuance and redemption; a new depositor cannot claim them.") : "")
-      + meta("Stickiness bonus", pct(info.reward), bonusRule)
-      + (pool.supply > 0n
-        ? meta(
-            "Backing",
-            `1 ${esc(info.stSymbol)} ≈ ${formatAmount((pool.sigma * 10n ** 18n) / pool.supply, info.decimals)} ${esc(info.symbol)}`,
-            "New sticks are priced against current backing. Donations, burns, and cash out taxes can change the number of Sticky tokens issued per underlying token.",
-          )
-        : "")
-      + meta("Transferable", transferMode, transferRule)
-      + `</div>`
-    + `<details class="token-contracts"><summary>Rules &amp; contracts</summary>`
-      + `<div class="token-contract-grid">`
-        + `<div><b>STICKY TOKEN CONTRACT</b><span>${info.stToken}</span></div>`
-        + `<div><b>${esc(info.symbol)} TOKEN CONTRACT</b><span>${info.stakedToken}</span></div>`
-        + `<div><b>STICK ACCOUNTING CONTRACT</b><span>${ctx.hook}</span></div>`
-        + `<div><b>UNSTICKING</b><span>${bonusRule}</span></div>`
-        + `<div><b>TRANSFERS</b><span>${transferRule}</span></div>`
-        + `<div><b>WHO CAN ADD STAKE</b><span>${senderRule}</span></div>`
-      + `</div></details>`;
+  $("token-info").innerHTML = detailsHtml(info, pool, totalStaked, humanGranters.length);
   for (const copy of $("token-info").querySelectorAll("[data-copy-address]")) {
     copy.onclick = guard(async () => {
       await navigator.clipboard.writeText(copy.dataset.copyAddress);
-      inlineStatus(copy, `${copy.textContent} address copied.`, "ok");
+      inlineStatus(copy, `${copy.dataset.copyLabel} address copied.`, "ok");
     });
   }
 
@@ -2147,6 +2137,46 @@ async function renderProject(projectId) {
   if (!current()) return;
   renderFeed($("p-activity"), activity);
   hydrateLogos().catch(() => {});
+}
+
+// The Details card: one short label and value per row, then the rules and contracts behind a disclosure.
+// Values never wrap mid-word; only the contract addresses may break.
+function detailsHtml(info, pool, totalStaked, trustedCount) {
+  const row = (label, text, title = text) => `<dt>${esc(label)}</dt><dd title="${esc(title)}">${esc(text)}</dd>`;
+  const rows = [
+    row("Token", `${info.stName} (${info.stSymbol})`),
+    row("Sticks", `${info.name} (${info.symbol})`),
+    row("Supply", `${formatAmount(totalStaked, 18)} ${info.stSymbol}`),
+    row("Backing", `${formatAmount(pool.sigma, info.decimals)} ${info.symbol}`),
+    pool.supply > 0n ? row("Backing per token", `${formatAmount((pool.sigma * 10n ** 18n) / pool.supply, info.decimals)} ${info.symbol}`) : "",
+    pool.orphaned > 0n
+      ? row("Unowned backing", `${formatAmount(pool.orphaned, info.decimals)} ${info.symbol}`, "Left when nobody was stuck. No one can claim it.") : "",
+    row("Stickiness bonus", pct(info.reward)),
+    row("Transfers", info.soulbound ? "Off" : "On"),
+  ];
+  const rules = [
+    info.reward > 0n ? `Unsticking leaves up to ${pct(info.reward)} behind for holders who stay.` : "Unsticking returns your share of the backing.",
+    info.soulbound ? "Sticky tokens can't be transferred." : "Transferred tokens start a new stick for the recipient.",
+    trustedCount ? `${trustedCount} trusted sender${trustedCount === 1 ? " can" : "s can"} stick for any holder.` : "Holders choose who can stick for them.",
+  ];
+  const contract = (label, address) => `<dt>${esc(label)}</dt><dd><span class="addr-break">${esc(address)}</span>`
+    + `<button type="button" class="copy-btn" data-copy-address="${esc(address)}" data-copy-label="${esc(label)}" `
+    + `aria-label="Copy ${esc(label)} address">Copy</button></dd>`;
+  return `<dl class="details-list">${rows.join("")}</dl>`
+    + `<details class="token-contracts"><summary>Rules and contracts</summary>`
+    + `<ul class="details-rules">${rules.map((rule) => `<li>${esc(rule)}</li>`).join("")}</ul>`
+    + `<dl class="details-list details-contracts">`
+    + contract(`${info.stSymbol} token`, info.stToken) + contract(`${info.symbol} token`, info.stakedToken)
+    + contract("Stick accounting", ctx.hook)
+    + `</dl></details>`;
+}
+
+// Signed out, the position is empty rather than unknown: zero, in each stat's unit.
+function renderEmptyPosition(info) {
+  if (account()) return;
+  $("p-balance").textContent = `0 ${info.stSymbol}`;
+  $("p-current").textContent = formatDuration(0);
+  $("p-longest").textContent = formatDuration(0);
 }
 
 let positionSequence = 0;
@@ -2280,13 +2310,13 @@ function renderConfirmSteps() {
       : `${transactionsLeft(steps.length - done)}. Confirmed steps will not be repeated.`;
   const offset = confirmPreSteps.length;
   card.innerHTML = `<p>${esc(intro)}</p>` + confirmPreSteps.map((step, i) =>
-    `<div class="cd-step ${step.state}"><i>${step.state === "done" ? "✓" : i + 1}</i><span>${esc(step.label)}<br><small>${esc(step.note)}</small></span></div>`,
+    `<div class="cd-step ${step.state}"><i>${i + 1}</i><span>${esc(step.label)}<br><small>${esc(step.note)}</small></span></div>`,
   ).join("") + steps.map((step, i) => {
     const state = step.state === "confirmed" ? "done" : ["pending", "submitting", "unknown"].includes(step.state) ? "current" : "pending";
     const chain = chainById(step.tx.chainId);
     const reference = step.hash ? ` <span class="mut">${esc(step.hash.slice(0, 12))}…</span>` : "";
     const link = step.hash && chain?.explorer ? ` <a href="${esc(chain.explorer)}/tx/${esc(step.hash)}" target="_blank" rel="noopener noreferrer">View</a>` : "";
-    return `<div class="cd-step ${state}"><i>${state === "done" ? "✓" : offset + i + 1}</i><span>${esc(step.tx.label)}<br><small>${esc(labels[step.state])}${reference}${link}</small></span></div>`;
+    return `<div class="cd-step ${state}"><i>${offset + i + 1}</i><span>${esc(step.tx.label)}<br><small>${esc(labels[step.state])}${reference}${link}</small></span></div>`;
   }).join("");
   const recovery = $("cd-recovery");
   if (recovery) recovery.classList.toggle("hide", !uncertain);
@@ -2303,9 +2333,48 @@ function reviewedRows(tx) {
   return { rows: out, decoded };
 }
 
+// The raw view: every field the wallet receives, and each argument exactly as decoded from the calldata.
+function rawRows(tx, decoded) {
+  const chainId = Number(tx.chainId ?? ctx.chainId);
+  const value = BigInt(tx.value || 0);
+  const data = String(tx.data || "0x");
+  const hex = (text) => `<span class="hexv">${esc(text)}</span>`;
+  const args = decoded
+    ? `<ul class="cd-rawargs">${StickyCalldata.rawArgs(decoded)
+      .map((arg) => `<li>${esc(arg.name || "argument")} <small>${esc(arg.type)}</small> = ${esc(arg.value)}</li>`).join("")}</ul>`
+    : "Could not decode";
+  return [
+    ["CHAIN", `${esc(chainById(chainId)?.name || "Unknown")} <small>${chainId}</small>`],
+    ["FROM", hex(tx.from || txAccount())],
+    ["TO", hex(tx.to)],
+    ["VALUE", `${value} wei <small>${formatUnits(value, 18, 18)} ETH</small>`],
+    ["SELECTOR", hex(data.slice(0, 10))],
+    ["FUNCTION", esc(decoded?.canonical || tx.fn || "unknown")],
+    ["ARGUMENTS", args],
+    ["CALLDATA", `${hex(data)} <small>${Math.max(0, (data.length - 2) / 2)} bytes</small>`],
+  ];
+}
+
+// The exact app-controlled payload as JSON-RPC fields, shown in the raw view and quoted in the audit prompt.
+function rawPayload(plan = confirmPlan) {
+  const one = (tx) => ({
+    chainId: Number(tx.chainId ?? ctx.chainId), from: tx.from || txAccount(), to: tx.to,
+    value: `0x${BigInt(tx.value || 0).toString(16)}`, data: tx.data,
+  });
+  return plan.length === 1 ? one(plan[0]) : { transactions: plan.map(one) };
+}
+
+function setConfirmView(view) {
+  $("confirm-dialog").dataset.view = view;
+  for (const name of ["pretty", "raw"]) {
+    $("cd-view-" + name).classList.toggle("on", name === view);
+    $("cd-view-" + name).setAttribute("aria-pressed", String(name === view));
+  }
+}
+
 function renderConfirm() {
   $("cd-summary").innerHTML = confirmSummary
-    .map(([k, v]) => `<div class="cd-summary-row"><span class="k">${esc(k)}</span><span class="v">${esc(String(v))}</span></div>`)
+    .map(([k, v]) => `<div class="cd-summary-row"><span class="k">${esc(k)}</span><span class="v">${reviewValue(String(v))}</span></div>`)
     .join("");
   renderConfirmSteps();
   confirmBlocked = "";
@@ -2319,20 +2388,20 @@ function renderConfirm() {
         problem = error instanceof StickyCalldata.CalldataError ? error.message : `This transaction could not be checked: ${error.message}`;
         confirmBlocked ||= multiple ? `Step ${i + 1}: ${problem}` : problem;
       }
-      const fn = reviewed ? reviewed.decoded.canonical : tx.fn;
       return `<div class="txstep">`
         + (chain ? `<div class="cd-chain">${esc(chain)}</div>` : "")
         + `<div class="cd-contract"><b>${esc(tx.contractName || contractNameOf(tx.to))}</b> | ${esc(tx.to)}</div>`
         + `<h3>${step}${esc(tx.label)}</h3>`
         + (problem ? `<p class="cd-block" role="alert">${esc(problem)}</p>` : "")
-        + (reviewed ? `<table><tbody>`
+        + (reviewed ? `<table class="cd-pretty-view"><tbody>`
           + reviewed.rows.map(([k, v]) => `<tr><th style="width:104px">${esc(k)}</th><td>${reviewValue(v)}</td></tr>`).join("")
           + `</tbody></table>` : "")
-        + `<details class="cd-raw"><summary>Show raw data</summary>`
-        + `<div class="rawbox">function: ${esc(fn)}\nfrom: ${esc(tx.from || txAccount())}\nto: ${tx.to}\nvalue: ${tx.value ? BigInt(tx.value) : 0} wei\ndata: ${tx.data}</div></details>`
-        + `</div>`;
+        + `<dl class="cd-rawlist cd-raw-view">`
+        + rawRows(tx, reviewed?.decoded).map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")
+        + `</dl></div>`;
     })
-    .join("");
+    .join("")
+    + `<pre class="cd-rawjson cd-raw-view">${esc(JSON.stringify(rawPayload(), null, 2))}</pre>`;
   $("cd-warn").textContent = confirmBlocked
     ? "Sending is blocked. The transaction data does not match this review."
     : confirmSponsored ? "Every row is read back from the exact data Juicebox Center will send. You only sign the listing."
@@ -2363,6 +2432,7 @@ function confirmTxs(title, txs, summary = [], { sponsored = false } = {}) {
   renderConfirm();
   const answer = new Promise((resolve) => { confirmResolve = resolve; });
   if (!$("confirm-dialog").open) {
+    setConfirmView("pretty");
     replaceOpenDialogs();
     $("confirm-dialog").showModal();
   }
@@ -2522,32 +2592,66 @@ function installTxRecoveryUI() {
   });
 }
 
+// A complete prompt a holder can paste into an AI to audit the reviewed plan, after juicebox.money's.
 async function auditPrompt() {
-  const chainIds = [...new Set(confirmPlan.map((tx) => Number(tx.chainId ?? ctx.chainId)))];
   const lines = [
-    "Audit these Ethereum transactions before I sign them. Do not assume good intent. Verify everything.",
-    `Chain ids: ${chainIds.join(", ")}. Reviewed account: ${confirmPlan[0]?.from || txAccount()}. App: Sticky webclient (${location.origin}).`,
-    `Stated intent: ${$("cd-title").textContent}.`,
+    "I'm about to authorize blockchain transactions in the Sticky webclient (Sticky tokens, built on the Juicebox V6 protocol). "
+      + "Act as a careful security reviewer. Independently verify the payload against the deployed contracts and their verified source, "
+      + "confirm it matches my intent, and give a go/no-go. Assume the UI could be spoofed; trust the onchain call and verified source over the page.",
     "",
+    `Stated intent: ${$("cd-title").textContent}.`,
+    ...confirmSummary.map(([k, v]) => `- ${k}: ${v}`),
+    "",
+    "Exact app-controlled transaction payload:",
+    "```json",
+    JSON.stringify(rawPayload(), null, 2),
+    "```",
+    "",
+    "What the app's review shows, decoded from that calldata:",
   ];
   confirmPlan.forEach((tx, i) => {
-    let rows;
-    try { rows = reviewedRows(tx).rows.slice(1); } catch (error) { rows = [["review error", error.message]]; }
+    const chainId = Number(tx.chainId ?? ctx.chainId);
+    const explorer = chainById(chainId)?.explorer;
+    let reviewed = null, problem = "";
+    try { reviewed = reviewedRows(tx); } catch (error) { problem = error.message; }
     lines.push(
       `Transaction ${i + 1} of ${confirmPlan.length}: ${tx.label}`,
-      `- chain id: ${tx.chainId ?? ctx.chainId}`,
-      `- to: ${tx.to} (expected to be ${tx.contractName || contractNameOf(tx.to)})`,
-      `- function: ${tx.fn}`,
-      ...rows.map(([k, v]) => `- ${k.toLowerCase()}: ${v?.title ? `${v.text} (${v.title})` : v}`),
-      `- value: ${tx.value ? BigInt(tx.value) : 0} wei`,
-      `- raw calldata: ${tx.data}`,
+      `- chain: ${chainById(chainId)?.name || "unknown"} (chain id ${chainId})`,
+      `- to: ${tx.to} (the app says this is ${tx.contractName || contractNameOf(tx.to)})`,
+      explorer ? `- target onchain: ${explorer}/address/${tx.to}` : `- target: chain ${chainId}, address ${tx.to}`,
+      `- value: ${BigInt(tx.value || 0)} wei`,
+      `- function: ${reviewed?.decoded.canonical || tx.fn} (selector ${String(tx.data).slice(0, 10)})`,
+      ...(reviewed
+        ? [
+          ...StickyCalldata.rawArgs(reviewed.decoded).map((arg) => `- argument ${arg.name || "(unnamed)"} (${arg.type}): ${arg.value}`),
+          ...reviewed.rows.slice(1).map(([k, v]) => `- shown as ${k.toLowerCase()}: ${v?.title ? `${v.text} (${v.title})` : v}`),
+        ]
+        : [`- review error: ${problem}`]),
       "",
     );
   });
   lines.push(
-    "Tasks: decode each raw calldata and confirm it exactly matches the stated function and arguments.",
-    "Confirm each target address matches the contract it claims to be. Flag any approval, transfer, or",
-    "value that could move funds anywhere other than described. Conclude SAFE or UNSAFE with reasons.",
+    "Audit the app build I am using:",
+    `- Page: ${location.href}`,
+    "- Confirm this page builds exactly the destinations, native values, and calldata above, with no hidden or substituted call.",
+    "",
+    "Verify the contracts:",
+    "- Sticky source and deployment records: https://github.com/mejango/sticky",
+    "- Juicebox V6 source: https://github.com/Bananapus/version-6. Use only V6 repositories (normally ending in -v6); same-named repositories without that suffix are older and incompatible.",
+    "- If your agent has Etherscan's skills installed (npx skills add etherscan/skills), run etherscan-contract-review on each target address. Otherwise work from the explorer pages.",
+    "",
+    "Check specifically:",
+    "1. Decode each selector and every argument. Explain in plain English what state, permissions, tokens, or funds can change.",
+    "2. Verify each chain ID, to address, native value, and calldata exactly. Flag any unexpected non-zero value or unknown target.",
+    "3. Identify every beneficiary, recipient, spender, trusted sender, and permission-bearing address in the decoded arguments.",
+    "4. Warn about unlimited approvals, arbitrary-call capability, permission grants, or any path that moves funds somewhere other than described.",
+    "5. For several transactions, confirm the order makes sense and that no extra call was added.",
+    "",
+    "Before your verdict, quiz me with 2 to 4 short plain-English questions about what I expect to happen (what changes, who receives what, "
+      + "how much moves, and on which chain). Wait for my answers, compare them with the decoded payload, and flag every mismatch.",
+    "",
+    "End with one verdict: SAFE TO SIGN / DO NOT SIGN / NEEDS MORE INFO, followed by the most important reasons. "
+      + "If a target is not a recognizable verified Sticky or Juicebox V6 deployment, say so explicitly.",
   );
   return lines.join("\n");
 }
@@ -3048,7 +3152,7 @@ async function prepareBridgeFunding() {
   try { complete = await confirmAndRun("Bridge rewards to " + stickyLabel(context.info), plan.txs, [
     ["Send", `${formatUnits(amount, route.sourceMeta.decimals, route.sourceMeta.decimals)} ${route.sourceMeta.symbol} on ${route.source.name}`],
     ["Receive", `${formatUnits(amount, route.rewardMeta.decimals, route.rewardMeta.decimals)} ${route.rewardMeta.symbol} in this project's receiver on ${route.destination.name}`],
-    ["Rewards", `${groupLabel(context.groupId)} (group ${context.groupId})`],
+    ["Rewards", groupLabel(context.groupId)],
     ["Afterward", "Send the queued bridge batch, wait for delivery, claim the arrival, then settle it into rewards."],
   ], { onPrepared: async session => {
     mayRun = true;
@@ -3113,7 +3217,7 @@ async function actOnBridgeMovement(index) {
   }
   const tx = item.status === "queued" ? await getBridgeApi().flush(item.route, context.owner, context.receiver)
     : await getBridgeApi().claim(item.route, item.row, context.owner, context.receiver);
-  if (!(await confirmAndRun(tx.label, [tx], [["Reward token on destination", item.route.rewardToken], ["Destination receiver", context.receiver], ["Rewards", `${groupLabel(context.groupId)} (group ${context.groupId})`]]))) return;
+  if (!(await confirmAndRun(tx.label, [tx], [["Reward token on destination", item.route.rewardToken], ["Destination receiver", context.receiver], ["Rewards", groupLabel(context.groupId)]]))) return;
   await renderRewards();
 }
 
@@ -3486,7 +3590,7 @@ async function renderRewards() {
       if (!current()) return;
       ctx.receiver = receiver;
       $("receiver-addr").textContent = receiver;
-      $("receiver-group").textContent = `${groupLabel(groupId)} (group ${groupId})`;
+      $("receiver-group").textContent = groupLabel(groupId);
       const rewardToken = rewardTokenAddress($("bridge-reward-token")?.value || $("r-token").value, info.stakedToken);
       if (rewardToken.toLowerCase() === NATIVE_REWARD_TOKEN) throw new Error("receivers accept ERC-20 rewards");
       const meta = await rewardTokenMeta(rewardToken);
@@ -3546,7 +3650,7 @@ async function renderRewards() {
     }
     const card = document.createElement("div");
     card.className = "reward-card";
-    card.innerHTML = `<div class="reward-head"><b>${esc(groupLabel(entry.groupId))}</b> <span class="mut">group ${esc(entry.groupId)}</span>`
+    card.innerHTML = `<div class="reward-head"><b>${esc(groupLabel(entry.groupId))}</b>`
       + `<span class="reward-token">${tok(entry.token, entry.meta.symbol)}</span></div>`
       + `<dl class="reward-kv">${rewardLines(position, entry.meta, entry.funded, entry.fundedThisRound, schedule)
         .map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>`
@@ -3608,7 +3712,7 @@ async function createRewardAddress() {
   const info = await projectInfo(ctx.currentId);
   const factory = actionAddress(stickyDeploymentFor(ctx.chainId).rewardReceiverFactory, "reward receiver factory address");
   const groupId = groupIdFromWeeks($("ra-min-weeks").value, $("ra-max-weeks").value);
-  if (!isValidGroupId(groupId)) throw new Error("this stake-age window is not a valid reward group");
+  if (!isValidGroupId(groupId)) throw new Error("this stake-age window is not valid");
   const receiver = decAddress(await view(factory, SEL.predictReceiverOf, encAddress(info.stToken) + word(groupId)));
   const txs = [{
     label: "Create reward address",
@@ -3646,7 +3750,7 @@ async function fundRewards() {
   await requireTokenBalance(tokenAddr, holder, amount, meta);
   const native = tokenAddr.toLowerCase() === NATIVE_REWARD_TOKEN;
   const txs = native ? [] : await tokenApprovalTxs(tokenAddr, distributor(), amount, meta);
-  const who = `${groupLabel(groupId)} (group ${groupId})`;
+  const who = groupLabel(groupId);
   txs.push({
     label: "Fund stuck holders",
     to: distributor(),
@@ -3688,7 +3792,7 @@ async function claimReward(tokenAddr, groupId = 0n) {
     args: [
       ["STUCK IN", bind("hook", info.stToken, { names: named([info.stToken, stickyLabel(info)]) })],
       ["HOLDER", bind("tokenIds", [BigInt(holder)], { kind: "holders" })],
-      ["GROUP", bind("groupId", groupId, { kind: "group" })],
+      ["WHO", bind("groupId", groupId, { kind: "group" })],
       ["REWARD TOKEN", bind("tokens", [tokenAddr], { names: named([tokenAddr, meta.symbol]) })],
       ["BENEFICIARY", bind("beneficiary", holder)],
       ["READY", `${formatUnits(collectable, meta.decimals, meta.decimals)} ${meta.symbol}`],
@@ -4044,7 +4148,7 @@ async function autoStickNow() {
     args: [
       ["PROJECT", bind("projectId", ctx.currentId, { note: stickyLabel(info) })],
       ["HOLDER", bind("holder", holder)],
-      ["GROUPS", bind("groupIds", groupIds, { kind: "groups" })],
+      ["WHO", bind("groupIds", groupIds, { kind: "groups" })],
       ["READY", `${formatAmount(state.collectable, info.decimals)} ${info.symbol}`],
       ["ESTIMATED STICKY TOKENS", `${formatUnits(expectedMint, 18, 18)} ${info.stSymbol}`],
       ["ISSUANCE", "Priced at the backing when it runs. A mint of zero tokens reverts."],
@@ -4074,7 +4178,7 @@ async function beginAutoStickVesting() {
     args: [
       ["PROJECT", bind("projectId", ctx.currentId, { note: stickyLabel(info) })],
       ["HOLDER", bind("holder", holder)],
-      ["GROUPS", bind("groupIds", groupIds, { kind: "groups" })],
+      ["WHO", bind("groupIds", groupIds, { kind: "groups" })],
       ["EFFECT", `Starts the unlock schedule for your ${info.symbol} rewards. No tokens move.`],
     ],
     data: SEL.asBeginVestingFor + encode(["uint256", "address", "uint256[]"], [ctx.currentId, holder, groupIds]),
@@ -4112,7 +4216,7 @@ async function claimAndStick() {
     fn: "stickRewardsFor(uint256 projectId, uint256[] groupIds)",
     args: [
       ["PROJECT", bind("projectId", ctx.currentId, { note: stickyLabel(info) })],
-      ["GROUPS", bind("groupIds", groupIds, { kind: "groups" })],
+      ["WHO", bind("groupIds", groupIds, { kind: "groups" })],
       ["CLAIM", pretty],
       ["ISSUANCE", "Priced at the backing when it runs. A mint of zero tokens reverts."],
       ["EFFECT", `Your unlocked ${info.symbol} rewards stick for you in a new tranche, in the same transaction.`],
@@ -4138,7 +4242,7 @@ async function settleArrivals({ groupId: chosenGroup, tokenValue, fromDialog = t
   if (tokenAddr.toLowerCase() === NATIVE_REWARD_TOKEN) throw new Error("reward receivers settle ERC-20 tokens; fund ETH rewards directly");
   const meta = await rewardTokenMeta(tokenAddr);
   const groupId = chosenGroup ?? fundGroupId();
-  if (!isValidGroupId(groupId)) throw new Error("this stake-age window is not a valid reward group");
+  if (!isValidGroupId(groupId)) throw new Error("this stake-age window is not valid");
   const configuredDistributor = decAddress(await view(receiverFactoryAddr, SEL.DISTRIBUTOR));
   if (configuredDistributor.toLowerCase() !== distributor()?.toLowerCase()) {
     throw new Error("the reward receiver factory uses a different distributor");
@@ -4156,7 +4260,7 @@ async function settleArrivals({ groupId: chosenGroup, tokenValue, fromDialog = t
       ["REWARD TOKEN", bind("token", tokenAddr, { names: named([tokenAddr, meta.symbol]) })],
       ["AMOUNT", `${formatUnits(pending, meta.decimals, meta.decimals)} ${meta.symbol}`],
       ["RECEIVER", receiver],
-      ["EFFECT", "The receiver's whole balance becomes this round's rewards for that group."],
+      ["EFFECT", "The receiver's whole balance becomes this round's rewards for those holders."],
     ],
     data: SEL.settleFor + encode(["address", "uint256", "address"], [info.stToken, groupId, tokenAddr]),
   }];
@@ -4170,7 +4274,7 @@ async function settleArrivals({ groupId: chosenGroup, tokenValue, fromDialog = t
 
 // ------------------------------------------------------------------- actions
 function syncTransferSticky(info) {
-  $("transfer-sticky")?.classList.toggle("hide", info.soulbound !== false);
+  $("open-transfer")?.classList.toggle("hide", info.soulbound !== false);
 }
 
 async function transferSticky() {
@@ -4203,16 +4307,18 @@ async function transferSticky() {
   if (!(await reviewAction(action, `Transfer ${pretty}`, [tx], [
     ["Transfer", pretty], ["To", recipient], ["Transferred tranche", "the recipient's clock starts again now"],
   ]))) return;
+  try { $("transfer-dialog").close(); } catch {}
   txStatus("Sticky tokens transferred", "ok");
   await renderProject(ctx.currentId);
 }
 
-async function stake() {
+// The Stick card sticks for the signed-in holder; the Airdrops tab's form sticks for someone else.
+async function stake(gift = false) {
   const action = beginAction();
   const { holder } = action;
   const info = await projectInfo(ctx.currentId);
-  const amount = positiveAmount($("stake-amount").value, info.decimals);
-  const beneficiary = actionAddress($("stake-beneficiary")?.value || holder, "beneficiary address");
+  const amount = positiveAmount($(gift ? "gift-amount" : "stake-amount").value, info.decimals);
+  const beneficiary = gift ? actionAddress($("stake-beneficiary").value, "recipient address") : holder;
   const pretty = `${formatUnits(amount, info.decimals, info.decimals)} ${info.symbol}`;
   await requireTokenBalance(info.stakedToken, holder, amount, info);
   if (beneficiary.toLowerCase() !== holder.toLowerCase()) {
@@ -4316,15 +4422,16 @@ async function previewStickMint(projectId, info, amount, beneficiary, payer = be
   return count;
 }
 
-let stickQuoteSequence = 0;
-async function renderStickQuote() {
-  const sequence = ++stickQuoteSequence;
-  const el = $("stake-quote");
+const stickQuoteSequences = { self: 0, gift: 0 };
+async function renderStickQuote(gift = false) {
+  const mode = gift ? "gift" : "self";
+  const sequence = ++stickQuoteSequences[mode];
+  const el = $(gift ? "gift-quote" : "stake-quote");
   const pool = ctx.pool;
   if (!el) return;
   el.textContent = "";
   if (!pool) return;
-  const field = $("stake-amount");
+  const field = $(gift ? "gift-amount" : "stake-amount");
   let amount = 0n;
   try { amount = parseUnits(field.value || field.placeholder || "0", pool.decimals); } catch {}
   if (amount <= 0n) return;
@@ -4332,19 +4439,23 @@ async function renderStickQuote() {
   const displayedAccount = account();
   const input = field.value;
   const payer = /^0x[0-9a-fA-F]{40}$/.test(displayedAccount || "") ? displayedAccount : "0x0000000000000000000000000000000000000000";
-  const beneficiary = $("stake-beneficiary")?.value || payer;
+  const recipient = () => {
+    const typed = gift ? $("stake-beneficiary").value.trim() : "";
+    return /^0x[0-9a-fA-F]{40}$/.test(typed) ? typed : payer;
+  };
+  const beneficiary = recipient();
   el.textContent = "Checking the current backing price…";
-  const current = () => sequence === stickQuoteSequence && ctx.currentId === projectId && ctx.chainId === chainId
-    && account() === displayedAccount && field.value === input && ($("stake-beneficiary")?.value || payer) === beneficiary;
+  const current = () => sequence === stickQuoteSequences[mode] && ctx.currentId === projectId && ctx.chainId === chainId
+    && account() === displayedAccount && field.value === input && recipient() === beneficiary;
   try {
     const info = await projectInfo(projectId);
     if (!current()) return;
     const mint = await previewStickMint(projectId, info, amount, beneficiary, payer);
     if (!current()) return;
-    el.textContent = `Estimated mint: ${formatAmount(mint, 18)} ${pool.stSymbol}. The final review sets your minimum.`
-      + (pool.reward === MAX_TAX ? " 100% stickiness bonus: unsticking returns no underlying tokens." : "");
+    el.textContent = `At least ${formatAmount(mint, 18)} ${pool.stSymbol}`
+      + (pool.reward === MAX_TAX ? ". Unsticking returns nothing at a 100% bonus." : "");
   } catch (error) {
-    if (current()) el.textContent = `Quote unavailable: ${error.message}`;
+    if (current()) el.textContent = `Could not quote: ${error.message}`;
   }
 }
 
@@ -4793,7 +4904,7 @@ function renderStickyLaunchRecovery() {
   const confirmed = Object.values(session.results).filter((result) => result.status === "confirmed").length;
   $("sl-title").textContent = `${done ? "Created" : "Create"} ${session.symbol}`;
   $("sl-banner-text").textContent = `${session.symbol}: ${confirmed} of ${session.targets.length} chains confirmed.`;
-  $("sl-summary").innerHTML = session.summary.map(([key, value]) => `<div class="cd-summary-row"><span class="k">${esc(key)}</span><span class="v">${esc(value)}</span></div>`).join("");
+  $("sl-summary").innerHTML = session.summary.map(([key, value]) => `<div class="cd-summary-row"><span class="k">${esc(key)}</span><span class="v">${reviewValue(String(value))}</span></div>`).join("");
   $("sl-status").textContent = done ? "Your Sticky token is deployed on every selected chain."
     : session.paymentConfirmed ? "Your payment is confirmed. Relayr is deploying on the selected chains. Keep this saved launch until every chain confirms."
     : session.paymentIntent ? "Your saved payment is being recovered. Check your wallet and use Continue launch to verify its result."
@@ -4804,12 +4915,12 @@ function renderStickyLaunchRecovery() {
     : "Review the saved deployment, then confirm it in your wallet.";
   const listing = listingRow(session);
   $("sl-progress").innerHTML = (listing
-    ? `<div class="cd-step ${listing.state}"><i>${listing.state === "done" ? "✓" : 1}</i><span>${esc(listing.label)}<br><small>${esc(listing.note)}</small></span></div>` : "")
+    ? `<div class="cd-step ${listing.state}"><i>1</i><span>${esc(listing.label)}<br><small>${esc(listing.note)}</small></span></div>` : "")
     + session.targets.map((target, i) => {
       const result = session.results[target.chainId];
       const step = listing ? i + 2 : i + 1;
       const recorded = session.center?.recorded?.[target.chainId];
-      return `<div class="cd-step ${result?.status === "confirmed" ? "done" : "pending"}"><i>${result?.status === "confirmed" ? "✓" : step}</i><span>${esc(target.name)}: `
+      return `<div class="cd-step ${result?.status === "confirmed" ? "done" : "pending"}"><i>${step}</i><span>${esc(target.name)}: `
         + (result?.status === "confirmed"
           ? `<a class="link" href="?chain=${target.chainId}#/project/${esc(result.projectId)}">project #${esc(result.projectId)}</a>${recorded ? " <small>listed</small>" : ""}`
           : "awaiting confirmation") + `</span></div>`;
@@ -5387,12 +5498,14 @@ async function renderAccount(address) {
 
 // -------------------------------------------------------------------- router
 function route() {
+  const PROJECT_TABS = { overview: "overview", tokens: "owners", airdrops: "rewards", latest: "activity" };
   const sequence = ++viewSequence;
   closeWalletMenu();
   try { $("create-dialog").close(); } catch {}
   try { $("connection-dialog").close(); } catch {}
   try { $("unstick-dialog").close(); } catch {}
   try { $("trust-dialog").close(); } catch {}
+  try { $("transfer-dialog").close(); } catch {}
   try { $("fund-dialog").close(); } catch {}
   try { $("autostick-dialog").close(); } catch {}
   confirmReturnTo = [];
@@ -5406,10 +5519,10 @@ function route() {
     return;
   }
   $("view-account").classList.add("hide");
-  const handleMatch = location.hash.match(/^#\/@([^/]+)(?:\/(overview|tokens|airdrops))?\/?$/);
+  const handleMatch = location.hash.match(/^#\/@([^/]+)(?:\/(overview|tokens|airdrops|latest))?\/?$/);
   if (handleMatch) {
     const handle = decodeURIComponent(handleMatch[1]);
-    const tab = { overview: "overview", tokens: "owners", airdrops: "rewards" }[handleMatch[2] || "overview"];
+    const tab = PROJECT_TABS[handleMatch[2] || "overview"];
     setTab(tab);
     projectIdForHandle(handle).then((projectId) => {
       if (sequence !== viewSequence) return;
@@ -5419,10 +5532,10 @@ function route() {
     }).catch((e) => status(e.message, "err"));
     return;
   }
-  const match = location.hash.match(/^#\/project\/(\d+)(?:\/(overview|tokens|airdrops))?\/?$/);
+  const match = location.hash.match(/^#\/project\/(\d+)(?:\/(overview|tokens|airdrops|latest))?\/?$/);
   if (match) {
     const projectId = BigInt(match[1]);
-    const tab = { overview: "overview", tokens: "owners", airdrops: "rewards" }[match[2] || "overview"];
+    const tab = PROJECT_TABS[match[2] || "overview"];
     setTab(tab);
     ctx.alias = null;
     renderProject(projectId).catch((e) => status(e.message, "err"));
@@ -5460,8 +5573,9 @@ $("load").onclick = guard(async () => {
   await loadDeployer();
   $("connection-dialog").close();
 });
-$("stake").onclick = guard(stake);
-$("transfer-send")?.addEventListener("click", guard(transferSticky));
+$("stake").onclick = guard(() => stake());
+$("gift-stake").onclick = guard(() => stake(true));
+$("transfer-send").onclick = guard(transferSticky);
 $("unstake").onclick = guard(unstake);
 $("trust").onclick = guard(async () => {
   await setTrust($("trust-addr").value, true);
@@ -5505,8 +5619,10 @@ const fillStakeMax = () => { if (ctx.walletMax) { $("stake-amount").value = ctx.
 $("stake-balance").onclick = fillStakeMax;
 $("unstake-max").onclick = () => { if (ctx.stakedMax) { $("unstake-amount").value = ctx.stakedMax; renderUnstickQuote(); } };
 $("unstake-amount").oninput = renderUnstickQuote;
-$("stake-amount").oninput = renderStickQuote;
-$("stake-beneficiary").oninput = renderStickQuote;
+$("stake-amount").oninput = () => renderStickQuote();
+$("gift-amount").oninput = () => renderStickQuote(true);
+$("stake-beneficiary").oninput = () => renderStickQuote(true);
+$("transfer-max").onclick = () => { if (ctx.stakedMax) $("transfer-amount").value = ctx.stakedMax; };
 $("tranches-newer").onclick = guard(async () => {
   ctx.tranchePage = ctx.tranchePage > 0n ? ctx.tranchePage - 1n : 0n;
   await refreshPosition();
@@ -5710,6 +5826,9 @@ $("cd-audit").onclick = guard(async () => {
   await navigator.clipboard.writeText(await auditPrompt());
   inlineStatus($("cd-audit"), "Audit prompt copied. Paste it into your AI.", "ok");
 });
+$("cd-view-pretty").onclick = () => setConfirmView("pretty");
+$("cd-view-raw").onclick = () => setConfirmView("raw");
+
 $("tx-status-close").onclick = () => txStatus("");
 $("confirm-dialog").oncancel = (event) => { event.preventDefault(); settleConfirm(false); };
 // The close event arrives a task later; a review reopened in the meantime is not closed by it.
@@ -5791,6 +5910,11 @@ $("fund-dialog").onclick = (event) => {
   if (event.target === $("fund-dialog")) $("fund-dialog").close();
 };
 $("open-unstick").onclick = () => { renderUnstickQuote(); $("unstick-dialog").showModal(); };
+$("open-transfer").onclick = () => $("transfer-dialog").showModal();
+$("transfer-close").onclick = () => $("transfer-dialog").close();
+$("transfer-dialog").onclick = (event) => {
+  if (event.target === $("transfer-dialog")) $("transfer-dialog").close();
+};
 $("unstick-close").onclick = () => $("unstick-dialog").close();
 $("unstick-dialog").onclick = (event) => {
   if (event.target === $("unstick-dialog")) $("unstick-dialog").close();
@@ -5827,9 +5951,11 @@ $("connection-close").onclick = () => $("connection-dialog").close();
 $("connection-dialog").onclick = (event) => {
   if (event.target === $("connection-dialog")) $("connection-dialog").close();
 };
+// Latest is a tab only on phones; on wider screens it stays beside the tabs and its route shows the overview.
 function setTab(tab) {
-  for (const name of ["overview", "owners", "rewards"]) {
-    $("tab-" + name).classList.toggle("hide", tab !== name);
+  document.querySelector(".proj-grid").dataset.tab = tab;
+  for (const name of ["activity", "overview", "owners", "rewards"]) {
+    $("tab-" + name)?.classList.toggle("hide", tab !== name);
     $("tab-btn-" + name).classList.toggle("on", tab === name);
     if (tab === name) $("tab-btn-" + name).setAttribute("aria-current", "page");
     else $("tab-btn-" + name).removeAttribute("aria-current");
