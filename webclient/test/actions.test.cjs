@@ -165,19 +165,19 @@ test('a stale asynchronous mint estimate cannot replace a newer amount or projec
   await second;
   pending[0](1n * 10n ** 18n);
   await first;
-  assert.match(c.$('stake-quote').textContent, /At least 2 STICKYART/);
+  assert.match(c.$('stake-quote').textContent, /You get at least 2 STICKYART/);
   const third = c.renderStickQuote();
   await new Promise(setImmediate);
   c.ctx.currentId = 99n;
   pending[2](3n * 10n ** 18n);
   await third;
-  assert.doesNotMatch(c.$('stake-quote').textContent, /At least 3/);
+  assert.doesNotMatch(c.$('stake-quote').textContent, /You get at least 3/);
   const fourth = c.renderStickQuote();
   await new Promise(setImmediate);
   c.account = () => OTHER;
   pending[3](4n * 10n ** 18n);
   await fourth;
-  assert.doesNotMatch(c.$('stake-quote').textContent, /At least 4/);
+  assert.doesNotMatch(c.$('stake-quote').textContent, /You get at least 4/);
 });
 
 test('tranche pages stay bounded under a million dust entries and pin count and slice to one block', async () => {

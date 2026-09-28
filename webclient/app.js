@@ -4452,7 +4452,7 @@ async function renderStickQuote(gift = false) {
     if (!current()) return;
     const mint = await previewStickMint(projectId, info, amount, beneficiary, payer);
     if (!current()) return;
-    el.textContent = `At least ${formatAmount(mint, 18)} ${pool.stSymbol}`
+    el.textContent = `${gift ? "They get" : "You get"} at least ${formatAmount(mint, 18)} ${pool.stSymbol}`
       + (pool.reward === MAX_TAX ? ". Unsticking returns nothing at a 100% bonus." : "");
   } catch (error) {
     if (current()) el.textContent = `Could not quote: ${error.message}`;

@@ -383,7 +383,7 @@
   .headline { font-size: 16px; margin: 3px 0; }
   .headline-key { color: var(--muted); }
   .headline b { color: var(--text); font-weight: 500; }
-  .proj-grid { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 20px; align-items: start; }
+  .proj-grid { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 20px; align-items: start; }
   .proj-grid > * { min-width: 0; }
   /* Project tabs, like juicebox.money's: icon and label, ink underline on the active tab. */
   .tabs {
@@ -448,6 +448,15 @@
   .position-metric b { display: block; color: var(--accent); font-size: 16px; }
   .position-stakes-title { margin: 0 0 5px; }
   .table-scroll { width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; -webkit-overflow-scrolling: touch; }
+  /* Fields sized to what they hold: an address fits one address, a number stays short. */
+  #stake-beneficiary, #ra-token, #r-check, #d-token, #r-token, #bridge-source-token, #bridge-reward-token,
+  #transfer-recipient, #trust-addr { max-width: calc(42ch + 28px); }
+  #rr-min-weeks, #rr-max-weeks, #ra-min-weeks, #ra-max-weeks, #r-min-weeks, #r-max-weeks,
+  #d-reward, #bridge-amount { max-width: 18ch; }
+  .amount-field:has(#gift-amount), .amount-field:has(#transfer-amount) { max-width: 26ch; }
+  /* Tables scroll sideways instead of wrapping a value onto a second line. */
+  .table-scroll > table { width: max-content; min-width: 100%; }
+  .table-scroll th, .table-scroll td { white-space: nowrap; }
   .position-table { min-width: 520px; }
   .leaderboard-table { min-width: 400px; }
   .address-label {
@@ -819,12 +828,9 @@
         <section class="glow" id="stick-card">
           <h2 id="stake-title">Stick</h2>
           <div>
-            <div style="display:flex;gap:8px;align-items:stretch">
-              <div style="position:relative;flex:1;min-width:0">
-                <input aria-label="Amount of underlying tokens to stick" inputmode="decimal" id="stake-amount" placeholder="10" style="padding-right:64px;height:100%">
-                <span id="stake-symbol" class="mut" style="position:absolute;right:10px;top:50%;transform:translateY(-50%)"></span>
-              </div>
-              <button id="stake" style="margin-top:0;flex:none">Stick</button>
+            <div style="position:relative">
+              <input aria-label="Amount of underlying tokens to stick" inputmode="decimal" id="stake-amount" placeholder="10" style="padding-right:64px">
+              <span id="stake-symbol" class="mut" style="position:absolute;right:10px;top:50%;transform:translateY(-50%)"></span>
             </div>
             <div class="mut" style="margin-top:3px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
               <button type="button" class="link text-button" id="stake-balance" title="Use full wallet balance"></button>
@@ -832,6 +838,7 @@
             </div>
           </div>
           <div class="mut stick-quote" id="stake-quote"></div>
+          <button id="stake" style="width:100%;margin-top:12px">Stick</button>
         </section>
         <div class="feed-panel" id="p-latest">
           <h2 class="feed-head"><svg class="tab-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7.5H13.5M12 10.5H13.5M6 13.5H13.5M6 16.5H13.5M16.5 7.5H19.875C20.4963 7.5 21 8.00368 21 8.625V18C21 19.2426 19.9926 20.25 18.75 20.25M16.5 7.5V18C16.5 19.2426 17.5074 20.25 18.75 20.25M16.5 7.5V4.875C16.5 4.25368 15.9963 3.75 15.375 3.75H4.125C3.50368 3.75 3 4.25368 3 4.875V18C3 19.2426 4.00736 20.25 5.25 20.25H18.75M6 7.5H9V10.5H6V7.5Z"/></svg>Latest</h2>
