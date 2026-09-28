@@ -75,7 +75,7 @@ function fixture({ chain = null, deployed = [1, 10, 8453, 84532, 11155420], hash
     clearHomeSecuredChart() {}, setTab() {}, closeWalletMenu() {},
     configuredStickiestCards: () => [], configuredAirdropItems: async () => [],
     mountHomeSecuredChart() {}, homeSecuredSeries: () => ({}), hydrateLogos: async () => {},
-    tokenLogo: () => '', esc: String, stickyLabel: info => info.stSymbol, formatUnits: value => String(value), pct: String,
+    tokenLogo: () => '', esc: String, stickyLabel: info => info.stSymbol, formatUnits: value => String(value), formatAmount: value => String(value), pct: String,
     renderFeed: (el, items, empty = 'no activity yet') => { el.innerHTML = items.length ? items.map(item => item.html ?? item).join('') : empty; },
     renderProject: async () => {}, renderAccount: async () => {}, projectIdForHandle: async () => null,
     homeChainData: async chainId => chainResult(chainId),

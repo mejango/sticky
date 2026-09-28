@@ -35,7 +35,7 @@ function functionSource(name) {
 }
 
 const names = [
-  'formatUnits', 'parseUnits', 'formatDuration', 'actionAddress', 'rewardTokenAddress', 'positiveAmount',
+  'formatUnits', 'formatAmount', 'parseUnits', 'formatDuration', 'actionAddress', 'rewardTokenAddress', 'positiveAmount',
   'beginAction', 'reviewAction', 'actionCall', 'hasRewardsToVest', 'requireTokenBalance', 'tokenApprovalTxs',
   'rewardTokenMeta', 'asApproveTx', 'asTrustTx', 'asConfigTx', 'asDisableTxs', 'setTrust', 'fundRewards',
   'claimReward', 'saveAutoStick', 'toggleAutoStick', 'repairAutoStick', 'autoStickNow', 'beginAutoStickVesting',

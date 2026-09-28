@@ -399,6 +399,15 @@ function formatUnits(v, decimals, dp = 4) {
   const fracStr = frac.toString().padStart(dp, "0").replace(/0+$/, "");
   return fracStr ? `${whole}.${fracStr}` : whole.toString();
 }
+// Every displayed amount, same rules as juicebox.money's formatTokenAmount: grouped, at most
+// `maxDigits` decimals, and a tiny amount shows its first significant figure instead of 0.
+// Inputs and exact review rows keep formatUnits at full precision.
+function formatAmount(v, decimals, maxDigits = 4) {
+  const value = Number(formatUnits(v, decimals, decimals));
+  if (value === 0) return "0";
+  if (value > 0 && value < 0.0001) return value.toFixed(Math.ceil(-Math.log10(value))).replace(/0+$/, "");
+  return value.toLocaleString("en-US", { maximumFractionDigits: maxDigits });
+}
 function parseUnits(str, decimals) {
   if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) throw new Error("invalid token decimals");
   const input = String(str).trim();
@@ -777,15 +786,15 @@ async function renderSiblings(projectId, info, current) {
   if (!current()) return;
   const totals = siblingTotals(rows);
   const cell = (row) => row.backing
-    ? `<td>${formatUnits(row.backing.backing, row.backing.decimals)} ${esc(row.backing.symbol)}</td><td>${formatUnits(row.backing.supply, 18)} ${esc(info.stSymbol)}</td>`
+    ? `<td>${formatAmount(row.backing.backing, row.backing.decimals)} ${esc(row.backing.symbol)}</td><td>${formatAmount(row.backing.supply, 18)} ${esc(info.stSymbol)}</td>`
     : `<td colspan="2" class="mut">${esc(row.error ? "Could not read this chain." : "Not found yet.")}</td>`;
   const link = (row) => row.self
     ? `${esc(chainById(row.chainId)?.name || row.chainId)} <span class="mut">#${row.projectId} (this page)</span>`
     : `<a class="link" href="?chain=${row.chainId}#/project/${row.projectId}">${esc(chainById(row.chainId)?.name || row.chainId)} #${row.projectId}</a>`;
   $("p-chains").innerHTML = rows.map((row) => `<tr><td>${row.projectId === undefined ? esc(chainById(row.chainId)?.name || row.chainId) : link(row)}</td>${cell(row)}</tr>`).join("")
     + missing.map((chainId) => `<tr><td>${esc(chainById(chainId)?.name || chainId)}</td><td colspan="2" class="mut">Planned at launch. Not deployed yet.</td></tr>`).join("")
-    + `<tr class="total"><td>Total</td><td>${totals.backing === null ? "Backed by different tokens" : `${formatUnits(totals.backing, totals.decimals)} ${esc(totals.symbol)}`}</td>`
-    + `<td>${formatUnits(totals.supply, 18)} ${esc(info.stSymbol)}</td></tr>`;
+    + `<tr class="total"><td>Total</td><td>${totals.backing === null ? "Backed by different tokens" : `${formatAmount(totals.backing, totals.decimals)} ${esc(totals.symbol)}`}</td>`
+    + `<td>${formatAmount(totals.supply, 18)} ${esc(info.stSymbol)}</td></tr>`;
   $("p-chains-note").textContent = totals.complete ? "" : "Some chains could not be read. Totals cover the chains shown.";
   section.classList.remove("hide");
 }
@@ -1084,10 +1093,10 @@ async function activityItems(logs, includeProject, reader = pageReader()) {
     let html;
     if (log.topics[0] === TOPIC.Staked) {
       const autoStuck = decAddress(log.data, 0).toLowerCase() === adapter;
-      html = `<span class="addr">${holder}</span> <span class="verb">${autoStuck ? "auto-stuck" : "received"}</span> ${formatUnits(decUint(log.data, 1), 18)} ${esc(info.stSymbol)}`;
+      html = `<span class="addr">${holder}</span> <span class="verb">${autoStuck ? "auto-stuck" : "received"}</span> ${formatAmount(decUint(log.data, 1), 18)} ${esc(info.stSymbol)}`;
     } else if (log.topics[0] === TOPIC.Unstaked) {
       // Burns and outgoing transfers reduce the position too; this event does not prove an underlying payout.
-      html = `<span class="addr">${holder}</span> <span class="verb out">removed</span> ${formatUnits(decUint(log.data, 0), 18)} ${esc(info.stSymbol)} from their position`;
+      html = `<span class="addr">${holder}</span> <span class="verb out">removed</span> ${formatAmount(decUint(log.data, 0), 18)} ${esc(info.stSymbol)} from their position`;
     } else if (log.topics[0] === TOPIC.StreakStarted) {
       html = `<span class="addr">${holder}</span> <span class="verb">got sticky</span>`;
     } else {
@@ -1124,7 +1133,7 @@ async function airdropItems(logs, reader = pageReader()) {
     } catch {
       continue;
     }
-    const amount = formatUnits(decUint(log.data, 1), 18);
+    const amount = formatAmount(decUint(log.data, 1), 18);
     const self = holder.toLowerCase() === account().toLowerCase() ? " (you)" : "";
     items.push({
       ts: log.ts,
@@ -1155,7 +1164,7 @@ async function indexedActivityItems(events, reader) {
     items.push({
       ts: event.ts,
       html: feedCard(info, reader, event.projectId, event.ts,
-        `<span class="addr">${shortAddr(event.holder)}</span> ${verb} ${formatUnits(event.tokens, 18)} ${esc(info.stSymbol)}`),
+        `<span class="addr">${shortAddr(event.holder)}</span> ${verb} ${formatAmount(event.tokens, 18)} ${esc(info.stSymbol)}`),
     });
   }
   return items.reverse();
@@ -1175,7 +1184,7 @@ async function indexedAirdropItems(events, reader) {
     items.push({
       ts: event.ts,
       html: feedCard(info, reader, event.projectId, event.ts,
-        `<span class="addr">${addressLabel(event.holder)}${self}</span> received ${formatUnits(event.tokens, 18)} ${esc(info.stSymbol)}`
+        `<span class="addr">${addressLabel(event.holder)}${self}</span> received ${formatAmount(event.tokens, 18)} ${esc(info.stSymbol)}`
         + ` from <span class="addr">${addressLabel(event.payer)}</span>`),
     });
   }
@@ -1278,21 +1287,6 @@ for (const [prefix, names, select] of [
 }
 
 // ------------------------------------------------------ home secured chart
-const groupAmount = (value, decimals = 18, dp = 2) => {
-  const [whole, fraction] = formatUnits(value, decimals, dp).split(".");
-  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  return fraction ? `${grouped}.${fraction}` : grouped;
-};
-
-const compactAmount = (value, decimals = 18) => {
-  const numeric = Number(formatUnits(value, decimals, 2));
-  if (!Number.isFinite(numeric)) return groupAmount(value, decimals, 0);
-  return new Intl.NumberFormat(undefined, {
-    notation: numeric >= 1_000 ? "compact" : "standard",
-    maximumFractionDigits: numeric >= 10 ? 1 : 2,
-  }).format(numeric);
-};
-
 const USD_DECIMALS = 6;
 const USD_SCALE = 10n ** BigInt(USD_DECIMALS);
 const DEXSCREENER_CHAIN = {
@@ -1639,7 +1633,7 @@ function chartSvg(logs, info, projectId) {
     <path d="${path(yStaked, "staked")}" fill="none" stroke="#1c2d33" stroke-width="1.3" opacity="0.75"/>
     <path d="${path(yStreaks, "streaks")}" fill="none" stroke="#2fb3c7" stroke-width="2"/>
     <text x="${PAD}" y="14" fill="#1a8fa1" font-size="10" font-weight="600">Peak: ${maxStreaks} active stick${maxStreaks === 1 ? "" : "s"}</text>
-    <text x="${W - 10}" y="14" fill="#1c2d33" font-size="10" font-weight="600" text-anchor="end">Peak: ${formatUnits(maxStaked, 18, 2)} ${esc(info.stSymbol)} stuck</text>
+    <text x="${W - 10}" y="14" fill="#1c2d33" font-size="10" font-weight="600" text-anchor="end">Peak: ${formatAmount(maxStaked, 18, 2)} ${esc(info.stSymbol)} stuck</text>
     <text x="${PAD - 6}" y="${H - 21}" fill="#64808a" font-size="10" text-anchor="end">0</text>
     <text x="${PAD}" y="${H - 8}" fill="#64808a" font-size="10">${date(t0)}</text>
     <text x="${W - 10}" y="${H - 8}" fill="#64808a" font-size="10" text-anchor="end">now</text>
@@ -1691,7 +1685,7 @@ function chartSvg(logs, info, projectId) {
         card.setAttribute("transform", `translate(${cardX} 25)`);
         dateLabel.textContent = date(ts);
         streaksLabel.textContent = `${point.streaks} active stick${point.streaks === 1 ? "" : "s"}`;
-        lockedLabel.textContent = `${formatUnits(point.staked, 18, 2)} ${info.stSymbol}`;
+        lockedLabel.textContent = `${formatAmount(point.staked, 18, 2)} ${info.stSymbol}`;
         chart.setAttribute("aria-label", `${date(ts)}: ${streaksLabel.textContent}; ${lockedLabel.textContent}`);
         hover.style.display = "";
       };
@@ -1720,7 +1714,7 @@ function pieSvg(active, symbol, tokenSupply) {
     const share = Number((row.staked * 10_000n) / total) / 10_000;
     const percent = Number((row.staked * 1_000_000n) / total) / 10_000;
     const self = row.holder.toLowerCase() === (account() || "").toLowerCase() ? ", you" : "";
-    const label = `${shortAddr(row.holder)}${self}: ${formatUnits(row.staked, 18)} ${symbol}, ${percent.toFixed(2)}%`;
+    const label = `${shortAddr(row.holder)}${self}: ${formatAmount(row.staked, 18)} ${symbol}, ${percent.toFixed(2)}%`;
     const length = Math.max(share * C - gap, 0.5);
     const seg = `<circle class="owner-pie-slice" data-pie-index="${i}" r="${R}" cx="70" cy="70" fill="none"
       stroke="var(--amber)" stroke-width="22" stroke-dasharray="${length.toFixed(2)} ${C.toFixed(2)}"
@@ -1735,7 +1729,7 @@ function pieSvg(active, symbol, tokenSupply) {
       <text class="owner-pie-wallet" x="70" y="60"></text>
       <text class="owner-pie-balance" x="70" y="77"></text>
       <text class="owner-pie-percent" x="70" y="94"></text>
-    </g></svg><div class="owner-pie-total"><b>${formatUnits(total, 18)}</b> ${esc(symbol)}
+    </g></svg><div class="owner-pie-total"><b>${formatAmount(total, 18)}</b> ${esc(symbol)}
       <span class="owner-pie-separator" aria-hidden="true">|</span> <b>${totalPercent.toFixed(2)}%</b> of all ${esc(symbol)}</div>
     <span class="sr-only owner-pie-live" aria-live="polite"></span></div>`;
 
@@ -1753,7 +1747,7 @@ function pieSvg(active, symbol, tokenSupply) {
         if (!row) return;
         const percent = Number((row.staked * 1_000_000n) / total) / 10_000;
         const self = row.holder.toLowerCase() === (account() || "").toLowerCase() ? " (you)" : "";
-        const amount = `${formatUnits(row.staked, 18)} ${symbol}`;
+        const amount = `${formatAmount(row.staked, 18)} ${symbol}`;
         walletLabel.textContent = `${shortAddr(row.holder)}${self}`;
         balanceLabel.textContent = amount;
         percentLabel.textContent = `${percent.toFixed(2)}%`;
@@ -1926,8 +1920,8 @@ function stickiestCardHtml(group, rank) {
   const amount = (card) => card.pool?.sigma ?? card.totalStaked;
   const same = group.cards.every((card) => card.info.symbol === first.info.symbol && decimals(card) === decimals(first));
   const backing = same
-    ? `${formatUnits(group.cards.reduce((sum, card) => sum + amount(card), 0n), decimals(first))} ${esc(first.info.symbol)}`
-    : group.cards.map((card) => `${formatUnits(amount(card), decimals(card))} ${esc(card.info.symbol)}`).join(", ");
+    ? `${formatAmount(group.cards.reduce((sum, card) => sum + amount(card), 0n), decimals(first))} ${esc(first.info.symbol)}`
+    : group.cards.map((card) => `${formatAmount(amount(card), decimals(card))} ${esc(card.info.symbol)}`).join(", ");
   const sticks = group.cards.reduce((sum, card) => sum + card.sticks, 0);
   const tag = first.demo ? "div" : "a";
   const chains = first.demo ? "" : ` ${chainIcons(group.cards.map((card) => card.chainId))}`;
@@ -2065,7 +2059,7 @@ async function renderProject(projectId) {
     });
   }
   const active = rows.filter((row) => row.staked > 0n).sort((a, b) => (b.staked > a.staked ? 1 : -1));
-  $("h-staked").textContent = `${formatUnits(totalStaked, 18)} ${info.stSymbol}`;
+  $("h-staked").textContent = `${formatAmount(totalStaked, 18)} ${info.stSymbol}`;
   $("h-streakers").textContent = active.length;
   renderHeaderAges(rows, pin.timestamp);
   const projectChains = await projectChainIds(projectId);
@@ -2110,15 +2104,15 @@ async function renderProject(projectId) {
       + `</div>`
     + `<div class="token-meta-row">`
       + meta("Sticks", `${esc(info.name)} (${copySymbol(info.symbol, info.stakedToken)})`)
-      + meta("Sticky supply", `${formatUnits(totalStaked, 18)} ${copySymbol(info.stSymbol, info.stToken)}`)
-      + meta("Pool backing", `${formatUnits(pool.sigma, info.decimals)} ${copySymbol(info.symbol, info.stakedToken)}`)
-      + (pool.orphaned > 0n ? meta("Unowned backing", `${formatUnits(pool.orphaned, info.decimals)} ${esc(info.symbol)}`,
+      + meta("Sticky supply", `${formatAmount(totalStaked, 18)} ${copySymbol(info.stSymbol, info.stToken)}`)
+      + meta("Pool backing", `${formatAmount(pool.sigma, info.decimals)} ${copySymbol(info.symbol, info.stakedToken)}`)
+      + (pool.orphaned > 0n ? meta("Unowned backing", `${formatAmount(pool.orphaned, info.decimals)} ${esc(info.symbol)}`,
         "Funds left when no Sticky shares existed are excluded from issuance and redemption; a new depositor cannot claim them.") : "")
       + meta("Stickiness bonus", pct(info.reward), bonusRule)
       + (pool.supply > 0n
         ? meta(
             "Backing",
-            `1 ${esc(info.stSymbol)} ≈ ${formatUnits((pool.sigma * 10n ** 18n) / pool.supply, info.decimals)} ${esc(info.symbol)}`,
+            `1 ${esc(info.stSymbol)} ≈ ${formatAmount((pool.sigma * 10n ** 18n) / pool.supply, info.decimals)} ${esc(info.symbol)}`,
             "New sticks are priced against current backing. Donations, burns, and cash out taxes can change the number of Sticky tokens issued per underlying token.",
           )
         : "")
@@ -2180,15 +2174,15 @@ async function refreshPosition() {
   const current = streakStart === 0n ? 0n : BigInt(Math.max(0, now - Number(streakStart)));
   const header = ctx.streakRows;
   if (header?.chainId === chainId && header.projectId === projectId) renderHeaderAges(header.rows, now);
-  $("p-balance").textContent = `${formatUnits(staked, 18)} ${info.stSymbol}`;
+  $("p-balance").textContent = `${formatAmount(staked, 18)} ${info.stSymbol}`;
   $("p-current").textContent = formatDuration(current);
   $("p-longest").textContent = formatDuration(longest > current ? longest : current);
-  $("p-wallet").textContent = `${formatUnits(wallet, info.decimals)} ${info.symbol}`;
+  $("p-wallet").textContent = `${formatAmount(wallet, info.decimals)} ${info.symbol}`;
   $("open-unstick").textContent = `Unstick ${info.symbol}`;
   ctx.walletMax = formatUnits(wallet, info.decimals, info.decimals);
   // Full precision so "max" truly unsticks everything (and the full-exit auto-stick check sees a full exit).
   ctx.stakedMax = formatUnits(staked, 18, 18);
-  $("stake-balance").textContent = ctx.walletMax;
+  $("stake-balance").textContent = formatAmount(wallet, info.decimals);
   $("stake-balance-label").textContent = ` ${info.symbol} in wallet`;
   renderTrustedSenders().catch(() => {});
   const tbody = $("tranches");
@@ -2198,7 +2192,7 @@ async function refreshPosition() {
     const stuckSince = new Date(tranche.timestamp * 1000).toLocaleString(undefined, {
       month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit",
     });
-    row.innerHTML = `<td>${formatUnits(tranche.amount, 18)}</td>` +
+    row.innerHTML = `<td>${formatAmount(tranche.amount, 18)}</td>` +
       `<td>${stuckSince}</td>` +
       `<td>${formatDuration(Math.max(0, now - tranche.timestamp))}</td>`;
     tbody.appendChild(row);
@@ -3370,7 +3364,7 @@ function roundSentence(schedule) {
 
 // One pot's lines, stating amounts and dates. Pure so the copy is tested.
 function rewardLines(position, meta, funded, fundedThisRound, schedule) {
-  const amt = (value) => `${formatUnits(value, meta.decimals)} ${meta.symbol}`;
+  const amt = (value) => `${formatAmount(value, meta.decimals)} ${meta.symbol}`;
   const lines = [["Claimable now", amt(position.collectable)]];
   if (position.vesting > 0n) {
     lines.push(["Vesting", `${amt(position.vesting)}. Next unlock ${dateLabel(position.nextUnlockAt)}.`
@@ -3741,8 +3735,8 @@ function asStatusLine(state) {
     case AS_STATUS.COOLDOWN:
       return `Next auto-stick in ${formatDuration(Math.max(0, state.nextCompoundAt - now))}`;
     case AS_STATUS.BELOW_MINIMUM:
-      return `${formatUnits(state.collectable, info.decimals)} ${info.symbol} ready | minimum `
-        + `${formatUnits(state.minimum, info.decimals)}`;
+      return `${formatAmount(state.collectable, info.decimals)} ${info.symbol} ready | minimum `
+        + `${formatAmount(state.minimum, info.decimals)}`;
     case AS_STATUS.NOT_TRUSTED:
       return "Permission removed | repair setup";
     case AS_STATUS.INSUFFICIENT_ALLOWANCE:
@@ -3791,7 +3785,7 @@ async function renderAutoStick() {
       + `them.</span>`;
   } else {
     stateHtml = `<strong>On</strong><span>Unlocked ${esc(info.symbol)} rewards auto-stick when at least `
-      + `${formatUnits(state.minimum, info.decimals)} ${esc(info.symbol)} is ready, at most once every `
+      + `${formatAmount(state.minimum, info.decimals)} ${esc(info.symbol)} is ready, at most once every `
       + `${formatDuration(state.cooldown)}.</span>`;
     if (state.lastCompoundedAt) {
       stateHtml += `<span>Last auto-stick: ${ago(state.lastCompoundedAt)}</span>`;
@@ -3987,14 +3981,14 @@ async function autoStickNow() {
       ["PROJECT", bind("projectId", ctx.currentId, { note: stickyLabel(info) })],
       ["HOLDER", bind("holder", holder)],
       ["GROUPS", bind("groupIds", groupIds, { kind: "groups" })],
-      ["READY", `${formatUnits(state.collectable, info.decimals)} ${info.symbol}`],
+      ["READY", `${formatAmount(state.collectable, info.decimals)} ${info.symbol}`],
       ["ESTIMATED STICKY TOKENS", `${formatUnits(expectedMint, 18, 18)} ${info.stSymbol}`],
       ["ISSUANCE", "Priced at the backing when it runs. A mint of zero tokens reverts."],
       ["EFFECT", `Collects your unlocked ${info.symbol} rewards and sticks them for you in a new tranche.`],
     ],
     data: SEL.asCompoundFor + encode(["uint256", "address", "uint256[]"], [ctx.currentId, holder, groupIds]),
   }];
-  if (!(await reviewAction(action, `Stick ready ${info.symbol} rewards`, txs, [["Stick", `${formatUnits(state.collectable, info.decimals)} ${info.symbol} of unlocked rewards`]]))) return;
+  if (!(await reviewAction(action, `Stick ready ${info.symbol} rewards`, txs, [["Stick", `${formatAmount(state.collectable, info.decimals)} ${info.symbol} of unlocked rewards`]]))) return;
   txStatus("Rewards auto-stuck", "ok");
   await renderProject(ctx.currentId);
 }
@@ -4282,7 +4276,7 @@ async function renderStickQuote() {
     if (!current()) return;
     const mint = await previewStickMint(projectId, info, amount, beneficiary, payer);
     if (!current()) return;
-    el.textContent = `Estimated mint: ${formatUnits(mint, 18)} ${pool.stSymbol}. The final review sets your minimum.`
+    el.textContent = `Estimated mint: ${formatAmount(mint, 18)} ${pool.stSymbol}. The final review sets your minimum.`
       + (pool.reward === MAX_TAX ? " 100% stickiness bonus: unsticking returns no underlying tokens." : "");
   } catch (error) {
     if (current()) el.textContent = `Quote unavailable: ${error.message}`;
@@ -4317,7 +4311,7 @@ async function renderUnstickQuote() {
     const info = await projectInfo(projectId);
     const quote = await unstickQuote(projectId, info, holder, count > pool.supply ? pool.supply : count);
     if (!current()) return;
-    const amt = (v) => `${formatUnits(v, pool.decimals)} ${pool.symbol}`;
+    const amt = (v) => `${formatAmount(v, pool.decimals)} ${pool.symbol}`;
     const share = count >= pool.supply ? pool.sigma : (pool.sigma * count) / pool.supply;
     const stays = share > quote.gross ? share - quote.gross : 0n;
     el.textContent = `You get ${amt(quote.net)}.`
@@ -5079,11 +5073,11 @@ async function appendWalletBalances(menu, address) {
   try {
     const rows = [];
     const native = decUint(await rpc("eth_getBalance", [address, "latest"]));
-    rows.push(["ETH", formatUnits(native, 18)]);
+    rows.push(["ETH", formatAmount(native, 18)]);
     if (ctx.currentId !== null) {
       const info = await projectInfo(ctx.currentId);
-      rows.push([info.symbol, formatUnits(decUint(await view(info.stakedToken, SEL.balanceOf, encAddress(address))), info.decimals)]);
-      rows.push([info.stSymbol, formatUnits(decUint(await view(info.stToken, SEL.balanceOf, encAddress(address))), 18)]);
+      rows.push([info.symbol, formatAmount(decUint(await view(info.stakedToken, SEL.balanceOf, encAddress(address))), info.decimals)]);
+      rows.push([info.stSymbol, formatAmount(decUint(await view(info.stToken, SEL.balanceOf, encAddress(address))), 18)]);
     }
     if (!panel.isConnected) return;
     panel.innerHTML = rows.map(([label, value]) =>
@@ -5312,7 +5306,7 @@ async function renderAccount(address) {
         `<a class="card-item pickc" href="#/project/${id}"><div class="card-head">` +
         `${tokenLogo(info.stakedToken, info.symbol, 26)}<div style="flex:1;min-width:0">` +
         `<div style="font-weight:700">${esc(stickyLabel(info))} <span class="mut">#${id}</span></div>` +
-        `<div class="kv"><span class="mut">Stuck:</span> ${formatUnits(staked, 18)} ${esc(info.stSymbol)}</div>` +
+        `<div class="kv"><span class="mut">Stuck:</span> ${formatAmount(staked, 18)} ${esc(info.stSymbol)}</div>` +
         `<div class="kv"><span class="mut">Time:</span> ${formatDuration(current)}</div>` +
         `<div class="kv"><span class="mut">Longest:</span> ${formatDuration(Math.max(Number(longest), current))}</div>` +
         `</div></div></a>`,
@@ -5675,7 +5669,7 @@ function renderBoard() {
           const self = row.holder.toLowerCase() === (account() || "").toLowerCase() ? " (you)" : "";
           const share = total > 0n ? Number(row.staked * 10_000n / total) / 100 : 0;
           return `<tr data-owner="${esc(row.holder.toLowerCase())}"><td>${page * BOARD_PAGE + i + 1}</td><td class="addr">${addressLabel(row.holder)}${self}</td>` +
-            `<td>${share.toFixed(1)}%</td><td>${formatUnits(row.staked, 18)} ${esc(symbol)}</td>` +
+            `<td>${share.toFixed(1)}%</td><td>${formatAmount(row.staked, 18)} ${esc(symbol)}</td>` +
             `<td>${formatDuration(row.current)}</td></tr>`;
         }).join("")
       : `<tr><td colspan="5" class="mut">Nobody is stuck yet.</td></tr>`;
