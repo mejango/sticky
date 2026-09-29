@@ -55,7 +55,7 @@ function context({ terminalLogs = [], failTerminal = false } = {}) {
   });
   vm.runInContext(`${block('const TOPIC =')}\n${codec}\n${constSource('esc')}\n${block('const feedCard =')}\n`
     + ['formatUnits', 'formatAmount', 'formatDuration', 'ago', 'moveKey', 'terminalMoves', 'underlyingAmount', 'shareAmount', 'logMove',
-      'activityItems', 'airdropItems'].map(functionSource).join('\n'), c);
+      'sameTxKey', 'activityItems', 'airdropItems'].map(functionSource).join('\n'), c);
   c.TOPIC = vm.runInContext('TOPIC', c);
   c.scans = scans;
   return c;
@@ -162,4 +162,22 @@ test('stuck amounts on the page are the underlying token; Sticky token counts ke
   assert.equal(c.backingOfShares(10n, { supply: 100n, sigma: 101n }), 10n);
   assert.equal(c.backingOfShares(50n, { supply: 100n, sigma: 202n }), 101n);
   assert.equal(c.backingOfShares(50n, { supply: 0n, sigma: 0n }), 0n);
+});
+
+test('a streak that starts or ends in a stick or unstick transaction reads on that row', async () => {
+  const c = context();
+  const streak = (topic, holder, tx, data = '') => hookLog(c, topic, holder, data, tx);
+  const logs = [
+    staked(c, HOLDER, HOLDER, 10n * E18, 10n * E18, '0xe1'),
+    streak('StreakStarted', HOLDER, '0xE1'),
+    // Another holder's streak in the same transaction keeps its own row.
+    streak('StreakStarted', RECIPIENT, '0xe1'),
+    unstaked(c, HOLDER, 10n * E18, 0n, '0xe2'),
+    streak('StreakEnded', HOLDER, '0xe2', word(86400)),
+  ];
+  const items = await c.activityItems(logs, false, reader);
+  assert.equal(items.length, 3);
+  assert.match(items[0].html, new RegExp(`removed by ${HOLDER} and came unstuck after <span class="nowrap">`));
+  assert.match(items[1].html, new RegExp(`${RECIPIENT} got sticky`));
+  assert.match(items[2].html, new RegExp(`stuck by ${HOLDER} and got sticky`));
 });
