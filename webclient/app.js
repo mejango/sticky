@@ -1248,14 +1248,24 @@ async function backingFlows(projectId, from, reader = pageReader()) {
   return flows.map(({ log, delta }) => ({ ts: log.ts, delta })).sort((a, b) => a.ts - b.ts);
 }
 
+// One row per transaction, project and holder, like jbm's same-tx groups.
+function sameTxKey(log) {
+  return `${log.chainId ?? ""}:${String(log.transactionHash || "").toLowerCase()}:${log.topics[1]}:${log.topics[2]}`.toLowerCase();
+}
+
 // Decode hook logs into activity cards, newest first. Each card carries the stuck token's logo. Sticks and
-// unsticks show the underlying tokens that came in or went out; transfers show the Sticky tokens moved.
+// unsticks show the underlying tokens that came in or went out; transfers show the Sticky tokens moved. A streak
+// that starts or ends in the same transaction as a stick or unstick reads on that row instead of its own.
 async function activityItems(logs, includeProject, reader = pageReader()) {
   const items = [];
   const adapter = (autoStickAdapterOn(reader.chainId) || "").toLowerCase();
   const recent = logs.slice(-40);
   const moves = await terminalMoves(recent, reader);
+  const isMove = (log) => log.topics[0] === TOPIC.Staked || log.topics[0] === TOPIC.Unstaked;
+  const streaks = new Map(recent.filter((log) => log.transactionHash && !isMove(log)).map((log) => [sameTxKey(log), log]));
+  const moved = new Set(recent.filter(isMove).map(sameTxKey));
   for (const log of recent) {
+    if (!isMove(log) && moved.has(sameTxKey(log))) continue;
     const id = decUint(log.topics[1]);
     let info;
     try {
@@ -1265,24 +1275,29 @@ async function activityItems(logs, includeProject, reader = pageReader()) {
     }
     const holder = addressLabel(decAddress(log.topics[2]));
     const row = { info, chainId: reader.chainId, projectId: includeProject ? id : undefined, ts: log.ts };
-    if (log.topics[0] === TOPIC.Staked) {
-      const payer = decAddress(log.data, 0);
-      const autoStuck = payer.toLowerCase() === adapter;
-      const self = payer.toLowerCase() === decAddress(log.topics[2]).toLowerCase();
-      const paid = logMove(moves, log);
-      row.amount = paid === undefined ? shareAmount(decUint(log.data, 1), info) : underlyingAmount(paid, info);
-      row.direction = "in";
-      row.line = autoStuck ? `auto-stuck by ${holder}` : self ? `stuck by ${holder}` : `to ${holder} from ${addressLabel(payer)}`;
-    } else if (log.topics[0] === TOPIC.Unstaked) {
-      // Burns and outgoing transfers reduce the position too; only a cash out in the same transaction pays out.
-      const reclaimed = logMove(moves, log);
-      row.amount = reclaimed === undefined ? shareAmount(decUint(log.data, 0), info) : underlyingAmount(reclaimed, info);
-      row.direction = "out";
-      row.line = reclaimed === undefined ? `removed by ${holder}` : `unstuck by ${holder}`;
+    const streakEnd = (ended) => `came unstuck after <span class="nowrap">${formatDuration(decUint(ended.data, 0))}</span>`;
+    if (isMove(log)) {
+      if (log.topics[0] === TOPIC.Staked) {
+        const payer = decAddress(log.data, 0);
+        const autoStuck = payer.toLowerCase() === adapter;
+        const self = payer.toLowerCase() === decAddress(log.topics[2]).toLowerCase();
+        const paid = logMove(moves, log);
+        row.amount = paid === undefined ? shareAmount(decUint(log.data, 1), info) : underlyingAmount(paid, info);
+        row.direction = "in";
+        row.line = autoStuck ? `auto-stuck by ${holder}` : self ? `stuck by ${holder}` : `to ${holder} from ${addressLabel(payer)}`;
+      } else {
+        // Burns and outgoing transfers reduce the position too; only a cash out in the same transaction pays out.
+        const reclaimed = logMove(moves, log);
+        row.amount = reclaimed === undefined ? shareAmount(decUint(log.data, 0), info) : underlyingAmount(reclaimed, info);
+        row.direction = "out";
+        row.line = reclaimed === undefined ? `removed by ${holder}` : `unstuck by ${holder}`;
+      }
+      const streak = streaks.get(sameTxKey(log));
+      if (streak) row.line += streak.topics[0] === TOPIC.StreakStarted ? " and got sticky" : ` and ${streakEnd(streak)}`;
     } else if (log.topics[0] === TOPIC.StreakStarted) {
       row.lead = `<span>${holder} got sticky</span>`;
     } else {
-      row.lead = `<span>${holder} came unstuck after <span class="nowrap">${formatDuration(decUint(log.data, 0))}</span></span>`;
+      row.lead = `<span>${holder} ${streakEnd(log)}</span>`;
     }
     items.push({ ts: log.ts, html: feedCard(row) });
   }
