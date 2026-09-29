@@ -78,6 +78,65 @@
       throw error;
     } finally { clearTimeout(timer); }
   }
+  // Reads issued together travel together: calls made within a few milliseconds of each other go to the
+  // node as one JSON-RPC batch, answered by id. Log scans, estimates and sends keep their own requests.
+  // A node that rejects or garbles a batch gets each request on its own, so errors keep their shape.
+  const BATCHABLE = new Set(["eth_call", "eth_getCode", "eth_chainId", "eth_blockNumber", "eth_getBlockByNumber", "eth_getTransactionReceipt", "eth_getBalance"]);
+  function rpcError(item) {
+    const error = new Error(String(item.error.message || "The chain RPC rejected the request.").slice(0, 500));
+    error.code = item.error.code;
+    error.data = item.error.data;
+    return error;
+  }
+  function batchedRpc(options = {}) {
+    const windowMs = options.windowMs ?? 8;
+    const maxBatch = options.maxBatch ?? 20;
+    const single = (url, entry) => jsonRpc(url, entry.method, entry.params, { ...entry.options, fetch: options.fetch }).then(entry.resolve, entry.reject);
+    const queues = new Map();
+    async function send(url, chunk) {
+      const fetcher = options.fetch || globalThis.fetch;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), options.timeout || 20000);
+      let body = null;
+      try {
+        const response = await fetcher(url, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify(chunk.map((entry, id) => ({ jsonrpc: "2.0", id, method: entry.method, params: entry.params }))),
+          signal: controller.signal, cache: "no-store", credentials: "omit", redirect: "error",
+        });
+        body = response.ok ? await response.json() : null;
+      } catch { body = null; } finally { clearTimeout(timer); }
+      if (!Array.isArray(body)) { for (const entry of chunk) single(url, entry); return; }
+      const byId = new Map(body.filter((item) => item && typeof item === "object").map((item) => [item.id, item]));
+      chunk.forEach((entry, id) => {
+        const item = byId.get(id);
+        if (!item || (!item.error && !Object.hasOwn(item, "result"))) single(url, entry);
+        else if (item.error) entry.reject(rpcError(item));
+        else entry.resolve(item.result);
+      });
+    }
+    function flush(url) {
+      const queue = queues.get(url);
+      queues.delete(url);
+      if (!queue?.length) return;
+      if (queue.length === 1) return single(url, queue[0]);
+      for (let at = 0; at < queue.length; at += maxBatch) send(url, queue.slice(at, at + maxBatch));
+    }
+    return function rpc(url, method, params, callOptions = {}) {
+      if (!url || typeof url !== "string") return jsonRpc(url, method, params, callOptions);
+      if (!BATCHABLE.has(method)) return jsonRpc(url, method, params, { ...callOptions, fetch: callOptions.fetch || options.fetch });
+      return new Promise((resolve, reject) => {
+        let queue = queues.get(url);
+        if (!queue) {
+          queue = [];
+          queues.set(url, queue);
+          setTimeout(() => { if (queues.get(url) === queue) flush(url); }, windowMs);
+        }
+        queue.push({ method, params, options: callOptions, resolve, reject });
+        if (queue.length >= maxBatch) flush(url);
+      });
+    };
+  }
   // Nodes impose different log range/result limits. Split only rejected ranges and never
   // report a partial response as complete. Deployment fromBlock keeps the scan bounded.
   const RANGE_ERROR = /range|limit|too (?:many|large)|exceed|response size|query returned|block distance/i;
@@ -284,5 +343,5 @@
     return items.length === 1 && /^0x[0-9a-fA-F]{64}$/.test(items[0].txHash || "") ? items[0].txHash : null;
   }
 
-  return { address, assetUrl, deployment, withoutFixtures, jsonRpc, logs, statedRange, graphql, stickyIndex, stickyEvents, projectCreateTx };
+  return { address, assetUrl, deployment, withoutFixtures, jsonRpc, batchedRpc, logs, statedRange, graphql, stickyIndex, stickyEvents, projectCreateTx };
 });

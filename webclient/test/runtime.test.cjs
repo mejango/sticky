@@ -1,6 +1,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { address, assetUrl, deployment, withoutFixtures, jsonRpc, logs, statedRange } = require("../runtime.js");
+const Runtime = require("../runtime.js");
+const { address, assetUrl, deployment, withoutFixtures, jsonRpc, logs, statedRange } = Runtime;
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(require.resolve('../app.js'), 'utf8');
@@ -121,4 +122,38 @@ test("ERC20 string and bytes32 metadata are decoded without trusting offsets or 
   assert.throws(() => abi.decString('0x' + abi.word(2n ** 255n) + abi.word(100)));
   assert.throws(() => abi.decString('0x' + abi.word(32) + abi.word(100)));
   assert.throws(() => abi.decTranches('0x' + abi.word(32) + abi.word(2n ** 255n)));
+});
+
+test('reads issued together travel as one batch and each caller gets its own answer or error', async () => {
+  const bodies = [];
+  const fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    bodies.push(body);
+    return { ok: true, json: async () => body.map(({ id, method }) => method === 'eth_getCode' ? { jsonrpc: '2.0', id, error: { code: 3, message: 'no code' } } : { jsonrpc: '2.0', id, result: `r${id}` }).reverse() };
+  };
+  const rpc = Runtime.batchedRpc({ fetch, windowMs: 1 });
+  const results = await Promise.allSettled([rpc('https://rpc', 'eth_call', [{}]), rpc('https://rpc', 'eth_blockNumber', []), rpc('https://rpc', 'eth_getCode', ['0x1'])]);
+  assert.equal(bodies.length, 1);
+  assert.deepEqual(bodies[0].map(item => item.method), ['eth_call', 'eth_blockNumber', 'eth_getCode']);
+  assert.deepEqual(results.slice(0, 2).map(r => r.value), ['r0', 'r1']);
+  assert.equal(results[2].status, 'rejected');
+  assert.equal(results[2].reason.message, 'no code');
+  assert.equal(results[2].reason.code, 3);
+});
+
+test('a node that rejects batches gets each read on its own, and logs and sends never batch', async () => {
+  const bodies = [];
+  const fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    bodies.push(body);
+    if (Array.isArray(body)) return { ok: false, status: 400, json: async () => ({ error: { message: 'batch not supported' } }) };
+    return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: body.method }) };
+  };
+  const rpc = Runtime.batchedRpc({ fetch, windowMs: 1 });
+  assert.deepEqual(await Promise.all([rpc('https://rpc', 'eth_call', []), rpc('https://rpc', 'eth_chainId', [])]), ['eth_call', 'eth_chainId']);
+  assert.equal(bodies.filter(Array.isArray).length, 1);
+  bodies.length = 0;
+  await Promise.all([rpc('https://rpc', 'eth_getLogs', [{}]), rpc('https://rpc', 'eth_sendRawTransaction', ['0x']), rpc('https://rpc', 'eth_estimateGas', [{}])]);
+  assert.equal(bodies.filter(Array.isArray).length, 0);
+  assert.deepEqual(bodies.map(body => body.method), ['eth_getLogs', 'eth_sendRawTransaction', 'eth_estimateGas']);
 });

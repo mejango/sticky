@@ -223,9 +223,11 @@ window.addEventListener("load", () => requestAnimationFrame(setInitialTopFold), 
 window.addEventListener("pageshow", () => requestAnimationFrame(setInitialTopFold));
 setTimeout(setInitialTopFold, 150);
 
+// One batching transport for every chain read, so parallel reads share requests.
+const batchedRpc = StickyRuntime.batchedRpc();
 async function rpc(method, params) {
   if (window.__DEMO_RPC) return window.__DEMO_RPC(method, params);
-  return StickyRuntime.jsonRpc($("rpc").value, method, params);
+  return batchedRpc($("rpc").value, method, params);
 }
 
 // Match Juicescan's ENS behavior: reverse-resolve every account against Ethereum mainnet's Universal Resolver,
@@ -2251,6 +2253,10 @@ async function renderProject(projectId) {
   renderEmptyPosition(info);
   renderProjectLabels(projectId, info);
 
+  // Backing and the project's chains need only its info: they read while the history scan runs.
+  const poolRead = poolBacking(projectId, info);
+  const chainsRead = projectChainIds(projectId);
+  for (const read of [poolRead, chainsRead]) read.catch(() => {});
   ctx.projectLogs = null;
   const scanned = await projectLogs(projectId);
   if (!current()) return;
@@ -2264,7 +2270,7 @@ async function renderProject(projectId) {
   if (!current()) return;
   const rows = holderRows(projectId, logs, pin.timestamp);
   ctx.streakRows = { chainId: ctx.chainId, projectId, rows };
-  const pool = await poolBacking(projectId, info);
+  const pool = await poolRead;
   if (!current()) return;
   const totalStaked = pool.supply;
   ctx.pool = pool;
@@ -2293,7 +2299,7 @@ async function renderProject(projectId) {
   $("stake").disabled = false;
   $("stake").textContent = "Stick";
   $("view-project").removeAttribute("aria-busy");
-  const projectChains = await projectChainIds(projectId);
+  const projectChains = await chainsRead;
   if (!current()) return;
   renderProjectChains(projectChains);
   renderSiblings(projectId, info, current).catch(() => {});
@@ -2960,7 +2966,7 @@ function stickyDeploymentFor(chainId) {
 }
 
 async function rpcAt(url, method, params) {
-  return StickyRuntime.jsonRpc(url, method, params);
+  return batchedRpc(url, method, params);
 }
 
 const viewAt = (deployment, to, selector, args = "") =>
