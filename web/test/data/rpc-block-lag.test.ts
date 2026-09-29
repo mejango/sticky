@@ -1,5 +1,3 @@
-// @vitest-environment node
-
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { base } from 'viem/chains'
 import { createPublicClient, erc20Abi } from 'viem'

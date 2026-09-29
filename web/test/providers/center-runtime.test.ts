@@ -19,7 +19,7 @@ describe('Center runtime', () => {
   it('refuses to build a wallet client on a site that has no Signa configuration', async () => {
     runtime.config = null
     const { centerWalletClient } = await import('@/providers/center-runtime')
-    expect(() => centerWalletClient()).toThrow('Juicebox account is not configured for this site.')
+    expect(() => centerWalletClient()).toThrow('Signa sign-in is not configured for this site.')
     expect(runtime.create).not.toHaveBeenCalled()
   })
   it('preserves the original page before a passkey launch and refuses when it cannot', async () => {

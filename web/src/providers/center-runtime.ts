@@ -5,7 +5,7 @@ import { centerReturnPath } from './center-callback'
 const returnKey = 'sticky:center:return:v2'
 let client: ReturnType<typeof createCenterWalletClient> | undefined
 export function centerWalletClient() {
-  if (!CENTER_WALLET_CONFIG || typeof window === 'undefined') throw new Error('Juicebox account is not configured for this site.')
+  if (!CENTER_WALLET_CONFIG || typeof window === 'undefined') throw new Error('Signa sign-in is not configured for this site.')
   client ??= createCenterWalletClient({ ...CENTER_WALLET_CONFIG, callbackUri: window.location.origin + '/center/callback' })
   return client
 }

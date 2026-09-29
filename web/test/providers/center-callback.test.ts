@@ -23,8 +23,10 @@ describe('Center callback containment', () => {
       expect(() => centerReturnPath(path), path).toThrow('The original Sticky page is unavailable.')
     expect(() => centerReturnPath(undefined as unknown as string)).toThrow()
   })
-  it('checks a hostile path in linear time', () => {
-    expect(() => centerReturnPath('/' + 'a'.repeat(1000) + '!')).toThrow()
+  it('refuses a short adversarial path at once: a backtracking pattern needs seconds for it', () => {
+    const started = performance.now()
+    expect(() => centerReturnPath('/' + 'a'.repeat(30) + '!')).toThrow()
+    expect(performance.now() - started).toBeLessThan(50)
   })
 })
 

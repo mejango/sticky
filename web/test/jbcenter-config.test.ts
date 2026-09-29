@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { JBCENTER_DEFAULT_URL } from '@bananapus/nana-sdk-core/jbcenter'
 import { jbCenterAppOrigin, jbCenterBaseUrl } from '@/lib/jbcenter-config'
 
 describe('JB Center environment', () => {
@@ -40,15 +41,36 @@ describe('JB Center environment', () => {
     expect(jbCenterBaseUrl()).toBe('https://center.example')
     expect(jbCenterAppOrigin()).toBe('https://dev.sticky.center')
   })
+})
 
-  it('names the local server in development and sticky.center everywhere else when no site is set', () => {
+describe('Sticky JB Center deployment origins', () => {
+  it('uses Sticky production origin for production without borrowing another application identity', () => {
+    vi.stubEnv('NODE_ENV', 'production')
     vi.stubEnv('NEXT_PUBLIC_SITE_URL', '')
+    vi.stubEnv('NEXT_PUBLIC_JBCENTER_URL', '')
+    expect(jbCenterAppOrigin()).toBe('https://sticky.center')
+    expect(jbCenterBaseUrl()).toBe(JBCENTER_DEFAULT_URL)
+  })
+
+  it('maps supported local and staging origins to development Center', () => {
+    vi.stubEnv('NEXT_PUBLIC_JBCENTER_URL', '')
+    for (const origin of ['http://127.0.0.1:8788', 'https://sticky-dev.up.railway.app', 'https://dev.sticky.center']) {
+      expect(jbCenterAppOrigin(origin)).toBe(origin)
+      expect(jbCenterBaseUrl(origin)).toBe('https://dev.juicebox.center')
+    }
+  })
+
+  it('uses the default npm development port when no explicit site URL is set', () => {
     vi.stubEnv('NODE_ENV', 'development')
+    vi.stubEnv('NEXT_PUBLIC_SITE_URL', '')
+    vi.stubEnv('NEXT_PUBLIC_JBCENTER_URL', '')
     expect(jbCenterAppOrigin()).toBe('http://127.0.0.1:8788')
     expect(jbCenterBaseUrl()).toBe('https://dev.juicebox.center')
+  })
 
-    vi.stubEnv('NODE_ENV', 'production')
-    expect(jbCenterAppOrigin()).toBe('https://sticky.center')
-    expect(jbCenterBaseUrl()).toBe('https://juicebox.center')
+  it('respects an explicitly configured endpoint without altering the real app origin', () => {
+    vi.stubEnv('NEXT_PUBLIC_JBCENTER_URL', 'https://center.example')
+    expect(jbCenterBaseUrl('https://sticky.center/path')).toBe('https://center.example')
+    expect(jbCenterAppOrigin('https://sticky.center/path')).toBe('https://sticky.center')
   })
 })

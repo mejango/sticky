@@ -1,3 +1,5 @@
+import { act, createElement } from 'react'
+import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const ALICE = '0x1111111111111111111111111111111111111111'
@@ -10,12 +12,26 @@ async function freshStore() {
   return import('@/lib/viewAs')
 }
 
+type Store = Awaited<ReturnType<typeof freshStore>>
+
+// Renders a component that reads the store through its hook, the way the header will.
+async function mountProbe(store: Store) {
+  const seen: { value?: ReturnType<Store['useViewAs']> } = {}
+  function Probe() {
+    seen.value = store.useViewAs()
+    return null
+  }
+  const root = createRoot(document.createElement('div'))
+  await act(async () => root.render(createElement(Probe)))
+  return { latest: () => seen.value!, unmount: () => act(async () => root.unmount()) }
+}
+
 beforeEach(() => {
-  window.localStorage.clear()
+  localStorage.clear()
 })
 
 afterEach(() => {
-  window.localStorage.clear()
+  localStorage.clear()
 })
 
 describe('View as', () => {
@@ -51,6 +67,17 @@ describe('View as', () => {
     expect(store.getViewAs()).toBe(CHECKSUMMED)
   })
 
+  it('is inert without a window (SSR) yet still tracks in memory', async () => {
+    vi.stubGlobal('window', undefined)
+    const store = await freshStore()
+
+    expect(store.getViewAs()).toBeNull()
+    store.setViewAs(ALICE)
+    expect(store.getViewAs()).toBe(ALICE)
+    store.clearViewAs()
+    expect(store.getViewAs()).toBeNull()
+  })
+
   it('refuses writes while it is active, and only then', async () => {
     const store = await freshStore()
     expect(() => store.assertNoViewAs()).not.toThrow()
@@ -62,33 +89,37 @@ describe('View as', () => {
     expect(() => store.assertNoViewAs()).not.toThrow()
   })
 
+  it('notifies useViewAs subscribers', async () => {
+    const store = await freshStore()
+    const probe = await mountProbe(store)
+    expect(probe.latest()).toMatchObject({ viewAs: null, isViewAs: false })
+
+    await act(async () => probe.latest().setViewAs(ALICE))
+    expect(probe.latest()).toMatchObject({ viewAs: ALICE, isViewAs: true })
+
+    await act(async () => probe.latest().clearViewAs())
+    expect(probe.latest()).toMatchObject({ viewAs: null, isViewAs: false })
+
+    await probe.unmount()
+  })
+
   it('follows a change made in another tab', async () => {
     const store = await freshStore()
-    const seen = vi.fn()
-    // Subscribing through the hook's store is what registers the storage listener.
-    const { createRoot } = await import('react-dom/client')
-    const { act, createElement } = await import('react')
-    const host = document.createElement('div')
-    const root = createRoot(host)
-    function Probe() {
-      seen(store.useViewAs().viewAs)
-      return null
-    }
-    await act(async () => root.render(createElement(Probe)))
-    expect(seen).toHaveBeenLastCalledWith(null)
+    const probe = await mountProbe(store)
+    expect(probe.latest().viewAs).toBeNull()
 
     window.localStorage.setItem(STORAGE_KEY, CHECKSUMMED)
     await act(async () => { window.dispatchEvent(new StorageEvent('storage', { key: STORAGE_KEY })) })
-    expect(seen).toHaveBeenLastCalledWith(CHECKSUMMED)
+    expect(probe.latest().viewAs).toBe(CHECKSUMMED)
 
     // Another key changing is not a reason to read the store again.
     window.localStorage.removeItem(STORAGE_KEY)
     await act(async () => { window.dispatchEvent(new StorageEvent('storage', { key: 'something-else' })) })
-    expect(seen).toHaveBeenLastCalledWith(CHECKSUMMED)
+    expect(probe.latest().viewAs).toBe(CHECKSUMMED)
 
     await act(async () => { window.dispatchEvent(new StorageEvent('storage', { key: STORAGE_KEY })) })
-    expect(seen).toHaveBeenLastCalledWith(null)
+    expect(probe.latest().viewAs).toBeNull()
 
-    await act(async () => root.unmount())
+    await probe.unmount()
   })
 })

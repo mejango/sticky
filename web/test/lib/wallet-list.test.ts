@@ -44,6 +44,16 @@ describe("offerableWallets", () => {
     expect(list.map((c) => c.id)).toEqual(["injected"]);
   });
 
+  it("keeps legacy injection when only configured SDK wallets accompany it", () => {
+    const list = offerableWallets([
+      configured("injected", "Injected"),
+      configured("coinbaseWalletSDK", "Coinbase Wallet"),
+      configured("walletConnect", "WalletConnect"),
+      configured("safe", "Safe"),
+    ]);
+    expect(list.map(c => c.id)).toContain("injected");
+  });
+
   it("never offers Para, which is not a wallet the user picks here", () => {
     const list = offerableWallets([
       configured("para", "Para"),

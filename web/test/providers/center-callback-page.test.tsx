@@ -237,7 +237,7 @@ describe('the Center callback page', () => {
     it('refuses on a site with no Signa configuration, and finishes when Retry is pressed once it has', async () => {
       mocks.config = null
       await openCallback(CODE_PATH)
-      await until(() => message() === 'Juicebox account is not configured for this site.')
+      await until(() => message() === 'Signa sign-in is not configured for this site.')
 
       expect(heading()).toBe('Your Signa account')
       expect(replace).not.toHaveBeenCalled()
