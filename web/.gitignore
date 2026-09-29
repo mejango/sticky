@@ -1,0 +1,16 @@
+node_modules/
+.next/
+.next-*/
+coverage/
+playwright-report/
+test-results/
+.playwright/
+
+.env
+.env.*
+!.env.example
+.railway/
+.DS_Store
+
+next-env.d.ts
+*.tsbuildinfo
