@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
   openSignIn: vi.fn(),
   preload: vi.fn(),
   pathname: '/',
-  ensName: undefined as string | undefined,
+  ensNames: {} as Record<string, string>,
   balance: undefined as { value: bigint; symbol: string } | undefined,
   balanceError: false,
   balanceQuery: vi.fn(),
@@ -29,7 +29,7 @@ vi.mock('next/link', () => ({
   default: ({ children, ...props }: { children: ReactNode }) => createElement('a', props, children),
 }))
 vi.mock('wagmi', () => ({
-  useEnsName: (query: { address?: string }) => ({ data: query.address === ALICE ? mocks.ensName : undefined }),
+  useEnsName: (query: { address?: string }) => ({ data: query.address ? mocks.ensNames[query.address] : undefined }),
   useBalance: (query: unknown) => {
     mocks.balanceQuery(query)
     return { data: mocks.balance, isError: mocks.balanceError }
@@ -46,7 +46,7 @@ let renderer: TestRenderer.ReactTestRenderer | undefined
 beforeEach(() => {
   mocks.wallet = { address: undefined, isConnected: false, isCenterWallet: false }
   mocks.pathname = '/'
-  mocks.ensName = undefined
+  mocks.ensNames = {}
   mocks.balance = undefined
   mocks.balanceError = false
   mocks.writeText.mockResolvedValue(undefined)
@@ -102,7 +102,7 @@ describe('the button label', () => {
 
   it('reads "Signed in" with the ENS name of the connected account', async () => {
     connect()
-    mocks.ensName = 'jango.eth'
+    mocks.ensNames = { [ALICE]: 'jango.eth' }
     await render()
     expect(label()).toContain('Signed in')
     expect(label()).toContain('jango.eth')
@@ -123,15 +123,27 @@ describe('the button label', () => {
 
   it('keeps the viewed account in the label when a wallet is connected too', async () => {
     connect()
-    mocks.ensName = 'jango.eth'
+    mocks.ensNames = { [ALICE]: 'jango.eth' }
     await render()
     await act(async () => setViewAs(VIEWED))
     expect(label()).toBe('Viewing as 0x1234…abcd')
   })
 
+  it('shows the ENS name of the viewed account, never the connected wallet’s', async () => {
+    connect()
+    mocks.ensNames = { [ALICE]: 'alice.eth', [VIEWED]: 'jango.eth' }
+    await render()
+    expect(label()).toContain('alice.eth')
+    await act(async () => setViewAs(VIEWED))
+    expect(label()).toBe('Viewing as jango.eth')
+    expect(trigger().props.title).toBe(VIEWED)
+    await act(async () => clearViewAs())
+    expect(label()).toContain('alice.eth')
+  })
+
   it('renders the signed-out shell on the server, whatever the wallet state', () => {
     connect()
-    mocks.ensName = 'jango.eth'
+    mocks.ensNames = { [ALICE]: 'jango.eth' }
     const html = renderToString(createElement(WalletButton))
     expect(html).toContain('Sign in')
     expect(html).not.toContain('Signed in')

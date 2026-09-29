@@ -1,6 +1,7 @@
-import { act } from 'react'
+import { act, type AnchorHTMLAttributes } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { clearViewAs, getViewAs, setViewAs } from '@/lib/viewAs'
 import { ExternalWalletDialog } from '@/providers/ExternalWalletDialog'
 
 // The dialog is rendered with the SDK's own modal and connect controller, so these tests exercise the
@@ -35,8 +36,17 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/hooks/useWallet', () => ({
-  useWallet: () => ({ connectors: mocks.connectors, connectWith: mocks.connectWith, isConnected: mocks.isConnected }),
+  useWallet: () => ({
+    connectors: mocks.connectors, connectWith: mocks.connectWith, isConnected: mocks.isConnected,
+    address: undefined, isCenterWallet: false, openSignIn: vi.fn(), disconnect: vi.fn(),
+  }),
 }))
+// The header beside the dialog, in the tests of viewing as an address.
+vi.mock('next/navigation', () => ({ usePathname: () => '/' }))
+vi.mock('next/link', () => ({ default: (props: AnchorHTMLAttributes<HTMLAnchorElement>) => <a {...props} /> }))
+vi.mock('wagmi', () => ({ useEnsName: () => ({ data: undefined }), useBalance: () => ({ data: undefined }) }))
+vi.mock('@/providers/preload-center', () => ({ preloadCenterWallet: vi.fn() }))
+vi.mock('@/providers/Providers', () => ({ IS_DETERMINISTIC_BROWSER: false }))
 vi.mock('@/providers/wallet-config', () => ({
   get CENTER_WALLET_CONFIG() { return mocks.config },
   get CENTER_WALLET_ENABLED() { return mocks.config !== null },
@@ -51,6 +61,8 @@ function connector(id: string, name: string, icon?: string): FakeConnector {
 }
 const rabby = () => connector('io.rabby', 'Rabby', 'data:image/svg+xml;base64,PHN2Zy8+')
 const sneaky = () => connector('sneaky', 'Sneaky', 'https://tracker.example/icon.png')
+
+import { WalletButton } from '@/components/WalletButton'
 
 let host: HTMLDivElement
 let root: Root
@@ -73,6 +85,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   await act(async () => root.unmount())
+  clearViewAs()
   host.remove()
   for (const stranger of strangers) stranger.remove()
 })
@@ -349,6 +362,92 @@ describe('the Signa frame', () => {
 
     expect(mocks.wallet.completeConnection).not.toHaveBeenCalled()
     expect(onClose).not.toHaveBeenCalled()
+  })
+})
+
+describe('viewing as an address, without signing in', () => {
+  const ADDRESS = '0x123400000000000000000000000000000028abcd'
+
+  // The header beside the dialog is where the app shows the account being viewed.
+  const openBesideHeader = () =>
+    act(async () => root.render(<><WalletButton /><ExternalWalletDialog onClose={onClose} /></>))
+  const entry = () =>
+    [...dialog().querySelectorAll('button')].find(button => /^View as (an address|another account)$/.test(button.textContent!))
+  const field = () => dialog().querySelector<HTMLInputElement>('input[aria-label="Account address to preview"]')
+  const view = () => [...dialog().querySelectorAll('button')].find(button => button.textContent === 'View')!
+  const headerButton = () => [...host.querySelectorAll('button')].find(button => button.closest('dialog') === null)!
+
+  async function type(input: HTMLInputElement, value: string) {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+  }
+
+  it('offers "View as an address" after the wallets, and no field until it is asked for', async () => {
+    await open()
+    expect(entry()!.textContent).toBe('View as an address')
+    expect(field()).toBeNull()
+    expect(tiles().at(-1)!.compareDocumentPosition(entry()!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('is offered whether or not Signa is configured', async () => {
+    mocks.config = null
+    await open()
+    expect(primary()).toBeNull()
+    expect(entry()).toBeDefined()
+  })
+
+  it('is not offered while a sign-in is in progress', async () => {
+    mocks.connectWith.mockReturnValue(new Promise(() => {}))
+    await open()
+    await click(tile('Rabby'))
+    await until(() => status() === 'Opening Rabby…')
+    expect(entry()).toBeUndefined()
+  })
+
+  it('asks for a 0x address, with the field focused', async () => {
+    await open()
+    await click(entry()!)
+    expect(entry()).toBeUndefined()
+    expect(field()!.getAttribute('placeholder')).toBe('0x address')
+    expect(document.activeElement).toBe(field())
+  })
+
+  it('views the site as the address, closes, and the app shows who is being viewed', async () => {
+    await openBesideHeader()
+    expect(headerButton().textContent).toBe('Sign in')
+
+    await click(entry()!)
+    await type(field()!, ` ${ADDRESS} `)
+    await click(view())
+
+    expect(getViewAs()).toBe(ADDRESS)
+    expect(onClose).toHaveBeenCalledTimes(1)
+    expect(headerButton().textContent).toBe('Viewing as 0x1234…abcd')
+  })
+
+  it('keeps an address that is not one in the field, says so, and sets nothing', async () => {
+    await openBesideHeader()
+    await click(entry()!)
+    await type(field()!, 'vitalik.eth')
+    await click(view())
+
+    expect(errorAlert()!.textContent).toBe('Enter an address')
+    expect(field()!.value).toBe('vitalik.eth')
+    expect(field()!.getAttribute('aria-invalid')).toBe('true')
+    expect(getViewAs()).toBeNull()
+    expect(onClose).not.toHaveBeenCalled()
+    expect(headerButton().textContent).toBe('Sign in')
+
+    await type(field()!, ADDRESS)
+    expect(errorAlert()).toBeNull()
+  })
+
+  it('offers another account while one is already being viewed', async () => {
+    setViewAs(ADDRESS)
+    await open()
+    expect(entry()!.textContent).toBe('View as another account')
   })
 })
 

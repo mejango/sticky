@@ -4,14 +4,33 @@ import { useEffect, useRef, useState } from 'react'
 import { createConnectController, passkeyOption, type ConnectOption } from '@bananapus/nana-sdk-connect/core'
 import { JBConnectModal, passkeyLabel } from '@bananapus/nana-sdk-connect/react'
 import { WalletFallbackMark } from '@/components/BrandMarks'
+import { ViewAsForm } from '@/components/ViewAsForm'
 import { useWallet } from '@/hooks/useWallet'
 import { useMobileWallet } from '@/hooks/useMobileWallet'
+import { useViewAs } from '@/lib/viewAs'
 import { mobileWalletLinks } from '@/lib/walletLinks'
 import { CENTER_WALLET_CONFIG, CENTER_WALLET_ENABLED } from './wallet-config'
 
 /** A wallet tile shows only an inline image: a remote icon URL would tell its host that this page was opened. */
 const safeIcon = (icon: string | undefined) =>
   icon && /^data:image\/(?:png|svg\+xml|webp|jpeg|gif)[;,]/i.test(icon) ? icon : undefined
+
+/** The way to look without signing in: an address to view the site as. */
+function ViewAsAddress({ onDone }: { onDone: () => void }) {
+  const { viewAs } = useViewAs()
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="mt-4 text-[13px]">
+      {open ? (
+        <ViewAsForm onDone={onDone} />
+      ) : (
+        <button type="button" className="btn-link" onClick={() => setOpen(true)}>
+          {viewAs ? 'View as another account' : 'View as an address'}
+        </button>
+      )}
+    </div>
+  )
+}
 
 /** Two ways in: a passkey account at Signa, or an external wallet through the
  * shared wagmi stack. Keep the SDK's connection and dismissal behavior with Sticky's typography. */
@@ -108,6 +127,7 @@ export function ExternalWalletDialog({ onClose }: { onClose: () => void }) {
           </div>
         </div>
       ) : null}
+      <ViewAsAddress onDone={onClose} />
     </JBConnectModal>
   )
 }

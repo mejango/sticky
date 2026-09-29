@@ -18,8 +18,19 @@ import { useResolvedProjectRoute } from '@/providers/ProjectRouteContext'
 
 const CONNECT_BUTTON =
   'max-w-full whitespace-nowrap rounded-sm border px-3 py-[5px] font-bold tracking-[1px] text-ink max-[520px]:px-2.5 max-[520px]:text-[13px] max-[520px]:tracking-[.5px]'
-const MENU_ITEM =
-  'block w-full rounded-sm px-2.5 py-1.5 text-left font-normal tracking-[.5px] hover:bg-card focus-visible:outline-offset-[-2px]'
+
+function formatTokenAmount(wei: bigint, decimals = 18, maxDigits = 4) {
+  return formatAmount(Number(formatUnits(wei, decimals)), maxDigits)
+}
+
+/** A token amount already in whole-token units. */
+function formatAmount(value: number, maxDigits = 4) {
+  if (value === 0) return '0'
+  // A real amount never reads as nothing: below the digit budget, show its first significant figure.
+  if (value > 0 && value < 0.0001)
+    return value.toFixed(Math.ceil(-Math.log10(value))).replace(/0+$/, '')
+  return value.toLocaleString('en-US', { maximumFractionDigits: maxDigits })
+}
 
 function formatWalletBalance(
   value: bigint | undefined,
@@ -27,9 +38,7 @@ function formatWalletBalance(
   symbol: string,
 ) {
   if (value === undefined) return 'Loading…'
-  return `${Number(formatUnits(value, decimals)).toLocaleString(undefined, {
-    maximumFractionDigits: 4,
-  })} ${symbol}`
+  return `${formatTokenAmount(value, decimals)} ${symbol}`
 }
 
 function BalanceRow({ label, value }: { label: string; value: string }) {
@@ -81,7 +90,7 @@ function MenuButton({
   return (
     <button
       type="button"
-      className={`${MENU_ITEM} ${danger ? 'text-err' : 'text-ink'}`}
+      className={danger ? 'menu-item text-err' : 'menu-item'}
       {...props}
     >
       {children}
@@ -147,7 +156,7 @@ export function WalletButton() {
   const menuAttributes = {
     ref: triggerRef,
     type: 'button' as const,
-    onClick: () => setMenuOpen(open => !open),
+    onClick: () => (menuOpen ? closeMenu() : setMenuOpen(true)),
     'aria-expanded': menuOpen,
     'aria-controls': menuOpen ? panelId : undefined,
   }
@@ -215,7 +224,7 @@ export function WalletButton() {
           <Link
             href={`/account/${account}`}
             onClick={closeMenu}
-            className={`${MENU_ITEM} text-ink`}
+            className="menu-item"
           >
             Account
           </Link>
@@ -256,7 +265,9 @@ export function WalletButton() {
           >
             {activeViewAs ? 'View as another account…' : 'View as…'}
           </MenuButton>
-          {viewAsOpen ? <ViewAsForm onDone={closeMenu} /> : null}
+          {viewAsOpen ? (
+            <ViewAsForm onDone={closeMenu} className="px-2.5 pb-2 pt-1.5" />
+          ) : null}
         </div>
       ) : null}
     </div>

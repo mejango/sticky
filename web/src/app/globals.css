@@ -2,7 +2,6 @@
 @import "tailwindcss";
 
 :root {
-  color-scheme: light;
   /* The blank strip above the header. A page loads scrolled past it (see SiteHeader). */
   --top-fold-height: 50px;
 }
@@ -101,20 +100,12 @@
     @apply inline-flex items-center justify-center rounded-lg border border-transparent bg-teal font-semibold text-ink;
   }
 
-  .btn-primary:hover:not(:disabled) {
-    @apply bg-amber;
-  }
-
   .btn-primary:disabled {
     @apply cursor-not-allowed opacity-45;
   }
 
   .btn-secondary {
     @apply inline-flex items-center justify-center rounded-lg border border-ink bg-transparent font-semibold text-ink;
-  }
-
-  .btn-secondary:hover:not(:disabled) {
-    @apply bg-bg;
   }
 
   .btn-secondary:disabled {
@@ -127,6 +118,11 @@
 
   .btn-link:disabled {
     @apply cursor-not-allowed opacity-45;
+  }
+
+  /* A row in a menu; put `text-err` on it for a dangerous one. */
+  .menu-item {
+    @apply block w-full rounded-sm px-2.5 py-1.5 text-left font-normal tracking-[.5px] text-ink hover:bg-card focus-visible:outline-offset-[-2px];
   }
 
   /* --- The page: the top fold, then a centered column ---
@@ -158,6 +154,11 @@
   .brand-slime img {
     @apply block h-auto w-full;
     transform: translateY(-1px);
+  }
+
+  .brand-slime:focus-visible {
+    outline: 2px solid theme('colors.amber');
+    outline-offset: 3px;
   }
 
   .overscroll-slime {
@@ -249,6 +250,7 @@
   margin: 0;
   padding: 0;
   border-radius: var(--jb-connect-radius);
+  color: var(--jb-connect-muted);
   font-size: 0;
   text-decoration: none;
 }
@@ -270,7 +272,13 @@
 }
 
 .jb-connect.sticky-connect .jb-connect-footer > .jb-connect-text:hover {
-  background: theme('colors.bg');
+  color: var(--jb-connect-fg);
+}
+
+/* The SDK's own `.jb-connect button { color: inherit }` is unlayered, so it
+   beats Tailwind's layers on a button inside the dialog. */
+.jb-connect.sticky-connect .btn-link {
+  color: theme('colors.accent');
 }
 
 .jb-connect.sticky-connect:has(.jb-connect-frame) {
