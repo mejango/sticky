@@ -34,6 +34,17 @@ function context(extra = {}, names = []) {
   return c;
 }
 
+// The saved-history helpers and constants projectLogs reads, with a fresh storage per context.
+function withHistory(c, head = 0x1000n) {
+  const store = new Map();
+  c.window = c.window || {};
+  c.localStorage = { getItem: (k) => store.has(k) ? store.get(k) : null, setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) };
+  c.rpc = async (method) => method === 'eth_blockNumber' ? '0x' + head.toString(16) : '0x';
+  vm.runInContext(`const HISTORY_KEY = "sticky.history.v1:"; const HISTORY_SAFE_DEPTH = 64n; const HISTORY_MAX_CHARS = 400000;
+    ${functionSource('readHistory')}\n${functionSource('writeHistory')}`, c);
+  return store;
+}
+
 // ---------------------------------------------------------------- holders
 function hookLog(c, topic, projectId, holder, data, ts) {
   return { topics: [c.TOPIC[topic], '0x' + word(projectId), '0x' + word(BigInt(holder))], data: '0x' + data, ts };
@@ -264,6 +275,7 @@ test('a project view scans the hook once; granters and trusted senders reuse it,
     trust(holder, addr('6')), trust(HOLDER_B, addr('7')), trust(holder, addr('5')),
     { topics: [T.Staked, '0x' + word(7), '0x' + word(BigInt(holder))], data: '0x' },
   ];
+  withHistory(c);
   c.getLogs = async (address, topics, from) => { assert.equal(from, 'start:84532:7'); scans.push(topics); return all.filter((log) => [].concat(topics[0]).includes(log.topics[0])); };
   vm.runInContext(`const POSITION_TOPICS = [TOPIC.Staked, TOPIC.Unstaked, TOPIC.StreakStarted, TOPIC.StreakEnded];
     const cachedProjectLogs = (projectId) => ctx.projectLogs?.chainId === ctx.chainId && ctx.projectLogs.projectId === BigInt(projectId) ? ctx.projectLogs : null;`, c);
@@ -281,4 +293,33 @@ test('a project view scans the hook once; granters and trusted senders reuse it,
   await c.renderTrustedSenders();
   await c.renderTrustedSenders();
   assert.equal(scans.length, 2);
+});
+
+test('a return visit scans only the blocks after its saved history, and never saves what a reorg could replace', async () => {
+  const c = context({
+    ctx: { chainId: 8453, currentId: 7n, hook: addr('4') },
+    projectStartBlock: async () => '0x10',
+    attachTimestamps: async (logs) => { for (const log of logs) log.ts = 1000; return logs; },
+  }, ['projectLogs']);
+  vm.runInContext(`const POSITION_TOPICS = [TOPIC.Staked, TOPIC.Unstaked, TOPIC.StreakStarted, TOPIC.StreakEnded];`, c);
+  const store = withHistory(c, 0x1000n);
+  const T = c.TOPIC;
+  const staked = (block, index) => ({ topics: [T.Staked, '0x' + word(7), '0x' + word(BigInt(HOLDER_A))], data: '0x', blockNumber: '0x' + block.toString(16), blockHash: '0xb' + block.toString(16), transactionHash: '0xt' + block.toString(16), logIndex: '0x' + index.toString(16) });
+  const scans = [];
+  let chain = [staked(0x20, 0), staked(0xff0, 0)];
+  // A node answers with new objects each time, as over the wire.
+  c.getLogs = async (_address, _topics, from) => { scans.push(from); return chain.filter((log) => BigInt(log.blockNumber) >= BigInt(from)).map((log) => ({ ...log })); };
+  const first = await c.projectLogs(7n);
+  assert.equal(first.position.length, 2);
+  const saved = JSON.parse([...store.values()][0]);
+  assert.equal(saved.through, String(0x1000n - 64n));
+  assert.equal(saved.all.length, 1, 'the unburied event is not saved');
+  // Next visit: one new event arrives; the scan starts after the saved block and the old event is not doubled.
+  chain = [...chain, staked(0x1005, 0)];
+  const stamped = [];
+  c.attachTimestamps = async (logs) => { stamped.push(...logs); for (const log of logs) log.ts = 2000; return logs; };
+  const second = await c.projectLogs(7n);
+  assert.equal(scans[1], '0x' + (0x1000n - 64n + 1n).toString(16));
+  assert.deepEqual(Array.from(second.position, (log) => log.blockNumber), ['0x20', '0xff0', '0x1005']);
+  assert.equal(stamped.length, 2, 'saved events keep their timestamps');
 });

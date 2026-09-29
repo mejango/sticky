@@ -152,11 +152,20 @@
     if (start > end) return [];
     let requests = 0;
     const limit = options.maxRequests || 1024;
+    // At most this many ranges in flight, however the scan splits: fast, and gentle on rate limits.
+    const concurrency = options.concurrency || 8;
+    let inFlight = 0;
+    const waiting = [];
+    const acquire = () => inFlight < concurrency ? (inFlight++, Promise.resolve()) : new Promise((resolve) => waiting.push(resolve));
+    const release = () => { const next = waiting.shift(); if (next) next(); else inFlight--; };
     async function fetchRange(from, to) {
       if (++requests > limit) throw new Error(`This history spans ${end - start + 1n} blocks, more than this RPC can scan in ${limit} requests.`);
-      const result = await rpc("eth_getLogs", [{ ...filter, fromBlock: `0x${from.toString(16)}`, toBlock: `0x${to.toString(16)}` }]);
-      if (!Array.isArray(result)) throw new Error("The RPC returned invalid project history.");
-      return result;
+      await acquire();
+      try {
+        const result = await rpc("eth_getLogs", [{ ...filter, fromBlock: `0x${from.toString(16)}`, toBlock: `0x${to.toString(16)}` }]);
+        if (!Array.isArray(result)) throw new Error("The RPC returned invalid project history.");
+        return result;
+      } finally { release(); }
     }
     // Fixed-size windows run a few at a time; results keep block order.
     async function windows(from, to, span) {
@@ -165,7 +174,7 @@
       const out = new Array(parts.length);
       let next = 0;
       const worker = async () => { while (next < parts.length) { const i = next++; out[i] = await range(parts[i][0], parts[i][1]); } };
-      await Promise.all(Array.from({ length: Math.min(options.concurrency || 8, parts.length) }, worker));
+      await Promise.all(Array.from({ length: Math.min(concurrency, parts.length) }, worker));
       return out.flat();
     }
     async function range(from, to) {
@@ -177,8 +186,10 @@
         // Chunk straight to the span the node names; otherwise halve.
         const span = statedRange(error.message);
         if (span && span < to - from + 1n) return windows(from, to, span);
+        // Both halves read at once; the limiter above keeps the burst bounded. Order is kept.
         const middle = (from + to) / 2n;
-        return [...await range(from, middle), ...await range(middle + 1n, to)];
+        const [low, high] = await Promise.all([range(from, middle), range(middle + 1n, to)]);
+        return [...low, ...high];
       }
     }
     const result = await range(start, end);

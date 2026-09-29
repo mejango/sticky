@@ -1031,13 +1031,45 @@ async function holderLogs(ids, holder) {
 // One scan per project view: position events plus the launch granters and every holder's trusted senders,
 // all indexed by project. Timestamps are attached to position events only. Kept for the view's lifetime
 // so the 15-second position refresh never rescans history.
+// A project's history below a buried block cannot change, so this browser keeps it and the next visit
+// scans only what came after. Public events only; nothing wallet-scoped is stored.
+const HISTORY_KEY = "sticky.history.v1:";
+const HISTORY_SAFE_DEPTH = 64n;
+const HISTORY_MAX_CHARS = 400_000;
+function readHistory(key) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(HISTORY_KEY + key) || "null");
+    if (!saved || typeof saved.through !== "string" || !Array.isArray(saved.all)) return null;
+    return { through: BigInt(saved.through), all: saved.all };
+  } catch { return null; }
+}
+function writeHistory(key, through, all) {
+  try {
+    const payload = JSON.stringify({ through: through.toString(), all });
+    if (payload.length > HISTORY_MAX_CHARS) localStorage.removeItem(HISTORY_KEY + key);
+    else localStorage.setItem(HISTORY_KEY + key, payload);
+  } catch {}
+}
 async function projectLogs(projectId) {
-  const all = await getLogs(ctx.hook,
-    [[...POSITION_TOPICS, TOPIC.SetGranter, TOPIC.SetTrustedSender, TOPIC.ExcludeOrphanedBalance], "0x" + word(projectId)],
-    await projectStartBlock(ctx.chainId, projectId));
+  const topics = [[...POSITION_TOPICS, TOPIC.SetGranter, TOPIC.SetTrustedSender, TOPIC.ExcludeOrphanedBalance], "0x" + word(projectId)];
+  const key = `${ctx.chainId}:${String(ctx.hook).toLowerCase()}:${BigInt(projectId)}`;
+  const saved = window.__DEMO_RPC ? null : readHistory(key);
+  const [head, start] = await Promise.all([
+    window.__DEMO_RPC ? Promise.resolve(0n) : rpc("eth_blockNumber", []).then((value) => BigInt(value)),
+    saved ? Promise.resolve(`0x${(saved.through + 1n).toString(16)}`) : projectStartBlock(ctx.chainId, projectId),
+  ]);
+  // The resumed scan starts after the saved block, so saved and new events never overlap.
+  const fresh = await getLogs(ctx.hook, topics, start);
+  const all = [...(saved?.all ?? []), ...fresh];
   const position = all.filter((log) => POSITION_TOPICS.includes(log.topics[0]));
   const orphans = all.filter((log) => log.topics[0] === TOPIC.ExcludeOrphanedBalance);
-  await attachTimestamps([...position, ...orphans]);
+  // Saved history keeps its timestamps; only new events read their blocks.
+  await attachTimestamps([...position, ...orphans].filter((log) => typeof log.ts !== "number"));
+  if (!window.__DEMO_RPC && head > HISTORY_SAFE_DEPTH) {
+    const buried = head - HISTORY_SAFE_DEPTH;
+    // A resumed save never moves backwards, and never keeps anything a reorg could still replace.
+    if (!saved || buried > saved.through) writeHistory(key, buried, all.filter((log) => typeof log.blockNumber === "string" && BigInt(log.blockNumber) <= buried));
+  }
   ctx.projectLogs = { chainId: ctx.chainId, projectId: BigInt(projectId), all, position, orphans };
   return ctx.projectLogs;
 }
@@ -2171,6 +2203,7 @@ function enterProjectView(projectId) {
   for (const id of ["p-logo", "chart", "token-info", "p-activity", "leaderboard", "pie"]) $(id).innerHTML = "";
   for (const id of ["h-symbol", "h-name", "stake-symbol", "gift-symbol"]) $(id).textContent = "";
   for (const id of ["h-staked", "h-streakers", "h-average", "h-top"]) $(id).textContent = "–";
+  delete $("h-staked").dataset.early;
   $("stake-title").textContent = "Stick";
   // Nothing is stuck from a cached summary: the button opens once this visit has verified the project.
   $("stake").disabled = true;
@@ -2257,6 +2290,12 @@ async function renderProject(projectId) {
   const poolRead = poolBacking(projectId, info);
   const chainsRead = projectChainIds(projectId);
   for (const read of [poolRead, chainsRead]) read.catch(() => {});
+  // Stuck needs only the backing read, so it paints before the history scan finishes.
+  poolRead.then((pool) => {
+    if (!current() || $("view-project").dataset.state === "ready") return;
+    $("h-staked").textContent = `${formatAmount(pool.sigma, info.decimals)} ${info.symbol}`;
+    $("h-staked").dataset.early = "true";
+  }, () => {});
   ctx.projectLogs = null;
   const scanned = await projectLogs(projectId);
   if (!current()) return;

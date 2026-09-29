@@ -370,7 +370,7 @@
   #view-project[data-state="loading"] #h-symbol:empty::before {
     content: ""; display: inline-block; width: min(220px, 50vw); height: 16px; border-radius: 4px; background: var(--line); vertical-align: -2px;
   }
-  #view-project[data-state="loading"] .meta-pair b { display: inline-block; min-width: 3.5em; color: transparent; background: var(--line); border-radius: 4px; line-height: 1.1; }
+  #view-project[data-state="loading"] .meta-pair b:not([data-early]) { display: inline-block; min-width: 3.5em; color: transparent; background: var(--line); border-radius: 4px; line-height: 1.1; }
   #view-project[data-state="loading"] #h-chains-wrap { display: none; }
   #view-project[data-state="loading"] #stake-title { color: transparent; background: var(--line); border-radius: 4px; width: 120px; }
   #view-project[data-state="loading"] #stake { opacity: .5; pointer-events: none; }

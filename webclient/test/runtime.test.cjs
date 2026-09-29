@@ -157,3 +157,23 @@ test('a node that rejects batches gets each read on its own, and logs and sends 
   assert.equal(bodies.filter(Array.isArray).length, 0);
   assert.deepEqual(bodies.map(body => body.method), ['eth_getLogs', 'eth_sendRawTransaction', 'eth_estimateGas']);
 });
+
+test('a node that rejects wide ranges without naming a limit is bisected in parallel, bounded, and in order', async () => {
+  let inFlight = 0, peak = 0;
+  const rpc = async (method, [filter]) => {
+    if (method === 'eth_blockNumber') return '0x3ff';
+    const from = BigInt(filter.fromBlock), to = BigInt(filter.toBlock);
+    inFlight++; peak = Math.max(peak, inFlight);
+    await new Promise(resolve => setTimeout(resolve, 2));
+    inFlight--;
+    if (to - from > 15n) throw new Error('query returned more than 10000 results');
+    const out = [];
+    for (let block = from; block <= to; block++) if (block % 7n === 0n) out.push({ blockNumber: `0x${block.toString(16)}`, logIndex: '0x0', transactionHash: `0x${block.toString(16)}`, blockHash: `0xb${block.toString(16)}` });
+    return out;
+  };
+  const found = await logs(rpc, { fromBlock: '0x0', toBlock: 'latest' });
+  const blocks = found.map(log => Number(BigInt(log.blockNumber)));
+  assert.deepEqual(blocks, Array.from({ length: 147 }, (_, i) => i * 7).filter(b => b <= 1023));
+  assert.ok(peak > 1, 'halves read in parallel');
+  assert.ok(peak <= 8, `at most 8 ranges in flight, saw ${peak}`);
+});
