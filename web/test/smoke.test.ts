@@ -1,12 +1,13 @@
 import { createRequire } from 'node:module'
 import type { NextConfig } from 'next'
-import { PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD } from 'next/constants'
+import { PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD, PHASE_PRODUCTION_SERVER } from 'next/constants'
 import { getRedirectUrl, unstable_getResponseFromNextConfig } from 'next/experimental/testing/server'
 import { describe, expect, it, vi } from 'vitest'
 
 const require = createRequire(import.meta.url)
 const createConfig = require('../next.config.js') as (phase: string) => NextConfig
 const nextConfig = createConfig(PHASE_PRODUCTION_BUILD)
+const { configSchema } = require('next/dist/server/config-schema') as typeof import('next/dist/server/config-schema')
 const headerRoutes = async () => (await nextConfig.headers?.()) ?? []
 
 const SAFE_FRAMING = 'frame-ancestors https://app.safe.global https://app.5afe.dev'
@@ -64,6 +65,16 @@ describe('next config', () => {
       nextConfig: createConfig,
     })
     expect(bare.status).toBe(200)
+  })
+
+  it('keeps the cache of the Bendystraw relay in memory, where a client that varies its requests cannot fill the disk', () => {
+    for (const phase of [PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD, PHASE_PRODUCTION_SERVER]) {
+      const config = createConfig(phase)
+      expect(config.experimental?.isrFlushToDisk).toBe(false)
+      // A key that Next's schema does not know does nothing, so this catches a typo, or a Next that renames the option.
+      expect(configSchema.safeParse(config).success).toBe(true)
+    }
+    expect(configSchema.safeParse({ experimental: { isrFlushToDisc: false } }).success).toBe(false)
   })
 
   it('optimizes images only from Juicebox Center IPFS and keeps dev and production builds apart', () => {

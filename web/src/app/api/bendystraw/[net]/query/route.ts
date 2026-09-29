@@ -91,7 +91,13 @@ export async function POST(
         },
       },
     )
-  } catch {
+  } catch (error) {
+    // The cause is logged, on one line, and never sent: the answer is the same
+    // whatever failed.
+    console.error(
+      'Bendystraw relay failed:',
+      String(error).replace(/\s+/g, ' '),
+    )
     return Response.json(
       { error: 'Bendystraw unavailable' },
       { status: 502 },

@@ -47,6 +47,13 @@ module.exports = phase => ({
     // Preserve the SDK's ergonomic barrels while compiling client routes from
     // the narrow v6 modules they actually use.
     optimizePackageImports: ['@bananapus/nana-sdk-core'],
+    // Keep Next's caches in memory. Its fetch cache writes one file per entry
+    // to .next/cache/fetch-cache and never removes one, so a client that varies
+    // the variables of a Bendystraw relay request would fill the disk, while
+    // memory is bounded by cacheMaxMemorySize. Next also turns its image
+    // optimizer's disk cache off with this, so an image is optimized again on
+    // each request that reaches the server.
+    isrFlushToDisk: false,
   },
   // `page.browsertest.tsx` files are routes ONLY in the deterministic browser
   // build the Playwright suite compiles. They never reach a production image:

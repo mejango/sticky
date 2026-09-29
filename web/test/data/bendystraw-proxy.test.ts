@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { POST } from '@/app/api/bendystraw/[net]/query/route'
 import { compileBendystrawOperation } from '@/lib/bendystraw-operation'
 import { bendystrawOperationId } from '@/lib/bendystraw-operation-id'
@@ -58,10 +58,22 @@ function indexer(answer: () => Response) {
   return fetcher
 }
 
-/** The relay refused: an error status and a message. Which error status is up to the route. */
-async function expectRefused(response: Response) {
+const CAUSE_LABEL = 'Bendystraw relay failed:'
+const INVALID = 'received invalid variables'
+
+// The relay logs why it failed. Silencing the log keeps the run's output clean, and the spy lets a test read it.
+beforeEach(() => {
+  vi.spyOn(console, 'error').mockImplementation(() => {})
+})
+
+/** The relay refused: an error status and a message, with the cause logged. Which error status is up to the route. */
+async function expectRefused(response: Response, cause: string) {
   expect(response.status).toBeGreaterThanOrEqual(400)
   expect(await response.json()).toEqual({ error: expect.any(String) })
+  expect(console.error).toHaveBeenCalledExactlyOnceWith(
+    CAUSE_LABEL,
+    expect.stringContaining(cause),
+  )
 }
 
 /** `{ a: { a: … { a: 1 } } }`, `depth` objects deep. */
@@ -169,6 +181,7 @@ describe('same-origin relay route', () => {
       ),
     ).toBe(400)
     expect(fetch).not.toHaveBeenCalled()
+    expect(console.error).not.toHaveBeenCalled()
   })
 
   it('caps the body at 32 KiB, counted in bytes', async () => {
@@ -193,6 +206,8 @@ describe('same-origin relay route', () => {
       expect(await refused.json()).toEqual({ error: 'request is too large' })
     }
     expect(fetch).not.toHaveBeenCalled()
+    // Only the body the cap let through was judged on its content, so only it was logged.
+    expect(console.error).toHaveBeenCalledOnce()
   })
 
   it('refuses a declared size over the cap without reading the body', async () => {
@@ -237,22 +252,23 @@ describe('same-origin relay route', () => {
   })
 
   it.each([
-    ['a value of the wrong type', projectOperation, { chainId: 'eleven', projectId: 11 }],
-    ['a fractional Int', projectOperation, { chainId: 8453, projectId: 1.5 }],
-    ['a missing required variable', projectOperation, { chainId: 8453 }],
-    ['a null required variable', projectOperation, { chainId: 8453, projectId: null }],
-    ['a variable the operation does not declare', projectOperation, { chainId: 8453, projectId: 11, extra: 1 }],
-    ['a list of the wrong element type', filteredOperation, { where: {}, owners: [1] }],
-    ['an object nested 12 levels deep', filteredOperation, { where: nested(12) }],
-    ['a string over 16,384 characters', filteredOperation, { where: { name: 'x'.repeat(16_385) } }],
-    ['a list over 1,000 items', filteredOperation, { where: {}, owners: owners(1_001) }],
-    ['an object over 250 fields', filteredOperation, { where: Object.fromEntries(Array.from({ length: 251 }, (_, id) => [`field${id}`, id])) }],
-  ])('refuses %s, without asking the indexer', async (_name, operation, variables) => {
+    ['a value of the wrong type', projectOperation, { chainId: 8453, projectId: 'eleven' }, INVALID],
+    ['a chain ID that is not a number', projectOperation, { chainId: 'eleven', projectId: 11 }, 'Invalid Bendystraw chainId'],
+    ['a fractional Int', projectOperation, { chainId: 8453, projectId: 1.5 }, INVALID],
+    ['a missing required variable', projectOperation, { chainId: 8453 }, INVALID],
+    ['a null required variable', projectOperation, { chainId: 8453, projectId: null }, INVALID],
+    ['a variable the operation does not declare', projectOperation, { chainId: 8453, projectId: 11, extra: 1 }, INVALID],
+    ['a list of the wrong element type', filteredOperation, { where: {}, owners: [1] }, INVALID],
+    ['an object nested 12 levels deep', filteredOperation, { where: nested(12) }, INVALID],
+    ['a string over 16,384 characters', filteredOperation, { where: { name: 'x'.repeat(16_385) } }, INVALID],
+    ['a list over 1,000 items', filteredOperation, { where: {}, owners: owners(1_001) }, INVALID],
+    ['an object over 250 fields', filteredOperation, { where: Object.fromEntries(Array.from({ length: 251 }, (_, id) => [`field${id}`, id])) }, INVALID],
+  ])('refuses %s, without asking the indexer', async (_name, operation, variables, cause) => {
     const fetcher = indexer(() => json({ data: { project: null, projects: { items: [] } } }))
 
     const response = await POST(relayRequest({ operation, variables }), network('mainnet'))
 
-    await expectRefused(response)
+    await expectRefused(response, cause)
     expect(fetcher).not.toHaveBeenCalled()
   })
 
@@ -271,6 +287,7 @@ describe('same-origin relay route', () => {
 
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({ data: { projects: { items: [] } } })
+    expect(console.error).not.toHaveBeenCalled()
     expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toEqual({
       query: documents.filtered,
       variables,
@@ -332,20 +349,20 @@ describe('same-origin relay route', () => {
       network('mainnet'),
     )
 
-    await expectRefused(response)
+    await expectRefused(response, 'conflicts with testnet')
     expect(fetcher).not.toHaveBeenCalled()
   })
 
   it.each([
-    ['an HTTP error', () => json({ message: 'pg relation "secret_table" at 10.0.0.7:5432' }, 403)],
-    ['a GraphQL error', () => json({ errors: [{ message: 'relation "secret_table" does not exist' }] })],
-    ['an answer with no data', () => json({})],
-    ['null data', () => json({ data: null })],
-    ['data without the selected fields', () => json({ data: {} })],
-    ['a project without its fields', () => json({ data: { project: {} } })],
-    ['a body that is not JSON', () => new Response('<html>secret_table</html>', { headers: { 'content-type': 'application/json' } })],
-    ['a body not marked as JSON', () => new Response('{"data":{"project":null}}', { headers: { 'content-type': 'text/html' } })],
-  ])('answers 502 and only that when the indexer sends %s', async (_name, answer) => {
+    ['an HTTP error', () => json({ message: 'pg relation "secret_table" at 10.0.0.7:5432' }, 403), 'BendystrawRequestError: Bendystraw request failed (403)'],
+    ['a GraphQL error', () => json({ errors: [{ message: 'relation "secret_table" does not exist' }] }), 'BendystrawRequestError: relation "secret_table" does not exist'],
+    ['an answer with no data', () => json({}), 'BendystrawRequestError: Bendystraw response is missing data'],
+    ['null data', () => json({ data: null }), 'BendystrawRequestError: RelayProject returned invalid data'],
+    ['data without the selected fields', () => json({ data: {} }), 'BendystrawRequestError: RelayProject returned invalid data'],
+    ['a project without its fields', () => json({ data: { project: {} } }), 'BendystrawRequestError: RelayProject returned invalid data'],
+    ['a body that is not JSON', () => new Response('<html>secret_table</html>', { headers: { 'content-type': 'application/json' } }), 'BendystrawRequestError: Bendystraw returned invalid JSON'],
+    ['a body not marked as JSON', () => new Response('{"data":{"project":null}}', { headers: { 'content-type': 'text/html' } }), 'BendystrawRequestError: Bendystraw returned an invalid content type'],
+  ])('answers 502 and only that when the indexer sends %s, and logs the cause', async (_name, answer, cause) => {
     indexer(answer)
 
     const response = await POST(
@@ -358,10 +375,29 @@ describe('same-origin relay route', () => {
 
     expect(response.status).toBe(502)
     expect(await response.json()).toEqual({ error: 'Bendystraw unavailable' })
+    expect(console.error).toHaveBeenCalledExactlyOnceWith(CAUSE_LABEL, cause)
+  })
+
+  it('logs a cause on one line, whatever line breaks the indexer put in it', async () => {
+    indexer(() => json({ errors: [{ message: 'first line\r\n2026-09-29 ERROR forged line\n\tindented' }] }))
+
+    const response = await POST(
+      relayRequest({
+        operation: projectOperation,
+        variables: { chainId: 8453, projectId: 11 },
+      }),
+      network('mainnet'),
+    )
+
+    expect(await response.json()).toEqual({ error: 'Bendystraw unavailable' })
+    expect(console.error).toHaveBeenCalledExactlyOnceWith(
+      CAUSE_LABEL,
+      'BendystrawRequestError: first line 2026-09-29 ERROR forged line indented',
+    )
   })
 
   it('answers 502, not an empty result, when the indexer stays down through the retries', async () => {
-    const fetcher = indexer(() => new Response('Offline', { status: 503 }))
+    const fetcher = indexer(() => json({ error: 'offline' }, 503))
 
     const response = await POST(
       relayRequest({
@@ -374,5 +410,9 @@ describe('same-origin relay route', () => {
     expect(response.status).toBe(502)
     expect(await response.json()).toEqual({ error: 'Bendystraw unavailable' })
     expect(fetcher).toHaveBeenCalledTimes(3)
+    expect(console.error).toHaveBeenCalledExactlyOnceWith(
+      CAUSE_LABEL,
+      'BendystrawRequestError: Bendystraw request failed (503)',
+    )
   })
 })
