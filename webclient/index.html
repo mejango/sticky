@@ -388,7 +388,40 @@
       linear-gradient(var(--line) 0 0) 0 172px / 42% 8px no-repeat;
     opacity: .75;
   }
-  #view-project[data-state="cached"] .proj-head .headline, #token-info[aria-busy="true"] { opacity: .55; transition: opacity 180ms ease-out; }
+  /* Restored values stay readable while this visit confirms them: faded, with a light sweep, as on
+     juicebox.money. First loads pulse their placeholder shapes instead. */
+  @keyframes sticky-sweep { to { transform: translateX(100%); } }
+  @keyframes sticky-pulse { 50% { opacity: .4; } }
+  .revalidating, #view-project[data-state="cached"] .proj-head .headline, #token-info[aria-busy="true"] {
+    position: relative; overflow: hidden; opacity: .55; transition: opacity 180ms ease-out;
+  }
+  .revalidating::after, #view-project[data-state="cached"] .proj-head .headline::after, #token-info[aria-busy="true"]::after {
+    position: absolute; inset: 0; content: ""; pointer-events: none;
+    background: linear-gradient(100deg, transparent 20%, rgb(255 255 255 / .5) 50%, transparent 80%);
+    transform: translateX(-100%); animation: sticky-sweep 1.5s ease-in-out infinite;
+  }
+  #view-project:is([data-state="loading"], [data-state="cached"]) :is(#chart, #p-activity):empty,
+  #view-project[data-state="loading"] :is(#p-logo:empty, .meta-pair b, #stake-title),
+  #view-home[data-state="loading"] .home-secured-value, .home-secured-chart:empty,
+  :is(#home-panel-latest, #home-panel-stickiest, #home-panel-airdrops) .list-card:empty,
+  #view-account :is(#a-positions, #a-activity):empty { animation: sticky-pulse 1.6s ease-in-out infinite; }
+  #view-account :is(#a-positions, #a-activity):empty {
+    height: 160px;
+    background:
+      linear-gradient(var(--line) 0 0) 14px 16px / 62% 10px no-repeat,
+      linear-gradient(var(--line) 0 0) 14px 36px / 38% 8px no-repeat,
+      linear-gradient(var(--line) 0 0) 14px 84px / 70% 10px no-repeat,
+      linear-gradient(var(--line) 0 0) 14px 104px / 30% 8px no-repeat;
+    opacity: .75;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .revalidating::after, #view-project[data-state="cached"] .proj-head .headline::after, #token-info[aria-busy="true"]::after,
+    #view-project:is([data-state="loading"], [data-state="cached"]) :is(#chart, #p-activity):empty,
+    #view-project[data-state="loading"] :is(#p-logo:empty, .meta-pair b, #stake-title),
+    #view-home[data-state="loading"] .home-secured-value, .home-secured-chart:empty,
+    :is(#home-panel-latest, #home-panel-stickiest, #home-panel-airdrops) .list-card:empty,
+    #view-account :is(#a-positions, #a-activity):empty { animation: none; }
+  }
   #view-home:is([data-state="empty"], [data-state="error"]) .cols3 { display: block; }
   #view-home:is([data-state="empty"], [data-state="error"]) .hero-col { max-width: 560px; margin: 0 auto; border-left: none; padding-left: 0; }
   .home-steps { display: none; }

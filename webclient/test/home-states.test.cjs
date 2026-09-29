@@ -143,8 +143,8 @@ test('one empty chain does not decide the zero state while others load', async (
   assert.equal(c.home().dataset.state, 'empty');
 });
 
-test('the loading pill is skipped on the home route and kept elsewhere', () => {
-  assert.match(functionSource('loadDeployer'), /if \(!isHomeRoute\(\)\) status\("loading…"\);/);
+test('no route shows a page-wide loading pill: each view draws its own placeholders', () => {
+  assert.doesNotMatch(functionSource('loadDeployer'), /status\("loading…"\)/);
   const c = fixture();
   assert.equal(vm.runInContext('isHomeRoute()', c), true);
   c.location.hash = '#/project/3';

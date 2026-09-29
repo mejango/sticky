@@ -950,7 +950,6 @@ function currentView() {
 async function loadDeployer() {
   ctx.loaded = false;
   const deployer = $("deployer").value;
-  if (!isHomeRoute()) status("loading…");
   StickyRuntime.address(deployer);
   const chainId = Number(BigInt(await rpc("eth_chainId", [])));
   if (!window.__DEMO_RPC) {
@@ -5673,6 +5672,7 @@ function updateConnectButton() {
 }
 
 // ------------------------------------------------------------------- account view
+const ACCOUNT_READS_AT_ONCE = 6;
 async function renderAccount(address) {
   ++viewSequence;
   const current = currentView();
@@ -5683,39 +5683,52 @@ async function renderAccount(address) {
   $("a-logo").innerHTML = tokenBadge(address, address.slice(2, 3), 72);
   $("a-title").textContent = walletAccount && address.toLowerCase() === walletAccount.toLowerCase() ? "Your account" : "Account";
   $("a-address").textContent = address;
+  // Another account's rows never linger while this one loads; the empty list draws a skeleton.
+  $("a-positions").innerHTML = "";
+  $("a-activity").innerHTML = "";
   if (!ctx.loaded) return;
   const ids = await projectIds();
   if (!current()) return;
   const logs = await holderLogs(ids, address);
   if (!current()) return;
-  const rows = [];
-  for (const id of ids) {
-    try {
-      const info = await projectInfo(id);
-      if (!current()) return;
-      const args = word(id) + encAddress(address);
-      const [staked, streakStart, longest] = await Promise.all([
-        view(ctx.hook, SEL.stakedBalanceOf, args).then(decUint),
-        view(ctx.hook, SEL.streakStartOf, args).then(decUint),
-        view(ctx.hook, SEL.longestStreakOf, args).then(decUint),
-      ]);
-      if (!current()) return;
-      if (staked === 0n && longest === 0n) continue;
-      const pool = staked > 0n ? await poolBacking(id, info) : { supply: 0n, sigma: 0n };
-      if (!current()) return;
-      const age = streakStart === 0n ? 0 : Math.max(0, Math.floor(Date.now() / 1000) - Number(streakStart));
-      rows.push(
-        `<a class="card-item pickc" href="#/project/${id}"><div class="card-head">` +
-        `${tokenLogo(info.stakedToken, info.symbol, 26)}<div style="flex:1;min-width:0">` +
-        `<div style="font-weight:700">${esc(stickyLabel(info))} <span class="mut">#${id}</span></div>` +
-        `<div class="kv"><span class="mut">Stuck:</span> ${underlyingAmount(backingOfShares(staked, pool), info)}</div>` +
-        `<div class="kv"><span class="mut">Time:</span> ${formatDuration(age)}</div>` +
-        `<div class="kv"><span class="mut">Longest:</span> ${formatDuration(Math.max(Number(longest), age))}</div>` +
-        `</div></div></a>`,
-      );
-    } catch {}
-  }
-  $("a-positions").innerHTML = rows.length ? rows.join("") : `<div class="card-item mut">no positions yet</div>`;
+  // Projects are read a few at a time, in parallel; a project that fails is counted and offered again,
+  // never mistaken for an empty account.
+  const positionOf = async (id) => {
+    const info = await projectInfo(id);
+    const args = word(id) + encAddress(address);
+    const [staked, streakStart, longest] = await Promise.all([
+      view(ctx.hook, SEL.stakedBalanceOf, args).then(decUint),
+      view(ctx.hook, SEL.streakStartOf, args).then(decUint),
+      view(ctx.hook, SEL.longestStreakOf, args).then(decUint),
+    ]);
+    if (staked === 0n && longest === 0n) return null;
+    const pool = staked > 0n ? await poolBacking(id, info) : { supply: 0n, sigma: 0n };
+    const age = streakStart === 0n ? 0 : Math.max(0, Math.floor(Date.now() / 1000) - Number(streakStart));
+    return `<a class="card-item pickc" href="#/project/${id}"><div class="card-head">` +
+      `${tokenLogo(info.stakedToken, info.symbol, 26)}<div style="flex:1;min-width:0">` +
+      `<div style="font-weight:700">${esc(stickyLabel(info))} <span class="mut">#${id}</span></div>` +
+      `<div class="kv"><span class="mut">Stuck:</span> ${underlyingAmount(backingOfShares(staked, pool), info)}</div>` +
+      `<div class="kv"><span class="mut">Time:</span> ${formatDuration(age)}</div>` +
+      `<div class="kv"><span class="mut">Longest:</span> ${formatDuration(Math.max(Number(longest), age))}</div>` +
+      `</div></div></a>`;
+  };
+  const results = new Array(ids.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < ids.length) {
+      const at = next++;
+      try { results[at] = { row: await positionOf(ids[at]) }; } catch { results[at] = { failed: true }; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(ACCOUNT_READS_AT_ONCE, ids.length) }, worker));
+  if (!current()) return;
+  const rows = results.map((result) => result.row).filter(Boolean);
+  const failed = results.filter((result) => result.failed).length;
+  const retry = failed
+    ? `<div class="card-item mut">Couldn't read ${failed} ${failed === 1 ? "project" : "projects"}. <button type="button" class="text-button" id="a-retry">Retry</button></div>`
+    : "";
+  $("a-positions").innerHTML = (rows.length ? rows.join("") : failed ? "" : `<div class="card-item mut">no positions yet</div>`) + retry;
+  $("a-retry")?.addEventListener("click", () => renderAccount(address));
   const activity = await activityItems(logs, true);
   if (!current()) return;
   renderFeed($("a-activity"), activity);
