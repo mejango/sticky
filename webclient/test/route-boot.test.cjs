@@ -300,3 +300,15 @@ test('the header meta row puts On: chains right after Sticks, each pair unbroken
   assert.match(html, /\.meta-line \{ display: flex; flex-wrap: wrap; align-items: baseline; margin-left: -21px; \}/);
   assert.match(html, /\.meta-row \{ overflow: hidden; \}/);
 });
+
+test('public display reads round-trip, stay bounded, and a corrupt entry reads as nothing', () => {
+  const Boot = require('../route-boot.js');
+  const store = new Map();
+  const storage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) };
+  Boot.writeJson('sticky.ipfs.v1:ipfs://x', { name: 'Slop' }, storage);
+  assert.deepEqual(Boot.readJson('sticky.ipfs.v1:ipfs://x', storage), { name: 'Slop' });
+  Boot.writeJson('big', { blob: 'x'.repeat(250_000) }, storage);
+  assert.equal(store.has('big'), false);
+  store.set('bad', '{');
+  assert.equal(Boot.readJson('bad', storage), null);
+});

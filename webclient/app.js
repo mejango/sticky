@@ -449,6 +449,7 @@ function tokenBadge(addr, symbol, size) {
     `<text x="12" y="16.4" font-size="12" font-weight="700" fill="#f0f7f9" text-anchor="middle" font-family="ui-monospace,Menlo,monospace">${esc(letter)}</text></svg>`;
 }
 const ipfsUrl = (uri) => StickyRuntime.assetUrl(uri);
+
 const logoCache = {}; // token addr -> url | null | pending promise
 const projectMetadataCache = {}; // project token addr -> metadata | null | pending promise
 
@@ -466,10 +467,15 @@ async function resolveProjectMetadata(addr, reader = pageReader()) {
       if (inline) return inline;
       const url = ipfsUrl(uri);
       if (!url) return null;
+      // IPFS content is addressed by its hash: a document read once is the same document forever.
+      const kept = /^ipfs:\/\//.test(uri) ? (window.__DEMO_RPC ? null : window.StickyRouteBoot)?.readJson(`sticky.ipfs.v1:${uri}`) : null;
+      if (kept) return kept;
       const response = await fetch(url, { signal: AbortSignal.timeout(10000), credentials: "omit", referrerPolicy: "no-referrer" });
       if (!response.ok) return null;
       const metadata = await response.json();
-      return metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata : null;
+      const valid = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata : null;
+      if (valid && /^ipfs:\/\//.test(uri)) (window.__DEMO_RPC ? null : window.StickyRouteBoot)?.writeJson(`sticky.ipfs.v1:${uri}`, valid);
+      return valid;
     } catch {
       return null;
     }
@@ -2058,10 +2064,11 @@ async function homeChainData(chainId) {
   if (!projects.length) return { chainId, cards: [], moves: [], prices: new Map(), activity: [], airdrops: [] };
   const reader = await chainReader(chainId);
   const cards = await homeCards(reader, projects.map((project) => project.projectId), (id) => indexedHolderCount(id, events));
-  const [prices, activity, airdrops] = await Promise.all([
-    backingUsdPrices(cards, reader.chainId), indexedActivityItems(events, reader), indexedAirdropItems(events, reader),
-  ]);
-  return { chainId, cards, moves: eventMoves(events), prices, activity, airdrops };
+  // Prices only feed the USD chart: the cards and feeds paint without waiting for them.
+  const pricesRead = backingUsdPrices(cards, reader.chainId);
+  pricesRead.catch(() => {});
+  const [activity, airdrops] = await Promise.all([indexedActivityItems(events, reader), indexedAirdropItems(events, reader)]);
+  return { chainId, cards, moves: eventMoves(events), prices: null, pricesRead, activity, airdrops };
 }
 
 // The chain-only path: every DeploySticky from the deployment block, then every position event from the
@@ -2154,13 +2161,24 @@ function stickiestCardHtml(group, rank) {
 // Chains load in parallel and the dashboard redraws as each arrives. A chain that fails is named in the
 // note; it never blanks the chains that loaded.
 async function renderHome() {
+  // The home lists this browser last saw (public Sticky data only), restored on the next visit.
+  const snapshotParts = ["projects", "activity", "airdrops"];
+  const snapshotKey = `sticky.home.v1:${homeEnvironment()}`;
   const sequence = ++viewSequence;
   const current = () => sequence === viewSequence;
   clearHomeSecuredChart();
   $("view-home").classList.remove("hide");
   $("view-project").classList.add("hide");
   if (window.__DEMO_RPC && !ctx.loaded) return;
-  if ($("view-home").dataset.state !== "ready") setHomeState("loading");
+  if ($("view-home").dataset.state !== "ready") {
+    // The last home this browser saw shows at once, faded, until the chains confirm it.
+    const snapshot = (window.__DEMO_RPC ? null : window.StickyRouteBoot)?.readJson(snapshotKey);
+    if (snapshot && snapshotParts.every((id) => typeof snapshot[id] === "string")) {
+      for (const id of snapshotParts) { $(id).innerHTML = snapshot[id]; $(id).classList.add("revalidating"); }
+      setHomeState("ready");
+      hydrateLogos().catch(() => {});
+    } else setHomeState("loading");
+  }
 
   const chains = homeChains();
   const testnet = homeEnvironment() === "testnet";
@@ -2186,14 +2204,19 @@ async function renderHome() {
       return;
     }
     const moves = loaded.flatMap((result) => result.moves);
-    const prices = new Map(loaded.flatMap((result) => [...result.prices]));
-    mountHomeSecuredChart(homeSecuredSeries(moves, cards, prices));
+    // The USD chart mounts once every loaded chain has its prices; until then it keeps its placeholder.
+    if (loaded.every((result) => result.prices)) {
+      const prices = new Map(loaded.flatMap((result) => [...result.prices]));
+      mountHomeSecuredChart(homeSecuredSeries(moves, cards, prices));
+    }
+    for (const id of snapshotParts) $(id).classList?.remove("revalidating");
     const groups = [...groupHomeCards(cards), ...demoCards.map((card) => ({ cards: [card], totalStaked: card.totalStaked }))];
     $("projects").innerHTML = groups.map((group, i) => stickiestCardHtml(group, i + 1)).join("");
     const newest = (items) => items.sort((a, b) => b.ts - a.ts).slice(0, 40);
     renderFeed($("activity"), newest(loaded.flatMap((result) => result.activity)));
     renderFeed($("airdrops"), [...newest(loaded.flatMap((result) => result.airdrops)), ...demoAirdrops], "No airdrops yet");
     setHomeState("ready", failedNote, failed.length > 0);
+    if (!pending && !failed.length && !demoCards.length) (window.__DEMO_RPC ? null : window.StickyRouteBoot)?.writeJson(snapshotKey, Object.fromEntries(snapshotParts.map((id) => [id, $(id).innerHTML])));
     hydrateLogos().catch(() => {});
   };
   await Promise.all(chains.map(async (chainId) => {
@@ -2207,6 +2230,8 @@ async function renderHome() {
     if (!current()) return;
     results.set(chainId, result);
     paint();
+    result.pricesRead?.then((prices) => { result.prices = prices; }, () => { result.prices = new Map(); })
+      .then(() => { if (current()) paint(); });
   }));
 }
 

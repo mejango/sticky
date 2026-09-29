@@ -93,7 +93,19 @@
     }
   }
 
-  const api = { routeKind, readProject, writeProject, readHandle, writeHandle, validSummary };
+  // Other public, display-only reads (IPFS documents, the home lists), bounded in size. Never wallet data.
+  const JSON_MAX_CHARS = 200_000;
+  function readJson(name, storage) {
+    try { return JSON.parse(storageOf(storage)?.getItem(name) || "null"); } catch { return null; }
+  }
+  function writeJson(name, value, storage) {
+    try {
+      const payload = JSON.stringify(value);
+      if (payload.length <= JSON_MAX_CHARS) storageOf(storage)?.setItem(name, payload);
+    } catch {}
+  }
+
+  const api = { routeKind, readProject, writeProject, readHandle, writeHandle, validSummary, readJson, writeJson };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.StickyRouteBoot = api;
   try {
