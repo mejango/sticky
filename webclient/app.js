@@ -904,11 +904,26 @@ function status(msg, cls = "") {
 }
 
 let txStatusTimer = null;
+// The transaction a confirmation names: the last step the confirm dialog saw land, for a short while.
+let lastConfirmedTx = null;
 function txStatus(msg, cls = "") {
   clearTimeout(txStatusTimer);
-  $("tx-status-message").textContent = msg;
+  const message = $("tx-status-message");
+  message.textContent = msg;
+  const recent = msg && cls === "ok" && lastConfirmedTx && Date.now() - lastConfirmedTx.at < 120_000 ? lastConfirmedTx : null;
+  const explorer = recent ? chainById(recent.chainId)?.explorer : null;
+  if (explorer) {
+    const link = document.createElement("a");
+    link.href = `${explorer}/tx/${recent.hash}`;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = "View transaction ↗";
+    message.append(" ", link);
+    lastConfirmedTx = null;
+  }
   $("tx-status").className = msg ? cls : "hide";
-  if (msg && (cls === "ok" || cls === "err")) {
+  // A confirmation with its link stays until dismissed; other notices fade.
+  if (msg && (cls === "err" || (cls === "ok" && !explorer))) {
     txStatusTimer = setTimeout(() => txStatus(""), 8_000);
   }
 }
@@ -2036,6 +2051,16 @@ function homeFailed(error) {
   setHomeState("error", "Could not read Sticky tokens.", true);
   if (!isHomeRoute()) status(error?.message || String(error), "err");
 }
+// The index trails a new launch by a few seconds: drop its cached lists and look again while it catches up.
+function refreshIndexedHome() {
+  const again = () => {
+    indexCache.clear();
+    deployedCache.clear();
+    if (isHomeRoute()) renderHome().catch(homeFailed);
+  };
+  again();
+  for (const delay of [4_000, 12_000]) setTimeout(again, delay);
+}
 async function retryHome() {
   for (const id of ["home-secured-chart", "activity", "projects", "airdrops"]) $(id).innerHTML = "";
   $("home-secured-value").textContent = "–";
@@ -2622,6 +2647,8 @@ function renderConfirmSteps() {
     : uncertain ? "The submitted step will be checked before any remaining transaction is sent."
       : `${transactionsLeft(steps.length - done)}. Confirmed steps will not be repeated.`;
   const offset = confirmPreSteps.length;
+  const landed = [...steps].reverse().find((step) => step.state === "confirmed" && step.hash);
+  if (landed) lastConfirmedTx = { chainId: landed.tx.chainId, hash: landed.hash, at: Date.now() };
   card.innerHTML = `<p>${esc(intro)}</p>` + confirmPreSteps.map((step, i) =>
     `<div class="cd-step ${step.state}"><i>${i + 1}</i><span>${esc(step.label)}<br><small>${esc(step.note)}</small></span></div>`,
   ).join("") + steps.map((step, i) => {
@@ -5200,7 +5227,7 @@ function ensureStickyLaunchUI() {
     await stickyLaunchController().clear(); dialog.close();
     if (saved && StickyLaunch.complete(saved)) {
       txStatus(`${saved.symbol} deployed on ${saved.targets.length} ${saved.targets.length === 1 ? "chain" : "chains"}.`, "ok");
-      await renderHome();
+      refreshIndexedHome();
     }
   }));
   $("create-toggle").addEventListener("click", (event) => {
@@ -5351,6 +5378,8 @@ async function runStickyLaunchWallet(session, txs, { recovering, beforeSend }) {
   return { status: receipt ? "confirmed" : "pending", hash: receipt?.transactionHash || latest?.steps[0]?.hash, receipt };
 }
 async function pollStickyLaunchProgress() {
+  // A hidden tab checks nothing; the next tick after it is shown picks the launch back up.
+  if (document.hidden) return void setTimeout(pollStickyLaunchProgress, 12000);
   try {
     const saved = stickyLaunchStore().load();
     if (!stickyLaunchBusy && StickyLaunch.needsPolling(saved) && navigator.locks) {
@@ -6570,6 +6599,8 @@ if (config.demoMode) {
   if (selected && $("deployer").value) loadDeployer().catch((error) => isHomeRoute() ? console.error(error) : projectFailed(error));
   else if (!isHomeRoute()) projectFailed(new Error(selected ? "Sticky is not configured on this chain yet." : "This chain is not supported."));
 }
-setInterval(() => refreshPosition().catch(() => {}), 15_000);
+// Background refresh pauses in a hidden tab and catches up when it is shown again.
+setInterval(() => { if (!document.hidden) refreshPosition().catch(() => {}); }, 15_000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshPosition().catch(() => {}); });
 
 installTxRecoveryUI();
