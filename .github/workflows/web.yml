@@ -3,9 +3,9 @@ name: web
 on:
   push:
     branches: [main]
-    paths: ['web/**', '.github/workflows/web.yml']
+    paths: ['web/**', 'deployments/**', '.github/workflows/web.yml']
   pull_request:
-    paths: ['web/**', '.github/workflows/web.yml']
+    paths: ['web/**', 'deployments/**', '.github/workflows/web.yml']
   workflow_dispatch:
 
 permissions:
@@ -46,6 +46,10 @@ jobs:
         run: npm run lint
       - name: Type-check
         run: npm run ts:check
+      # The addresses and scan blocks the site builds from are generated from the
+      # repository's deployment records, so a records change without a sync fails.
+      - name: Check deployment addresses against the deployment records
+        run: npm run deployments:check
       # Local hash comparison only: a browser query whose document is missing from the
       # persisted registry is rejected by the proxy, so drift here silently breaks a
       # feature. The live-schema half of the script stays out of CI so a third-party

@@ -1,0 +1,82 @@
+{
+  "1": {
+    "deployer": "0xdA38Ec48B5b1d186B02BA99F297e95153BEE33a9",
+    "hook": "0xa8DcD735031cf96C4213D9A3f66a1DFFDCdba693",
+    "terminal": "0x130f5Dd2bD8805443Cf41755253D778a75a67f53",
+    "controller": "0x3Fcec3572e84b624477BcfF4E2CF1f7dEAb648F1",
+    "distributor": "0xc62b3fED668Cd8a3879ba34890a67C48a52b1Bb8",
+    "rewardReceiverFactory": "0x41AEC7AacEa4759F2c8AaBD68D4a4C1574A6A737",
+    "autoStick": "0x9B091e21d25c424De67751F4b6Ae8494351218C5",
+    "fromBlock": "26057164"
+  },
+  "10": {
+    "deployer": "0xdA38Ec48B5b1d186B02BA99F297e95153BEE33a9",
+    "hook": "0xa8DcD735031cf96C4213D9A3f66a1DFFDCdba693",
+    "terminal": "0x130f5Dd2bD8805443Cf41755253D778a75a67f53",
+    "controller": "0x3Fcec3572e84b624477BcfF4E2CF1f7dEAb648F1",
+    "distributor": "0xc62b3fED668Cd8a3879ba34890a67C48a52b1Bb8",
+    "rewardReceiverFactory": "0x41AEC7AacEa4759F2c8AaBD68D4a4C1574A6A737",
+    "autoStick": "0x9B091e21d25c424De67751F4b6Ae8494351218C5",
+    "fromBlock": "157386536"
+  },
+  "8453": {
+    "deployer": "0xdA38Ec48B5b1d186B02BA99F297e95153BEE33a9",
+    "hook": "0xa8DcD735031cf96C4213D9A3f66a1DFFDCdba693",
+    "terminal": "0x130f5Dd2bD8805443Cf41755253D778a75a67f53",
+    "controller": "0x3Fcec3572e84b624477BcfF4E2CF1f7dEAb648F1",
+    "distributor": "0xc62b3fED668Cd8a3879ba34890a67C48a52b1Bb8",
+    "rewardReceiverFactory": "0x41AEC7AacEa4759F2c8AaBD68D4a4C1574A6A737",
+    "autoStick": "0x9B091e21d25c424De67751F4b6Ae8494351218C5",
+    "fromBlock": "51791252"
+  },
+  "42161": {
+    "deployer": "0xdA38Ec48B5b1d186B02BA99F297e95153BEE33a9",
+    "hook": "0xa8DcD735031cf96C4213D9A3f66a1DFFDCdba693",
+    "terminal": "0x130f5Dd2bD8805443Cf41755253D778a75a67f53",
+    "controller": "0x3Fcec3572e84b624477BcfF4E2CF1f7dEAb648F1",
+    "distributor": "0xc62b3fED668Cd8a3879ba34890a67C48a52b1Bb8",
+    "rewardReceiverFactory": "0x41AEC7AacEa4759F2c8AaBD68D4a4C1574A6A737",
+    "autoStick": "0x9B091e21d25c424De67751F4b6Ae8494351218C5",
+    "fromBlock": "508887149"
+  },
+  "84532": {
+    "deployer": "0xdA38Ec48B5b1d186B02BA99F297e95153BEE33a9",
+    "hook": "0xa8DcD735031cf96C4213D9A3f66a1DFFDCdba693",
+    "terminal": "0x130f5Dd2bD8805443Cf41755253D778a75a67f53",
+    "controller": "0x3Fcec3572e84b624477BcfF4E2CF1f7dEAb648F1",
+    "distributor": "0xc62b3fED668Cd8a3879ba34890a67C48a52b1Bb8",
+    "rewardReceiverFactory": "0x41AEC7AacEa4759F2c8AaBD68D4a4C1574A6A737",
+    "autoStick": "0x9B091e21d25c424De67751F4b6Ae8494351218C5",
+    "fromBlock": "47301559"
+  },
+  "421614": {
+    "deployer": "0xdA38Ec48B5b1d186B02BA99F297e95153BEE33a9",
+    "hook": "0xa8DcD735031cf96C4213D9A3f66a1DFFDCdba693",
+    "terminal": "0x130f5Dd2bD8805443Cf41755253D778a75a67f53",
+    "controller": "0x3Fcec3572e84b624477BcfF4E2CF1f7dEAb648F1",
+    "distributor": "0xc62b3fED668Cd8a3879ba34890a67C48a52b1Bb8",
+    "rewardReceiverFactory": "0x41AEC7AacEa4759F2c8AaBD68D4a4C1574A6A737",
+    "autoStick": "0x9B091e21d25c424De67751F4b6Ae8494351218C5",
+    "fromBlock": "312706619"
+  },
+  "11155111": {
+    "deployer": "0xdA38Ec48B5b1d186B02BA99F297e95153BEE33a9",
+    "hook": "0xa8DcD735031cf96C4213D9A3f66a1DFFDCdba693",
+    "terminal": "0x130f5Dd2bD8805443Cf41755253D778a75a67f53",
+    "controller": "0x3Fcec3572e84b624477BcfF4E2CF1f7dEAb648F1",
+    "distributor": "0xc62b3fED668Cd8a3879ba34890a67C48a52b1Bb8",
+    "rewardReceiverFactory": "0x41AEC7AacEa4759F2c8AaBD68D4a4C1574A6A737",
+    "autoStick": "0x9B091e21d25c424De67751F4b6Ae8494351218C5",
+    "fromBlock": "11781859"
+  },
+  "11155420": {
+    "deployer": "0xdA38Ec48B5b1d186B02BA99F297e95153BEE33a9",
+    "hook": "0xa8DcD735031cf96C4213D9A3f66a1DFFDCdba693",
+    "terminal": "0x130f5Dd2bD8805443Cf41755253D778a75a67f53",
+    "controller": "0x3Fcec3572e84b624477BcfF4E2CF1f7dEAb648F1",
+    "distributor": "0xc62b3fED668Cd8a3879ba34890a67C48a52b1Bb8",
+    "rewardReceiverFactory": "0x41AEC7AacEa4759F2c8AaBD68D4a4C1574A6A737",
+    "autoStick": "0x9B091e21d25c424De67751F4b6Ae8494351218C5",
+    "fromBlock": "49284433"
+  }
+}
