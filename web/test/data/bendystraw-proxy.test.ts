@@ -396,6 +396,25 @@ describe('same-origin relay route', () => {
     )
   })
 
+  it('logs a cause without the control characters a terminal or a log viewer would act on', async () => {
+    // ESC starts a terminal sequence, NUL cuts a line in some viewers, and U+0085 (NEL), U+009B (CSI) and DEL are controls that `\s` does not match.
+    indexer(() => json({ errors: [{ message: 'red \u001b[31mforged\u001b[0m\u0000 nul \u0085 nel \u009b csi \u007f del' }] }))
+
+    const response = await POST(
+      relayRequest({
+        operation: projectOperation,
+        variables: { chainId: 8453, projectId: 11 },
+      }),
+      network('mainnet'),
+    )
+
+    expect(await response.json()).toEqual({ error: 'Bendystraw unavailable' })
+    expect(console.error).toHaveBeenCalledExactlyOnceWith(
+      CAUSE_LABEL,
+      'BendystrawRequestError: red [31mforged [0m nul nel csi del',
+    )
+  })
+
   it('answers 502, not an empty result, when the indexer stays down through the retries', async () => {
     const fetcher = indexer(() => json({ error: 'offline' }, 503))
 

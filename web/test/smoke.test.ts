@@ -7,7 +7,6 @@ import { describe, expect, it, vi } from 'vitest'
 const require = createRequire(import.meta.url)
 const createConfig = require('../next.config.js') as (phase: string) => NextConfig
 const nextConfig = createConfig(PHASE_PRODUCTION_BUILD)
-const { configSchema } = require('next/dist/server/config-schema') as typeof import('next/dist/server/config-schema')
 const headerRoutes = async () => (await nextConfig.headers?.()) ?? []
 
 const SAFE_FRAMING = 'frame-ancestors https://app.safe.global https://app.5afe.dev'
@@ -39,8 +38,16 @@ describe('next config', () => {
   })
 
   it('gives the callback page one frame-ancestors policy, its own, so Sticky can frame it', async () => {
-    for (const path of ['/center/callback', '/center/callback/']) {
+    for (const path of ['/center/callback', '/center/callback/', '/center/callback?code=abc&state=xyz']) {
       expect(await policiesFor(path)).toEqual([{ source: '/center/callback', policy: CALLBACK_FRAMING }])
+    }
+  })
+
+  it('skips the site-wide headers for the callback page alone, not for every path that starts with its name', async () => {
+    for (const path of ['/center/callback/x', '/center/callback/x/y', '/center/callbackfoo', '/center/callback-x', '/center', '/center/']) {
+      const policies = await policiesFor(path)
+      expect(policies.map(({ policy }) => policy)).toEqual([SAFE_FRAMING])
+      expect(policies[0].source).not.toBe('/center/callback')
     }
   })
 
@@ -68,6 +75,7 @@ describe('next config', () => {
   })
 
   it('keeps the cache of the Bendystraw relay in memory, where a client that varies its requests cannot fill the disk', () => {
+    const { configSchema } = require('next/dist/server/config-schema') as typeof import('next/dist/server/config-schema')
     for (const phase of [PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD, PHASE_PRODUCTION_SERVER]) {
       const config = createConfig(phase)
       expect(config.experimental?.isrFlushToDisk).toBe(false)
@@ -77,11 +85,12 @@ describe('next config', () => {
     expect(configSchema.safeParse({ experimental: { isrFlushToDisc: false } }).success).toBe(false)
   })
 
-  it('optimizes images only from Juicebox Center IPFS and keeps dev and production builds apart', () => {
+  it('serves images as they are, so the server resizes none and keeps no image cache', () => {
+    expect(nextConfig.images).toEqual({ unoptimized: true })
+  })
+
+  it('keeps dev and production builds apart', () => {
     vi.stubEnv('NEXT_DIST_DIR', '')
-    expect(nextConfig.images?.remotePatterns).toEqual([
-      { protocol: 'https', hostname: 'juicebox.center', pathname: '/ipfs/**' },
-    ])
     expect(createConfig(PHASE_PRODUCTION_BUILD).distDir).toBe('.next')
     expect(createConfig(PHASE_DEVELOPMENT_SERVER).distDir).toBe('.next-dev')
   })

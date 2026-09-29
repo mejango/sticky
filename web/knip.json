@@ -1,6 +1,7 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
+    "scripts/check-deployment-env.d.mts",
     "scripts/start-production.mjs",
     "src/app/**/page.browsertest.tsx",
     "test/browser/fail-fast-service.mjs"

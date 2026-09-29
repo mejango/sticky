@@ -18,7 +18,8 @@ const securityHeaders = [
 // The Signa sign-in frames /center/callback from Sticky's own origin, so the
 // page has its own policy and the site-wide set skips it. A browser enforces
 // every frame-ancestors policy on a response, and Safe's origins do not include
-// Sticky.
+// Sticky. Only that one path is skipped, with or without a trailing slash:
+// /center/callback/x and /center/callbackfoo get the site-wide set.
 const centerCallbackHeaders = [
   { key: 'Cache-Control', value: 'no-store' },
   { key: 'Referrer-Policy', value: 'strict-origin' },
@@ -50,9 +51,8 @@ module.exports = phase => ({
     // Keep Next's caches in memory. Its fetch cache writes one file per entry
     // to .next/cache/fetch-cache and never removes one, so a client that varies
     // the variables of a Bendystraw relay request would fill the disk, while
-    // memory is bounded by cacheMaxMemorySize. Next also turns its image
-    // optimizer's disk cache off with this, so an image is optimized again on
-    // each request that reaches the server.
+    // memory is bounded by cacheMaxMemorySize. With this the server writes no
+    // cache to disk, and the production image needs no writable .next/cache.
     isrFlushToDisk: false,
   },
   // `page.browsertest.tsx` files are routes ONLY in the deterministic browser
@@ -63,18 +63,15 @@ module.exports = phase => ({
     process.env.NEXT_PUBLIC_DETERMINISTIC_BROWSER === 'true'
       ? ['tsx', 'ts', 'jsx', 'js', 'browsertest.tsx']
       : ['tsx', 'ts', 'jsx', 'js'],
-  images: {
-    // Project media is content-addressed (IPFS), so optimized variants can be
-    // cached aggressively. Bundled artwork uses hashed static imports and is
-    // served immutable independently of this TTL.
-    minimumCacheTTL: 60 * 60 * 24 * 365,
-    remotePatterns: [
-      { protocol: 'https', hostname: 'juicebox.center', pathname: '/ipfs/**' },
-    ],
-  },
+  // Images are served as they are, and /_next/image answers 404. Its optimizer
+  // caches one file per image and width with no bound, and with the disk cache
+  // off above it would resize an image again on every request. A project's logo
+  // loads straight from JB Center's IPFS gateway and the header art is static,
+  // so nothing needs resizing.
+  images: { unoptimized: true },
   async headers() {
     return [
-      { source: '/((?!center/callback).*)', headers: securityHeaders },
+      { source: '/((?!center/callback/?$).*)', headers: securityHeaders },
       { source: '/center/callback', headers: centerCallbackHeaders },
       {
         source: '/manifest.json',
