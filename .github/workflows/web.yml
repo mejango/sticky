@@ -58,3 +58,50 @@ jobs:
         run: npm run test:ci
       - name: Build production application
         run: npm run build
+
+  container-smoke:
+    name: Standalone OCI smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Signa is on, with settings of the right shape only, so the build and the
+      # start check them the way a deployment's are checked.
+      - name: Build the production image
+        run: |
+          docker build --tag sticky-web:ci \
+            --build-arg NEXT_PUBLIC_SITE_URL=https://sticky.example \
+            --build-arg NEXT_PUBLIC_BENDYSTRAW_URL=https://bendystraw.example \
+            --build-arg NEXT_PUBLIC_TESTNET_BENDYSTRAW_URL=https://testnet.bendystraw.example \
+            --build-arg NEXT_PUBLIC_CENTER_WALLET_ENABLED=true \
+            --build-arg NEXT_PUBLIC_CENTER_WALLET_MANIFEST_ID=ci-shape-only \
+            --build-arg NEXT_PUBLIC_CENTER_WALLET_MANIFEST_REVISION=0x0000000000000000000000000000000000000000000000000000000000000001 \
+            --build-arg NEXT_PUBLIC_CENTER_WALLET_MAXIMUM_NETWORK_FEE_WEI=1 \
+            --build-arg NEXT_PUBLIC_VERSION=$GITHUB_SHA \
+            web
+      # The server writes no cache to disk, so the root filesystem stays read-only
+      # with nothing mounted at /app/.next/cache.
+      - name: Run the image as non-root and check readiness
+        run: |
+          docker run --detach --name sticky-ci \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --publish 127.0.0.1:3000:3000 \
+            sticky-web:ci
+          for attempt in {1..30}; do
+            body="$(curl --fail --silent http://127.0.0.1:3000/api/healthz || true)"
+            if [[ "$body" == *"\"revision\":\"$GITHUB_SHA\""* ]]; then
+              test "$(docker inspect --format '{{.Config.User}}' sticky-ci)" = node
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs sticky-ci
+          exit 1
+      - name: Remove smoke-test container
+        if: always()
+        run: docker rm --force sticky-ci || true
