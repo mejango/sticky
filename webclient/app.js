@@ -949,10 +949,22 @@ function currentView() {
     && ctx.currentId === projectId && account() === holder;
 }
 
-async function loadDeployer() {
-  ctx.loaded = false;
-  const deployer = $("deployer").value;
-  StickyRuntime.address(deployer);
+// The deployment's addresses come from the deployer contract and never change. After one full check they
+// are kept, so a return visit starts at once; the same check re-runs behind it and stops the page loudly if
+// the chain disagrees.
+const BOOT_KEY = "sticky.boot.v1:";
+function readBoot(key) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(BOOT_KEY + key) || "null");
+    if (!saved || typeof saved.chainId !== "number") return null;
+    for (const name of ["hook", "tokens", "terminal", "controller", "store"]) StickyRuntime.address(saved[name]);
+    return saved;
+  } catch { return null; }
+}
+function writeBoot(key, deployment) {
+  try { localStorage.setItem(BOOT_KEY + key, JSON.stringify(deployment)); } catch {}
+}
+async function resolveDeployment(deployer) {
   const chainId = Number(BigInt(await rpc("eth_chainId", [])));
   if (!window.__DEMO_RPC) {
     const selected = Number(new URL(location.href).searchParams.get("chain") || window.STICKY_CONFIG?.defaultChainId || chainId);
@@ -970,7 +982,10 @@ async function loadDeployer() {
       if (!code || code === "0x") throw new Error("The configured Sticky deployment has an unavailable dependency.");
     }));
   }
-  Object.assign(ctx, { chainId, hook, tokens, terminal, controller, store });
+  return { chainId, hook, tokens, terminal, controller, store };
+}
+function applyDeployment(deployment) {
+  Object.assign(ctx, deployment);
   ctx.loaded = true;
   ctx.projects = {};
   ctx.pool = null;
@@ -984,6 +999,28 @@ async function loadDeployer() {
   status("onchain", "ok");
   // The home page reads every chain itself and does not wait for this one.
   if (!isHomeRoute() || window.__DEMO_RPC) route();
+}
+async function loadDeployer() {
+  ctx.loaded = false;
+  const deployer = $("deployer").value;
+  StickyRuntime.address(deployer);
+  const selected = Number(new URL(location.href).searchParams.get("chain") || window.STICKY_CONFIG?.defaultChainId || 0);
+  const key = `${selected}:${deployer.toLowerCase()}`;
+  const saved = window.__DEMO_RPC || !selected ? null : readBoot(key);
+  if (saved && saved.chainId === selected) {
+    applyDeployment(saved);
+    resolveDeployment(deployer).then((fresh) => {
+      if (["chainId", "hook", "tokens", "terminal", "controller", "store"].some((name) => String(fresh[name]).toLowerCase() !== String(saved[name]).toLowerCase())) {
+        try { localStorage.removeItem(BOOT_KEY + key); } catch {}
+        ctx.loaded = false;
+        status("This Sticky deployment no longer matches the one this browser remembered. Reload the page.", "err");
+      }
+    }, (error) => status(error?.message || String(error), "err"));
+    return;
+  }
+  const fresh = await resolveDeployment(deployer);
+  if (!window.__DEMO_RPC && selected) writeBoot(key, fresh);
+  applyDeployment(fresh);
 }
 
 async function projectInfo(projectId, reader = pageReader()) {

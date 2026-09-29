@@ -333,5 +333,5 @@ test('a chain whose projects all fail to read is an error for that chain', async
 
 test('boot starts the home page, or the route\'s own view, without waiting for the page chain', () => {
   assert.match(source, /\n  route\(\);\n  if \(selected && \$\("deployer"\)\.value\) loadDeployer\(\)\.catch/);
-  assert.match(functionSource('loadDeployer'), /if \(!isHomeRoute\(\) \|\| window\.__DEMO_RPC\) route\(\);/);
+  assert.match(functionSource('applyDeployment'), /if \(!isHomeRoute\(\) \|\| window\.__DEMO_RPC\) route\(\);/);
 });
