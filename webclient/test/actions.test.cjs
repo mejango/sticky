@@ -57,9 +57,10 @@ function fixture(overrides = {}) {
     named: (...pairs) => Object.fromEntries(pairs.filter(([a]) => a).map(([a, n]) => [a.toLowerCase(), n])),
     contractNameOf: () => 'a contract',
     ctx: { chainId: 1, currentId: 12n, terminal: TERMINAL, hook: RECEIVER_FACTORY, store: DISTRIBUTOR, autoStick: null },
+    QUOTE_SETTLE_MS: 0, setTimeout,
     window: {},
     $: (id) => {
-      if (!fields.has(id)) fields.set(id, { value: '', close() {} });
+      if (!fields.has(id)) fields.set(id, { value: '', close() {}, classList: { add() {}, remove() {} } });
       return fields.get(id);
     },
     txAccount: () => HOLDER,
@@ -157,23 +158,23 @@ test('a stale asynchronous mint estimate cannot replace a newer amount or projec
   const pending = [];
   c.previewStickMint = () => new Promise(resolve => pending.push(resolve));
   const first = c.renderStickQuote();
-  await new Promise(setImmediate);
+  await new Promise(resolve => setTimeout(resolve, 5));
   c.$('stake-amount').value = '2';
   const second = c.renderStickQuote();
-  await new Promise(setImmediate);
+  await new Promise(resolve => setTimeout(resolve, 5));
   pending[1](2n * 10n ** 18n);
   await second;
   pending[0](1n * 10n ** 18n);
   await first;
   assert.match(c.$('stake-quote').textContent, /You get at least 2 STICKYART/);
   const third = c.renderStickQuote();
-  await new Promise(setImmediate);
+  await new Promise(resolve => setTimeout(resolve, 5));
   c.ctx.currentId = 99n;
   pending[2](3n * 10n ** 18n);
   await third;
   assert.doesNotMatch(c.$('stake-quote').textContent, /You get at least 3/);
   const fourth = c.renderStickQuote();
-  await new Promise(setImmediate);
+  await new Promise(resolve => setTimeout(resolve, 5));
   c.account = () => OTHER;
   pending[3](4n * 10n ** 18n);
   await fourth;
@@ -856,4 +857,25 @@ test('reward copy states the round end, the next unlock, the last unlock, and fu
   assert.equal(idle.Vesting, 'None');
   assert.equal(idle['Earned, not vesting'], undefined);
   assert.equal(idle.Funded, 'None this round. 0 ART in total.');
+});
+
+test('stick refuses before the project is verified, instead of reading a null project', async () => {
+  const { context: c } = fixture();
+  c.ctx.currentId = null;
+  await assert.rejects(c.stake(), /still being checked/);
+});
+
+test('typing settles into one quote read, and the last quote stays until the new one lands', async () => {
+  const { context: c, info } = fixture();
+  c.QUOTE_SETTLE_MS = 20;
+  c.ctx.pool = { decimals: 6, stSymbol: info.stSymbol, reward: 0n };
+  let reads = 0;
+  c.previewStickMint = async () => { reads += 1; return 5n * 10n ** 18n; };
+  c.$('stake-quote').textContent = 'You get at least 1 STICKYART';
+  const typed = [];
+  for (const value of ['1', '12', '123']) { c.$('stake-amount').value = value; typed.push(c.renderStickQuote()); }
+  assert.equal(c.$('stake-quote').textContent, 'You get at least 1 STICKYART');
+  await Promise.all(typed);
+  assert.equal(reads, 1);
+  assert.match(c.$('stake-quote').textContent, /You get at least 5 STICKYART/);
 });

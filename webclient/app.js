@@ -2171,6 +2171,9 @@ function enterProjectView(projectId) {
   for (const id of ["h-symbol", "h-name", "stake-symbol", "gift-symbol"]) $(id).textContent = "";
   for (const id of ["h-staked", "h-streakers", "h-average", "h-top"]) $(id).textContent = "–";
   $("stake-title").textContent = "Stick";
+  // Nothing is stuck from a cached summary: the button opens once this visit has verified the project.
+  $("stake").disabled = true;
+  $("stake").textContent = "Checking…";
   renderProjectChains([]);
   const cached = key === null ? null : projectCache()?.readProject(pageChainId(), projectId);
   if (cached) paintCachedProject(projectId, cached);
@@ -2206,6 +2209,7 @@ function cacheProjectSummary(projectId, info, pool, trusted, chains) {
 }
 function projectFailed(error) {
   status(error?.message || String(error), "err");
+  $("stake").textContent = "Stick";
   const view = $("view-project");
   if (view.dataset.state === "loading") view.dataset.state = "error";
   view.removeAttribute("aria-busy");
@@ -2287,6 +2291,8 @@ async function renderProject(projectId) {
   $("h-streakers").textContent = active.length;
   renderHeaderAges(rows, pin.timestamp);
   $("view-project").dataset.state = "ready";
+  $("stake").disabled = false;
+  $("stake").textContent = "Stick";
   $("view-project").removeAttribute("aria-busy");
   const projectChains = await projectChainIds(projectId);
   if (!current()) return;
@@ -4515,6 +4521,7 @@ async function transferSticky() {
 
 // The Stick card sticks for the signed-in holder; the Airdrops tab's form sticks for someone else.
 async function stake(gift = false) {
+  if (ctx.currentId == null) throw new Error("This project is still being checked. Try again in a moment.");
   const action = beginAction();
   const { holder } = action;
   const info = await projectInfo(ctx.currentId);
@@ -4628,18 +4635,22 @@ async function previewStickMint(projectId, info, amount, beneficiary, payer = be
 }
 
 const stickQuoteSequences = { self: 0, gift: 0 };
+const QUOTE_SETTLE_MS = 250;
 async function renderStickQuote(gift = false) {
   const mode = gift ? "gift" : "self";
   const sequence = ++stickQuoteSequences[mode];
   const el = $(gift ? "gift-quote" : "stake-quote");
   const pool = ctx.pool;
   if (!el) return;
-  el.textContent = "";
-  if (!pool) return;
+  const clear = () => { el.textContent = ""; el.classList.remove("revalidating"); };
+  if (!pool) return clear();
   const field = $(gift ? "gift-amount" : "stake-amount");
   let amount = 0n;
   try { amount = parseUnits(field.value || field.placeholder || "0", pool.decimals); } catch {}
-  if (amount <= 0n) return;
+  if (amount <= 0n) return clear();
+  // Typing settles before a quote is read; the last quote stays, faded, until the new one lands.
+  await new Promise((resolve) => setTimeout(resolve, QUOTE_SETTLE_MS));
+  if (sequence !== stickQuoteSequences[mode]) return;
   const projectId = ctx.currentId, chainId = ctx.chainId;
   const displayedAccount = account();
   const input = field.value;
@@ -4649,7 +4660,8 @@ async function renderStickQuote(gift = false) {
     return /^0x[0-9a-fA-F]{40}$/.test(typed) ? typed : payer;
   };
   const beneficiary = recipient();
-  el.textContent = "Checking the current backing price…";
+  if (el.textContent) el.classList.add("revalidating");
+  else el.textContent = "Checking the current backing price…";
   const current = () => sequence === stickQuoteSequences[mode] && ctx.currentId === projectId && ctx.chainId === chainId
     && account() === displayedAccount && field.value === input && recipient() === beneficiary;
   try {
@@ -4657,10 +4669,11 @@ async function renderStickQuote(gift = false) {
     if (!current()) return;
     const mint = await previewStickMint(projectId, info, amount, beneficiary, payer);
     if (!current()) return;
+    el.classList.remove("revalidating");
     el.textContent = `${gift ? "They get" : "You get"} at least ${formatAmount(mint, 18)} ${pool.stSymbol}`
       + (pool.reward === MAX_TAX ? ". Unsticking returns nothing at a 100% bonus." : "");
   } catch (error) {
-    if (current()) el.textContent = `Could not quote: ${error.message}`;
+    if (current()) { el.classList.remove("revalidating"); el.textContent = `Could not quote: ${error.message}`; }
   }
 }
 
@@ -4670,24 +4683,29 @@ async function renderUnstickQuote() {
   const el = $("unstake-quote");
   const pool = ctx.pool;
   if (!el) return;
-  el.textContent = "";
-  if (!pool || pool.supply === 0n) return;
+  const clear = () => { el.textContent = ""; el.classList.remove("revalidating"); };
+  if (!pool || pool.supply === 0n) return clear();
   let count;
-  try { count = parseUnits($("unstake-amount").value || "0", 18); } catch { return; }
-  if (count <= 0n) return;
+  try { count = parseUnits($("unstake-amount").value || "0", 18); } catch { return clear(); }
+  if (count <= 0n) return clear();
+  await new Promise((resolve) => setTimeout(resolve, QUOTE_SETTLE_MS));
+  if (sequence !== unstickQuoteSequence) return;
   if (pool.reward === MAX_TAX) {
+    clear();
     el.textContent = "100% stickiness bonus: unsticking burns your Sticky tokens and returns nothing.";
     return;
   }
   const holder = account();
   if (!/^0x[0-9a-fA-F]{40}$/.test(holder || "")) {
+    clear();
     el.textContent = "Connect a wallet to quote your unstick.";
     return;
   }
   const projectId = ctx.currentId, chainId = ctx.chainId, input = $("unstake-amount").value;
   const current = () => sequence === unstickQuoteSequence && ctx.currentId === projectId && ctx.chainId === chainId
     && account() === holder && $("unstake-amount").value === input;
-  el.textContent = "Quoting from the terminal…";
+  if (el.textContent) el.classList.add("revalidating");
+  else el.textContent = "Quoting from the terminal…";
   try {
     const info = await projectInfo(projectId);
     const quote = await unstickQuote(projectId, info, holder, count > pool.supply ? pool.supply : count);
@@ -4695,12 +4713,13 @@ async function renderUnstickQuote() {
     const amt = (v) => `${formatAmount(v, pool.decimals)} ${pool.symbol}`;
     const share = count >= pool.supply ? pool.sigma : (pool.sigma * count) / pool.supply;
     const stays = share > quote.gross ? share - quote.gross : 0n;
+    el.classList.remove("revalidating");
     el.textContent = `You get ${amt(quote.net)}.`
       + (stays > 0n ? ` ${amt(stays)} stays with the holders who remain.` : "")
       + (quote.fee > 0n ? ` ${amt(quote.fee)} goes to the protocol fee.` : quote.feeless ? " No protocol fee for this wallet." : " No protocol fee on this unstick.")
       + " The review uses this as your minimum.";
   } catch (error) {
-    if (current()) el.textContent = `Quote unavailable: ${error.message}`;
+    if (current()) { el.classList.remove("revalidating"); el.textContent = `Quote unavailable: ${error.message}`; }
   }
 }
 
