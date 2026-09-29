@@ -1,3 +1,3 @@
 export default function Home() {
-  return <main id="main-content">Sticky</main>
+  return <h1 className="font-agrandir-wide text-2xl">Sticky</h1>
 }
