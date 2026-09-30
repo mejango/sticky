@@ -2,7 +2,6 @@
 
 import type { Address } from 'viem'
 import { useWallet } from '@/hooks/useWallet'
-import { useViewAs } from '@/lib/viewAs'
 
 /** A tile in a color of the address's own, dark enough for its letter to read, with the address's first character. */
 function AddressBadge({ address }: { address: Address }) {
@@ -26,13 +25,12 @@ function AddressBadge({ address }: { address: Address }) {
 }
 
 /**
- * The account's logo, its title and its address. The title is "Your account" for the connected wallet and for the
- * account the site is viewed as, which is the account the header's menu links to, and "Account" for any other.
+ * The account's logo, its title and its address. The title is "Your account" for the connected wallet, and "Account"
+ * for any other account, the one the site is viewed as included: viewing as an account does not make it yours.
  */
 export function AccountHeader({ address }: { address: Address }) {
   const { address: wallet } = useWallet()
-  const { viewAs } = useViewAs()
-  const yours = [wallet, viewAs].some(account => !!account && account.toLowerCase() === address.toLowerCase())
+  const yours = !!wallet && wallet.toLowerCase() === address.toLowerCase()
   return (
     <header className="flex items-center gap-4">
       <AddressBadge address={address} />

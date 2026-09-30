@@ -25,7 +25,7 @@ import { FEED_WINDOW, type FeedRow } from '@/lib/sticky-feed'
 /** How often a position is read again while the page is in view. */
 const POSITIONS_REFRESH_MS = 15_000
 /** How long what Bendystraw says of the account stays fresh: one read of it serves every chain's, and a refresh of the
- * positions reads it again, since a new position shows there first. */
+ * positions reads it again, so that the scan past its block stays short. */
 const INDEX_FRESH_MS = 10_000
 /** How long the projects of a chain that Bendystraw cannot list positions on stay fresh. Finding them scans the chain,
  * and a refresh reads balances only. */
@@ -86,7 +86,8 @@ export type AccountPositionsRead = {
 
 /**
  * The positions an account holds on the chains of a network, read one chain after another and drawn as each arrives.
- * Bendystraw lists them, once for the network, and each chain reads them again from StickyHook; when it cannot list a
+ * Bendystraw lists them, once for the network, and each chain reads them again from StickyHook, adding the projects
+ * the account's position events show past the block the listing is indexed through; when Bendystraw cannot list a
  * chain's, every Sticky project of the chain is asked. Every 15 s, until the tab is hidden, they are read again. A
  * chain whose read fails is named in `failedChains`, and the console hears why; the others still show.
  */
@@ -102,8 +103,9 @@ export function useAccountPositions(network: BendystrawNetwork, address: Address
         inTurn(client, signal, async () => {
           try {
             const index = await indexOf(client, network, holder, signal)
-            const projectIds = listedPositions(index, chainId) ?? (await deployedOf(client, network, chainId, index, signal))
-            return await accountPositions(chainId, holder, projectIds, { signal })
+            const listed = listedPositions(index, chainId)
+            if (listed) return await accountPositions(chainId, holder, listed.projects, { signal, through: listed.through })
+            return await accountPositions(chainId, holder, await deployedOf(client, network, chainId, index, signal), { signal })
           } catch (error) {
             if (!signal.aborted) console.warn(POSITIONS_UNREADABLE, { network, chainId }, error)
             throw error
@@ -162,7 +164,7 @@ export function useAccountActivity(network: BendystrawNetwork, address: Address)
             if (listed === null && (await deployedOf(client, network, chainId, index, signal)).length === 0) {
               return { chainId, rows: [], labels: {} }
             }
-            return await accountActivity(chainId, holder, { signal, projects: listed ?? undefined })
+            return await accountActivity(chainId, holder, { signal, projects: listed?.projects })
           } catch (error) {
             if (!signal.aborted) console.warn(ACTIVITY_UNREADABLE, { network, chainId }, error)
             throw error

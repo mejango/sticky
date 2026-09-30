@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   openSignIn: vi.fn(),
   preload: vi.fn(),
   pathname: '/',
+  search: '',
   ensNames: {} as Record<string, string>,
   balance: undefined as { value: bigint; symbol: string } | undefined,
   balanceError: false,
@@ -24,7 +25,10 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/hooks/useWallet', () => ({
   useWallet: () => ({ ...mocks.wallet, disconnect: mocks.disconnect, openSignIn: mocks.openSignIn }),
 }))
-vi.mock('next/navigation', () => ({ usePathname: () => mocks.pathname }))
+vi.mock('next/navigation', () => ({
+  usePathname: () => mocks.pathname,
+  useSearchParams: () => new URLSearchParams(mocks.search),
+}))
 vi.mock('next/link', () => ({
   default: ({ children, ...props }: { children: ReactNode }) => createElement('a', props, children),
 }))
@@ -46,6 +50,7 @@ let renderer: TestRenderer.ReactTestRenderer | undefined
 beforeEach(() => {
   mocks.wallet = { address: undefined, isConnected: false, isCenterWallet: false }
   mocks.pathname = '/'
+  mocks.search = ''
   mocks.ensNames = {}
   mocks.balance = undefined
   mocks.balanceError = false
@@ -339,5 +344,87 @@ describe('the balances', () => {
     await openMenu()
     expect(mocks.balanceQuery).not.toHaveBeenCalledWith(expect.objectContaining({ address: ALICE }))
     expect(textOf(panel()!)).not.toContain('Optimism')
+  })
+})
+
+describe('the Account item, and the network of the page in view', () => {
+  const href = async () => {
+    await render()
+    await openMenu()
+    return item('Account').props.href as string
+  }
+
+  it.each([
+    ['/basesep:37', 'a Base Sepolia project'],
+    ['/opsep:20', 'an Optimism Sepolia project'],
+    ['/sep:1', 'a Sepolia project'],
+    ['/arbsep:9', 'an Arbitrum Sepolia project'],
+  ])('links to the account on the testnets from %s, %s', async pathname => {
+    connect()
+    mocks.pathname = pathname
+    expect(await href()).toBe(`/account/${ALICE}?network=testnet`)
+  })
+
+  it.each([
+    ['/base:23', 'a Base project'],
+    ['/eth:5', 'an Ethereum project'],
+    ['/@design', 'a handle no project has been resolved for'],
+  ])('links to the account on the production chains from %s, %s', async pathname => {
+    connect()
+    mocks.pathname = pathname
+    expect(await href()).toBe(`/account/${ALICE}`)
+  })
+
+  it('takes the network of a project from its chain, not from the address bar', async () => {
+    connect()
+    mocks.pathname = '/base:23'
+    mocks.search = 'network=testnet'
+    expect(await href()).toBe(`/account/${ALICE}`)
+  })
+
+  it.each([
+    ['/', 'network=testnet', 'the testnet home'],
+    [`/account/${VIEWED}`, 'network=testnet', 'an account\'s testnet page'],
+  ])('carries the network of %s, from the address bar, to the account', async (pathname, search) => {
+    connect()
+    mocks.pathname = pathname
+    mocks.search = search
+    expect(await href()).toBe(`/account/${ALICE}?network=testnet`)
+  })
+
+  it.each([
+    ['/', ''],
+    ['/', 'network=mainnet'],
+    ['/', 'network=other'],
+    ['/', 'chain=84532'],
+    [`/account/${VIEWED}`, ''],
+  ])('links to the production chains from %s with the search "%s"', async (pathname, search) => {
+    connect()
+    mocks.pathname = pathname
+    mocks.search = search
+    expect(await href()).toBe(`/account/${ALICE}`)
+  })
+
+  it('keeps the network for the account being viewed', async () => {
+    mocks.pathname = '/basesep:37'
+    await render()
+    await act(async () => setViewAs(VIEWED))
+    await openMenu()
+    expect(item('Account').props.href).toBe(`/account/${VIEWED}?network=testnet`)
+  })
+
+  it('takes the network of a handle from the chain of the project the page resolved it to', async () => {
+    connect()
+    mocks.pathname = '/@design'
+    await render(
+      createElement(
+        ProjectRouteProvider,
+        null,
+        createElement(ProjectRouteSync, { route: { chainId: 84532 as const, projectId: 3, handle: 'design' } }),
+        createElement(WalletButton),
+      ),
+    )
+    await openMenu()
+    expect(item('Account').props.href).toBe(`/account/${ALICE}?network=testnet`)
   })
 })

@@ -3,6 +3,7 @@ import { act, type AnchorHTMLAttributes, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { getAddress, type Address } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { ScannedLog } from '@/lib/hook-logs'
 import type { StickyEvent } from '@/lib/sticky-events'
 import type { IndexedProjects } from '@/lib/sticky-indexed'
 import {
@@ -18,12 +19,14 @@ import {
   type Call,
   type FakeChain,
 } from '../account-fixtures'
+import { POSITION_TOPICS, deployment, staked, streakStarted, topic, unstaked } from '../lib/sticky-log-fixtures'
 
 const mocks = vi.hoisted(() => ({
   positions: vi.fn(),
   projects: vi.fn(),
   projectsOn: vi.fn(),
   events: vi.fn(),
+  scan: vi.fn(),
   moves: vi.fn(),
   client: vi.fn(),
   /** The connected wallet. */
@@ -39,6 +42,7 @@ vi.mock('@/lib/sticky-events', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-events')>()),
   stickyHolderEvents: mocks.events,
   stickyProjectsOn: mocks.projectsOn,
+  scanToHead: mocks.scan,
 }))
 vi.mock('@/lib/sticky-feed', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-feed')>()),
@@ -63,6 +67,8 @@ import { AccountActivity } from '@/components/account/AccountActivity'
 import { AccountHeader } from '@/components/account/AccountHeader'
 import { AccountPositions } from '@/components/account/AccountPositions'
 import { groupSameTx } from '@/lib/activity-groups'
+import { stickyDeployment } from '@/lib/sticky-addresses'
+import { scanFrom } from '@/lib/sticky-events'
 import { moveKey } from '@/lib/sticky-feed'
 import { clearViewAs, setViewAs } from '@/lib/viewAs'
 
@@ -79,12 +85,14 @@ let client: QueryClient
 let world: Record<number, FakeChain>
 let calls: Call[]
 let broken: Set<number>
+/** What each chain's hook logged for the account past the block Bendystraw is indexed through, or why it cannot say. */
+let tails: Record<number, ScannedLog[] | Error>
 
 const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } })
-/** A Bendystraw answer that lists `rows` and covers `chainIds`. */
-const listing = (rows: ReturnType<typeof positionRow>[], chainIds = MAINNET) => ({
+/** A Bendystraw answer that lists `rows` and covers `chainIds`, indexed through block `through`. */
+const listing = (rows: ReturnType<typeof positionRow>[], chainIds = MAINNET, through = 100n) => ({
   rows,
-  blocks: new Map(chainIds.map(chainId => [chainId, 100n])),
+  blocks: new Map(chainIds.map(chainId => [chainId, through])),
 })
 
 beforeEach(() => {
@@ -93,12 +101,26 @@ beforeEach(() => {
   world = {}
   calls = []
   broken = new Set()
+  tails = {}
   mocks.address = undefined
   clearViewAs()
   mocks.positions.mockReset().mockImplementation(async ({ chainIds }: { chainIds: number[] }) => listing([], chainIds))
   mocks.projects.mockReset().mockResolvedValue({ blocks: new Map(), projects: [] } satisfies IndexedProjects)
   mocks.projectsOn.mockReset().mockResolvedValue({ projects: [], source: 'scanned', degraded: 'indexer-error' })
   mocks.events.mockReset().mockResolvedValue({ events: [], source: 'indexed', degraded: null })
+  mocks.scan.mockReset().mockImplementation(async (chainId: number) => {
+    calls.push({ chainId, phase: 'start', what: 'scan' })
+    try {
+      await Promise.resolve()
+      await Promise.resolve()
+      if (broken.has(chainId)) throw new Error('rpc down')
+      const tail = tails[chainId] ?? []
+      if (tail instanceof Error) throw tail
+      return tail
+    } finally {
+      calls.push({ chainId, phase: 'end', what: 'scan' })
+    }
+  })
   mocks.moves.mockReset().mockResolvedValue(new Map())
   mocks.client.mockReset().mockImplementation(fakeCenter(world, calls, { broken }))
   client = newClient()
@@ -196,11 +218,15 @@ describe('the account\'s title', () => {
     expect(title()).toBe('Account')
   })
 
-  it('is "Your account" for the account the site is viewed as, which is the one the header links to', async () => {
+  it('is "Account" for the account the site is viewed as: viewing as an account does not make it yours', async () => {
     mocks.address = OTHER
     await act(async () => setViewAs(CHECKSUMMED))
     await renderNode(<AccountHeader address={CHECKSUMMED} />)
-    expect(title()).toBe('Your account')
+    expect(title()).toBe('Account')
+
+    mocks.address = undefined
+    await renderNode(<AccountHeader address={CHECKSUMMED} />)
+    expect(title()).toBe('Account')
 
     await act(async () => setViewAs(getAddress(OTHER)))
     expect(title()).toBe('Account')
@@ -237,7 +263,7 @@ describe('the account\'s positions', () => {
     expect(mocks.positions).toHaveBeenCalledWith({ holder: HOLDER, chainIds: TESTNET }, expect.any(AbortSignal))
   })
 
-  it('reads each listed position\'s balance on its own chain, one chain after another, and asks no other chain', async () => {
+  it('reads each listed position\'s balance on its own chain, one chain after another, and asks no chain for one it lists none in', async () => {
     mocks.positions.mockResolvedValue(
       listing([positionRow(1, 5n), positionRow(10, 4n), positionRow(8453, 23n), positionRow(8453, 24n)]),
     )
@@ -246,14 +272,16 @@ describe('the account\'s positions', () => {
     world[8453] = { '23': { staked: E18 }, '24': { staked: E18 } }
     await renderPositions()
 
-    // Chain 1's requests all end before chain 10's begin, and so on. Arbitrum lists nothing, so it is not asked.
-    expect(chainsOf(calls)).toEqual([1, 10, 8453])
+    // Chain 1's requests all end before chain 10's begin, and so on. Arbitrum lists nothing, so its balances are not read.
+    expect(chainsOf(calls)).toEqual(MAINNET)
     expect(oneAfterAnother(calls)).toBe(true)
     const first = (chainId: number) => calls.findIndex(call => call.chainId === chainId)
     const last = (chainId: number) => calls.findLastIndex(call => call.chainId === chainId)
     expect(last(1)).toBeLessThan(first(10))
     expect(last(10)).toBeLessThan(first(8453))
+    expect(last(8453)).toBeLessThan(first(42161))
     expect(balanceReads(8453)).toHaveLength(1)
+    expect(balanceReads(42161)).toHaveLength(0)
     expect(cards().map(card => card.getAttribute('href'))).toEqual(['/eth:5', '/op:4', '/base:23', '/base:24'])
   })
 
@@ -270,12 +298,13 @@ describe('the account\'s positions', () => {
       return { ...chain, multicall: async (parameters: never) => (await slow.promise, multicall(parameters)) }
     })
     await renderPositions()
-    expect(chainsOf(calls)).toEqual([])
+    // Chain 1 has read the account's position events, and its balances are stuck: no other chain has begun.
+    expect(chainsOf(calls)).toEqual([1])
     expect(cards()).toHaveLength(0)
 
     await act(async () => slow.resolve())
     await settle()
-    expect(chainsOf(calls)).toEqual([1, 10])
+    expect(chainsOf(calls)).toEqual(MAINNET)
     expect(oneAfterAnother(calls)).toBe(true)
     expect(cards()).toHaveLength(2)
   })
@@ -373,8 +402,9 @@ describe('the account\'s positions', () => {
     expect(host.textContent).toContain('No positions yet')
     expect(note()).toBe('')
     expect(retryButton()).toBeNull()
-    // Nothing is listed, so nothing is read.
-    expect(calls).toEqual([])
+    // Nothing is listed and no position event has come since, so no balance is read.
+    expect(chainsOf(calls)).toEqual(MAINNET)
+    expect(calls.every(call => call.what === 'scan')).toBe(true)
   })
 
   it('draws the positions of the chains that have answered while another is read', async () => {
@@ -396,6 +426,117 @@ describe('the account\'s positions', () => {
     await act(async () => slow.resolve())
     await settle()
     expect(cards().map(card => card.getAttribute('href'))).toEqual(['/eth:5', '/op:4'])
+  })
+})
+
+describe('the account\'s positions, past the block Bendystraw is indexed through', () => {
+  const THROUGH = deployment.fromBlock + 1_000n
+  /** A stick of HOLDER's in `projectId` that came after the block the listing is indexed through. */
+  const opened = (projectId: bigint) => staked(HOLDER, HOLDER, E18, E18, { project: projectId, blockNumber: THROUGH + 5n })
+  const hrefs = () => cards().map(card => card.getAttribute('href'))
+
+  it('lists a position opened after the block the listing is indexed through, which its position events show', async () => {
+    mocks.positions.mockResolvedValue(listing([positionRow(8453, 23n)], MAINNET, THROUGH))
+    tails[8453] = [opened(24n)]
+    world[8453] = { '23': { staked: E18 }, '24': { staked: 2n * E18, symbol: 'NEW' } }
+    await renderPositions()
+    expect(hrefs()).toEqual(['/base:23', '/base:24'])
+    expect(cards()[1].textContent).toContain('Stuck: 2 NEW')
+  })
+
+  it('shows an account whose only position is new, and not "No positions yet"', async () => {
+    mocks.positions.mockResolvedValue(listing([], MAINNET, THROUGH))
+    tails[1] = [opened(5n)]
+    world[1] = { '5': { staked: E18 } }
+    await renderPositions()
+    expect(hrefs()).toEqual(['/eth:5'])
+    expect(host.textContent).not.toContain('No positions yet')
+  })
+
+  it('reads the account\'s position events on each chain from just below the block, one chain after another', async () => {
+    mocks.positions.mockResolvedValue(listing([], MAINNET, THROUGH))
+    await renderPositions()
+
+    expect(mocks.scan.mock.calls.map(([chainId]) => chainId)).toEqual(MAINNET)
+    for (const [chainId, filter, options] of mocks.scan.mock.calls) {
+      const on = stickyDeployment(chainId)!
+      // The position events of StickyHook that name the account, the way a holder's activity is tailed.
+      expect(filter).toEqual({ address: on.hook, topics: [POSITION_TOPICS, null, topic(HOLDER)], fromBlock: scanFrom(THROUGH, on) })
+      expect(options).toEqual({ signal: expect.any(AbortSignal) })
+    }
+    // Just below the block: 64 blocks, and never before the deployer's block (Arbitrum's is later than this one).
+    expect(mocks.scan.mock.calls[0][1].fromBlock).toBe(THROUGH + 1n - 64n)
+    expect(mocks.scan.mock.calls[3][1].fromBlock).toBe(stickyDeployment(42161)!.fromBlock)
+    expect(oneAfterAnother(calls)).toBe(true)
+  })
+
+  it('counts a position once when the listing and the position events both have it', async () => {
+    mocks.positions.mockResolvedValue(listing([positionRow(8453, 23n)], MAINNET, THROUGH))
+    tails[8453] = [opened(23n), opened(23n)]
+    world[8453] = { '23': { staked: E18 } }
+    await renderPositions()
+    expect(hrefs()).toEqual(['/base:23'])
+  })
+
+  it('finds the project of every kind of position event, and only the account\'s', async () => {
+    mocks.positions.mockResolvedValue(listing([], MAINNET, THROUGH))
+    tails[10] = [
+      unstaked(HOLDER, E18, 0n, { project: 4n, blockNumber: THROUGH + 5n }),
+      streakStarted(HOLDER, { project: 6n, blockNumber: THROUGH + 6n }),
+      // Whatever the node sends, another account's event is not this account's position.
+      staked(OTHER, OTHER, E18, E18, { project: 7n, blockNumber: THROUGH + 7n }),
+    ]
+    world[10] = { '4': { staked: 0n, longest: 3_600 }, '6': { staked: E18 }, '7': { staked: E18 } }
+    await renderPositions()
+    expect(hrefs()).toEqual(['/op:4', '/op:6'])
+  })
+
+  it('counts a chain whose position events cannot be read, warns why, and never shows its listing as the whole', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mocks.positions.mockResolvedValue(listing([positionRow(1, 5n), positionRow(10, 4n)], MAINNET, THROUGH))
+    world[1] = { '5': { staked: E18 } }
+    world[10] = { '4': { staked: E18 } }
+    const failure = new Error('This history spans 600000 blocks, more than this RPC can scan in 1024 requests.')
+    tails[10] = failure
+    await renderPositions()
+
+    expect(hrefs()).toEqual(['/eth:5'])
+    expect(note()).toBe("Couldn't read 1 chain (Optimism). Retry")
+    expect(balanceReads(10)).toHaveLength(0)
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/positions/), { network: 'mainnet', chainId: 10 }, failure)
+
+    tails[10] = []
+    await act(async () => retryButton()!.click())
+    await settle()
+    expect(hrefs()).toEqual(['/eth:5', '/op:4'])
+    expect(note()).toBe('')
+  })
+
+  it('is never "No positions yet" when the position events of every chain cannot be read', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mocks.positions.mockResolvedValue(listing([], MAINNET, THROUGH))
+    for (const chainId of MAINNET) tails[chainId] = new Error('down')
+    await renderPositions()
+    expect(host.textContent).not.toContain('No positions yet')
+    expect(note()).toBe("Couldn't read 4 chains (Ethereum, Optimism, Base, Arbitrum). Retry")
+  })
+
+  it('reads them again with each refresh, so a position opened while the page is open shows without waiting for the index', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
+    vi.setSystemTime(NOW * 1_000)
+    mocks.positions.mockResolvedValue(listing([positionRow(8453, 23n)], MAINNET, THROUGH))
+    world[8453] = { '23': { staked: E18 }, '24': { staked: E18 } }
+    await act(async () => root.render(inClient(<AccountPositions address={CHECKSUMMED} network="mainnet" />)))
+    await act(async () => void (await vi.advanceTimersByTimeAsync(0)))
+    expect(hrefs()).toEqual(['/base:23'])
+    expect(mocks.scan.mock.calls.filter(([chainId]) => chainId === 8453)).toHaveLength(1)
+
+    // The index still has not caught up, but the chain has the new position.
+    tails[8453] = [opened(24n)]
+    await act(async () => void (await vi.advanceTimersByTimeAsync(15_000)))
+    expect(mocks.scan.mock.calls.filter(([chainId]) => chainId === 8453)).toHaveLength(2)
+    expect(hrefs()).toEqual(['/base:23', '/base:24'])
   })
 })
 
@@ -423,6 +564,8 @@ describe('the account\'s positions, when Bendystraw cannot list them', () => {
     expect(oneAfterAnother(calls)).toBe(true)
     expect(cards().map(card => card.getAttribute('href'))).toEqual(['/eth:5', '/base:6', '/arb:7'])
     expect(note()).toBe('')
+    // Every project was asked about, so there is no listing whose block the position events would follow.
+    expect(mocks.scan).not.toHaveBeenCalled()
     // The console hears why, once for Bendystraw's positions and once for its projects.
     expect(warn.mock.calls.map(([label]) => label)).toEqual([
       "Bendystraw could not list the account's Sticky positions; reading every Sticky project instead.",
@@ -640,7 +783,7 @@ describe('the account\'s positions, as they are read again', () => {
     await act(async () => root.render(inClient(<AccountPositions address={CHECKSUMMED} network="mainnet" />)))
     await later(0)
     await later(15_000)
-    expect(chainsOf(calls)).toEqual([1, 10])
+    expect(chainsOf(calls)).toEqual(MAINNET)
     expect(oneAfterAnother(calls)).toBe(true)
     expect(balanceReads(1)).toHaveLength(2)
 

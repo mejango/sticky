@@ -2,10 +2,11 @@
  * An account's page: the positions it holds in the Sticky projects of a network, and its newest activity there.
  *
  * Bendystraw's positions say where the account holds shares, and each position listed is read again from StickyHook,
- * where the balance and the streak really are. Bendystraw lists a new position a few seconds after it opens, so it
- * shows on a later read. When Bendystraw cannot list the positions, or has no status for a chain, every Sticky project
- * of that chain is asked instead, and a project the account holds nothing in is left out. A project that cannot be
- * read is left out and counted: it is never an account that holds nothing.
+ * where the balance and the streak really are. A listing is as of the block Bendystraw is indexed through, so the
+ * account's position events in StickyHook from just below that block to the head add the projects it does not have
+ * yet. When Bendystraw cannot list the positions, or has no status for a chain, every Sticky project of that chain is
+ * asked instead, and a project the account holds nothing in is left out. A project that cannot be read is left out
+ * and counted: it is never an account that holds nothing.
  *
  * A chain is read on its own, so that one that cannot be read fails alone. Its caller reads the chains one after
  * another: Center has one rate limit for all of them.
@@ -14,13 +15,22 @@
  */
 
 import type { BendystrawNetwork } from '@bananapus/nana-sdk-core'
-import type { Address, ContractFunctionParameters } from 'viem'
+import { pad, type Address, type ContractFunctionParameters } from 'viem'
 import { chainsForEnvironment } from '@/lib/chains'
 import { untilAborted } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { stickyHookAbi } from '@/lib/sticky-abis'
 import { stickyChainIds, stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
-import { orNull, stickyHolderEvents, stickyProjectsOn } from '@/lib/sticky-events'
+import {
+  POSITION_TOPICS,
+  decodeHookLog,
+  orNull,
+  scanFrom,
+  scanToHead,
+  stickyHolderEvents,
+  stickyProjectsOn,
+  type StickyReadDeps,
+} from '@/lib/sticky-events'
 import { FEED_WINDOW, feedRows, terminalMoves, type FeedRow } from '@/lib/sticky-feed'
 import { stickyLabel } from '@/lib/sticky-format'
 import {
@@ -53,6 +63,10 @@ export type AccountActivityChain = { chainId: number; rows: FeedRow[]; labels: R
  * positions it cannot list. Each is null when Bendystraw cannot say. */
 export type AccountIndex = { positions: IndexedRows<IndexedPosition> | null; projects: IndexedProjects | null }
 
+/** What Bendystraw lists of the account on a chain: the projects it holds positions in, and the block the listing is
+ * indexed through. */
+type ListedPositions = { projects: bigint[]; through: bigint }
+
 type Cancel = { signal?: AbortSignal }
 
 /** An account's shares and streaks in one project, as StickyHook says. */
@@ -66,6 +80,8 @@ export type PositionReadDeps = {
     projectIds: readonly bigint[],
     opts: Cancel & { orphans?: OrphanedPolicy },
   ) => Promise<StickyProjectInfo[]>
+  /** StickyHook's logs through the head, each with its block's time. */
+  scan: StickyReadDeps['scan']
 }
 
 /** A caller's signal, which every read gets, and in tests the reads to use instead of the real ones. */
@@ -133,10 +149,11 @@ export async function accountIndex(
   return { positions, projects }
 }
 
-/** The projects Bendystraw lists the account's positions in on a chain, or null when it does not cover the chain. */
-export function listedPositions({ positions }: AccountIndex, chainId: number): bigint[] | null {
-  if (!positions?.blocks.has(chainId)) return null
-  return positions.rows.filter(row => row.chainId === chainId).map(row => row.projectId)
+/** What Bendystraw lists of the account's positions on a chain, or null when it does not cover the chain. */
+export function listedPositions({ positions }: AccountIndex, chainId: number): ListedPositions | null {
+  const through = positions?.blocks.get(chainId)
+  if (!positions || through === undefined) return null
+  return { projects: positions.rows.filter(row => row.chainId === chainId).map(row => row.projectId), through }
 }
 
 /** Every Sticky project of a chain: the ones Bendystraw lists, and the ones the deployer's launches show past them. */
@@ -189,8 +206,28 @@ async function holdingsIn(
 
 const live: ActivityReadDeps = {
   readProjects: (chainId, projectIds, { signal, orphans }) => readStickyProjects(chainId, projectIds, { signal, orphans }),
+  scan: scanToHead,
   holderEvents: stickyHolderEvents,
   terminalMoves,
+}
+
+/** The projects the account's hook events show from just below `through`, the block a listing is indexed through, to the
+ * head: what the listing does not have yet. */
+async function projectsPast(
+  deps: PositionReadDeps,
+  chainId: number,
+  holder: Address,
+  through: bigint,
+  signal: AbortSignal | undefined,
+): Promise<bigint[]> {
+  const deployment = deploymentOn(chainId)
+  const who = holder.toLowerCase() as Address
+  const filter = { address: deployment.hook, topics: [POSITION_TOPICS, null, pad(who)], fromBlock: scanFrom(through, deployment) }
+  const logs = await deps.scan(chainId, filter, { signal })
+  return logs
+    .flatMap(log => decodeHookLog(log, chainId) ?? [])
+    .filter(event => event.holder === who)
+    .map(event => event.projectId)
 }
 
 const byProjectId = (a: { projectId: bigint }, b: { projectId: bigint }) =>
@@ -200,16 +237,21 @@ const byProjectId = (a: { projectId: bigint }, b: { projectId: bigint }) =>
  * The account's positions among `projectIds` on a chain: the balance and streak of each are read from StickyHook, and
  * the figures of the projects held are read together at one block, so that one whose token cannot be read is left out
  * and counted in `skipped` while the others still show. A project the account holds nothing in makes no position.
+ *
+ * `projectIds` that are Bendystraw's listing come with `through`, the block it is indexed through: the projects the
+ * account's position events show from just below that block to the head are asked about too. A scan that fails rejects,
+ * since a list without them would be shorter than the chain's.
  */
 export async function accountPositions(
   chainId: number,
   holder: Address,
   projectIds: readonly bigint[],
-  options: PositionReadOptions = {},
+  options: PositionReadOptions & { through?: bigint } = {},
 ): Promise<AccountChain> {
-  const { signal, ...given } = options
+  const { signal, through, ...given } = options
   const deps: PositionReadDeps = { ...live, ...given }
-  const held = (await holdingsIn(chainId, holder, [...new Set(projectIds)], signal)).sort(byProjectId)
+  const past = through === undefined ? [] : await projectsPast(deps, chainId, holder, through, signal)
+  const held = (await holdingsIn(chainId, holder, [...new Set([...projectIds, ...past])], signal)).sort(byProjectId)
   if (!held.length) return { chainId, positions: [], skipped: 0 }
 
   // Read strictly: a project whose accounting does not hold together is left out and counted, not shown with a wrong

@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { usePathname, useSearchParams } from 'next/navigation'
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import type { Address } from 'viem'
 import { useBalance } from 'wagmi'
@@ -10,6 +10,7 @@ import { useAccountIdentity } from '@/hooks/useAccountIdentity'
 import { useOutsideClose } from '@/hooks/useOutsideClose'
 import { useWallet } from '@/hooks/useWallet'
 import { displayChainName } from '@/lib/chainDisplay'
+import { environmentForChainIds } from '@/lib/chains'
 import { projectRouteSegmentFromPathname } from '@/lib/project-route'
 import { formatAmount } from '@/lib/sticky-format'
 import { parseUrn } from '@/lib/urn'
@@ -62,6 +63,37 @@ function WalletBalances({
         />
       </dl>
     </div>
+  )
+}
+
+/**
+ * The link to an account's page, on the network of the page in view: a project's chain names its network, and the home
+ * and an account's page carry theirs as `?network=testnet`. Only the open menu renders it, and only the client opens
+ * the menu, so reading the search parameters here needs no Suspense boundary above the header.
+ */
+function AccountLink({
+  account,
+  projectChainId,
+  onClick,
+}: {
+  account: Address
+  /** The chain of the project in view, when one is. */
+  projectChainId: number | undefined
+  onClick: () => void
+}) {
+  const searchParams = useSearchParams()
+  const testnet =
+    projectChainId === undefined
+      ? searchParams.get('network') === 'testnet'
+      : environmentForChainIds([projectChainId]) === 'testnet'
+  return (
+    <Link
+      href={`/account/${account}${testnet ? '?network=testnet' : ''}`}
+      onClick={onClick}
+      className="menu-item"
+    >
+      Account
+    </Link>
   )
 }
 
@@ -209,13 +241,11 @@ export function WalletButton() {
           {routeProject ? (
             <WalletBalances address={account} chainId={routeProject.chainId} />
           ) : null}
-          <Link
-            href={`/account/${account}`}
+          <AccountLink
+            account={account}
+            projectChainId={routeProject?.chainId}
             onClick={closeMenu}
-            className="menu-item"
-          >
-            Account
-          </Link>
+          />
           {activeViewAs ? (
             <MenuButton
               onClick={() => {

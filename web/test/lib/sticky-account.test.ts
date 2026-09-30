@@ -13,16 +13,19 @@ import {
 } from '@/lib/sticky-account'
 import { stickyHookAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
+import { scanFrom } from '@/lib/sticky-events'
 import { FEED_WINDOW, moveKey } from '@/lib/sticky-feed'
 import type { IndexedPosition, IndexedProjects, IndexedRows } from '@/lib/sticky-indexed'
 import { E18, E6, HOLDER, OTHER, positionRow, stick } from '../account-fixtures'
 import { stickyInfo } from '../home-fixtures'
+import { POSITION_TOPICS, staked, streakEnded, streakStarted, topic, unstaked } from './sticky-log-fixtures'
 
 const center = vi.hoisted(() => ({ client: vi.fn() }))
 vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: center.client }))
 
 const CHAIN = 8453
-const { hook, autoStick } = stickyDeployment(CHAIN)!
+const deployment = stickyDeployment(CHAIN)!
+const { hook, autoStick } = deployment
 
 beforeEach(() => {
   center.client.mockReset()
@@ -117,15 +120,18 @@ describe('accountIndex', () => {
 describe('listedPositions', () => {
   const index = (positions: AccountIndex['positions']): AccountIndex => ({ positions, projects: null })
 
-  it('lists the projects Bendystraw lists the account\'s positions in on the chain, and only that chain\'s', () => {
-    const positions = listing([positionRow(1, 9n), positionRow(8453, 23n), positionRow(8453, 4n)], [1, 8453])
-    expect(listedPositions(index(positions), 8453)).toEqual([23n, 4n])
-    expect(listedPositions(index(positions), 1)).toEqual([9n])
+  it('lists the projects Bendystraw lists the account\'s positions in on the chain, and the block it is indexed through', () => {
+    const positions = {
+      rows: [positionRow(1, 9n), positionRow(8453, 23n), positionRow(8453, 4n)],
+      blocks: new Map([[1, 90n], [8453, 120n]]),
+    }
+    expect(listedPositions(index(positions), 8453)).toEqual({ projects: [23n, 4n], through: 120n })
+    expect(listedPositions(index(positions), 1)).toEqual({ projects: [9n], through: 90n })
   })
 
   it('lists none for a chain with no position, and null for a chain Bendystraw does not cover or could not read', () => {
     const positions = listing([positionRow(1, 9n)], [1, 8453])
-    expect(listedPositions(index(positions), 8453)).toEqual([])
+    expect(listedPositions(index(positions), 8453)).toEqual({ projects: [], through: 100n })
     expect(listedPositions(index(positions), 10)).toBeNull()
     expect(listedPositions(index(null), 1)).toBeNull()
   })
@@ -289,6 +295,111 @@ describe('accountPositions', () => {
       }),
     } as unknown as PublicClient)
     await expect(accountPositions(CHAIN, HOLDER, ids, { readProjects: later, signal: answers.signal })).rejects.toBe(reason)
+  })
+})
+
+describe('accountPositions, past the block the listing is indexed through', () => {
+  const THROUGH = deployment.fromBlock + 1_000n
+  const opened = (projectId: bigint, blockNumber = THROUGH + 3n) =>
+    staked(HOLDER, HOLDER, E18, E18, { project: projectId, blockNumber })
+  const tail = (logs: ReturnType<typeof opened>[] = []) => vi.fn<PositionReadDeps['scan']>(async () => logs)
+
+  it('asks for the account\'s position events from just below that block, and asks about the projects they show too', async () => {
+    const multicall = fakeHook({ '5': [E18, 0n, 0n], '9': [2n * E18, 0n, 0n] })
+    const scan = tail([opened(9n)])
+    const controller = new AbortController()
+    const chain = await accountPositions(CHAIN, HOLDER, [5n], {
+      readProjects: figures(),
+      scan,
+      through: THROUGH,
+      signal: controller.signal,
+    })
+
+    // The position events of StickyHook that name the account: the way a holder's activity is tailed.
+    expect(scan).toHaveBeenCalledExactlyOnceWith(
+      CHAIN,
+      { address: hook, topics: [POSITION_TOPICS, null, topic(HOLDER)], fromBlock: THROUGH + 1n - 64n },
+      { signal: controller.signal },
+    )
+    expect(multicall.mock.calls[0][0].contracts.map(({ args: [projectId] }) => projectId)).toEqual([5n, 5n, 5n, 9n, 9n, 9n])
+    expect(chain.positions.map(position => [position.info.projectId, position.staked])).toEqual([
+      [5n, E18],
+      [9n, 2n * E18],
+    ])
+  })
+
+  it('reads the events before it asks the hook about any balance', async () => {
+    const multicall = fakeHook({ '9': [E18, 0n, 0n] })
+    const scan = tail([opened(9n)])
+    await accountPositions(CHAIN, HOLDER, [], { readProjects: figures(), scan, through: THROUGH })
+    expect(scan.mock.invocationCallOrder[0]).toBeLessThan(multicall.mock.invocationCallOrder[0])
+  })
+
+  it('never starts from below the deployer\'s block', async () => {
+    fakeHook()
+    const scan = tail()
+    await accountPositions(CHAIN, HOLDER, [], { readProjects: figures(), scan, through: deployment.fromBlock - 5_000n })
+    expect(scan.mock.calls[0][1].fromBlock).toBe(deployment.fromBlock)
+    expect(scan.mock.calls[0][1].fromBlock).toBe(scanFrom(deployment.fromBlock - 5_000n, deployment))
+  })
+
+  it('asks about a project once when the listing and the events both have it', async () => {
+    const multicall = fakeHook({ '5': [E18, 0n, 0n] })
+    const chain = await accountPositions(CHAIN, HOLDER, [5n], {
+      readProjects: figures(),
+      scan: tail([opened(5n), opened(5n, THROUGH + 4n)]),
+      through: THROUGH,
+    })
+    expect(chain.positions).toHaveLength(1)
+    expect(multicall.mock.calls[0][0].contracts).toHaveLength(3)
+  })
+
+  it('takes the project of every kind of position event, and of no event that is not the account\'s', async () => {
+    const multicall = fakeHook()
+    const at = { blockNumber: THROUGH + 3n }
+    await accountPositions(CHAIN, HOLDER, [], {
+      readProjects: figures(),
+      through: THROUGH,
+      scan: tail([
+        opened(11n),
+        unstaked(HOLDER, E18, 0n, { project: 12n, ...at }),
+        streakStarted(HOLDER, { project: 13n, ...at }),
+        streakEnded(HOLDER, 60n, { project: 14n, ...at }),
+        // Another account's event, which a node that ignores the filter may send, and another contract's.
+        staked(OTHER, OTHER, E18, E18, { project: 15n, ...at }),
+        staked(HOLDER, HOLDER, E18, E18, { project: 16n, address: OTHER, ...at }),
+      ]),
+    })
+    const asked = multicall.mock.calls[0][0].contracts.map(({ args: [projectId] }) => projectId)
+    expect([...new Set(asked)]).toEqual([11n, 12n, 13n, 14n])
+  })
+
+  it('reads no events for a list that is not Bendystraw\'s listing', async () => {
+    fakeHook({ '5': [E18, 0n, 0n] })
+    const scan = tail([opened(9n)])
+    const chain = await accountPositions(CHAIN, HOLDER, [5n], { readProjects: figures(), scan })
+    expect(scan).not.toHaveBeenCalled()
+    expect(chain.positions.map(position => position.info.projectId)).toEqual([5n])
+  })
+
+  it('rejects when the events cannot be read, and asks the hook for nothing: a shorter list is not the chain\'s', async () => {
+    const multicall = fakeHook({ '5': [E18, 0n, 0n] })
+    const failure = new Error('This history spans 600000 blocks, more than this RPC can scan in 1024 requests.')
+    const scan = vi.fn<PositionReadDeps['scan']>(async () => {
+      throw failure
+    })
+    await expect(
+      accountPositions(CHAIN, HOLDER, [5n], { readProjects: figures(), scan, through: THROUGH }),
+    ).rejects.toBe(failure)
+    expect(multicall).not.toHaveBeenCalled()
+  })
+
+  it('rejects for an event it cannot read, rather than leave its project out', async () => {
+    fakeHook()
+    const { blockTimestamp: _time, ...withoutTime } = opened(9n)
+    await expect(
+      accountPositions(CHAIN, HOLDER, [], { readProjects: figures(), scan: tail([withoutTime]), through: THROUGH }),
+    ).rejects.toThrow("came without its block's time")
   })
 })
 
