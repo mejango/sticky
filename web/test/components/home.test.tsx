@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider, notifyManager } from '@tanstack/react-query'
-import { act, type AnchorHTMLAttributes, type ReactNode } from 'react'
+import { act, type AnchorHTMLAttributes, type ReactElement, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { getAddress, type Address } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -44,6 +44,7 @@ vi.mock('@/lib/ens', () => ({
 }))
 
 import Home from '@/app/page'
+import { LegacyHashRedirect } from '@/components/LegacyHashRedirect'
 import { HomeLists } from '@/components/home/HomeLists'
 import { SecuredChart } from '@/components/home/SecuredChart'
 import { StickiestCard } from '@/components/home/StickiestCard'
@@ -121,9 +122,14 @@ describe('the home route', () => {
     [{ network: ['testnet', 'testnet'] }, 'mainnet'],
   ])('reads the home of %o as %s', async (query, network) => {
     const page = await Home({ params: Promise.resolve({}), searchParams: Promise.resolve(query) })
-    const [lists] = page.props.children
-    expect(lists.type).toBe(HomeLists)
+    const lists = page.props.children.find((child: ReactElement) => child.type === HomeLists)
     expect(lists.props).toEqual({ network })
+  })
+
+  it('mounts the redirect that sends an old link on to the page it named', async () => {
+    const page = await Home({ params: Promise.resolve({}), searchParams: Promise.resolve({}) })
+    const redirects = page.props.children.filter((child: ReactElement) => child.type === LegacyHashRedirect)
+    expect(redirects).toHaveLength(1)
   })
 })
 

@@ -2,9 +2,12 @@ import { act, type AnchorHTMLAttributes } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const mocks = vi.hoisted(() => ({ pathname: '/' }))
+const mocks = vi.hoisted(() => ({ pathname: '/', search: '' }))
 
-vi.mock('next/navigation', () => ({ usePathname: () => mocks.pathname }))
+vi.mock('next/navigation', () => ({
+  usePathname: () => mocks.pathname,
+  useSearchParams: () => new URLSearchParams(mocks.search),
+}))
 vi.mock('next/link', () => ({
   default: (props: AnchorHTMLAttributes<HTMLAnchorElement>) => <a {...props} />,
 }))
@@ -29,6 +32,7 @@ beforeEach(() => {
   document.body.append(host)
   root = createRoot(host)
   mocks.pathname = '/'
+  mocks.search = ''
 })
 
 afterEach(async () => {
@@ -70,6 +74,35 @@ describe('the logo', () => {
     await render()
     expect(wallet().textContent).toBe('wallet')
   })
+})
+
+describe('the logo, on the network of the page', () => {
+  const homeLinks = () => [...host.querySelectorAll<HTMLAnchorElement>('a.overscroll-slime, a.brand-slime')]
+  const hrefs = () => homeLinks().map(link => link.getAttribute('href'))
+
+  it('links to the home on the production chains, from both of its links', async () => {
+    await render()
+    expect(hrefs()).toEqual(['/', '/'])
+    mocks.pathname = '/base:23'
+    await render()
+    expect(hrefs()).toEqual(['/', '/'])
+  })
+
+  it('links to the testnet home from the page of a testnet project, from both of its links', async () => {
+    mocks.pathname = '/basesep:37'
+    await render()
+    expect(hrefs()).toEqual(['/?network=testnet', '/?network=testnet'])
+  })
+
+  it.each([['/'], ['/account/0x1111111111111111111111111111111111111111']])(
+    'links to the testnet home from %s when the address bar names the testnets',
+    async pathname => {
+      mocks.pathname = pathname
+      mocks.search = 'network=testnet'
+      await render()
+      expect(hrefs()).toEqual(['/?network=testnet', '/?network=testnet'])
+    },
+  )
 })
 
 describe('the top fold', () => {

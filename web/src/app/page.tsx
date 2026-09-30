@@ -1,5 +1,6 @@
 import Image, { type StaticImageData } from 'next/image'
 import type { ReactNode } from 'react'
+import { LegacyHashRedirect } from '@/components/LegacyHashRedirect'
 import { HomeLists } from '@/components/home/HomeLists'
 import cone from '../../public/assets/cone.png'
 import jar from '../../public/assets/jar.png'
@@ -39,11 +40,13 @@ function Explainer({
 
 const points = 'mt-3.5 list-decimal pl-[30px] marker:font-bold marker:text-accent [&>li]:my-2.5 [&>li]:pl-1.5'
 
-/** The home: `/` for Sticky on production chains, `/?network=testnet` for Sticky on testnets. */
+/** The home: `/` for Sticky on production chains, `/?network=testnet` for Sticky on testnets. It is also where every
+ * link from the old client lands (`/?chain=8453#/project/23`), and sends it on. */
 export default async function Home({ searchParams }: PageProps<'/'>) {
   const { network } = await searchParams
   return (
     <>
+      <LegacyHashRedirect />
       <HomeLists network={network === 'testnet' ? 'testnet' : 'mainnet'} />
       <div className="mt-11 border-t border-line" />
       <Explainer image={jar} width={260} height={500} maxWidth="max-w-[70%]" title="Dip one in, get a sticky one out">
