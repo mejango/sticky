@@ -2,7 +2,9 @@
 
 import { useQuery } from '@tanstack/react-query'
 import type { Address } from 'viem'
-import { pinnedBlock, verifyHolderPage, type HolderRow } from '@/lib/sticky-holders'
+import { useShowing } from '@/hooks/useShowing'
+import { FRESH_MS, warned } from '@/lib/query-reads'
+import { pinnedBlock, verifyHolderPage, type HolderRow, type StickyPosition } from '@/lib/sticky-holders'
 import { readTranchePage, type TranchePage } from '@/lib/sticky-tranches'
 
 /**
@@ -11,11 +13,6 @@ import { readTranchePage, type TranchePage } from '@/lib/sticky-tranches'
  * and stay in memory: which holders a page shows changes with the sort and the page.
  */
 
-/** How long a page of balances stays fresh. */
-const FRESH_MS = 30_000
-/** How often a holder's tranches are read again while the page is in view, as the Stick card's stick is. */
-const TRANCHES_REFRESH_MS = 15_000
-
 const TRANCHES_UNREADABLE = "Could not read the viewer's tranches; the Tokens tab offers to try again."
 const BALANCES_UNCHECKED =
   "Could not read the visible holders' balances from the hook; the leaderboard keeps the balances the index gave."
@@ -23,34 +20,32 @@ const BALANCES_UNCHECKED =
 /** A holder's page of tranches, and the time of the block it was read at, which its ages are measured at. */
 type HolderTranches = TranchePage & { now: number }
 
-/** What `read` gives, or its failure, which the console hears about under `label` unless the read was cancelled. */
-async function warned<T>(label: string, about: object, signal: AbortSignal, read: () => Promise<T>): Promise<T> {
-  try {
-    return await read()
-  } catch (error) {
-    if (!signal.aborted) console.warn(label, about, error)
-    throw error
-  }
-}
-
 /**
- * The page `requestedPage` of `holder`'s tranches, read at one block, once there is a holder. It is read again every 15
- * seconds while the tab is in view, and the browser never keeps it: it is an account's. Another page is read while the
- * one shown stays; another account's page never does.
+ * The page `requestedPage` of `holder`'s tranches, read at the block of the holder's `position` (the Stick card's): so
+ * the tranches and the stick beside them are one block's, and the block's time is what their ages are measured at.
+ * Nothing is read before there is a position, which waits for the project, or while the tab's panel is hidden. The
+ * position is read again every 15 seconds and when the tab is shown again, and each block it is read at is a page of its
+ * own here: the tranches follow it, and the panel, shown again, reads the page of the block the position is at. The
+ * browser never keeps them: they are an account's. Another page is read while the one shown stays; another account's
+ * page never does.
  */
-export function useHolderTranches(chainId: number, projectId: number, holder: Address | null, requestedPage: number) {
+export function useHolderTranches(
+  chainId: number,
+  projectId: number,
+  holder: Address | null,
+  requestedPage: number,
+  position: StickyPosition | undefined,
+) {
+  const showing = useShowing()
   return useQuery<HolderTranches>({
-    queryKey: ['sticky-tranches', chainId, projectId, holder, requestedPage],
+    queryKey: ['sticky-tranches', chainId, projectId, holder, requestedPage, position?.blockNumber.toString() ?? null],
     queryFn: ({ signal }) =>
       warned(TRANCHES_UNREADABLE, { chainId, projectId }, signal, async () => {
-        const pin = await pinnedBlock(chainId, { signal })
-        const page = await readTranchePage(chainId, BigInt(projectId), holder!, requestedPage, pin.number, { signal })
-        return { ...page, now: pin.timestamp }
+        const page = await readTranchePage(chainId, BigInt(projectId), holder!, requestedPage, position!.blockNumber, { signal })
+        return { ...page, now: position!.timestamp }
       }),
-    enabled: holder !== null,
+    enabled: holder !== null && position !== undefined && showing,
     placeholderData: (previous, previousQuery) => (previousQuery?.queryKey[3] === holder ? previous : undefined),
-    refetchInterval: TRANCHES_REFRESH_MS,
-    refetchIntervalInBackground: false,
   })
 }
 

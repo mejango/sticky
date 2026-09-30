@@ -7,6 +7,7 @@ import { Leaderboard } from '@/components/project/Leaderboard'
 import { TrancheTable } from '@/components/project/TrancheTable'
 import { Revalidating } from '@/components/ui/Revalidating'
 import { Skeleton } from '@/components/ui/Skeleton'
+import { ShowingPanel } from '@/hooks/useShowing'
 import { useStickyPosition, useStickyProject } from '@/hooks/useStickyProject'
 import { useWallet } from '@/hooks/useWallet'
 import { formatAmount, formatDuration } from '@/lib/sticky-format'
@@ -125,7 +126,8 @@ function YouCard({
 /**
  * A Sticky project's Tokens tab: the viewer's own stick and tranches (the viewed account's in View as), everyone's
  * holdings as a pie and a leaderboard, and, for a project with a bonus, where an unstick's value goes. What the browser
- * kept of the project shows at once and reads as unconfirmed until this visit has read it.
+ * kept of the project shows at once and reads as unconfirmed until this visit has read it. The tranches are read only
+ * while its panel is showing.
  */
 export function TokensTab({ chainId, projectId }: { chainId: number; projectId: number }) {
   const { info, verified, failed, retry } = useStickyProject(chainId, projectId)
@@ -145,10 +147,10 @@ export function TokensTab({ chainId, projectId }: { chainId: number; projectId: 
   }
 
   return (
-    <div className="space-y-5">
+    <ShowingPanel className="space-y-5">
       <YouCard chainId={chainId} projectId={projectId} holder={holder} info={info} unconfirmed={info !== undefined && !verified} />
       <Leaderboard chainId={chainId} projectId={projectId} info={info} you={holder} />
       {info ? <BonusSplit info={info} pending={!verified} /> : null}
-    </div>
+    </ShowingPanel>
   )
 }

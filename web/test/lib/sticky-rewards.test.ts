@@ -3,7 +3,7 @@
 // Dates in reward copy are local; pin the zone so the expected dates hold on every machine.
 process.env.TZ = 'UTC'
 
-import { erc20Abi, erc20Abi_bytes32, getAbiItem, numberToHex, pad, stringToHex, toEventSelector, type Address } from 'viem'
+import { erc20Abi, erc20Abi_bytes32, getAbiItem, getAddress, numberToHex, pad, stringToHex, toEventSelector, type Address } from 'viem'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { stickyDistributorAbi, stickyHookAbi, stickyTokenAbi } from '@/lib/sticky-abis'
 import { raw, topic, words } from './sticky-log-fixtures'
@@ -80,6 +80,12 @@ const funded = (groupId: bigint, token: Address | string, amount = 0n) => ({
   groupId,
   token: token.toLowerCase() as Address,
   funded: amount,
+})
+
+/** A pot the Fund logs show, last funded `at` blocks into a window that ends at the head. */
+const fundedPot = (groupId: bigint, token: Address | string, amount: bigint, at: number) => ({
+  ...funded(groupId, token, amount),
+  fundedAt: HEAD - 500n + BigInt(at),
 })
 
 beforeEach(() => {
@@ -212,9 +218,10 @@ describe('the Fund logs', () => {
     const chain = rewardChain([fund(4000n, OTHER, 5n, 1), fund(0n, NATIVE, 2n, 2), fund(4000n, OTHER, 6n, 3)])
     const r = await load()
 
+    // Each pot is last funded at its last log's block.
     expect(await r.discoverFunding(CHAIN, STICKY, PROJECT)).toEqual([
-      funded(4000n, OTHER, 11n),
-      funded(0n, NATIVE, 2n),
+      fundedPot(4000n, OTHER, 11n, 3),
+      fundedPot(0n, NATIVE, 2n, 2),
     ])
 
     expect(creation.block).toHaveBeenCalledWith(CHAIN, PROJECT, expect.objectContaining({}))
@@ -231,7 +238,7 @@ describe('the Fund logs', () => {
     creation.block.mockResolvedValue(null)
     const r = await load()
 
-    expect(await r.discoverFunding(CHAIN, STICKY, PROJECT)).toEqual([funded(0n, TOKEN, 3n)])
+    expect(await r.discoverFunding(CHAIN, STICKY, PROJECT)).toEqual([fundedPot(0n, TOKEN, 3n, 1)])
     const [scan] = chain.requests.filter(request => request.method === 'eth_getLogs')
     expect(scan.block).toMatchObject({ fromBlock: `0x${deployment.fromBlock.toString(16)}` })
   })
@@ -249,28 +256,35 @@ describe('the Fund logs', () => {
     })
     rewardChain([other, fund(0n, TOKEN, 3n, 1)])
     const r = await load()
-    expect(await r.discoverFunding(CHAIN, STICKY, PROJECT)).toEqual([funded(0n, TOKEN, 3n)])
+    expect(await r.discoverFunding(CHAIN, STICKY, PROJECT)).toEqual([fundedPot(0n, TOKEN, 3n, 1)])
   })
 
   it('reject rather than give part of the list when the project is too old to scan', async () => {
     rewardChain()
     const r = await load()
     creation.block.mockResolvedValue(1n)
-    await expect(r.discoverFunding(CHAIN, STICKY, PROJECT)).rejects.toThrow(/more than this RPC can scan/)
+    // The card tells it from an ordinary failure, which trying again may get past, by what the scan says it is.
+    await expect(r.discoverFunding(CHAIN, STICKY, PROJECT)).rejects.toMatchObject({
+      name: 'HistoryTooLongError',
+      message: expect.stringMatching(/more than this RPC can scan/),
+    })
   })
 
   it('show the underlying token under group 0 and every funded group, and tokens checked by hand under each', async () => {
     const r = await load()
-    const pots = [funded(4000n, OTHER, 11n), funded(0n, NATIVE, 2n)]
+    const pots = [fundedPot(4000n, OTHER, 11n, 3), fundedPot(0n, NATIVE, 2n, 2)]
 
-    const { groups, rows } = r.rewardRows(TOKEN, pots)
+    const { groups, rows, more } = r.rewardRows(TOKEN, pots)
     expect(groups).toEqual([0n, 4000n])
+    expect(more).toBe(0)
     expect(rows.map(row => `${row.groupId}:${row.token}:${row.funded}`)).toEqual([
       `4000:${OTHER.toLowerCase()}:11`,
       `0:${NATIVE}:2`,
       `0:${TOKEN.toLowerCase()}:0`,
       `4000:${TOKEN.toLowerCase()}:0`,
     ])
+    // A row is a pot and nothing more: when it was funded is only for choosing.
+    expect(Object.keys(rows[0]).sort()).toEqual(['funded', 'groupId', 'token'])
 
     const checked = r.rewardRows(TOKEN, pots, [address('5'), TOKEN.toUpperCase().replace('0X', '0x') as Address])
     expect(checked.groups).toEqual([0n, 4000n])
@@ -283,7 +297,55 @@ describe('the Fund logs', () => {
       `4000:${address('5').toLowerCase()}`,
     ])
     // With nothing funded, group 0 is still there for the underlying token.
-    expect(r.rewardRows(TOKEN, []).rows).toEqual([funded(0n, TOKEN)])
+    expect(r.rewardRows(TOKEN, [])).toEqual({ groups: [0n], rows: [funded(0n, TOKEN)], more: 0 })
+  })
+
+  describe('when a project has more pots than are looked at', () => {
+    /** `count` pots, each in a group of its own and a token of its own, the first funded the earliest. */
+    const crowd = (count: number, at = (each: number) => each) =>
+      Array.from({ length: count }, (_, each) => fundedPot(BigInt(each + 1) * 1000n, `0x${(each + 1).toString(16).padStart(40, '0')}`, 1n, at(each)))
+
+    it('look at the newest 12 by when each was last funded, and at what the staked token and checked ones have in their groups', async () => {
+      const r = await load()
+      const { groups, rows, more } = r.rewardRows(TOKEN, crowd(100))
+
+      expect(r.MAX_FUNDED_POTS).toBe(12)
+      expect(more).toBe(88)
+      // The newest twelve are the last twelve to be funded, in the order they were first funded; each has its group.
+      expect(groups).toEqual([0n, ...Array.from({ length: 12 }, (_, each) => BigInt(89 + each) * 1000n)])
+      expect(rows.slice(0, 12).map(row => row.groupId)).toEqual(groups.slice(1))
+      // And the staked token under each of those groups and group 0: 13 more.
+      expect(rows).toHaveLength(12 + 13)
+      expect(rows.slice(12).every(row => row.token === TOKEN.toLowerCase() && row.funded === 0n)).toBe(true)
+      expect(r.rewardRows(TOKEN, crowd(100), [address('5')]).rows).toHaveLength(12 + 2 * 13)
+    })
+
+    it('choose by the last funding, not the first: an old pot funded again is a new one', async () => {
+      const r = await load()
+      const old = fundedPot(52_000n, address('6'), 9n, 1_000)
+      const pots = [old, ...crowd(20, each => each + 1)]
+      const { rows } = r.rewardRows(TOKEN, pots)
+      expect(rows.some(row => row.groupId === 52_000n)).toBe(true)
+      // The oldest of the rest was funded long before it, and is out.
+      expect(rows.some(row => row.groupId === 1000n)).toBe(false)
+    })
+
+    it('keep the pots in the order they were first funded, and the earlier of two funded at the same block', async () => {
+      const r = await load()
+      const pots = crowd(14, () => 7)
+      const { rows, more } = r.rewardRows(TOKEN, pots)
+      expect(more).toBe(2)
+      expect(rows.slice(0, 12).map(row => row.groupId)).toEqual(pots.slice(0, 12).map(pot => pot.groupId))
+    })
+
+    it('leave a project with as many as the limit whole, and take the limit as a parameter', async () => {
+      const r = await load()
+      expect(r.rewardRows(TOKEN, crowd(12)).more).toBe(0)
+      expect(r.rewardRows(TOKEN, crowd(13)).more).toBe(1)
+      const three = r.rewardRows(TOKEN, crowd(5), [], 3)
+      expect(three.more).toBe(2)
+      expect(three.groups).toHaveLength(4)
+    })
   })
 })
 
@@ -584,6 +646,248 @@ describe('the reward tokens', () => {
         functionName: 'aggregate3',
       })
     })
+  })
+})
+
+describe('what is kept of the reward tokens', () => {
+  const stockPot = (chain: Chain) => {
+    stockClock(chain)
+    chain.stock(DISTRIBUTOR, stickyDistributorAbi, 'rewardRoundOf', round(0n, 0, 0n, 0, 0n))
+  }
+  const asksOfTokens = (requests: Chain['requests']) =>
+    requests.filter(request => request.reads?.some(read => read.functionName === 'symbol' || read.functionName === 'decimals'))
+
+  it('is read once for the session: the next refresh asks no token for its symbol or decimals', async () => {
+    const chain = rewardChain()
+    stockPot(chain)
+    stockToken(chain, STAKED)
+    stockToken(chain, TOKEN, 'GOOD')
+    const r = await load()
+    const pots = [funded(0n, STAKED), funded(0n, TOKEN), funded(4000n, TOKEN)]
+
+    expect((await r.readRewards(CHAIN, STICKY, null, pots)).map(card => card.meta.symbol)).toEqual(['ART', 'GOOD', 'GOOD'])
+    expect(asksOfTokens(chain.requests)).toHaveLength(1)
+
+    const before = chain.requests.length
+    expect((await r.readRewards(CHAIN, STICKY, null, pots)).map(card => card.meta.symbol)).toEqual(['ART', 'GOOD', 'GOOD'])
+    expect(asksOfTokens(chain.requests.slice(before))).toEqual([])
+  })
+
+  it('is read for the tokens it has not been read for, and no more', async () => {
+    const chain = rewardChain()
+    stockPot(chain)
+    stockToken(chain, STAKED)
+    stockToken(chain, TOKEN, 'GOOD')
+    const r = await load()
+    await r.readRewards(CHAIN, STICKY, null, [funded(0n, STAKED)])
+
+    const before = chain.requests.length
+    await r.readRewards(CHAIN, STICKY, null, [funded(0n, STAKED), funded(0n, TOKEN)])
+    const [asked] = asksOfTokens(chain.requests.slice(before))
+    expect([...new Set(asked.reads!.map(read => read.target))]).toEqual([TOKEN])
+  })
+
+  it('is kept for a chain\'s token apart from the same address on another chain', async () => {
+    const chain = rewardChain()
+    stockPot(chain)
+    stockToken(chain, STAKED)
+    const r = await load()
+    await r.readRewards(CHAIN, STICKY, null, [funded(0n, STAKED)])
+
+    const before = chain.requests.length
+    await r.readRewards(1, STICKY, null, [funded(0n, STAKED)])
+    expect(asksOfTokens(chain.requests.slice(before))).toHaveLength(1)
+  })
+
+  it('is taken from the caller for the tokens it knows, which are never asked for what they are', async () => {
+    const chain = rewardChain()
+    stockPot(chain)
+    const r = await load()
+    const known = new Map([[STAKED.toLowerCase() as Address, { symbol: 'KNOWN', decimals: 7 }]])
+
+    const cards = await r.readRewards(CHAIN, STICKY, null, [funded(0n, STAKED)], { known })
+
+    expect(cards.map(card => card.meta)).toEqual([{ symbol: 'KNOWN', decimals: 7 }])
+    expect(asksOfTokens(chain.requests)).toEqual([])
+  })
+
+  it('shows the staked token\'s pot when every other token keeps a request from being answered', async () => {
+    const chain = rewardChain()
+    stockPot(chain)
+    stockToken(chain, HOSTILE, 'EVIL')
+    chain.lose(reads => reads.some(read => read.target === HOSTILE))
+    const r = await load()
+    const known = new Map([[STAKED.toLowerCase() as Address, { symbol: 'ART', decimals: 6 }]])
+
+    const cards = await r.readRewards(CHAIN, STICKY, null, [funded(0n, STAKED), funded(0n, HOSTILE)], { known })
+
+    expect(cards.map(card => card.token)).toEqual([STAKED.toLowerCase()])
+  })
+
+  describe('for a token that could not be read', () => {
+    const stockAll = (chain: Chain) => {
+      stockPot(chain)
+      stockToken(chain, STAKED)
+      stockToken(chain, TOKEN, 'GOOD')
+      stockToken(chain, HOSTILE, 'EVIL')
+      chain.lose(reads => reads.some(read => read.target === HOSTILE))
+    }
+    const pots = [funded(0n, STAKED), funded(0n, HOSTILE), funded(0n, TOKEN)]
+
+    it('is not asked again for three minutes, so the lost request is not sent on every refresh, and then is, alone', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date('2026-09-30T12:00:00Z'))
+      const chain = rewardChain()
+      stockAll(chain)
+      const r = await load()
+
+      expect((await r.readRewards(CHAIN, STICKY, null, pots)).map(card => card.meta.symbol)).toEqual(['ART', 'GOOD'])
+      expect(console.warn).toHaveBeenCalledTimes(1)
+
+      // A moment later nothing is asked of any token, and Center is not probed.
+      vi.setSystemTime(new Date('2026-09-30T12:02:59Z'))
+      const second = chain.requests.length
+      expect((await r.readRewards(CHAIN, STICKY, null, pots)).map(card => card.meta.symbol)).toEqual(['ART', 'GOOD'])
+      expect(asksOfTokens(chain.requests.slice(second))).toEqual([])
+      expect(chain.requests.slice(second).some(request => request.method === 'eth_blockNumber')).toBe(false)
+      expect(console.warn).toHaveBeenCalledTimes(1)
+
+      // Three minutes on it is asked about again, on its own: the others are kept.
+      vi.setSystemTime(new Date('2026-09-30T12:03:01Z'))
+      const third = chain.requests.length
+      await r.readRewards(CHAIN, STICKY, null, pots)
+      const asked = asksOfTokens(chain.requests.slice(third))
+      expect(asked.length).toBeGreaterThan(0)
+      expect(asked.every(request => request.reads!.every(read => read.target === HOSTILE))).toBe(true)
+    })
+
+    it('is read and kept when it answers the next time, and its pot shows', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date('2026-09-30T12:00:00Z'))
+      const chain = rewardChain()
+      stockAll(chain)
+      const r = await load()
+      await r.readRewards(CHAIN, STICKY, null, pots)
+
+      chain.lose(() => false)
+      vi.setSystemTime(new Date('2026-09-30T12:03:01Z'))
+      expect((await r.readRewards(CHAIN, STICKY, null, pots)).map(card => card.meta.symbol)).toEqual(['ART', 'EVIL', 'GOOD'])
+      const before = chain.requests.length
+      await r.readRewards(CHAIN, STICKY, null, pots)
+      expect(asksOfTokens(chain.requests.slice(before))).toEqual([])
+    })
+
+    it('is asked again at the next refresh when Center could not be reached, which says nothing of it', async () => {
+      const chain = rewardChain()
+      stockAll(chain)
+      chain.takeDown()
+      const r = await load()
+      await expect(r.readRewards(CHAIN, STICKY, null, pots)).rejects.toMatchObject({ functionName: 'aggregate3' })
+      // Nothing was kept: the good tokens are read again with the rest.
+      const before = chain.requests.length
+      await expect(r.readRewards(CHAIN, STICKY, null, pots)).rejects.toBeDefined()
+      expect(asksOfTokens(chain.requests.slice(before)).length).toBeGreaterThan(0)
+    })
+
+    it('has its decimals judged once too: 256 is not asked about again either', async () => {
+      const chain = rewardChain()
+      stockPot(chain)
+      chain.stock(TOKEN, erc20Abi, 'symbol', 'BIG')
+      chain.stock(TOKEN, erc20Abi, 'decimals', returning(numberToHex(256, { size: 32 })))
+      const r = await load()
+      await r.readRewards(CHAIN, STICKY, null, [funded(0n, TOKEN)])
+      const before = chain.requests.length
+      await r.readRewards(CHAIN, STICKY, null, [funded(0n, TOKEN)])
+      expect(asksOfTokens(chain.requests.slice(before))).toEqual([])
+      expect(console.warn).toHaveBeenCalledTimes(1)
+    })
+  })
+})
+
+describe('a project funded in a hundred groups', () => {
+  /** The nth token, each its own contract with its own symbol. */
+  const tokenN = (n: number) => getAddress(`0x${n.toString(16).padStart(40, '0')}`)
+  const pots = Array.from({ length: 100 }, (_, at) => fundedPot(BigInt(at + 1) * 1000n, tokenN(at + 1), 1n, at))
+  const known = new Map([[STAKED.toLowerCase() as Address, { symbol: 'ART', decimals: 6 }]])
+
+  /** A holder with nothing to collect, vest or resolve in any pot, which is what a refresh costs least. */
+  function stockQuiet(chain: Chain) {
+    stockClock(chain, 2n)
+    chain.stock(DISTRIBUTOR, stickyDistributorAbi, 'rewardRoundOf', round(0n, 0, 0n, 0, 0n))
+    chain.stock(DISTRIBUTOR, stickyDistributorAbi, 'collectableFor', 0n, 4)
+    chain.stock(DISTRIBUTOR, stickyDistributorAbi, 'claimedFor', 0n, 4)
+    chain.stock(DISTRIBUTOR, stickyDistributorAbi, 'latestVestedIndexOf', 0n)
+    chain.stock(DISTRIBUTOR, stickyDistributorAbi, 'nextClaimRoundOf', 2n)
+    for (let n = 1; n <= 100; n += 1) stockToken(chain, tokenN(n), `T${n}`)
+  }
+
+  it('is read as the 25 pots that matter, in a few requests, and after the first refresh in three', async () => {
+    const chain = rewardChain()
+    stockQuiet(chain)
+    const r = await load()
+    const { rows, more } = r.rewardRows(STAKED, pots)
+    expect(rows).toHaveLength(25)
+    expect(more).toBe(88)
+
+    const cards = await r.readRewards(CHAIN, STICKY, HOLDER, rows, { known })
+    expect(cards).toHaveLength(25)
+    expect(shape(chain.requests)).toEqual([
+      ['eth_getBlockByNumber', undefined, undefined],
+      // The distributor's clock.
+      ['eth_call', blockHex, 4],
+      // The twelve tokens of the pots looked at, three calls each: the staked token is known, not read.
+      ['eth_call', blockHex, 36],
+      // What was funded this round and what the holder has, in five calls for each of the 25 pots.
+      ['eth_call', blockHex, 125],
+    ])
+
+    const before = chain.requests.length
+    await r.readRewards(CHAIN, STICKY, HOLDER, rows, { known })
+    expect(shape(chain.requests.slice(before))).toEqual([
+      ['eth_getBlockByNumber', undefined, undefined],
+      ['eth_call', blockHex, 4],
+      ['eth_call', blockHex, 125],
+    ])
+  })
+
+  it('costs a hostile token among them one lost request and one probe, once, and its neighbours a request each, once', async () => {
+    const chain = rewardChain()
+    stockQuiet(chain)
+    // The newest pot's token burns the request it is asked in.
+    chain.lose(reads => reads.some(read => read.target === tokenN(100)))
+    const r = await load()
+    const { rows } = r.rewardRows(STAKED, pots)
+
+    const first = await r.readRewards(CHAIN, STICKY, HOLDER, rows, { known })
+    // The hostile token's pot is left out, and the other 24 are read.
+    expect(first).toHaveLength(24)
+    expect(first.some(card => card.token === tokenN(100).toLowerCase())).toBe(false)
+    const lost = chain.requests.filter(request => request.reads?.some(read => read.target === tokenN(100)))
+    // A lost request is sent twice by the transport, for the twelve tokens together and then for the token alone.
+    expect(lost.length).toBeLessThanOrEqual(4)
+
+    // The next refresh is as cheap as when nothing is wrong: the token's answer, or its want of one, is kept.
+    const before = chain.requests.length
+    const second = await r.readRewards(CHAIN, STICKY, HOLDER, rows, { known })
+    expect(second).toHaveLength(24)
+    expect(shape(chain.requests.slice(before))).toEqual([
+      ['eth_getBlockByNumber', undefined, undefined],
+      ['eth_call', blockHex, 4],
+      ['eth_call', blockHex, 120],
+    ])
+  })
+
+  it('does not let the number of groups steer a refresh: 400 groups cost what 100 do', async () => {
+    const chain = rewardChain()
+    stockQuiet(chain)
+    for (let n = 101; n <= 400; n += 1) stockToken(chain, tokenN(n), `T${n}`)
+    const r = await load()
+    const many = Array.from({ length: 400 }, (_, at) => fundedPot(BigInt(at + 1) * 1000n, tokenN(at + 1), 1n, at))
+    const { rows, more } = r.rewardRows(STAKED, many)
+    expect(rows).toHaveLength(25)
+    expect(more).toBe(388)
+    await r.readRewards(CHAIN, STICKY, HOLDER, rows, { known })
+    expect(chain.requests).toHaveLength(4)
   })
 })
 

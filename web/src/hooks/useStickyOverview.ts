@@ -1,10 +1,11 @@
 'use client'
 
 import { queryOptions, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import { useProjectLatest, useStickyEvents, useStickyHolders, useStickyProject } from '@/hooks/useStickyProject'
 import { inTurn } from '@/lib/in-turn'
 import { PERSIST } from '@/lib/query-persist'
+import { FRESH_MS } from '@/lib/query-reads'
 import {
   backingFlows,
   backingSeries,
@@ -30,9 +31,6 @@ import { launchSiblings, missingChains, siblingRows, type SiblingRow } from '@/l
  * the header's holders and Latest, then the balance flows, then the search for the copies on the other chains. All of
  * them are observed here, so a page that closes cancels them.
  */
-
-/** How long a read stays fresh: the reads that others build on are shared for this long. */
-const FRESH_MS = 30_000
 
 /** The version of what the browser keeps of the chains, in the key. Change it whenever `SiblingRow` or
  * `StickyProjectInfo` changes shape, or a page renders a kept copy in an older shape until it is read again. */
@@ -138,10 +136,13 @@ export function useBackingSeries(chainId: number, projectId: number) {
       const supply = supplyPoints(history, Math.floor(Date.now() / 1000))
       return { series: backingSeries(flows.data, { supply, info, orphans: orphanExclusions(history) }) }
     } catch (error) {
-      console.warn(CHART_UNDRAWABLE, { chainId, projectId }, error)
       return { error }
     }
-  }, [history, info, flows.data, chainId, projectId])
+  }, [history, info, flows.data])
+  // Said from an effect: a render can run twice, or be thrown away, and a drawing that failed is said once.
+  useEffect(() => {
+    if (drawn && 'error' in drawn) console.warn(CHART_UNDRAWABLE, { chainId, projectId }, drawn.error)
+  }, [drawn, chainId, projectId])
 
   const series: BackingSeries | undefined = drawn && 'series' in drawn ? drawn.series : undefined
   return {

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider, notifyManager } from '@tanstack/react-query'
-import { act, type AnchorHTMLAttributes, type ReactElement, type ReactNode } from 'react'
+import { act, StrictMode, type AnchorHTMLAttributes, type ReactElement, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import type { Address, Hex } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -387,6 +387,77 @@ describe('Rules and contracts', () => {
   })
 })
 
+describe('a copy button\'s result', () => {
+  const region = (label: string) => copyButton(label)!.parentElement!.querySelector<HTMLElement>('[role="status"]')!
+
+  it('is said in a live region beside the button, which its name hides from a screen reader, and which stays in place', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    await renderTab()
+    const pressed = region('SLOPSHOP token')
+    expect(pressed.textContent).toBe('')
+    expect(pressed.getAttribute('aria-atomic')).toBe('true')
+    expect(copyButton('SLOPSHOP token')!.getAttribute('aria-label')).toBe('Copy SLOPSHOP token address')
+    expect(copyButton('SLOPSHOP token')!.contains(pressed)).toBe(false)
+
+    await act(async () => copyButton('SLOPSHOP token')!.click())
+    // The same element says it: a region that appears with its message is not reliably announced.
+    expect(region('SLOPSHOP token')).toBe(pressed)
+    expect(pressed.textContent).toBe('Address copied.')
+    expect(region('Stick accounting').textContent).toBe('')
+    await settle(1_500)
+    expect(pressed.textContent).toBe('')
+  })
+
+  it('says when the browser refuses, and when it has no clipboard to copy to', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'))
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    await renderTab()
+    await act(async () => copyButton('Stick accounting')!.click())
+    expect(region('Stick accounting').textContent).toBe('Could not copy the address.')
+    await settle(1_500)
+    expect(region('Stick accounting').textContent).toBe('')
+
+    Reflect.deleteProperty(navigator, 'clipboard')
+    await act(async () => copyButton('SLOPSHOP token')!.click())
+    expect(region('SLOPSHOP token').textContent).toBe('Could not copy the address.')
+  })
+})
+
+describe('the contracts\' names', () => {
+  const symbol = 'S'.repeat(256)
+  const stSymbol = `ST${'S'.repeat(254)}`
+
+  it('are cut where their column ends, held to a width, and whole in their tooltips, at 256 characters', async () => {
+    mocks.project.mockResolvedValue(slopshop({ symbol, stSymbol }))
+    await renderTab()
+    const names = [...detailsCard().querySelectorAll('details dl dt')]
+    expect(names.map(name => name.getAttribute('title'))).toEqual([`${stSymbol} token`, `${symbol} token`, 'Stick accounting'])
+    expect(names.map(text)).toEqual([`${stSymbol} token`, `${symbol} token`, 'Stick accounting'])
+    for (const name of names) {
+      const classes = name.className.split(' ')
+      expect(classes).toEqual(expect.arrayContaining(['min-w-0', 'max-w-[16rem]', 'truncate', 'max-[560px]:max-w-full']))
+    }
+    // Nothing is lost to the cut: each address is there in full, with its copy button.
+    expect(contracts()).toEqual([
+      [`${stSymbol} token`, ST_TOKEN],
+      [`${symbol} token`, TOKEN],
+      ['Stick accounting', HOOK],
+    ])
+    expect(copyButton(`${symbol} token`)).not.toBeNull()
+    expect(copyButton(`${stSymbol} token`)).not.toBeNull()
+  })
+
+  it('keep the details\' own rows as they were', async () => {
+    mocks.project.mockResolvedValue(slopshop({ symbol, stSymbol }))
+    await renderTab()
+    const labels = [...detailsCard().querySelector('dl')!.querySelectorAll('dt')]
+    for (const label of labels) expect(label.className).not.toContain('truncate')
+    expect(value('Sticks')).toBe(`Slop Shop (${symbol})`)
+  })
+})
+
 describe('the Chains card', () => {
   it('lists each chain\'s project with its backing and supply, and the totals', async () => {
     await renderTab()
@@ -671,6 +742,15 @@ describe('the chart', () => {
     expect(chart()).toBeNull()
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not read the chart.')
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('draw'), { chainId: 8453, projectId: 23 }, expect.any(TypeError))
+  })
+
+  it('tells the console once, from the page and not from its render, which a strict page runs twice', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mocks.events.mockResolvedValue(history(event('stick', NOW - DAY)))
+    await act(async () => root.render(<StrictMode>{inClient(<OverviewTab chainId={8453} projectId={23} />)}</StrictMode>))
+    await settle()
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not read the chart.')
+    expect(warn.mock.calls.filter(([message]) => String(message).includes('draw'))).toHaveLength(1)
   })
 
   it('says the chart could not be read, and reads the history again on Try again', async () => {

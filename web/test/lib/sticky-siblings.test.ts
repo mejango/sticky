@@ -287,6 +287,24 @@ describe('launchSiblings', () => {
     expect(found(await launchSiblings(HERE, alone))).toEqual([[BASE_SEPOLIA, 12n, true]])
   })
 
+  it('a project whose uri plans chains that leave out its own has no siblings, and reads nothing', async () => {
+    const off = { ...HERE, plannedChains: [OP_SEPOLIA, ARB_SEPOLIA] }
+    const deps = fakeDeps({
+      world: { [OP_SEPOLIA]: opSepoliaLaunches, [ARB_SEPOLIA]: [{ id: 2, tax: 500n, soulbound: false, launchId: LAUNCH, plan: null }] },
+    })
+    expect(await launchSiblings(off, deps)).toEqual([{ chainId: BASE_SEPOLIA, projectId: 12n, self: true }])
+    expect(deps.calls).toEqual([])
+    expect(deps.indexedProjects).not.toHaveBeenCalled()
+    // A plan with its own chain among the others is searched as before, and an empty plan leaves every chain out.
+    expect(found(await launchSiblings({ ...HERE, plannedChains: [BASE_SEPOLIA, OP_SEPOLIA] }, deps))).toEqual([
+      [BASE_SEPOLIA, 12n, true],
+      [OP_SEPOLIA, 5n, false],
+    ])
+    const empty = fakeDeps({ world: { [OP_SEPOLIA]: opSepoliaLaunches } })
+    expect(await launchSiblings({ ...HERE, plannedChains: [] }, empty)).toEqual([{ chainId: BASE_SEPOLIA, projectId: 12n, self: true }])
+    expect(empty.calls).toEqual([])
+  })
+
   it('a single-chain project, or one whose uri carries no launch id, has no siblings to scan', async () => {
     const lone = fakeDeps({ world: { [OP_SEPOLIA]: opSepoliaLaunches } })
     expect(await launchSiblings({ ...HERE, projectId: 99n, launchId: null }, lone)).toEqual([

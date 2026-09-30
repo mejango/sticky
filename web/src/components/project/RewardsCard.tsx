@@ -3,8 +3,9 @@
 import { Fragment, useId, useState, type FormEvent } from 'react'
 import type { Address } from 'viem'
 import { Skeleton } from '@/components/ui/Skeleton'
-import { useAutoStick, useRewardFunding, useRewards, useViewer } from '@/hooks/useStickyAirdrops'
+import { useAutoStick, useRewardPots, useRewards, useViewer } from '@/hooks/useStickyAirdrops'
 import { useStickyProject } from '@/hooks/useStickyProject'
+import { HistoryTooLongError } from '@/lib/hook-logs'
 import { AS_STATUS } from '@/lib/sticky-autostick'
 import { groupLabel, rewardLines, roundSentence, type RewardCard } from '@/lib/sticky-rewards'
 
@@ -133,8 +134,8 @@ export function RewardsCard({ chainId, projectId }: { chainId: number; projectId
   const { info, failed, retry } = useStickyProject(chainId, projectId)
   const holder = useViewer()
   const [checked, setChecked] = useState<Address[]>([])
-  const funding = useRewardFunding(chainId, projectId)
-  const rewards = useRewards(chainId, projectId, holder, checked)
+  const { funding, more, rows } = useRewardPots(chainId, projectId, checked)
+  const rewards = useRewards(chainId, projectId, holder, rows)
   const autoStick = useAutoStick(chainId, projectId, holder).data
   // Auto-stick fails closed: for a project the adapter cannot resolve, nothing is stuck through it.
   const canStick =
@@ -171,7 +172,9 @@ export function RewardsCard({ chainId, projectId }: { chainId: number; projectId
           {funding.isFetching && funding.data === undefined ? (
             <p className="mb-2.5 text-[13px] text-muted">Looking for more airdrops…</p>
           ) : null}
-          {funding.isError ? (
+          {funding.error instanceof HistoryTooLongError ? (
+            <p className="mb-2.5 text-muted">This project is too old to list every airdrop here.</p>
+          ) : funding.isError ? (
             <p role="alert" className="mb-2.5 text-err">
               Could not list every airdrop.{' '}
               <button type="button" className="btn-link font-semibold" onClick={() => void funding.refetch()}>
@@ -188,6 +191,11 @@ export function RewardsCard({ chainId, projectId }: { chainId: number; projectId
           ) : (
             <p className="rounded-md border border-line p-3 text-muted">No rewards yet.</p>
           )}
+          {more > 0 ? (
+            <p className="mt-2.5 text-[13px] text-muted">
+              and {more} more airdrop{more === 1 ? '' : 's'}
+            </p>
+          ) : null}
           {shown.some(card => card.groupId !== 0n) ? (
             <p className="mt-2.5 text-muted">Claim stake-age rewards before unsticking, or you forfeit them.</p>
           ) : null}

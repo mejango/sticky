@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import type { Address } from 'viem'
 import { SkeletonTable } from '@/components/ui/Skeleton'
+import { useStickyPosition } from '@/hooks/useStickyProject'
 import { useHolderTranches } from '@/hooks/useStickyTokens'
 import { formatAmount, formatDuration } from '@/lib/sticky-format'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
@@ -16,9 +17,10 @@ const count = (value: bigint) => value.toLocaleString('en-US')
 
 /**
  * A holder's tranches: each stick's Sticky shares, when it was stuck and how old it is at the block the page was read
- * at, oldest first. Tranches are 50 to a page, the newest page first: Older goes back a page and Newer forward. A
- * holder with no tranches, or nobody, has none to show. A page that cannot be read says so, and offers to read it
- * again: it is never an empty table.
+ * at, which is the block of the holder's stick beside it. Oldest first. Tranches are 50 to a page, the newest page
+ * first: Older goes back a page and Newer forward. A holder with no tranches, or nobody, has none to show. A page that
+ * cannot be read says so, and offers to read it again: it is never an empty table. When the stick itself cannot be read,
+ * which the card above says, there is no block to read the tranches at.
  */
 export function TrancheTable({
   chainId,
@@ -32,7 +34,8 @@ export function TrancheTable({
   info: StickyProjectInfo | undefined
 }) {
   const [requested, setRequested] = useState(0)
-  const read = useHolderTranches(chainId, projectId, holder, requested)
+  const position = useStickyPosition(chainId, projectId, holder, info)
+  const read = useHolderTranches(chainId, projectId, holder, requested, position.data)
   const page = read.data
 
   // A page the read clamped to, which burns can leave the one asked for past the last, is the page asked for from now on.
@@ -40,7 +43,7 @@ export function TrancheTable({
     if (page && !read.isPlaceholderData && page.page !== requested) setRequested(page.page)
   }, [page, read.isPlaceholderData, requested])
 
-  const loading = holder !== null && read.isPending
+  const loading = holder !== null && read.isPending && !position.isError
   const failed = holder !== null && read.isError && !page
 
   return (

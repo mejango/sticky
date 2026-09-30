@@ -6,11 +6,13 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import type { Address, Hex } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { HistoryTooLongError } from '@/lib/hook-logs'
 import { installQueryPersistence } from '@/lib/query-persist'
 import type { StickyEvent } from '@/lib/sticky-events'
 import { clearViewAs, setViewAs } from '@/lib/viewAs'
 import { HOLDER, TOKEN, stickyInfo } from '../home-fixtures'
 import { memoryStorage } from '../memory-storage'
+import { FakeObserver, siteClient } from '../panel-fixtures'
 
 // The Airdrops tab: the viewer's rewards, their auto-stick and who they trust to stick for them. Every read is a mock;
 // the reads have tests of their own (test/lib/sticky-rewards.test.ts and sticky-autostick.test.ts). The clock is
@@ -48,7 +50,7 @@ vi.mock('@/hooks/useWallet', () => ({ useWallet: () => ({ address: mocks.address
 
 import { AirdropsTab } from '@/components/project/AirdropsTab'
 import { AS_STATUS, type AutoStickState } from '@/lib/sticky-autostick'
-import { type RewardCard, type RewardPot } from '@/lib/sticky-rewards'
+import { type FundedPot, type RewardCard, type RewardPot } from '@/lib/sticky-rewards'
 
 const CHAIN = 8453
 const NOW = 1_800_000_000
@@ -109,11 +111,13 @@ const trust = (sender: Address, trusted = true): StickyEvent => ({
   timestamp: NOW,
 })
 
+/** A pot the Fund logs show, last funded at block `at`. */
+const fundedPot = (groupId: bigint, token: Address, funded: bigint, at = 1): FundedPot => ({ groupId, token, funded, fundedAt: BigInt(at) })
+
 let host: HTMLDivElement
 let root: Root
 let client: QueryClient
 const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } })
-
 beforeEach(() => {
   notifyManager.setScheduler(callback => queueMicrotask(callback))
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
@@ -194,8 +198,7 @@ describe('the rewards', () => {
   })
 
   it('reads the pots the distributor was funded for, and the staked token under every group, for the viewer', async () => {
-    const funded: RewardPot[] = [{ groupId: 4000n, token: OTHER, funded: 5n }]
-    mocks.funding.mockResolvedValue(funded)
+    mocks.funding.mockResolvedValue([fundedPot(4000n, OTHER, 5n)])
     await renderTab()
 
     expect(mocks.funding).toHaveBeenCalledWith(CHAIN, slopshop().stToken, 23n, expect.objectContaining({ signal: expect.any(AbortSignal) }))
@@ -206,11 +209,15 @@ describe('the rewards', () => {
       `0:${TOKEN.toLowerCase()}`,
       `4000:${TOKEN.toLowerCase()}`,
     ])
-    expect(options).toEqual({ signal: expect.any(AbortSignal) })
+    // The staked token's own symbol and decimals are the verified project's, and are not read.
+    expect(options).toEqual({
+      signal: expect.any(AbortSignal),
+      known: new Map([[TOKEN.toLowerCase(), { symbol: 'SLOPSHOP', decimals: 6 }]]),
+    })
   })
 
   it('reads the staked token\'s pots at once and every pot when the scan lands, keeping the cards on show meanwhile', async () => {
-    const scan = Promise.withResolvers<RewardPot[]>()
+    const scan = Promise.withResolvers<FundedPot[]>()
     mocks.funding.mockReturnValue(scan.promise)
     await renderTab()
 
@@ -223,7 +230,7 @@ describe('the rewards', () => {
 
     const everything = Promise.withResolvers<RewardCard[]>()
     mocks.rewards.mockReturnValue(everything.promise)
-    await act(async () => scan.resolve([{ groupId: 4000n, token: OTHER, funded: 5n }]))
+    await act(async () => scan.resolve([fundedPot(4000n, OTHER, 5n)]))
     await settled()
     expect(mocks.rewards).toHaveBeenCalledTimes(2)
     expect(mocks.rewards.mock.calls[1][3]).toHaveLength(3)
@@ -352,6 +359,45 @@ describe('the rewards', () => {
   })
 })
 
+describe('the pots that are looked at', () => {
+  /** `count` pots, each in a group and a token of its own, the last funded the newest. */
+  const crowd = (count: number) =>
+    Array.from({ length: count }, (_, at) =>
+      fundedPot(BigInt(at + 1) * 1000n, `0x${(at + 1).toString(16).padStart(40, '0')}` as Address, 1n, at),
+    )
+  const said = () => [...rewards().querySelectorAll('p')].map(each => each.textContent).find(text => /^and \d+ more/.test(text ?? ''))
+
+  it('are the newest 12 funded, and the staked token under group 0 and their groups, and the rest are counted', async () => {
+    mocks.funding.mockResolvedValue(crowd(30))
+    await renderTab()
+
+    const rows = mocks.rewards.mock.calls.at(-1)![3] as RewardPot[]
+    expect(rows).toHaveLength(12 + 13)
+    expect(rows.slice(0, 12).map(row => row.groupId)).toEqual(Array.from({ length: 12 }, (_, at) => BigInt(19 + at) * 1000n))
+    expect(said()).toBe('and 18 more airdrops')
+  })
+
+  it('give the same groups to auto-stick, so what it reads does not grow with what a project is funded with either', async () => {
+    mocks.funding.mockResolvedValue(crowd(30))
+    await renderTab()
+    const { groups } = mocks.autoStick.mock.calls.at(-1)![3]
+    expect(groups).toEqual([0n, ...Array.from({ length: 12 }, (_, at) => BigInt(19 + at) * 1000n)])
+  })
+
+  it('say one more airdrop in the singular, and nothing when none is left out', async () => {
+    mocks.funding.mockResolvedValue(crowd(13))
+    await renderTab()
+    expect(said()).toBe('and 1 more airdrop')
+
+    await act(async () => root.unmount())
+    root = createRoot(host)
+    client.clear()
+    mocks.funding.mockResolvedValue(crowd(12))
+    await renderTab()
+    expect(said()).toBeUndefined()
+  })
+})
+
 describe('the pots that could not be listed', () => {
   it('shows the staked token\'s, says the list is incomplete, tells the console, and reads the list again on Try again', async () => {
     const failure = new Error('over budget')
@@ -364,12 +410,28 @@ describe('the pots that could not be listed', () => {
     expect(alert.textContent).toContain('Could not list every airdrop.')
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('airdrops'), { chainId: CHAIN, projectId: 23 }, failure)
 
-    mocks.funding.mockResolvedValue([{ groupId: 4000n, token: OTHER, funded: 5n }])
+    mocks.funding.mockResolvedValue([fundedPot(4000n, OTHER, 5n)])
     await act(async () => buttonNamed(alert, 'Try again').click())
     await settled()
     expect(mocks.funding).toHaveBeenCalledTimes(2)
     expect(rewards().querySelector('[role="alert"]')).toBeNull()
     expect(mocks.rewards.mock.calls.at(-1)![3]).toHaveLength(3)
+  })
+
+  it('says a project is too old to list, without offering to try again, for a history no scan can reach', async () => {
+    const failure = new HistoryTooLongError('This history spans 9000000 blocks, more than this RPC can scan in 1024 requests.')
+    mocks.funding.mockRejectedValue(failure)
+    await renderTab()
+
+    expect(rewards().textContent).toContain('This project is too old to list every airdrop here.')
+    expect(rewards().textContent).not.toContain('Could not list every airdrop.')
+    expect(rewards().querySelector('[role="alert"]')).toBeNull()
+    expect(buttonsOf(rewards()).includes('Try again')).toBe(false)
+    // The staked token's pot and the check for another token are still there, and the console has been told.
+    expect(pots()).toHaveLength(1)
+    expect(rewards().querySelector('input')).not.toBeNull()
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('airdrops'), { chainId: CHAIN, projectId: 23 }, failure)
+    expect(mocks.funding).toHaveBeenCalledTimes(1)
   })
 
   it('tries once: a scan that cannot finish would only be sent again', async () => {
@@ -402,7 +464,7 @@ describe('the check for another reward token', () => {
   })
 
   it('looks for rewards in the token under every group, and forgets the address it was given', async () => {
-    mocks.funding.mockResolvedValue([{ groupId: 4000n, token: OTHER, funded: 5n }])
+    mocks.funding.mockResolvedValue([fundedPot(4000n, OTHER, 5n)])
     await renderTab()
     const checked = `0x${'AB'.repeat(20)}`
     await enter(checked)
@@ -586,6 +648,103 @@ describe('the reads behind the rewards', () => {
   })
 })
 
+describe('the reads when the tab is shown again', () => {
+  const counts = () => [mocks.rewards.mock.calls.length, mocks.autoStick.mock.calls.length, mocks.trusted.mock.calls.length]
+
+  it('read the viewer\'s again as soon as the browser tab is shown again, whatever the site\'s defaults', async () => {
+    const site = siteClient()
+    await renderTab(site)
+    expect(counts()).toEqual([1, 1, 1])
+
+    const state = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    await act(async () => document.dispatchEvent(new Event('visibilitychange', { bubbles: true })))
+    await settled()
+    expect(counts()).toEqual([1, 1, 1])
+
+    state.mockReturnValue('visible')
+    await act(async () => document.dispatchEvent(new Event('visibilitychange', { bubbles: true })))
+    await settled()
+    expect(counts()).toEqual([2, 2, 2])
+    // The pots the scan found are not scanned for again: they are the project's, not the viewer's.
+    expect(mocks.funding).toHaveBeenCalledTimes(1)
+    site.clear()
+  })
+})
+
+describe('a panel that is hidden', () => {
+  const counts = () => [mocks.rewards.mock.calls.length, mocks.autoStick.mock.calls.length, mocks.trusted.mock.calls.length]
+
+  beforeEach(() => {
+    FakeObserver.all = []
+    vi.stubGlobal('IntersectionObserver', FakeObserver)
+  })
+
+  it('is watched by its own element, which the tabs hide and show, with a margin around the screen', async () => {
+    await renderTab()
+    expect(FakeObserver.all).toHaveLength(1)
+    expect(FakeObserver.all[0].options).toEqual({ rootMargin: '600px 0px' })
+    expect(FakeObserver.all[0].element).toBe(host.firstElementChild)
+    expect(host.firstElementChild?.contains(rewards())).toBe(true)
+  })
+
+  it('reads nothing of the viewer\'s, and shows what it had, and reads at once and then every 15 seconds when it is shown', async () => {
+    await renderTab()
+    expect(counts()).toEqual([1, 1, 1])
+
+    await act(async () => FakeObserver.tell(false))
+    await settle(60_000)
+    expect(counts()).toEqual([1, 1, 1])
+    expect(pots()).toHaveLength(1)
+
+    await act(async () => FakeObserver.tell(true))
+    await settled()
+    expect(counts()).toEqual([2, 2, 2])
+    await settle(15_000)
+    expect(counts()).toEqual([3, 3, 3])
+  })
+
+  it('is not read when the browser tab is shown again while it is hidden, and is when it is shown', async () => {
+    const site = siteClient()
+    await renderTab(site)
+    await act(async () => FakeObserver.tell(false))
+
+    const state = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    await act(async () => document.dispatchEvent(new Event('visibilitychange', { bubbles: true })))
+    state.mockReturnValue('visible')
+    await act(async () => document.dispatchEvent(new Event('visibilitychange', { bubbles: true })))
+    await settled()
+    expect(counts()).toEqual([1, 1, 1])
+
+    await act(async () => FakeObserver.tell(true))
+    await settled()
+    expect(counts()).toEqual([2, 2, 2])
+    site.clear()
+  })
+
+  it('still finds the pots, once, while it is hidden: the scan is the project\'s and is not the viewer\'s to repeat', async () => {
+    const scan = Promise.withResolvers<FundedPot[]>()
+    mocks.funding.mockReturnValue(scan.promise)
+    await renderTab()
+    await act(async () => FakeObserver.tell(false))
+    await act(async () => scan.resolve([fundedPot(4000n, OTHER, 5n)]))
+    await settled()
+    expect(mocks.funding).toHaveBeenCalledTimes(1)
+
+    await act(async () => FakeObserver.tell(true))
+    await settled()
+    expect(mocks.funding).toHaveBeenCalledTimes(1)
+    expect((mocks.rewards.mock.calls.at(-1)![3] as RewardPot[]).some(row => row.groupId === 4000n)).toBe(true)
+  })
+
+  it('stops watching when the tab is closed', async () => {
+    await renderTab()
+    expect(FakeObserver.all).toHaveLength(1)
+    await act(async () => root.unmount())
+    expect(FakeObserver.all).toHaveLength(0)
+    root = createRoot(host)
+  })
+})
+
 describe('auto-stick', () => {
   const state = () => autoStick()!.querySelector('[data-autostick-state]')!.textContent
   const actions = () => buttonsOf(autoStick()!.querySelector('div.flex')!)
@@ -633,7 +792,7 @@ describe('auto-stick', () => {
   })
 
   it('reads the viewer\'s auto-stick for the groups the pots are in', async () => {
-    mocks.funding.mockResolvedValue([{ groupId: 4008n, token: OTHER, funded: 5n }, { groupId: 4000n, token: OTHER, funded: 5n }])
+    mocks.funding.mockResolvedValue([fundedPot(4008n, OTHER, 5n), fundedPot(4000n, OTHER, 5n)])
     await renderTab()
     expect(mocks.autoStick).toHaveBeenCalledTimes(1)
     expect(mocks.autoStick).toHaveBeenCalledWith(CHAIN, 23n, VIEWER, {

@@ -43,7 +43,11 @@ function Row({ label, text, title = text }: { label: string; text: string; title
   )
 }
 
-/** A copy button for an address: it says "Copied!" for a moment, or "Could not copy" when the browser refuses. */
+/**
+ * A copy button for an address: it says "Copied!" for a moment, or "Could not copy" when the browser refuses. The button
+ * is named for what it copies, which hides its text from a screen reader, so what became of the copy is also said in a
+ * live region beside it, which is always there for the announcement to be made in.
+ */
 function CopyAddress({ label, address }: { label: string; address: string }) {
   const [notice, setNotice] = useState<'copied' | 'refused' | null>(null)
   useEffect(() => {
@@ -63,22 +67,34 @@ function CopyAddress({ label, address }: { label: string; address: string }) {
   }
 
   return (
-    <button
-      type="button"
-      aria-label={`Copy ${label} address`}
-      onClick={() => void copy()}
-      className={`btn-link ml-2 min-h-0 align-baseline text-xs font-medium decoration-amber ${notice === 'refused' ? 'text-err' : ''}`}
-    >
-      {notice === 'copied' ? 'Copied!' : notice === 'refused' ? 'Could not copy' : 'Copy'}
-    </button>
+    <>
+      <button
+        type="button"
+        aria-label={`Copy ${label} address`}
+        onClick={() => void copy()}
+        className={`btn-link ml-2 min-h-0 align-baseline text-xs font-medium decoration-amber ${notice === 'refused' ? 'text-err' : ''}`}
+      >
+        {notice === 'copied' ? 'Copied!' : notice === 'refused' ? 'Could not copy' : 'Copy'}
+      </button>
+      <span role="status" aria-atomic="true" className="sr-only">
+        {notice === 'copied' ? 'Address copied.' : notice === 'refused' ? 'Could not copy the address.' : ''}
+      </span>
+    </>
   )
 }
 
-/** A contract's name and its full address, which may break anywhere, with its copy button. */
+/**
+ * A contract's name and its full address, which may break anywhere, with its copy button. The name holds a token's
+ * symbol, which can run to 256 characters, so it is cut where the column ends, and its tooltip says all of it. The
+ * column is as wide as its widest name, so a name that is only cut by the width of the card would be as wide as the
+ * symbol: it is held to 16rem, and to the card's width on a phone, where the name has a row of its own.
+ */
 function Contract({ label, address }: { label: string; address: string }) {
   return (
     <>
-      <dt className={LABEL}>{label}</dt>
+      <dt title={label} className={`${LABEL} min-w-0 max-w-[16rem] truncate max-[560px]:max-w-full`}>
+        {label}
+      </dt>
       <dd className="m-0 whitespace-normal border-b border-line py-2 text-left max-[560px]:pt-0.5">
         <span className="break-all font-mono text-xs leading-[1.4]">{address}</span>
         <CopyAddress label={label} address={address} />

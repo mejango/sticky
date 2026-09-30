@@ -8,7 +8,11 @@
  * Every amount is read from the distributor, never added up from logs: the Fund logs only say which pots exist. All
  * of a refresh's reads are made at one pinned block and together, a request for each step (and one more for every 250
  * calls) and not for each pot. A reward token is any contract, so its symbol and decimals are read apart from the
- * distributor's own answers, where a token that keeps a request from being answered leaves out only itself.
+ * distributor's own answers, where a token that keeps a request from being answered leaves out only itself, and what
+ * is read of a token is kept, so a refresh does not read it again.
+ *
+ * Funding is permissionless: anyone can fund any group with any token. So the pots looked at are capped
+ * (`MAX_FUNDED_POTS`), and what a refresh costs does not grow with what a project's enemies fund it with.
  *
  * Addresses of tokens are lowercase.
  */
@@ -145,6 +149,9 @@ export type TokenMeta = { symbol: string; decimals: number }
 
 /** One group's rewards in one token, and everything ever sent to it (0 for a pot only checked by hand). */
 export type RewardPot = { groupId: bigint; token: Address; funded: bigint }
+
+/** A pot the Fund logs show, and the block it was last funded in. */
+export type FundedPot = RewardPot & { fundedAt: bigint }
 
 /** A pot as a holder sees it, and the schedule its dates are on. */
 export type RewardCard = RewardPot & {
@@ -286,15 +293,15 @@ export async function readRewardSchedule(
 // ---- the pots
 
 /** Every pot the distributor has been funded for a Sticky token: one for each group and token in its Fund logs, in the
- * order they were first funded, with everything sent to it. The scan starts at the project's creation block, and this
- * browser keeps what it has read, so a later visit scans only newer blocks. It rejects when the scan cannot finish:
- * a list of pots is never quietly shorter. */
+ * order they were first funded, with everything sent to it and the block it was last funded in. The scan starts at the
+ * project's creation block, and this browser keeps what it has read, so a later visit scans only newer blocks. It
+ * rejects when the scan cannot finish: a list of pots is never quietly shorter. */
 export async function discoverFunding(
   chainId: number,
   stToken: Address,
   projectId: bigint,
   { signal }: Cancel = {},
-): Promise<RewardPot[]> {
+): Promise<FundedPot[]> {
   const { distributor } = deploymentOn(chainId)
   const fromBlock = await projectCreationBlock(chainId, projectId, { signal })
   const hook = stToken.toLowerCase() as Address
@@ -304,7 +311,7 @@ export async function discoverFunding(
     { address: distributor, topics: [FUND, pad(hook, { size: 32 })], fromBlock },
     { signal },
   )
-  const pots = new Map<string, RewardPot>()
+  const pots = new Map<string, FundedPot>()
   for (const log of logs) {
     const { args } = decodeEventLog({
       abi: stickyDistributorAbi,
@@ -314,30 +321,46 @@ export async function discoverFunding(
     })
     const token = args.token.toLowerCase() as Address
     const id = `${args.groupId}:${token}`
-    const pot = pots.get(id) ?? { groupId: args.groupId, token, funded: 0n }
-    pots.set(id, { ...pot, funded: pot.funded + args.amount })
+    const pot = pots.get(id) ?? { groupId: args.groupId, token, funded: 0n, fundedAt: 0n }
+    pots.set(id, { ...pot, funded: pot.funded + args.amount, fundedAt: log.blockNumber })
   }
   return [...pots.values()]
 }
 
-/** The pots to show: every funded one, and the staked token and any token checked by hand under every group there is,
- * so a holder can always look for rewards where the funding logs could not be read. `groups` are those of the funded
- * pots and group 0, in order. */
+/** How many of the pots the Fund logs show are looked at. Anyone can fund any group with any token, so a project can
+ * be given as many pots as an enemy cares to pay for, and the newest are the ones that matter to a holder. */
+export const MAX_FUNDED_POTS = 12
+
+/**
+ * The pots to look at: the newest `limit` funded ones (by when each was last funded, shown in the order they were first
+ * funded), and the staked token and any token checked by hand under group 0 and the group of each of those, so a holder
+ * can always look for rewards where the funding logs could not be read. `groups` are those, in order, and `more` is
+ * how many funded pots are left out.
+ */
 export function rewardRows(
   stakedToken: Address,
-  funded: readonly RewardPot[],
+  funded: readonly FundedPot[],
   checked: Iterable<Address> = [],
-): { groups: bigint[]; rows: RewardPot[] } {
+  limit = MAX_FUNDED_POTS,
+): { groups: bigint[]; rows: RewardPot[]; more: number } {
+  const newest = new Set(
+    funded.length <= limit
+      ? funded
+      : [...funded].sort((a, b) => (a.fundedAt === b.fundedAt ? 0 : a.fundedAt > b.fundedAt ? -1 : 1)).slice(0, limit),
+  )
+  const shown = funded.filter(pot => newest.has(pot))
   const known = new Set([stakedToken, ...checked].map(token => token.toLowerCase() as Address))
-  const groups = [...new Set([0n, ...funded.map(pot => pot.groupId)])].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
-  const rows = new Map(funded.map(pot => [`${pot.groupId}:${pot.token}`, pot]))
+  const groups = [...new Set([0n, ...shown.map(pot => pot.groupId)])].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+  const rows = new Map<string, RewardPot>(
+    shown.map(({ groupId, token, funded: amount }) => [`${groupId}:${token}`, { groupId, token, funded: amount }]),
+  )
   for (const groupId of groups) {
     for (const token of known) {
       const id = `${groupId}:${token}`
       if (!rows.has(id)) rows.set(id, { groupId, token, funded: 0n })
     }
   }
-  return { groups, rows: [...rows.values()] }
+  return { groups, rows: [...rows.values()], more: funded.length - shown.length }
 }
 
 // ---- the reward tokens
@@ -366,31 +389,55 @@ const tokenCalls = (token: Address): ContractFunctionParameters[] => [
   { address: token, abi: erc20Abi_bytes32, functionName: 'symbol' },
 ]
 
+/** What has been read of each reward token's symbol and decimals, by chain and address, for the session: they do not
+ * change. */
+const tokenMetas = new Map<string, TokenMeta>()
+/** The tokens that could not be read, by chain and address, and when each may be asked about again. */
+const tokensUnreadable = new Map<string, number>()
+/** How long a token that could not be read is left alone. A hostile token costs a lost request, a probe of Center and a
+ * request for each of its neighbours, and would cost them again on every refresh. */
+const UNREADABLE_MS = 3 * 60_000
+
 /**
- * The symbol and decimals of each reward token that can be read, at `block`. A token is any contract, so what it
- * answers is not trusted and what it does to a request is not known: one that returns more than Center carries, or
- * runs Multicall3 out of gas, takes the request with it. So when the tokens' request is lost, Center is asked afresh for
- * its head. If it answers, each token is read alone and one whose own request is lost is left out, with why; if not, the
- * lost request's error is thrown. A token that answers without valid decimals is left out, with why.
+ * The symbol and decimals of each reward token that can be read, at `block`: those the caller `known`, and those read
+ * before, cost nothing, and a token that could not be read a moment ago is left out without asking again. A token is
+ * any contract, so what it answers is not trusted and what it does to a request is not known: one that returns more
+ * than Center carries, or runs Multicall3 out of gas, takes the request with it. So when the tokens' request is lost,
+ * Center is asked afresh for its head. If it answers, each token is read alone and one whose own request is lost is
+ * left out, with why; if not, the lost request's error is thrown. A token that answers without valid decimals is left
+ * out, with why.
  */
 async function readTokenMetas(
   chainId: number,
   tokens: readonly Address[],
   block: bigint,
   signal: AbortSignal | undefined,
+  known: ReadonlyMap<Address, TokenMeta>,
 ): Promise<Map<Address, TokenMeta>> {
   const metas = new Map<Address, TokenMeta>()
+  const keyOf = (token: Address) => `${chainId}:${token}`
+  const unread: Address[] = []
+  for (const token of tokens) {
+    const meta = token === NATIVE_TOKEN ? { symbol: 'ETH', decimals: 18 } : (known.get(token) ?? tokenMetas.get(keyOf(token)))
+    if (meta) metas.set(token, meta)
+    else if ((tokensUnreadable.get(keyOf(token)) ?? 0) <= Date.now()) unread.push(token)
+  }
+  const leaveOut = (token: Address, error: unknown) => {
+    tokensUnreadable.set(keyOf(token), Date.now() + UNREADABLE_MS)
+    console.warn(REWARD_TOKEN_UNREADABLE, { chainId, token }, error)
+  }
   const keep = (token: Address, answers: readonly Answer<unknown>[]) => {
     try {
-      metas.set(token, tokenMetaOf(token, answers))
+      const meta = tokenMetaOf(token, answers)
+      metas.set(token, meta)
+      tokenMetas.set(keyOf(token), meta)
+      tokensUnreadable.delete(keyOf(token))
     } catch (error) {
-      console.warn(REWARD_TOKEN_UNREADABLE, { chainId, token }, error)
+      leaveOut(token, error)
     }
   }
-  if (tokens.includes(NATIVE_TOKEN)) metas.set(NATIVE_TOKEN, { symbol: 'ETH', decimals: 18 })
-  const others = tokens.filter(token => token !== NATIVE_TOKEN)
-  for (let at = 0; at < others.length; at += TOKENS_PER_REQUEST) {
-    const some = others.slice(at, at + TOKENS_PER_REQUEST)
+  for (let at = 0; at < unread.length; at += TOKENS_PER_REQUEST) {
+    const some = unread.slice(at, at + TOKENS_PER_REQUEST)
     try {
       const answers = await readAt(chainId, some.flatMap(tokenCalls), block, signal)
       some.forEach((token, i) => keep(token, answers.slice(i * 3, i * 3 + 3)))
@@ -405,7 +452,7 @@ async function readTokenMetas(
           keep(token, await readAt(chainId, tokenCalls(token), block, signal))
         } catch (error) {
           if (signal?.aborted) throw error
-          console.warn(REWARD_TOKEN_UNREADABLE, { chainId, token }, error)
+          leaveOut(token, error)
         }
       }
     }
@@ -567,21 +614,23 @@ export async function hasRewardsToVest(
 
 /**
  * A holder's standing in each of `groups` (the pots to look at: see `rewardRows`), with each token's symbol and
- * decimals and the schedule the dates are on, all read at one block. A pot whose token cannot be read is left out. With
- * no holder, the pots show what was funded and nothing collectable. A read that fails fails the whole call: an amount
- * the distributor could not give is never shown as zero.
+ * decimals and the schedule the dates are on, all read at one block. `known` are tokens the caller has the symbol and
+ * decimals of, and which are not read: the staked token's come from the verified project, so no token can keep the
+ * staked token's own pot from showing. A pot whose token cannot be read is left out. With no holder, the pots show what
+ * was funded and nothing collectable. A read that fails fails the whole call: an amount the distributor could not give is
+ * never shown as zero.
  */
 export async function readRewards(
   chainId: number,
   stToken: Address,
   holder: Address | null,
   groups: readonly RewardPot[],
-  { signal }: Cancel = {},
+  { signal, known = new Map() }: Cancel & { known?: ReadonlyMap<Address, TokenMeta> } = {},
 ): Promise<RewardCard[]> {
   const { distributor } = deploymentOn(chainId)
   const at = await pinnedBlock(chainId, { signal })
   const clock = await readRewardSchedule(chainId, { pin: at, signal })
-  const metas = await readTokenMetas(chainId, [...new Set(groups.map(pot => pot.token))], at.number, signal)
+  const metas = await readTokenMetas(chainId, [...new Set(groups.map(pot => pot.token))], at.number, signal, known)
   const pots = groups.flatMap(pot => {
     const meta = metas.get(pot.token)
     return meta ? [{ ...pot, meta }] : []

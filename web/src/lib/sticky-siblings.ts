@@ -142,8 +142,8 @@ async function candidatesOn(
  * searched one after another. Bendystraw lists each chain's launches, and a scan of the chain's deployer from just
  * below its indexed block adds the newer ones; when Bendystraw cannot list them, each chain's deployer is scanned from
  * its first block. A chain that cannot be searched is a failure in its place, and the others are still searched. A
- * project whose uri carries no launch id has no copies, and nothing is read. When the page's uri lists the chains the
- * launch planned, only those are searched.
+ * project whose uri carries no launch id, or plans chains that do not include its own, has no copies, and nothing is
+ * read. When the page's uri lists the chains the launch planned, only those are searched.
  */
 export async function launchSiblings(
   info: LaunchFacts,
@@ -152,7 +152,7 @@ export async function launchSiblings(
   const { signal, ...given } = options
   const deps: SiblingReadDeps = { ...live, ...given }
   const self: Sibling = { chainId: info.chainId, projectId: info.projectId, self: true }
-  if (launchKey(info) === null) return [self]
+  if (launchKey(info) === null || !onPlan(info.plannedChains, info.chainId)) return [self]
   const environment = environmentForChainIds([info.chainId])
   const others = stickyChainIds(environment).filter(
     chainId => chainId !== info.chainId && onPlan(info.plannedChains, chainId),

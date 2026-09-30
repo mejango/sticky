@@ -10,6 +10,7 @@ import type { Tranche, TranchePage } from '@/lib/sticky-tranches'
 import { clearViewAs, setViewAs } from '@/lib/viewAs'
 import { E18, E6, stickyInfo } from '../home-fixtures'
 import { memoryStorage } from '../memory-storage'
+import { FakeObserver, siteClient } from '../panel-fixtures'
 
 // The Tokens tab: what the viewer has stuck, their tranches, everyone's holdings and the stickiness bonus. Every read
 // is a mock; the read model has tests of its own (sticky-holders, sticky-tranches). The clock is fake, so the 15-second
@@ -262,15 +263,19 @@ describe('You', () => {
     expect(mocks.tranches).toHaveBeenCalledWith(8453, 23n, expect.stringMatching(new RegExp(A, 'i')), 0, 100n, expect.anything())
   })
 
-  it('reads the stick and the tranches again every 15 seconds, and not while the tab is hidden', async () => {
+  it('reads the stick again every 15 seconds and the tranches at each block it is read at, and neither while the browser tab is hidden', async () => {
     mocks.address = VIEWER
+    let block = 100n
+    mocks.position.mockImplementation(async () => ({ ...position, blockNumber: (block += 1n) }))
     await renderTab()
     expect(mocks.position).toHaveBeenCalledTimes(1)
     expect(mocks.tranches).toHaveBeenCalledTimes(1)
+    expect(mocks.tranches).toHaveBeenLastCalledWith(8453, 23n, VIEWER, 0, 101n, expect.anything())
 
     await settle(15_000)
     expect(mocks.position).toHaveBeenCalledTimes(2)
     expect(mocks.tranches).toHaveBeenCalledTimes(2)
+    expect(mocks.tranches).toHaveBeenLastCalledWith(8453, 23n, VIEWER, 0, 102n, expect.anything())
 
     const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
     const state = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
@@ -283,6 +288,29 @@ describe('You', () => {
     await settle(15_000)
     expect(mocks.position).toHaveBeenCalledTimes(3)
     expect(mocks.tranches).toHaveBeenCalledTimes(3)
+  })
+
+  it('reads the stick again as soon as the tab is shown again, and the tranches at the block that read gives', async () => {
+    mocks.address = VIEWER
+    let block = 100n
+    mocks.position.mockImplementation(async () => ({ ...position, blockNumber: (block += 1n) }))
+    // Providers' defaults refetch nothing on focus; the stick is read again anyway, and the tranches follow it.
+    const site = siteClient()
+    await renderTab(site)
+    expect(mocks.tranches).toHaveBeenCalledTimes(1)
+
+    const state = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    await act(async () => document.dispatchEvent(new Event('visibilitychange', { bubbles: true })))
+    await settle()
+    expect(mocks.tranches).toHaveBeenCalledTimes(1)
+
+    state.mockReturnValue('visible')
+    await act(async () => document.dispatchEvent(new Event('visibilitychange', { bubbles: true })))
+    await settle()
+    expect(mocks.position).toHaveBeenCalledTimes(2)
+    expect(mocks.tranches).toHaveBeenCalledTimes(2)
+    expect(mocks.tranches).toHaveBeenLastCalledWith(8453, 23n, VIEWER, 0, 102n, expect.anything())
+    site.clear()
   })
 
   it('shows a refreshed stick when the read lands, and keeps the last one, and tells the console, when a refresh fails', async () => {
@@ -373,12 +401,48 @@ describe('the tranche table', () => {
     expect(button(you(), 'Older')).toBeUndefined()
   })
 
-  it('reads a page at one pinned block, and measures the ages at that block\'s time', async () => {
+  it('reads a page at the block of the stick beside it, and measures the ages at that block\'s time', async () => {
     mocks.address = VIEWER
-    mocks.pinned.mockResolvedValue({ number: 77n, timestamp: NOW + 3 * DAY })
+    mocks.position.mockResolvedValue({ ...position, blockNumber: 77n, timestamp: NOW + 3 * DAY })
+    // The leaderboard is pinned at a block of its own, which the tranches do not use.
+    mocks.pinned.mockResolvedValue({ number: 55n, timestamp: NOW })
     await renderTab()
     expect(mocks.tranches).toHaveBeenCalledWith(8453, 23n, VIEWER, 0, 77n, expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(mocks.tranches.mock.calls.every(call => call[4] === 77n)).toBe(true)
     expect(trancheRows()[0][2]).toBe('3d 8h')
+  })
+
+  it('reads nothing of the tranches until the project has been read, and then at the block of the stick', async () => {
+    mocks.address = VIEWER
+    const read = Promise.withResolvers<StickyProjectInfo>()
+    mocks.project.mockReturnValue(read.promise)
+    await renderTab()
+    expect(mocks.position).not.toHaveBeenCalled()
+    expect(mocks.tranches).not.toHaveBeenCalled()
+    expect(you().querySelector('[aria-busy="true"]')).not.toBeNull()
+
+    await act(async () => read.resolve(slopshop()))
+    await settle()
+    expect(mocks.position).toHaveBeenCalledTimes(1)
+    expect(mocks.tranches).toHaveBeenCalledTimes(1)
+    expect(mocks.tranches).toHaveBeenCalledWith(8453, 23n, VIEWER, 0, 100n, expect.anything())
+  })
+
+  it('waits for the stick, which the card above says it could not read, and shows no table skeleton for it', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mocks.address = VIEWER
+    mocks.position.mockRejectedValueOnce(new Error('429'))
+    await renderTab()
+    expect(mocks.tranches).not.toHaveBeenCalled()
+    expect(you().querySelector('[aria-busy="true"]')).toBeNull()
+    expect(you().textContent).not.toContain('No active tranches')
+    expect(trancheRows()).toEqual([])
+
+    const alert = [...you().querySelectorAll('[role="alert"]')].find(each => each.textContent?.includes('Could not read your stick'))!
+    await click(button(alert, 'Try again'))
+    await settle()
+    expect(mocks.tranches).toHaveBeenCalledTimes(1)
+    expect(trancheRows()).toHaveLength(3)
   })
 
   it('says there are no active tranches for a holder without any', async () => {
@@ -453,6 +517,8 @@ describe('the tranche table', () => {
 
   it('asks for the page a read clamped to from then on, when burns shortened the list', async () => {
     mocks.address = VIEWER
+    let block = 100n
+    mocks.position.mockImplementation(async () => ({ ...position, blockNumber: (block += 1n) }))
     mocks.tranches.mockImplementation(async (_c: number, _p: bigint, _h: Address, requested: number) => pageOf(120, requested))
     await renderTab()
     await click(button(you(), 'Older'))
@@ -508,7 +574,7 @@ describe('the tranche table', () => {
 describe('the tranche read', () => {
   /** What a read of `holder`'s first page has, as a component that uses the hook sees it. */
   function Probe({ holder }: { holder: Address }) {
-    const read = useHolderTranches(8453, 23, holder, 0)
+    const read = useHolderTranches(8453, 23, holder, 0, position)
     return <output>{read.data ? String(read.data.total) : 'none'}</output>
   }
   const output = () => host.querySelector('output')!.textContent
@@ -539,7 +605,7 @@ describe('the tranche read', () => {
 
   it('reads nothing without a holder', async () => {
     function Nobody() {
-      const read = useHolderTranches(8453, 23, null, 0)
+      const read = useHolderTranches(8453, 23, null, 0, position)
       return <output>{read.fetchStatus}</output>
     }
     await act(async () =>
@@ -553,6 +619,77 @@ describe('the tranche read', () => {
     expect(output()).toBe('idle')
     expect(mocks.tranches).not.toHaveBeenCalled()
     expect(mocks.pinned).not.toHaveBeenCalled()
+  })
+})
+
+describe('a panel that is hidden', () => {
+  beforeEach(() => {
+    FakeObserver.all = []
+    vi.stubGlobal('IntersectionObserver', FakeObserver)
+    let block = 100n
+    mocks.position.mockImplementation(async () => ({ ...position, blockNumber: (block += 1n) }))
+  })
+
+  it('is watched by its own element, which the tabs hide and show, with a margin around the screen', async () => {
+    mocks.address = VIEWER
+    await renderTab()
+    expect(FakeObserver.all).toHaveLength(1)
+    expect(FakeObserver.all[0].options).toEqual({ rootMargin: '600px 0px' })
+    expect(FakeObserver.all[0].element).toBe(host.firstElementChild)
+    expect(host.firstElementChild?.contains(you())).toBe(true)
+  })
+
+  it('reads no more tranches, and shows the ones it had, and reads the page of the stick\'s latest block when it is shown', async () => {
+    mocks.address = VIEWER
+    await renderTab()
+    expect(mocks.tranches).toHaveBeenCalledTimes(1)
+
+    await act(async () => FakeObserver.tell(false))
+    await settle(60_000)
+    expect(mocks.tranches).toHaveBeenCalledTimes(1)
+    expect(trancheRows()).toHaveLength(3)
+    expect(you().querySelector('[aria-busy="true"]')).toBeNull()
+    // The stick is the page's: the Stick card beside every tab reads it, so it is read on.
+    expect(mocks.position).toHaveBeenCalledTimes(5)
+
+    await act(async () => FakeObserver.tell(true))
+    await settle()
+    expect(mocks.tranches).toHaveBeenCalledTimes(2)
+    expect(mocks.tranches).toHaveBeenLastCalledWith(8453, 23n, VIEWER, 0, 105n, expect.anything())
+    await settle(15_000)
+    expect(mocks.tranches).toHaveBeenCalledTimes(3)
+    expect(mocks.tranches).toHaveBeenLastCalledWith(8453, 23n, VIEWER, 0, 106n, expect.anything())
+  })
+
+  it('is not read when the browser tab is shown again while it is hidden, and is when it is shown', async () => {
+    mocks.address = VIEWER
+    const site = siteClient()
+    await renderTab(site)
+    await act(async () => FakeObserver.tell(false))
+
+    const state = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    await act(async () => document.dispatchEvent(new Event('visibilitychange', { bubbles: true })))
+    state.mockReturnValue('visible')
+    await act(async () => document.dispatchEvent(new Event('visibilitychange', { bubbles: true })))
+    await settle()
+    expect(mocks.position).toHaveBeenCalledTimes(2)
+    expect(mocks.tranches).toHaveBeenCalledTimes(1)
+
+    await act(async () => FakeObserver.tell(true))
+    await settle()
+    expect(mocks.tranches).toHaveBeenCalledTimes(2)
+    expect(mocks.tranches).toHaveBeenLastCalledWith(8453, 23n, VIEWER, 0, 102n, expect.anything())
+    site.clear()
+  })
+
+  it('does not read the holders again when it is shown again: they are the page\'s, read once', async () => {
+    await renderTab()
+    await act(async () => FakeObserver.tell(false))
+    await settle(60_000)
+    await act(async () => FakeObserver.tell(true))
+    await settle(60_000)
+    expect(mocks.holders).toHaveBeenCalledTimes(1)
+    expect(boardRows()).toHaveLength(5)
   })
 })
 

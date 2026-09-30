@@ -5,6 +5,7 @@ import type { Address } from 'viem'
 import { untilAborted } from '@/lib/hook-logs'
 import { inTurn } from '@/lib/in-turn'
 import { PERSIST } from '@/lib/query-persist'
+import { FRESH_MS, warned } from '@/lib/query-reads'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import { stickyEvents, type StickyEventKind, type StickyEventsResult } from '@/lib/sticky-events'
 import { FEED_WINDOW, feedRows, terminalMoves, type FeedRow } from '@/lib/sticky-feed'
@@ -35,8 +36,6 @@ import { readStickyProject, type StickyProjectInfo } from '@/lib/sticky-project'
  * `StickyProjectInfo`, `FeedRow` or `ProjectSticks` changes shape, or a page renders a kept copy in an older shape
  * until it is read again. */
 const PROJECT_VERSION = 'v1'
-/** How long a read stays fresh: the reads that others build on are shared for this long. */
-const FRESH_MS = 30_000
 /** How often the viewer's stick is read again while the page is in view. */
 const POSITION_REFRESH_MS = 15_000
 
@@ -55,16 +54,6 @@ export type ProjectSticks = { sticks: number; average: number; longest: number }
 
 /** A project's holders, and the pinned block time their streaks are measured at. */
 export type ProjectHolders = StickyHoldersResult & { now: number }
-
-/** What `read` gives, or its failure, which the console hears about under `label` unless the read was cancelled. */
-export async function warned<T>(label: string, about: object, signal: AbortSignal, read: () => Promise<T>): Promise<T> {
-  try {
-    return await read()
-  } catch (error) {
-    if (!signal.aborted) console.warn(label, about, error)
-    throw error
-  }
-}
 
 /** The projects a read of this visit gave. A copy the browser kept from an earlier visit is never among them. */
 const readThisVisit = new WeakSet<StickyProjectInfo>()

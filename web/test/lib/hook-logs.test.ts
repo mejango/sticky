@@ -1,6 +1,6 @@
 import { getAddress, pad, toHex, type Address, type Hex, type PublicClient } from 'viem'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { keptLogs, projectHookLogs, scanLogs, statedRange, type ScannedLog } from '@/lib/hook-logs'
+import { HistoryTooLongError, keptLogs, projectHookLogs, scanLogs, statedRange, type ScannedLog } from '@/lib/hook-logs'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 
 const center = vi.hoisted(() => ({ client: vi.fn() }))
@@ -524,6 +524,21 @@ describe('scanLogs', () => {
       )
       await expect(ran(scanLogs(client, query(0n, 1_500n), { maxRequests: 3 }))).rejects.toThrow(/in 3 requests/)
       expect(client.asked).toEqual([])
+    })
+
+    it('says a history too long for any scan is so, which no retry mends, and not one a scan ran out of requests on', async () => {
+      const client = fakeClient(() => [])
+      const tooLong = await ran(scanLogs(client, query(0n, 600_000n))).catch((error: unknown) => error)
+      expect(tooLong).toBeInstanceOf(HistoryTooLongError)
+      expect(tooLong).toMatchObject({ name: 'HistoryTooLongError' })
+
+      const splitting = fakeClient(range => {
+        if (size(range) > 1n) throw new Error('range too large')
+        return [log(range.fromBlock)]
+      })
+      const ranOut = await ran(scanLogs(splitting, query(0n, 499n), { maxRequests: 50 })).catch((error: unknown) => error)
+      expect(ranOut).toBeInstanceOf(Error)
+      expect(ranOut).not.toBeInstanceOf(HistoryTooLongError)
     })
 
     it('accepts a history that takes exactly the budget, and refuses one block more', async () => {
