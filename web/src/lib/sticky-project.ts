@@ -98,13 +98,13 @@ function deploymentOn(chainId: number): StickyDeployment {
   return deployment
 }
 
-type Answer<T> = { status: 'success'; result: T } | { status: 'failure'; error: Error }
+export type Answer<T> = { status: 'success'; result: T } | { status: 'failure'; error: Error }
 
 /** With `allowFailure`, viem also reports a request that never got an answer (a rate limit, a timeout)
  * as a failed call, and names it for Multicall3's `aggregate3`, where a contract's own failure is named
  * for the function it failed. A revert is an answer and some of them are read as facts; a lost request
  * is not one, so it is thrown, whichever calls it took with it. */
-function answered<T extends readonly Answer<unknown>[]>(answers: T): T {
+export function answered<T extends readonly Answer<unknown>[]>(answers: T): T {
   for (const answer of answers) {
     if (answer.status !== 'failure') continue
     const own = answer.error instanceof ContractFunctionExecutionError && answer.error.functionName !== 'aggregate3'
@@ -133,7 +133,7 @@ export type OrphanedPolicy = 'strict' | 'clamp'
 /** The most characters of a token's symbol or name that are kept: what the browser keeps of a project stays bounded,
  * as a project's name from its metadata is (`sticky-metadata.ts`). A longer one is cut, never inside a character. */
 const MAX_TOKEN_TEXT = 256
-const capped = (text: string) =>
+export const capped = (text: string) =>
   text.length <= MAX_TOKEN_TEXT ? text : Array.from(text).slice(0, MAX_TOKEN_TEXT).join('')
 
 /** How many projects one Multicall3 request carries. A project's second round is ten calls. */

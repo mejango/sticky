@@ -71,6 +71,30 @@ vi.mock('@/hooks/useProjectMetadata', () => ({
 }))
 vi.mock('@/hooks/useWallet', () => ({ useWallet: () => ({ address: mocks.address }) }))
 vi.mock('@/lib/ens', () => ({ ensAvailable: () => false, lookupEnsName: async () => null }))
+// The Airdrops tab's reads have tests of their own (airdrops.test.tsx). Here they answer at once, with nothing.
+vi.mock('@/lib/sticky-rewards', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/lib/sticky-rewards')>()),
+  discoverFunding: async () => [],
+  readRewards: async () => [],
+}))
+vi.mock('@/lib/sticky-autostick', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/lib/sticky-autostick')>()),
+  readAutoStick: async () => ({
+    groupIds: [0n],
+    status: 1,
+    collectable: 0n,
+    allowance: 0n,
+    nextCompoundAt: 0,
+    minimum: 0n,
+    cooldown: 0,
+    lastCompoundedAt: 0,
+    enabled: false,
+    projectGranter: false,
+    personallyTrusted: false,
+    canBeginVesting: false,
+  }),
+  trustedSenders: async () => [],
+}))
 
 import ProjectPage from '@/app/[urn]/page'
 import { ProjectRouteProvider, useResolvedProjectRoute } from '@/providers/ProjectRouteContext'
@@ -397,6 +421,18 @@ describe('the tabs', () => {
     await act(async () => airdrops.click())
     expect(window.location.hash).toBe('#airdrops')
     expect(selected()).toEqual(['Airdrops'])
+  })
+
+  it('show the Airdrops under the Airdrops tab, which reads nothing until it is picked', async () => {
+    mocks.address = VIEWER
+    await renderPage('base:23')
+    expect(host.textContent).not.toContain('Your rewards')
+    const airdrops = tabs().find(tab => tab.textContent === 'Airdrops')!
+    await act(async () => airdrops.click())
+    await settle()
+    expect([...host.querySelectorAll('h2')].map(heading => heading.textContent)).toEqual(
+      expect.arrayContaining(['Your rewards', 'Who can stick for you']),
+    )
   })
 
   it('show Latest beside the tabs: the project\'s newest sticks, in the underlying token', async () => {

@@ -1,4 +1,5 @@
 import { notFound } from 'next/navigation'
+import { AirdropsTab } from '@/components/project/AirdropsTab'
 import { OverviewTab } from '@/components/project/OverviewTab'
 import { ProjectHeader } from '@/components/project/ProjectHeader'
 import { ProjectLatest } from '@/components/project/ProjectLatest'
@@ -65,7 +66,7 @@ export default async function ProjectPage({ params }: PageProps<'/[urn]'>) {
           },
           {
             label: 'Airdrops',
-            content: null,
+            content: <AirdropsTab chainId={chainId} projectId={projectId} />,
           },
         ]}
       />

@@ -57,7 +57,7 @@ export type ProjectSticks = { sticks: number; average: number; longest: number }
 export type ProjectHolders = StickyHoldersResult & { now: number }
 
 /** What `read` gives, or its failure, which the console hears about under `label` unless the read was cancelled. */
-async function warned<T>(label: string, about: object, signal: AbortSignal, read: () => Promise<T>): Promise<T> {
+export async function warned<T>(label: string, about: object, signal: AbortSignal, read: () => Promise<T>): Promise<T> {
   try {
     return await read()
   } catch (error) {
