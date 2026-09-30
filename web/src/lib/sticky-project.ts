@@ -348,7 +348,11 @@ function figuresOf(
 }
 
 /** Each of a chain's `projectIds`, read at one block, PROJECTS_PER_REQUEST projects to a request, one request after
- * another. A request that got no answer rejects: it says nothing about the projects it carried. */
+ * another. A request that got no answer says nothing about the projects it carried, and one of them can lose it for the
+ * rest (a staked token that answers with more than Center carries, or runs Multicall3 out of gas). So when one is lost
+ * while reading several projects, Center is asked afresh for its head: if it answers, that request's projects are read
+ * one at a time at the same block, and a project whose own request is lost is left out with why; if not, the lost
+ * request's error is thrown. Reading one project, a lost request is thrown. */
 async function readEach(
   chainId: number,
   projectIds: readonly bigint[],
@@ -357,12 +361,30 @@ async function readEach(
 ): Promise<ProjectRead[]> {
   const deployment = deploymentOn(chainId)
   if (!projectIds.length) return []
-  const blockNumber = await untilAborted(jbCenterPublicClient(chainId).getBlockNumber(), signal)
+  const client = jbCenterPublicClient(chainId)
+  const blockNumber = await untilAborted(client.getBlockNumber(), signal)
+  const read = (some: readonly bigint[]) => readSome(chainId, deployment, some, blockNumber, orphans, signal)
   const reads: ProjectRead[] = []
   for (let at = 0; at < projectIds.length; at += PROJECTS_PER_REQUEST) {
     if (signal?.aborted) throw signal.reason
     const some = projectIds.slice(at, at + PROJECTS_PER_REQUEST)
-    reads.push(...(await readSome(chainId, deployment, some, blockNumber, orphans, signal)))
+    try {
+      reads.push(...(await read(some)))
+    } catch (lost) {
+      if (signal?.aborted || projectIds.length === 1) throw lost
+      // cacheTime 0: the head read above is cached for a moment, and only a fresh request says Center still answers.
+      await untilAborted(client.getBlockNumber({ cacheTime: 0 }), signal).catch(() => {
+        throw signal?.aborted ? signal.reason : lost
+      })
+      for (const projectId of some) {
+        if (signal?.aborted) throw signal.reason
+        const one = await read([projectId]).catch((error: Error) => {
+          if (signal?.aborted) throw error
+          return [{ projectId, error }]
+        })
+        reads.push(...one)
+      }
+    }
   }
   return reads
 }

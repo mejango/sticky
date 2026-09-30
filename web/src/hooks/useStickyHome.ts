@@ -100,8 +100,19 @@ function chainsRead(results: QueryObserverResult<KeptChain>[]) {
   }
 }
 const historiesRead = (results: QueryObserverResult<SupplyMove[]>[]) => results.map(read => read.data)
-const pricesRead = (results: QueryObserverResult<Map<Address, number> | null>[]) =>
-  results.map(read => ({ prices: read.data ?? undefined, answered: read.isSuccess }))
+type ChainPrices = {
+  prices: Map<Address, number> | undefined
+  /** Whether there are prices to draw with: the chain's answer, or while its tokens change, its last one. */
+  answered: boolean
+  /** Whether the chain's answer for its tokens as they are now has come. */
+  settled: boolean
+}
+const pricesRead = (results: QueryObserverResult<Map<Address, number> | null>[]): ChainPrices[] =>
+  results.map(read => ({
+    prices: read.data ?? undefined,
+    answered: read.isSuccess,
+    settled: read.isSuccess && !read.isPlaceholderData,
+  }))
 
 /** The prices a chain's latest answered price query gave, for whatever tokens it asked about. */
 function lastPrices(client: QueryClient, network: BendystrawNetwork, chainId: number) {
@@ -117,7 +128,7 @@ function securedOf(
   chains: readonly number[],
   shown: readonly (KeptChain | undefined)[],
   histories: readonly (SupplyMove[] | undefined)[],
-  prices: readonly { prices: Map<Address, number> | undefined; answered: boolean }[],
+  prices: readonly ChainPrices[],
 ): SecuredSeries | null {
   const charted = shown.flatMap((chain, at) => {
     const supply = histories[at]
@@ -130,6 +141,7 @@ function securedOf(
     charted.map(({ chain }) => chain),
     priceOf,
     Math.floor(Date.now() / 1_000),
+    chainId => prices[chains.indexOf(chainId)]?.settled ?? false,
   )
 }
 

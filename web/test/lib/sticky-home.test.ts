@@ -13,6 +13,7 @@ import {
   homeSecuredSeries,
   securedBars,
   type HomeCard,
+  type HomeCardGroup,
   type HomeChain,
   type HomeReadDeps,
 } from '@/lib/sticky-home'
@@ -463,11 +464,13 @@ describe('groupHomeCards', () => {
       card(84532, 38n, { launchId: 'L1' }),
       card(84532, 39n),
       card(11155420, 20n, { launchId: 'L1' }),
+      card(11155420, 21n),
     ])
     expect(groups.map(group => group.cards.map(({ info: { chainId, projectId } }) => `${chainId}:${projectId}`))).toEqual([
       ['84532:37', '11155420:20'],
       ['84532:38'],
       ['84532:39'],
+      ['11155420:21'],
     ])
     expect(groups[0].totalStaked).toBe(2n * E18)
   })
@@ -491,6 +494,24 @@ describe('groupHomeCards', () => {
       card(84532, 37n, plan),
     ])
     expect(groups.map(group => group.cards.map(({ info: { chainId, projectId } }) => `${chainId}:${projectId}`))).toEqual([
+      ['11155420:20', '84532:37'],
+      ['11155111:5'],
+    ])
+  })
+
+  it('keeps a copy apart whose uri adds its own chain to the launch\'s plan, whichever comes first', () => {
+    const plan = { launchId: 'L', plannedChains: [84532, 11155420] }
+    // The copier edits the uri's chains to name its own chain, Ethereum Sepolia, beside the launch's two.
+    const copied = { launchId: 'L', plannedChains: [84532, 11155420, 11155111] }
+    const named = (groups: HomeCardGroup[]) =>
+      groups.map(group => group.cards.map(({ info: { chainId, projectId } }) => `${chainId}:${projectId}`))
+
+    expect(named(groupHomeCards([card(84532, 37n, plan), card(11155111, 5n, copied), card(11155420, 20n, plan)]))).toEqual([
+      ['84532:37', '11155420:20'],
+      ['11155111:5'],
+    ])
+    // Ethereum Sepolia comes first in the site's order of chains, so the copy heads a group the launch must not join.
+    expect(named(groupHomeCards([card(11155111, 5n, copied), card(11155420, 20n, plan), card(84532, 37n, plan)]))).toEqual([
       ['11155420:20', '84532:37'],
       ['11155111:5'],
     ])
@@ -589,6 +610,12 @@ describe('homeSecuredSeries', () => {
       { timestamp: NOW - 30 * 86_400, value: 0n },
       { timestamp: NOW, value: 0n },
     ])
+  })
+
+  it('names a token it has no price for only once its chain\'s prices have answered', () => {
+    const chain = chainOf([card(CHAIN, 23n, { symbol: 'ART', stakedToken: getAddress(`0x${'9'.repeat(40)}`) })])
+    expect(homeSecuredSeries([chain], () => undefined, NOW, () => false).missing).toEqual([])
+    expect(homeSecuredSeries([chain], () => undefined, NOW, chainId => chainId === CHAIN).missing).toEqual(['ART'])
   })
 })
 

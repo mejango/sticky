@@ -76,28 +76,3 @@ export function feedRow(chainId: number, projectId: bigint, timestamp: number, e
     ...extra,
   }
 }
-
-export function deferred<T>() {
-  let resolve!: (value: T) => void
-  let reject!: (reason: unknown) => void
-  const promise = new Promise<T>((yes, no) => {
-    resolve = yes
-    reject = no
-  })
-  return { promise, resolve, reject }
-}
-
-/** A Storage that lives in memory, for the persister. */
-export function memoryStorage(): Storage {
-  const map = new Map<string, string>()
-  return {
-    get length() {
-      return map.size
-    },
-    clear: () => map.clear(),
-    getItem: key => map.get(key) ?? null,
-    key: index => [...map.keys()][index] ?? null,
-    removeItem: key => void map.delete(key),
-    setItem: (key, value) => void map.set(key, value),
-  } as Storage
-}

@@ -314,17 +314,19 @@ const live: HomeReadDeps = {
   creationBlock: (chainId, projectId, { signal }) => projectCreationBlock(chainId, projectId, { signal }),
 }
 
-/** A card's launch key when its chain is one its launch was planned on, or its uri names no chains; otherwise none, so
- * a project on another chain whose uri copies a launch's cannot join it, or head it. */
+/** A card's launch key and planned chains when its chain is one of them, or its uri names no chains; otherwise none.
+ * A launch writes one uri on every chain, so a project on another chain whose uri copies a launch's cannot join it, or
+ * head it, and neither can one whose copy adds its own chain to the plan. */
 function plannedKey({ info }: HomeCard): string | null {
+  const key = launchKey(info)
   const onPlan = info.plannedChains === null || info.plannedChains.includes(info.chainId)
-  return onPlan ? launchKey(info) : null
+  return key !== null && onPlan ? `${key}|${info.plannedChains ?? ''}` : null
 }
 
 /**
- * The Stickiest cards: a launch's projects share its launch id, stickiness bonus and transfer mode, and each chain
- * of its plan gives the first of its projects that does, so a copied uri cannot join a launch. Most Sticky shares
- * first; cards that tie keep the order they came in.
+ * The Stickiest cards: a launch's projects share its launch id, stickiness bonus, transfer mode and planned chains,
+ * and each chain of its plan gives the first of its projects that does, so a copied uri cannot join a launch. Most
+ * Sticky shares first; cards that tie keep the order they came in.
  */
 export function groupHomeCards(cards: readonly HomeCard[]): HomeCardGroup[] {
   const groups: HomeCardGroup[] = []
@@ -392,12 +394,14 @@ function stakedHistory(ownMoves: readonly SupplyMove[], info: StickyProjectInfo,
 /**
  * What Sticky secures, in US dollars: today's claimable backing of every priced token at today's price, and before
  * today the shares staked then at today's backing per share and price. It estimates; it does not rebuild past
- * donations, fees or prices. `priceOf` is a token's price on a chain, in dollars, or undefined.
+ * donations, fees or prices. `priceOf` is a token's price on a chain, in dollars, or undefined. `settled` says whether
+ * a chain's prices have answered: until they have, a token with no price is not named as one that could not be priced.
  */
 export function homeSecuredSeries(
   chains: readonly HomeChain[],
   priceOf: (chainId: number, token: Address) => number | undefined,
   now: number,
+  settled: (chainId: number) => boolean = () => true,
 ): SecuredSeries {
   const valued = chains.flatMap(chain => {
     const byProject = new Map<bigint, SupplyMove[]>()
@@ -429,7 +433,9 @@ export function homeSecuredSeries(
   points[points.length - 1] = { timestamp: now, value: total }
   const missing = chains.flatMap(chain =>
     chain.cards.flatMap(({ info }) =>
-      info.totalSupply > 0n && micros(priceOf(chain.chainId, info.stakedToken)) === null ? [info.symbol] : [],
+      info.totalSupply > 0n && settled(chain.chainId) && micros(priceOf(chain.chainId, info.stakedToken)) === null
+        ? [info.symbol]
+        : [],
     ),
   )
   return { points, total, missing: [...new Set(missing)], hasValue: valued.length > 0 }

@@ -7,15 +7,8 @@ import { deserializeState, installQueryPersistence } from '@/lib/query-persist'
 import { FEED_WINDOW } from '@/lib/sticky-feed'
 import { HOME_VERSION, type HomeChain } from '@/lib/sticky-home'
 import type { IndexedProjects, IndexedRows, IndexedStickyEvent } from '@/lib/sticky-indexed'
-import {
-  E18,
-  TOKEN,
-  deferred,
-  feedRow,
-  homeCard as card,
-  homeChainOf as chainResult,
-  memoryStorage,
-} from '../home-fixtures'
+import { E18, TOKEN, feedRow, homeCard as card, homeChainOf as chainResult } from '../home-fixtures'
+import { memoryStorage } from '../memory-storage'
 
 const mocks = vi.hoisted(() => ({ index: vi.fn(), latest: vi.fn(), chain: vi.fn(), prices: vi.fn(), series: vi.fn() }))
 vi.mock('@/lib/sticky-home', async importOriginal => {
@@ -87,7 +80,7 @@ afterEach(async () => {
 
 describe('useStickyHome', () => {
   it('reads the chains one after another, with the network\'s project list and newest events read once for all', async () => {
-    const reads = new Map(MAINNET.map(chainId => [chainId, deferred<HomeChain>()]))
+    const reads = new Map(MAINNET.map(chainId => [chainId, Promise.withResolvers<HomeChain>()]))
     mocks.chain.mockImplementation((chainId: number) => reads.get(chainId)!.promise)
     await render()
     await settle()
@@ -153,7 +146,7 @@ describe('useStickyHome', () => {
     // The next visit: a new client restores what was kept before anything is read.
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     installQueryPersistence(client, storage)
-    const reads = deferred<void>()
+    const reads = Promise.withResolvers<void>()
     mocks.chain.mockImplementation(async (chainId: number) => {
       await reads.promise
       return chainResult(chainId, chainId === 1 ? [card(1, 2n)] : [])
@@ -199,7 +192,7 @@ describe('useStickyHome', () => {
   })
 
   it('is pending while a chain has neither answered nor failed, and revalidating while one with data is read again', async () => {
-    const slow = deferred<HomeChain>()
+    const slow = Promise.withResolvers<HomeChain>()
     mocks.chain.mockImplementation(async (chainId: number) => (chainId === 8453 ? slow.promise : chainResult(chainId)))
     await render()
     await settle()
@@ -209,7 +202,7 @@ describe('useStickyHome', () => {
     await settle()
     expect(seen.pending).toBe(false)
 
-    const again = deferred<HomeChain>()
+    const again = Promise.withResolvers<HomeChain>()
     mocks.chain.mockImplementation(async (chainId: number) => (chainId === 1 ? again.promise : chainResult(chainId)))
     await act(async () => void client.invalidateQueries({ queryKey: ['sticky-home'] }))
     await settle()
@@ -227,7 +220,7 @@ describe('useStickyHome', () => {
         chainId === 1 ? [card(1, 1n), card(1, 2n, { stakedToken: OTHER_TOKEN }), card(1, 3n)] : chainId === 10 ? [card(10, 4n)] : [],
       ),
     )
-    const slow = deferred<Map<Address, number> | null>()
+    const slow = Promise.withResolvers<Map<Address, number> | null>()
     mocks.prices.mockImplementation(async (chainId: number) => (chainId === 10 ? slow.promise : new Map([[TOKEN, 1]])))
     await render()
     await settle()
@@ -281,7 +274,7 @@ describe('useStickyHome, when a chain cannot be read', () => {
 
   it('says nothing of a chain read that was cancelled', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const read = deferred<HomeChain>()
+    const read = Promise.withResolvers<HomeChain>()
     mocks.chain.mockImplementation(async (chainId: number) => (chainId === 1 ? read.promise : chainResult(chainId)))
     await render()
     await settle()
@@ -292,7 +285,7 @@ describe('useStickyHome, when a chain cannot be read', () => {
   })
 
   it('lets go of a chain read cancelled while it waits for the network\'s reads, and never reads that chain', async () => {
-    const index = deferred<IndexedProjects | null>()
+    const index = Promise.withResolvers<IndexedProjects | null>()
     mocks.index.mockReturnValue(index.promise)
     await render()
     await settle()
@@ -311,18 +304,38 @@ describe('useStickyHome\'s chart', () => {
     await settle()
     expect(seen.secured).toMatchObject({ total: 1_000_000n, missing: [] })
 
-    const priced = deferred<Map<Address, number> | null>()
+    const priced = Promise.withResolvers<Map<Address, number> | null>()
     mocks.prices.mockReturnValue(priced.promise)
     mocks.chain.mockImplementation(async (chainId: number) =>
       chainResult(chainId, chainId === 1 ? [card(1, 1n), card(1, 2n, { stakedToken: OTHER_TOKEN })] : []),
     )
     await act(async () => void client.invalidateQueries({ queryKey: ['sticky-home', 'mainnet', 'chain'] }))
     await settle()
-    expect(seen.secured).toMatchObject({ total: 1_000_000n, missing: ['CPN'] })
+    expect(seen.secured).toMatchObject({ total: 1_000_000n, missing: [] })
 
     await act(async () => priced.resolve(new Map([[TOKEN, 1], [OTHER_TOKEN, 3]])))
     await settle()
     expect(seen.secured).toMatchObject({ total: 4_000_000n, missing: [] })
+  })
+
+  it('says it could not price a chain\'s new token only once that chain\'s prices have answered without it', async () => {
+    mocks.chain.mockImplementation(async (chainId: number) => chainResult(chainId, chainId === 1 ? [card(1, 1n)] : []))
+    mocks.prices.mockResolvedValue(new Map([[TOKEN, 1]]))
+    await render()
+    await settle()
+
+    const priced = Promise.withResolvers<Map<Address, number> | null>()
+    mocks.prices.mockReturnValue(priced.promise)
+    mocks.chain.mockImplementation(async (chainId: number) =>
+      chainResult(chainId, chainId === 1 ? [card(1, 1n), card(1, 2n, { stakedToken: OTHER_TOKEN, symbol: 'ART' })] : []),
+    )
+    await act(async () => void client.invalidateQueries({ queryKey: ['sticky-home', 'mainnet', 'chain'] }))
+    await settle()
+    expect(seen.secured).toMatchObject({ total: 1_000_000n, missing: [] })
+
+    await act(async () => priced.resolve(new Map([[TOKEN, 1]])))
+    await settle()
+    expect(seen.secured).toMatchObject({ total: 1_000_000n, missing: ['ART'] })
   })
 
   it('values the chart again only when what it rests on changes, or the day does', async () => {

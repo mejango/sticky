@@ -5,6 +5,7 @@ import { getAddress } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { deserializeState, installQueryPersistence } from '@/lib/query-persist'
 import { METADATA_VERSION } from '@/lib/sticky-metadata'
+import { memoryStorage } from '../memory-storage'
 
 const mocks = vi.hoisted(() => ({ projectUriOf: vi.fn(), metadataOfUri: vi.fn() }))
 vi.mock('@/lib/sticky-metadata', async importOriginal => ({
@@ -22,20 +23,6 @@ const CID = 'ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi'
 const CID_TWO = 'ipfs://bafybeib6e45pjc5ipjwjpvw7fxfqpdy4dhqzjy7ru2zllfnrvcb5tiw2y4'
 const ARTIZEN = { name: 'Artizen', logoUri: 'https://juicebox.center/ipfs/bafylogo' }
 const STORE_KEY = 'sticky:query-cache:v1'
-
-function memoryStorage(): Storage {
-  const map = new Map<string, string>()
-  return {
-    get length() {
-      return map.size
-    },
-    clear: () => map.clear(),
-    getItem: key => map.get(key) ?? null,
-    key: index => [...map.keys()][index] ?? null,
-    removeItem: key => void map.delete(key),
-    setItem: (key, value) => void map.set(key, value),
-  } as Storage
-}
 
 type Seen = ReturnType<typeof useProjectMetadata>
 let host: HTMLDivElement
@@ -123,19 +110,10 @@ describe('useProjectMetadata', () => {
   })
 
   describe('what it says of the reads', () => {
-    function deferred<T>() {
-      let resolve!: (value: T) => void
-      let reject!: (reason: unknown) => void
-      const promise = new Promise<T>((yes, no) => {
-        resolve = yes
-        reject = no
-      })
-      return { promise, resolve, reject }
-    }
     const status = () => ({ data: seen?.data, isPending: seen?.isPending, isError: seen?.isError, error: seen?.error })
 
     it('is pending, with no error, while the project\'s uri is read', async () => {
-      const uri = deferred<string | null>()
+      const uri = Promise.withResolvers<string | null>()
       mocks.projectUriOf.mockReturnValue(uri.promise)
       await render()
 
@@ -144,7 +122,7 @@ describe('useProjectMetadata', () => {
     })
 
     it('is pending while the document is read, and done with it once it is', async () => {
-      const document = deferred<typeof ARTIZEN>()
+      const document = Promise.withResolvers<typeof ARTIZEN>()
       mocks.metadataOfUri.mockReturnValue(document.promise)
       await render()
       expect(status()).toEqual({ data: undefined, isPending: true, isError: false, error: null })

@@ -4,16 +4,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { getAddress, type Address } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HomeCard, HomeChain, SecuredSeries } from '@/lib/sticky-home'
-import {
-  E18,
-  E6,
-  HOLDER,
-  TOKEN,
-  deferred,
-  feedRow as row,
-  homeCard as card,
-  homeChainOf as chainResult,
-} from '../home-fixtures'
+import { E18, E6, HOLDER, TOKEN, feedRow as row, homeCard as card, homeChainOf as chainResult } from '../home-fixtures'
 
 const mocks = vi.hoisted(() => ({
   index: vi.fn(),
@@ -138,7 +129,7 @@ describe('the home route', () => {
 
 describe('the home page, as its chains are read', () => {
   it('starts loading, busy, with no note, a placeholder in every list and the chart, and no caption', async () => {
-    const pending = deferred<HomeChain>()
+    const pending = Promise.withResolvers<HomeChain>()
     mocks.chain.mockReturnValue(pending.promise)
     await renderHome()
 
@@ -168,7 +159,7 @@ describe('the home page, as its chains are read', () => {
   })
 
   it('keeps loading, and says nothing, while one chain is still read after the others came back empty', async () => {
-    const slow = deferred<HomeChain>()
+    const slow = Promise.withResolvers<HomeChain>()
     mocks.chain.mockImplementation(async (chainId: number) => (chainId === 8453 ? slow.promise : chainResult(chainId)))
     await renderHome()
     expect(state()).toBe('loading')
@@ -240,7 +231,7 @@ describe('the home page, as its chains are read', () => {
   })
 
   it('draws the dashboard as each chain arrives', async () => {
-    const slow = deferred<HomeChain>()
+    const slow = Promise.withResolvers<HomeChain>()
     mocks.chain.mockImplementation(async (chainId: number) =>
       chainId === 8453 ? slow.promise : chainResult(chainId, chainId === 1 ? [card(1, 4n)] : []),
     )
@@ -298,7 +289,7 @@ describe('the home page, as its chains are read', () => {
     await renderHome()
     expect(state()).toBe('error')
 
-    const reads = deferred<void>()
+    const reads = Promise.withResolvers<void>()
     mocks.chain.mockReset().mockImplementation(async (chainId: number) => {
       await reads.promise
       return chainResult(chainId, chainId === 1 ? [card(1, 4n)] : [])
@@ -323,7 +314,7 @@ describe('the home page, as its chains are read', () => {
     expect(state()).toBe('ready')
     await act(async () => root.unmount())
 
-    const again = deferred<void>()
+    const again = Promise.withResolvers<void>()
     mocks.chain.mockImplementation(async (chainId: number) => {
       await again.promise
       return chainResult(chainId, [card(chainId, 1n)])
@@ -432,7 +423,7 @@ describe('the secured chart on the home page', () => {
     mocks.chain.mockImplementation(async (chainId: number) =>
       chainResult(chainId, chainId === 1 || chainId === 10 ? [card(chainId, 1n, { decimals: 6, backing: 3n * E6 })] : []),
     )
-    const slow = deferred<Map<Address, number>>()
+    const slow = Promise.withResolvers<Map<Address, number>>()
     mocks.prices.mockImplementation(async (chainId: number) => (chainId === 10 ? slow.promise : new Map([[TOKEN, 2]])))
     await renderHome()
     expect(host.querySelectorAll('#home-secured [data-bar]')).toHaveLength(0)
