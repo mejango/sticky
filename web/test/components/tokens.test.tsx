@@ -53,6 +53,16 @@ vi.mock('@/lib/sticky-feed', async importOriginal => ({
   terminalMoves: mocks.moves,
 }))
 vi.mock('@/lib/sticky-handles', () => ({ resolveProjectHandle: mocks.handle }))
+// The flow has tests of its own (unstick-flow.test.tsx); here only what the card gives it is held.
+vi.mock('@/components/project/flows/UnstickFlow', () => ({
+  UnstickFlow: (props: { chainId: number; projectId: number; info: StickyProjectInfo; onClose: () => void }) => (
+    <div data-unstick-flow={`${props.chainId}:${props.projectId}:${props.info.symbol}`}>
+      <button type="button" onClick={props.onClose}>
+        Close flow
+      </button>
+    </div>
+  ),
+}))
 vi.mock('next/navigation', () => ({ notFound: vi.fn() }))
 vi.mock('next/link', () => ({
   default: (props: AnchorHTMLAttributes<HTMLAnchorElement>) => <a {...props} />,
@@ -350,11 +360,17 @@ describe('You', () => {
     expect(kept.toLowerCase()).not.toContain(VIEWER.toLowerCase())
   })
 
-  it('shows the unstick and transfer actions closed: the page only reads', async () => {
+  it('opens the unstick flow for the project once this visit has read it, and closes it again, while Transfer stays closed', async () => {
     await renderTab()
     const unstick = button(you(), 'Unstick SLOPSHOP')!
-    expect(unstick.disabled).toBe(true)
+    expect(unstick.disabled).toBe(false)
     expect(button(you(), 'Transfer')!.disabled).toBe(true)
+    expect(host.querySelector('[data-unstick-flow]')).toBeNull()
+
+    await click(unstick)
+    expect(host.querySelector('[data-unstick-flow]')!.getAttribute('data-unstick-flow')).toBe('8453:23:SLOPSHOP')
+    await click(button(host, 'Close flow'))
+    expect(host.querySelector('[data-unstick-flow]')).toBeNull()
   })
 
   it.each([
@@ -367,10 +383,10 @@ describe('You', () => {
     expect(button(you(), 'Transfer') !== undefined).toBe(shown)
   })
 
-  it('shows Transfer only once the project says the token is not soulbound', async () => {
+  it('shows Transfer only once the project says the token is not soulbound, and keeps Unstick closed until it does', async () => {
     mocks.project.mockReturnValue(new Promise(() => {}))
     await renderTab()
-    expect(button(you(), 'Unstick')).toBeDefined()
+    expect(button(you(), 'Unstick')!.disabled).toBe(true)
     expect(button(you(), 'Transfer')).toBeUndefined()
   })
 
@@ -1060,11 +1076,14 @@ describe('the stickiness bonus', () => {
     await renderTab(now)
     expect(bonus()?.querySelector('.revalidating')).not.toBeNull()
     expect(stat('Stuck')?.querySelector('.revalidating')).not.toBeNull()
+    // Nothing is unstuck on the word of a copy the browser kept.
+    expect(button(you(), 'Unstick SLOPSHOP')!.disabled).toBe(true)
 
     await act(async () => read.resolve(slopshop({ cashOutTaxRate: 1_000n })))
     await settle()
     expect(bonus()?.querySelector('.revalidating')).toBeNull()
     expect(stat('Stuck')?.querySelector('.revalidating')).toBeNull()
+    expect(button(you(), 'Unstick SLOPSHOP')!.disabled).toBe(false)
   })
 })
 

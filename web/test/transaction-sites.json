@@ -14,6 +14,21 @@
           ]
         }
       ]
+    },
+    "src/components/project/flows/UnstickFlow.tsx": {
+      "hooks": 1,
+      "sends": 1,
+      "sendSites": [
+        {
+          "id": "unstick-steps",
+          "actions": [
+            "Turn off auto-stick",
+            "Take back the auto-stick adapter's trust",
+            "Take back the auto-stick adapter's allowance",
+            "Unstick Sticky tokens"
+          ]
+        }
+      ]
     }
   },
   "authorityCalls": {},
