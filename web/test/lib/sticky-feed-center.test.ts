@@ -149,6 +149,7 @@ describe('terminalMoves through Center', () => {
       },
     ])
     expect(chain.request.mock.calls[0][1]).toEqual({ signal })
+    expect(chain.getBlockNumber).toHaveBeenCalledWith({ cacheTime: 0 })
     expect(feedRows(events, moves, options).map(({ amount }) => amount)).toEqual([
       { value: 99n * E6, decimals: 6, symbol: 'SLOPSHOP' },
       { value: 1010n * E6, decimals: 6, symbol: 'SLOPSHOP' },

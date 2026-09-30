@@ -22,7 +22,7 @@
 
 import { decodeEventLog, getAbiItem, pad, toEventSelector, toHex, type AbiEvent, type Address, type Hex } from 'viem'
 import { groupSameTx } from '@/lib/activity-groups'
-import { scanLogs, untilAborted, type ScannedLog } from '@/lib/hook-logs'
+import { freshHead, scanLogs, type ScannedLog } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { terminalEventsAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
@@ -191,7 +191,7 @@ const live: MoveReaders = {
   indexedMoves: indexedStickyMoves,
   async scan(chainId, filter, { signal }) {
     const client = jbCenterPublicClient(chainId)
-    const toBlock = await untilAborted(client.getBlockNumber(), signal)
+    const toBlock = await freshHead(client, signal)
     return scanLogs(client, { ...filter, toBlock }, { signal })
   },
 }

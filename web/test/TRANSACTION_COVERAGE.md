@@ -15,3 +15,4 @@ Legend:
 
 | User action | Contract function or authorization | Coverage | Test |
 | --- | --- | :---: | --- |
+| Submit a reviewed direct write | review → chain/account check → simulate → exact simulated write | **P** | `transactions/contract-write.test.ts`, `transactions/use-safe-tx.test.ts`, `transactions/sticky-use-safe-tx.test.tsx`, `transactions/signa-gate.test.tsx` |

@@ -46,3 +46,26 @@ export function stickyDeployment(chainId: number): StickyDeployment | null {
   const { fromBlock, ...addresses } = recorded[chainId]
   return { chainId, ...addresses, fromBlock: BigInt(fromBlock) }
 }
+
+/** Each contract of a deployment by the name the SDK's address table gives it. */
+const CONTRACT_NAMES = {
+  deployer: 'StickyDeployer',
+  hook: 'StickyHook',
+  terminal: 'JBMultiTerminal',
+  controller: 'JBController',
+  distributor: 'StickyDistributor',
+  rewardReceiverFactory: 'StickyRewardReceiverFactory',
+  autoStick: 'StickyAutoStick',
+} as const satisfies Record<keyof Omit<StickyDeployment, 'chainId' | 'fromBlock'>, string>
+
+/** The name of the Sticky contract at `address` on `chainId`, from the deployment records, or null. The review
+ * dialog names a destination or an address argument with it. */
+export function stickyContractName(chainId: number, address: string): string | null {
+  const deployment = stickyDeployment(chainId)
+  if (!deployment) return null
+  const lower = address.toLowerCase()
+  const field = (Object.keys(CONTRACT_NAMES) as (keyof typeof CONTRACT_NAMES)[]).find(
+    key => deployment[key].toLowerCase() === lower,
+  )
+  return field ? CONTRACT_NAMES[field] : null
+}

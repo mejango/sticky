@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { stickyChainIds, stickyDeployment } from '@/lib/sticky-addresses'
+import { stickyChainIds, stickyContractName, stickyDeployment } from '@/lib/sticky-addresses'
 
 describe('Sticky deployments', () => {
   it('lists every chain with verified records, in both families', () => {
@@ -31,6 +31,48 @@ describe('Sticky deployments', () => {
       autoStick: '0x9B091e21d25c424De67751F4b6Ae8494351218C5',
       fromBlock: 47301559n,
     })
+  })
+})
+
+describe('stickyContractName', () => {
+  const NAMES = {
+    deployer: 'StickyDeployer',
+    hook: 'StickyHook',
+    terminal: 'JBMultiTerminal',
+    controller: 'JBController',
+    distributor: 'StickyDistributor',
+    rewardReceiverFactory: 'StickyRewardReceiverFactory',
+    autoStick: 'StickyAutoStick',
+  } as const
+
+  it('names each Sticky contract on every chain it is deployed to, in any letter case', () => {
+    for (const chainId of [...stickyChainIds('production'), ...stickyChainIds('testnet')]) {
+      const deployment = stickyDeployment(chainId)!
+      for (const [field, name] of Object.entries(NAMES)) {
+        const address = deployment[field as keyof typeof NAMES]
+        expect(stickyContractName(chainId, address), `${chainId} ${field}`).toBe(name)
+        expect(stickyContractName(chainId, address.toLowerCase())).toBe(name)
+      }
+    }
+  })
+
+  it('knows no other address, and no chain without Sticky', () => {
+    expect(stickyContractName(8453, '0x1111111111111111111111111111111111111111')).toBeNull()
+    expect(stickyContractName(137, stickyDeployment(8453)!.hook)).toBeNull()
+  })
+
+  it('names a redeployed contract from the records, before anything else knows its address', async () => {
+    const { default: recorded } = await import('@/lib/sticky-deployments.json')
+    const redeployed = '0x00000000000000000000000000000000000000Aa'
+    vi.resetModules()
+    vi.doMock('@/lib/sticky-deployments.json', () => ({
+      default: { ...recorded, '8453': { ...recorded['8453'], hook: redeployed } },
+    }))
+    const accessor = await import('@/lib/sticky-addresses')
+    expect(accessor.stickyContractName(8453, redeployed)).toBe('StickyHook')
+    expect(accessor.stickyContractName(8453, recorded['8453'].hook)).toBeNull()
+    vi.doUnmock('@/lib/sticky-deployments.json')
+    vi.resetModules()
   })
 })
 

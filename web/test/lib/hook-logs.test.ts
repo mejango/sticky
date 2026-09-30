@@ -841,6 +841,8 @@ describe('projectHookLogs', () => {
     expect(node.asked.every(range => range.topics.length === 2 && range.topics[1] === word(7n))).toBe(true)
     expect(new Set(node.asked[0].topics[0])).toEqual(new Set(PROJECT_TOPICS))
     expect(node.asked.at(-1)?.toBlock).toBe(0x1000n)
+    // Through the head as Center says it now: a scan made right after a write reaches the write's block.
+    expect(node.getBlockNumber.mock.calls).toEqual([[{ cacheTime: 0 }]])
   })
 
   it('says so when Sticky is not deployed on the chain, without asking anyone', async () => {

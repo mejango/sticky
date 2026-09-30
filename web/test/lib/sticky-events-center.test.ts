@@ -158,6 +158,9 @@ describe('stickyEvents through Center', () => {
       { address: HOOK, topics: [PROJECT_TOPICS, topic(23n)], fromBlock: toHex(block + 1n - 64n), toBlock: toHex(block + 300n) },
     ])
     expect(chain.request.mock.calls[0][1]).toEqual({ signal })
+    // Through the head as Center says it now: a read right after a write reaches the write's block.
+    expect(chain.getBlockNumber).toHaveBeenCalledWith({ cacheTime: 0 })
+    expect(chain.getBlockNumber).not.toHaveBeenCalledWith()
   })
 
   it('without Bendystraw, scans the project\'s history from its checked creation block, and keeps it in this browser', async () => {

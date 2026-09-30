@@ -2,6 +2,26 @@
   "version": 1,
   "useSafeTx": {},
   "authorityCalls": {},
-  "reviewedDirectWrites": {},
-  "rawWalletCalls": {}
+  "reviewedDirectWrites": {
+    "src/hooks/useSafeTx.ts": {
+      "calls": 1,
+      "actions": [
+        "Submit a reviewed direct write"
+      ]
+    },
+    "src/lib/contract-write.ts": {
+      "calls": 1,
+      "actions": [
+        "Submit a reviewed direct write"
+      ]
+    }
+  },
+  "rawWalletCalls": {
+    "useWriteContract": {
+      "src/hooks/useSafeTx.ts": 1
+    },
+    "writeContractAsync": {
+      "src/hooks/useSafeTx.ts": 1
+    }
+  }
 }

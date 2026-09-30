@@ -115,6 +115,12 @@ export function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefine
   })
 }
 
+/** The chain's head as the node says it now. viem hands a head it read in the last few seconds to the next read, and
+ * a read made right after a write lands must not pin a block before it; a head request already under way is shared. */
+export function freshHead(client: Pick<PublicClient, 'getBlockNumber'>, signal: AbortSignal | undefined): Promise<bigint> {
+  return untilAborted(client.getBlockNumber({ cacheTime: 0 }), signal)
+}
+
 /** [from, to] ranges of at most `span` blocks that cover `from` to `to` exactly. */
 function windowsOf(from: bigint, to: bigint, span: bigint): [bigint, bigint][] {
   const windows: [bigint, bigint][] = []
@@ -387,7 +393,7 @@ export async function keptLogs(
   const saved = readHistory(key)
   const kept = saved && (fromBlock === null || saved.from === undefined || saved.from <= fromBlock) ? saved : null
   const start = fromBlock ?? deployment.fromBlock
-  const head = await untilAborted(client.getBlockNumber(), signal)
+  const head = await freshHead(client, signal)
   // The scan starts after what was kept, so the two never overlap.
   const fresh = await scanLogs(
     client,

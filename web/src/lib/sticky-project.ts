@@ -9,7 +9,7 @@ import {
   type ContractFunctionParameters,
   type Hex,
 } from 'viem'
-import { untilAborted } from '@/lib/hook-logs'
+import { freshHead, untilAborted } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import {
   controllerAbi,
@@ -362,7 +362,7 @@ async function readEach(
   const deployment = deploymentOn(chainId)
   if (!projectIds.length) return []
   const client = jbCenterPublicClient(chainId)
-  const blockNumber = await untilAborted(client.getBlockNumber(), signal)
+  const blockNumber = await freshHead(client, signal)
   const read = (some: readonly bigint[]) => readSome(chainId, deployment, some, blockNumber, orphans, signal)
   const reads: ProjectRead[] = []
   for (let at = 0; at < projectIds.length; at += PROJECTS_PER_REQUEST) {
