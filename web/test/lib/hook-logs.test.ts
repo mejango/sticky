@@ -1010,6 +1010,43 @@ describe('projectHookLogs', () => {
         await expect(projectHookLogs(CHAIN, 7n, 0x40n)).rejects.toThrow('archive unavailable')
         expect(localStorage.getItem(KEY)).toBe(before)
       })
+
+      describe('when the project\'s start is not known', () => {
+        it('uses a kept history whatever block it began at, and scans only after it', async () => {
+          keep(0x100n, hookLog(0x200n))
+          events = [hookLog(0x200n), hookLog(0x1005n)]
+          head = 0x1100n
+          const node = serve()
+
+          expect(blocks(await projectHookLogs(CHAIN, 7n, null))).toEqual([0x200n, 0x1005n])
+
+          expect(firstAsked(node)).toBe(4033n)
+          expect(saved()).toMatchObject({ from: String(0x100), through: String(0x1100 - 64) })
+        })
+
+        it('uses the old client\'s history too, and writes it back as starting at the deployer\'s block', async () => {
+          localStorage.setItem(KEY, JSON.stringify({ through: '4032', all: [rpcLog(hookLog(0x200n))] }))
+          events = [hookLog(0x200n), hookLog(0x1005n)]
+          head = 0x1100n
+          const node = serve()
+
+          expect(blocks(await projectHookLogs(CHAIN, 7n, null))).toEqual([0x200n, 0x1005n])
+
+          expect(firstAsked(node)).toBe(4033n)
+          expect(saved()).toMatchObject({ from: String(deployment.fromBlock), through: String(0x1100 - 64) })
+        })
+
+        it('without a kept history, scans from the deployer\'s block, before which no project exists', async () => {
+          head = deployment.fromBlock + 0x200n
+          events = [hookLog(deployment.fromBlock - 5n), hookLog(deployment.fromBlock + 5n)]
+          const node = serve()
+
+          expect(blocks(await projectHookLogs(CHAIN, 7n, null))).toEqual([deployment.fromBlock + 5n])
+
+          expect(firstAsked(node)).toBe(deployment.fromBlock)
+          expect(saved()).toMatchObject({ from: String(deployment.fromBlock), through: String(head - 64n) })
+        })
+      })
     })
 
     describe('a signal that cancels the scan', () => {

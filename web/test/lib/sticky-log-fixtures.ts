@@ -52,6 +52,9 @@ export type At = {
   time?: bigint | null
 }
 
+/** A block's time in these fixtures, in Unix seconds, so an indexed row can be placed where its log is. */
+export const timeAt = (block: bigint) => Number(1_000_000n + block)
+
 /** A log as the scanner hands it back: in a block, with that block's time, which Center sends with every log. */
 export function raw(topics: Hex[], data: Hex, at: At = {}): ScannedLog {
   const blockNumber = at.blockNumber ?? CREATED + 10n
@@ -60,7 +63,7 @@ export function raw(topics: Hex[], data: Hex, at: At = {}): ScannedLog {
     address: at.address ?? HOOK,
     blockHash: pad(toHex(blockNumber + 0x1000n), { size: 32 }),
     blockNumber,
-    ...(at.time === null ? {} : { blockTimestamp: at.time ?? 1_000_000n + blockNumber }),
+    ...(at.time === null ? {} : { blockTimestamp: at.time ?? BigInt(timeAt(blockNumber)) }),
     data,
     logIndex,
     removed: false,

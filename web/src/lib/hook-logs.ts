@@ -357,11 +357,13 @@ function writeHistory(key: string, from: bigint, through: bigint, logs: ScannedL
  * scans only what came after. Only public events are kept, and nothing that belongs to a wallet.
  * A history that began later than `fromBlock` lacks what came before, so it is not used and the scan
  * starts from `fromBlock`; one the old client kept has no start and counts as beginning at the project's.
+ * A null `fromBlock` is a project whose start could not be found: a kept history is used whatever block
+ * it began at, and without one the scan starts at the deployer's block, before which no project exists.
  * When `signal` aborts the call rejects with its reason and writes nothing. */
 export async function projectHookLogs(
   chainId: number,
   projectId: bigint,
-  fromBlock: bigint,
+  fromBlock: bigint | null,
   opts: { signal?: AbortSignal } = {},
 ): Promise<ScannedLog[]> {
   const { signal } = opts
@@ -371,7 +373,8 @@ export async function projectHookLogs(
   const client = jbCenterPublicClient(chainId)
   const key = `${chainId}:${deployment.hook.toLowerCase()}:${projectId}`
   const saved = readHistory(key)
-  const kept = saved && (saved.from === undefined || saved.from <= fromBlock) ? saved : null
+  const kept = saved && (fromBlock === null || saved.from === undefined || saved.from <= fromBlock) ? saved : null
+  const start = fromBlock ?? deployment.fromBlock
   const head = await untilAborted(client.getBlockNumber(), signal)
   // The scan starts after what was kept, so the two never overlap.
   const fresh = await scanLogs(
@@ -379,7 +382,7 @@ export async function projectHookLogs(
     {
       address: deployment.hook,
       topics: [PROJECT_TOPICS, pad(toHex(projectId), { size: 32 })],
-      fromBlock: kept ? kept.through + 1n : fromBlock,
+      fromBlock: kept ? kept.through + 1n : start,
       toBlock: head,
     },
     { signal },
@@ -389,7 +392,7 @@ export async function projectHookLogs(
     const buried = head - REORG_DEPTH
     // A kept history never moves backwards, and keeps nothing a reorg could still replace.
     if (!kept || buried > kept.through) {
-      writeHistory(key, kept?.from ?? fromBlock, buried, all.filter(log => log.blockNumber <= buried))
+      writeHistory(key, kept?.from ?? start, buried, all.filter(log => log.blockNumber <= buried))
     }
   }
   return all

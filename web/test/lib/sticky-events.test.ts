@@ -1,5 +1,5 @@
 import { zeroAddress, type Address, type Hex } from 'viem'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ScannedLog } from '@/lib/hook-logs'
 import {
   decodeHookLog,
@@ -32,6 +32,7 @@ import {
   staked,
   streakEnded,
   streakStarted,
+  timeAt,
   topic,
   trustSet,
   unstaked,
@@ -40,6 +41,11 @@ import {
 
 // Every read goes through the `deps` a call is given, so nothing here reaches Bendystraw or Center. The
 // default reads have tests of their own in sticky-events-center.test.ts.
+
+// A read that falls back tells the console why. The tests that care read what it said.
+beforeEach(() => {
+  vi.spyOn(console, 'warn').mockImplementation(() => {})
+})
 
 // ev(txHash, logIndex, timestamp) is an indexed event (no block number);
 // log(txHash, logIndex, blockNumber) is a raw hook log from the scanner.
@@ -131,7 +137,7 @@ const unexpected = (name: string) => () => {
 /** Fakes of every read. `scans` lists where each scan started, a tail's and a whole history's alike,
  * `filters` what each hook scan asked for, and `signals` the signal each read was handed, in order. */
 function fakeDeps(spec: Spec) {
-  const scans: { fromBlock: bigint }[] = []
+  const scans: { fromBlock: bigint | null }[] = []
   const filters: Parameters<StickyReadDeps['scan']>[1][] = []
   const signals: (AbortSignal | undefined)[] = []
   const { indexed: answer } = spec
@@ -180,12 +186,12 @@ const hashes = (events: StickyEvent[]) => events.map(event => event.txHash)
 const keys = (events: StickyEvent[]) => events.map(event => `${event.chainId}:${event.txHash}:${event.logIndex}`)
 
 describe('stickyEvents', () => {
-  it('uses Bendystraw and scans only past its indexed block', async () => {
-    const deps = fakeDeps({ indexed: { block: 100n, events: [ev('0xa', 1, 90)] }, tail: [log('0xb', 1, 101n)] })
+  it('uses Bendystraw and scans only past its indexed block, less a 64-block overlap', async () => {
+    const deps = fakeDeps({ indexed: { block: CREATED + 100n, events: [ev('0xa', 1, 90)] }, tail: [log('0xb', 1, CREATED + 101n)] })
     const result = await stickyEvents(8453, 23n, deps)
     expect(result.source).toBe('indexed')
     expect(result.events.map(e => e.txHash)).toEqual(['0xa', '0xb'])
-    expect(deps.scans).toEqual([{ fromBlock: 101n }])
+    expect(deps.scans).toEqual([{ fromBlock: CREATED + 101n - 64n }])
   })
   it('never double counts an event both sources returned', async () => {
     const deps = fakeDeps({ indexed: { block: 99n, events: [ev('0xa', 1, 100)] }, tail: [log('0xa', 1, 100n)] })
@@ -229,35 +235,63 @@ describe('stickyEvents', () => {
     expect(deps.scans).toEqual([{ fromBlock: CREATED }])
   })
 
+  it('hands on a creation block it could not find as null, so the scan keeps to the history this browser saved', async () => {
+    const deps = fakeDeps({ indexed: new Error('down'), full: [log('0xa', 1, CREATED + 5n)] })
+    deps.creationBlock.mockResolvedValue(null)
+    const result = await stickyEvents(CHAIN, 23n, deps)
+    expect(deps.projectLogs).toHaveBeenCalledWith(CHAIN, 23n, null, { signal: undefined })
+    expect(result).toMatchObject({ events: [expect.objectContaining({ txHash: '0xa' })], source: 'scanned' })
+  })
+
+  it('tells the console why it read the chain, under one label, and answers all the same', async () => {
+    const events = new Error('Unknown type "stickyEventFilter"')
+    const settings = new Error('Unknown type "stickySettingEventFilter"')
+    const deps = fakeDeps({ indexed: { block: CREATED + 100n }, full: [log('0xa', 1, CREATED + 5n)] })
+    deps.indexedEvents.mockRejectedValue(events)
+    deps.indexedSettings.mockRejectedValue(settings)
+    const result = await stickyEvents(CHAIN, 23n, deps)
+    expect(vi.mocked(console.warn).mock.calls).toEqual([
+      ['Bendystraw could not answer; reading the chain instead.', { chainId: CHAIN, projectId: 23n }, events],
+      ['Bendystraw could not answer; reading the chain instead.', { chainId: CHAIN, projectId: 23n }, settings],
+    ])
+    expect(result).toMatchObject({ events: [expect.objectContaining({ txHash: '0xa' })], source: 'scanned', degraded: 'indexer-error' })
+  })
+
+  it('says nothing to the console when Bendystraw answers', async () => {
+    await stickyEvents(CHAIN, 23n, fakeDeps({ indexed: { block: CREATED + 100n, events: [ev('0xa', 1, 90)] } }))
+    expect(console.warn).not.toHaveBeenCalled()
+  })
+
   it('completes a stale indexed answer to the head, without counting twice what a later page already had', async () => {
     // Bendystraw's status says block 5,000, from its first page. A later page was read after it had indexed
-    // further, so it already has the stick at 5,010. The scan from 5,001 finds that one again, and newer ones.
+    // further, so it already has the stick at 5,010. The scan finds that one again, and newer ones.
+    const at = (offset: bigint) => CREATED + offset
     const deps = fakeDeps({
       indexed: {
-        block: 5_000n,
+        block: at(5_000n),
         events: [
-          row.staked(HOLDER, HOLDER, 5n, 5n, { txHash: '0x1', logIndex: 3, timestamp: 4_000 }),
-          row.staked(OTHER, OTHER, 2n, 2n, { txHash: '0x2', logIndex: 0, timestamp: 5_020 }),
+          row.staked(HOLDER, HOLDER, 5n, 5n, { txHash: '0x1', logIndex: 3, timestamp: timeAt(at(4_000n)) }),
+          row.staked(OTHER, OTHER, 2n, 2n, { txHash: '0x2', logIndex: 0, timestamp: timeAt(at(5_010n)) }),
         ],
       },
       tail: [
-        staked(OTHER, OTHER, 2n, 2n, { txHash: '0x2', logIndex: 0, blockNumber: 5_010n }),
-        unstaked(HOLDER, 5n, 0n, { txHash: '0x3', logIndex: 7, blockNumber: 7_000n }),
-        streakEnded(HOLDER, 3_000n, { txHash: '0x3', logIndex: 8, blockNumber: 7_000n }),
+        staked(OTHER, OTHER, 2n, 2n, { txHash: '0x2', logIndex: 0, blockNumber: at(5_010n) }),
+        unstaked(HOLDER, 5n, 0n, { txHash: '0x3', logIndex: 7, blockNumber: at(7_000n) }),
+        streakEnded(HOLDER, 3_000n, { txHash: '0x3', logIndex: 8, blockNumber: at(7_000n) }),
       ],
     })
     const result = await stickyEvents(CHAIN, 23n, deps)
     expect(result).toMatchObject({ source: 'indexed', degraded: null })
-    expect(deps.scans).toEqual([{ fromBlock: 5_001n }])
+    expect(deps.scans).toEqual([{ fromBlock: at(5_001n) - 64n }])
     expect(keys(result.events)).toEqual([`${CHAIN}:0x1:3`, `${CHAIN}:0x2:0`, `${CHAIN}:0x3:7`, `${CHAIN}:0x3:8`])
     // The event both had is Bendystraw's, where Bendystraw put it.
-    expect(result.events.map(event => event.blockNumber)).toEqual([null, null, 7_000n, 7_000n])
+    expect(result.events.map(event => event.blockNumber)).toEqual([null, null, at(7_000n), at(7_000n)])
   })
 
   it('scans the hook for the project\'s seven events, as the old client did', async () => {
-    const deps = fakeDeps({ indexed: { block: 100n } })
+    const deps = fakeDeps({ indexed: { block: CREATED + 100n } })
     await stickyEvents(CHAIN, 23n, deps)
-    expect(deps.filters).toEqual([{ address: HOOK, topics: [PROJECT_TOPICS, topic(23n)], fromBlock: 101n }])
+    expect(deps.filters).toEqual([{ address: HOOK, topics: [PROJECT_TOPICS, topic(23n)], fromBlock: CREATED + 37n }])
   })
 
   it('asks Bendystraw about this project on its chain', async () => {
@@ -267,41 +301,65 @@ describe('stickyEvents', () => {
     expect(deps.indexedSettings).toHaveBeenCalledWith(CHAIN, 23n, undefined)
   })
 
-  it('adds granters, trusted senders and exclusions, each read past the block of the read that had it', async () => {
-    // The settings read is as of an older block than the events read: the scan starts after the older one.
+  it('adds granters, trusted senders and exclusions, and keeps every event the scan adds, in its place', async () => {
+    // The settings read is as of an older block than the events read, so the scan starts below the older one.
+    const at = (offset: bigint) => CREATED + offset
     const deps = fakeDeps({
       indexed: {
-        block: 300n,
-        settingsBlock: 200n,
-        events: [row.staked(HOLDER, HOLDER, 5n, 5n, { txHash: '0x5', logIndex: 0, timestamp: 150 })],
+        block: at(300n),
+        settingsBlock: at(200n),
+        events: [row.staked(HOLDER, HOLDER, 5n, 5n, { txHash: '0x5', logIndex: 0, timestamp: timeAt(at(150n)) })],
         settings: [
-          row.granter(GRANTER, { txHash: '0x1', logIndex: 4, timestamp: 100 }),
-          row.trust(HOLDER, SENDER, true, { txHash: '0x2', logIndex: 1, timestamp: 120 }),
-          row.orphans(9n, { txHash: '0x3', logIndex: 2, timestamp: 110 }),
+          row.granter(GRANTER, { txHash: '0x1', logIndex: 4, timestamp: timeAt(at(100n)) }),
+          row.trust(HOLDER, SENDER, true, { txHash: '0x2', logIndex: 1, timestamp: timeAt(at(120n)) }),
+          row.orphans(9n, { txHash: '0x3', logIndex: 2, timestamp: timeAt(at(110n)) }),
         ],
       },
       tail: [
-        trustSet(OTHER, SENDER, true, { txHash: '0x6', blockNumber: 250n }),
-        // Through block 300 the events read is the account of sticks, so the scan's copy of this one is not used.
-        staked(OTHER, OTHER, 1n, 1n, { txHash: '0x7', blockNumber: 260n }),
-        trustSet(HOLDER, SENDER, false, { txHash: '0x8', blockNumber: 301n }),
-        staked(OTHER, OTHER, 1n, 2n, { txHash: '0x9', blockNumber: 302n }),
+        trustSet(OTHER, SENDER, true, { txHash: '0x6', blockNumber: at(250n) }),
+        // Below the events read's block, yet not among its rows: the scan's copy is kept, not dropped.
+        staked(OTHER, OTHER, 1n, 1n, { txHash: '0x7', blockNumber: at(260n) }),
+        trustSet(HOLDER, SENDER, false, { txHash: '0x8', blockNumber: at(301n) }),
+        staked(OTHER, OTHER, 1n, 2n, { txHash: '0x9', blockNumber: at(302n) }),
       ],
     })
     const result = await stickyEvents(CHAIN, 23n, deps)
-    expect(deps.scans).toEqual([{ fromBlock: 201n }])
+    expect(deps.scans).toEqual([{ fromBlock: at(201n) - 64n }])
     expect(result.events.map(event => [event.txHash, event.kind])).toEqual([
       ['0x1', 'granter'],
       ['0x3', 'excludeOrphan'],
       ['0x2', 'trust'],
       ['0x5', 'stick'],
       ['0x6', 'trust'],
+      ['0x7', 'stick'],
       ['0x8', 'trust'],
       ['0x9', 'stick'],
     ])
     expect(result.events[0]).toMatchObject({ holder: GRANTER, trusted: true })
     expect(result.events[1]).toMatchObject({ holder: zeroAddress, amount: 9n })
-    expect(result.events[5]).toMatchObject({ holder: HOLDER, sender: SENDER, trusted: false })
+    expect(result.events[6]).toMatchObject({ holder: HOLDER, sender: SENDER, trusted: false })
+  })
+
+  it('puts a trust at block 250 before a stick at 290 when the events read is as of 300 and the settings read of 200', async () => {
+    const deps = fakeDeps({
+      indexed: {
+        block: 300n,
+        settingsBlock: 200n,
+        events: [row.staked(HOLDER, HOLDER, 1n, 1n, { txHash: '0x2', logIndex: 0, timestamp: timeAt(290n) })],
+      },
+      tail: [
+        trustSet(HOLDER, SENDER, true, { txHash: '0x1', blockNumber: 250n }),
+        staked(HOLDER, HOLDER, 1n, 1n, { txHash: '0x2', blockNumber: 290n }),
+        staked(HOLDER, HOLDER, 1n, 2n, { txHash: '0x3', blockNumber: 301n }),
+      ],
+    })
+    const { events } = await stickyEvents(CHAIN, 23n, deps)
+    expect(events.map(event => [event.kind, event.txHash, event.blockNumber])).toEqual([
+      ['trust', '0x1', 250n],
+      // Bendystraw's copy of the stick both had.
+      ['stick', '0x2', null],
+      ['stick', '0x3', 301n],
+    ])
   })
 
   it('reads the settings from a full scan too', async () => {
@@ -394,6 +452,8 @@ describe('stickyEvents', () => {
     expect(deps.scan).not.toHaveBeenCalled()
     expect(deps.creationBlock).not.toHaveBeenCalled()
     expect(deps.projectLogs).not.toHaveBeenCalled()
+    // A cancel is not a failure: the console hears nothing of it.
+    expect(console.warn).not.toHaveBeenCalled()
   })
 
   it('refuses a chain without Sticky, and a number that is no project, before reading anything', async () => {
@@ -410,14 +470,14 @@ describe('stickyHolderEvents', () => {
   it('reads the holder from Bendystraw and scans the hook for their position events past its block', async () => {
     const deps = fakeDeps({
       indexed: {
-        block: 700n,
+        block: CREATED + 700n,
         events: [
           row.streakStarted(HOLDER, { txHash: '0x1', logIndex: 1, timestamp: 10 }),
           row.staked(HOLDER, OTHER, 3n, 3n, { txHash: '0x1', logIndex: 0, timestamp: 10 }),
           row.staked(HOLDER, HOLDER, 1n, 1n, { txHash: '0x2', logIndex: 0, timestamp: 20, projectId: 5n }),
         ],
       },
-      tail: [unstaked(HOLDER, 1n, 0n, { txHash: '0x3', project: 5n, blockNumber: 701n })],
+      tail: [unstaked(HOLDER, 1n, 0n, { txHash: '0x3', project: 5n, blockNumber: CREATED + 701n })],
     })
     const result = await stickyHolderEvents(CHAIN, HOLDER, deps)
     expect(result).toMatchObject({ source: 'indexed', degraded: null })
@@ -428,7 +488,9 @@ describe('stickyHolderEvents', () => {
       ['0x3', 'unstick', 5n],
     ])
     expect(deps.indexedEvents).toHaveBeenCalledWith({ chainId: CHAIN, holder: HOLDER }, undefined)
-    expect(deps.filters).toEqual([{ address: HOOK, topics: [POSITION_TOPICS, null, holderTopic], fromBlock: 701n }])
+    expect(deps.filters).toEqual([
+      { address: HOOK, topics: [POSITION_TOPICS, null, holderTopic], fromBlock: CREATED + 701n - 64n },
+    ])
   })
 
   it('counts an event both sources reported once', async () => {
@@ -478,6 +540,14 @@ describe('stickyHolderEvents', () => {
     await expect(stickyHolderEvents(CHAIN, HOLDER, deps)).rejects.toThrow('over budget')
   })
 
+  it('tells the console why it scanned the chain', async () => {
+    const down = new Error('down')
+    await stickyHolderEvents(CHAIN, HOLDER, fakeDeps({ indexed: down }))
+    expect(vi.mocked(console.warn).mock.calls).toEqual([
+      ['Bendystraw could not answer; reading the chain instead.', { chainId: CHAIN }, down],
+    ])
+  })
+
   it('refuses something that is not an address, before reading anything', async () => {
     const deps = fakeDeps({ indexed: { block: 700n } })
     await expect(stickyHolderEvents(CHAIN, '0x1234' as Address, deps)).rejects.toThrow(TypeError)
@@ -493,6 +563,101 @@ describe('stickyHolderEvents', () => {
     })
     await expect(stickyHolderEvents(CHAIN, HOLDER, { ...deps, signal: controller.signal })).rejects.toThrow('gone')
     expect(deps.scan).not.toHaveBeenCalled()
+  })
+})
+
+describe('where a scan past Bendystraw\'s block starts', () => {
+  const launches = (block: bigint): IndexedProjects => ({ blocks: new Map([[CHAIN, block]]), projects: [] })
+  /** Where the project, holder and deployer scans start, with Bendystraw as of `block`. */
+  async function starts(block: bigint) {
+    const project = fakeDeps({ indexed: { block } })
+    await stickyEvents(CHAIN, 23n, project)
+    const holder = fakeDeps({ indexed: { block } })
+    await stickyHolderEvents(CHAIN, HOLDER, holder)
+    const deployer = fakeDeps({ indexed: new Error('not asked') })
+    await stickyProjectsOn(CHAIN, launches(block), deployer)
+    return [project, holder, deployer].map(deps => deps.scans)
+  }
+
+  it('is 64 blocks below the block after Bendystraw\'s, for a project, a holder and the deployer', async () => {
+    const block = CREATED + 500n
+    expect(await starts(block)).toEqual([[{ fromBlock: block - 63n }], [{ fromBlock: block - 63n }], [{ fromBlock: block - 63n }]])
+  })
+
+  it('is never below the deployer\'s block, even when Bendystraw is as of an earlier one', async () => {
+    const from = { fromBlock: deployment.fromBlock }
+    expect(await starts(deployment.fromBlock - 1_000n)).toEqual([[from], [from], [from]])
+    expect(await starts(deployment.fromBlock + 10n)).toEqual([[from], [from], [from]])
+  })
+
+  it('counts what the overlap reads again once, and puts what Bendystraw\'s rows had not reached in its place', async () => {
+    // Bendystraw's status says block B, but its rows stop short of it: the stick at B - 15 is on the chain only.
+    const block = CREATED + 500n
+    const project = fakeDeps({
+      indexed: {
+        block,
+        events: [
+          row.staked(HOLDER, HOLDER, 1n, 1n, { txHash: '0x1', logIndex: 0, timestamp: timeAt(block - 20n) }),
+          row.staked(HOLDER, HOLDER, 1n, 3n, { txHash: '0x3', logIndex: 0, timestamp: timeAt(block - 10n) }),
+        ],
+      },
+      tail: [
+        staked(HOLDER, HOLDER, 1n, 1n, { txHash: '0x1', blockNumber: block - 20n }),
+        staked(HOLDER, HOLDER, 1n, 2n, { txHash: '0x2', blockNumber: block - 15n }),
+        staked(HOLDER, HOLDER, 1n, 3n, { txHash: '0x3', blockNumber: block - 10n }),
+        staked(HOLDER, HOLDER, 1n, 4n, { txHash: '0x4', blockNumber: block + 1n }),
+      ],
+    })
+    const { events } = await stickyEvents(CHAIN, 23n, project)
+    expect(events.map(event => [event.txHash, event.blockNumber])).toEqual([
+      ['0x1', null],
+      ['0x2', block - 15n],
+      ['0x3', null],
+      ['0x4', block + 1n],
+    ])
+
+    const holder = fakeDeps({
+      indexed: { block, events: [row.staked(HOLDER, HOLDER, 1n, 1n, { txHash: '0x1', logIndex: 0, timestamp: timeAt(block - 20n) })] },
+      tail: [
+        streakEnded(HOLDER, 60n, { txHash: '0x0', blockNumber: block - 30n }),
+        staked(HOLDER, HOLDER, 1n, 1n, { txHash: '0x1', blockNumber: block - 20n }),
+      ],
+    })
+    const held = await stickyHolderEvents(CHAIN, HOLDER, holder)
+    expect(held.events.map(event => [event.txHash, event.blockNumber])).toEqual([
+      ['0x0', block - 30n],
+      ['0x1', null],
+    ])
+
+    // A row of a page read later can be newer than the status; what the scan found at the status's own block,
+    // and Bendystraw's rows lack, still goes in its place before it.
+    const atBlock = fakeDeps({
+      indexed: {
+        block,
+        events: [
+          row.staked(HOLDER, HOLDER, 1n, 1n, { txHash: '0x1', logIndex: 0, timestamp: timeAt(block - 20n) }),
+          row.staked(HOLDER, HOLDER, 1n, 3n, { txHash: '0x3', logIndex: 0, timestamp: timeAt(block + 2n) }),
+        ],
+      },
+      tail: [
+        staked(HOLDER, HOLDER, 1n, 2n, { txHash: '0x2', blockNumber: block }),
+        staked(HOLDER, HOLDER, 1n, 3n, { txHash: '0x3', blockNumber: block + 2n }),
+      ],
+    })
+    const placedAtBlock = await stickyEvents(CHAIN, 23n, atBlock)
+    expect(placedAtBlock.events.map(event => [event.txHash, event.blockNumber])).toEqual([
+      ['0x1', null],
+      ['0x2', block],
+      ['0x3', null],
+    ])
+
+    // The deployer's launches in the overlap: one the index lists, and one its rows had not reached.
+    const deployer = fakeDeps({
+      indexed: new Error('not asked'),
+      tail: [deploySticky(80n, { blockNumber: block - 30n }), deploySticky(81n, { blockNumber: block - 10n })],
+    })
+    const listed = { blocks: new Map([[CHAIN, block]]), projects: [{ chainId: CHAIN, projectId: 80n }] }
+    expect((await stickyProjectsOn(CHAIN, listed, deployer)).projects.map(entry => entry.projectId)).toEqual([80n, 81n])
   })
 })
 
@@ -615,6 +780,7 @@ describe('projectCreationBlock', () => {
     expect(deps.indexedCreateTx).toHaveBeenCalledWith(CHAIN, 37n, undefined)
     expect(deps.receipt).toHaveBeenCalledWith(CHAIN, TX, { signal: undefined })
     expect(deps.projectCount).not.toHaveBeenCalled()
+    expect(console.warn).not.toHaveBeenCalled()
 
     const again = chain({})
     expect(await projectCreationBlock(CHAIN, 37n, again)).toBe(deployment.fromBlock + 77n)
@@ -656,22 +822,53 @@ describe('projectCreationBlock', () => {
     expect(await projectCreationBlock(CHAIN, 53n, chain({ count: createdAt(53n, HEAD) }))).toBe(HEAD)
   })
 
-  it('uses the deployer\'s block when nothing answers, and tries again the next time', async () => {
+  it('is null when nothing answers, and tries again the next time', async () => {
     const deps = chain({ tx: new Error('down') })
-    expect(await projectCreationBlock(CHAIN, 54n, deps)).toBe(deployment.fromBlock)
-    expect(await projectCreationBlock(CHAIN, 54n, deps)).toBe(deployment.fromBlock)
+    expect(await projectCreationBlock(CHAIN, 54n, deps)).toBeNull()
+    expect(await projectCreationBlock(CHAIN, 54n, deps)).toBeNull()
     expect(deps.indexedCreateTx).toHaveBeenCalledTimes(2)
     expect(deps.projectCount).toHaveBeenCalledTimes(2)
   })
 
-  it('uses the deployer\'s block for a project that does not exist yet, and does not keep it', async () => {
+  it('is null for a project that does not exist yet, and does not keep that', async () => {
     const deps = chain({ count: () => 55n })
-    expect(await projectCreationBlock(CHAIN, 56n, deps)).toBe(deployment.fromBlock)
-    await projectCreationBlock(CHAIN, 56n, deps)
+    expect(await projectCreationBlock(CHAIN, 56n, deps)).toBeNull()
+    expect(await projectCreationBlock(CHAIN, 56n, deps)).toBeNull()
     expect(deps.head).toHaveBeenCalledTimes(2)
   })
 
-  it('stops when the caller cancels, rather than fall back to the deployer\'s block', async () => {
+  it('tells the console, under a label for each lookup, why it could not place the project, and answers all the same', async () => {
+    const down = new Error('Bendystraw request failed (502)')
+    expect(await projectCreationBlock(CHAIN, 60n, chain({ tx: down }))).toBeNull()
+    const about = { chainId: CHAIN, projectId: 60n }
+    expect(vi.mocked(console.warn).mock.calls).toEqual([
+      ["Could not find a Sticky project's creation from Bendystraw.", about, down],
+      ["Could not find a Sticky project's creation block on the chain.", about, new Error('missing trie node')],
+    ])
+  })
+
+  it('tells the console when Bendystraw names no creating transaction, or one that did not launch the project', async () => {
+    const searched = (projectId: bigint) => createdAt(projectId, deployment.fromBlock + 2n)
+    expect(await projectCreationBlock(CHAIN, 61n, chain({ tx: null, count: searched(61n) }))).toBe(deployment.fromBlock + 2n)
+    const launchedAnother = { blockNumber: deployment.fromBlock + 5n, logs: [deploySticky(61n)] }
+    expect(await projectCreationBlock(CHAIN, 62n, chain({ tx: TX, receipt: launchedAnother, count: searched(62n) }))).toBe(
+      deployment.fromBlock + 2n,
+    )
+    expect(vi.mocked(console.warn).mock.calls.map(([label, about, error]) => [label, about, (error as Error).message])).toEqual([
+      [
+        "Could not find a Sticky project's creation from Bendystraw.",
+        { chainId: CHAIN, projectId: 61n },
+        'Bendystraw names no transaction that created the project.',
+      ],
+      [
+        "Could not find a Sticky project's creation from Bendystraw.",
+        { chainId: CHAIN, projectId: 62n },
+        `Transaction ${TX} did not launch the project.`,
+      ],
+    ])
+  })
+
+  it('stops when the caller cancels, rather than search', async () => {
     const controller = new AbortController()
     const reason = new Error('left the page')
     const deps = chain({ tx: TX })
@@ -681,6 +878,7 @@ describe('projectCreationBlock', () => {
     })
     await expect(projectCreationBlock(CHAIN, 57n, { ...deps, signal: controller.signal })).rejects.toBe(reason)
     expect(deps.projectCount).not.toHaveBeenCalled()
+    expect(console.warn).not.toHaveBeenCalled()
   })
 
   it('hands the caller\'s signal to every read', async () => {
@@ -716,7 +914,7 @@ describe('stickyProjectsOn', () => {
       source: 'indexed',
       degraded: null,
     })
-    expect(deps.filters).toEqual([{ address: DEPLOYER, topics: [TOPIC.DeploySticky], fromBlock: INDEXED + 1n }])
+    expect(deps.filters).toEqual([{ address: DEPLOYER, topics: [TOPIC.DeploySticky], fromBlock: INDEXED + 1n - 64n }])
   })
 
   it('lists projects oldest first, whatever order the index gave them in', async () => {

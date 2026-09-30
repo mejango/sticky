@@ -2,7 +2,9 @@ import { pad, toHex, type Address, type Hex, type PublicClient } from 'viem'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ScannedLog } from '@/lib/hook-logs'
 import { controllerAbi, projectsAbi } from '@/lib/sticky-abis'
+import { stickyDeployment } from '@/lib/sticky-addresses'
 import { projectCreationBlock, stickyEvents, stickyHolderEvents, stickyProjectsOn } from '@/lib/sticky-events'
+import type { IndexedStickyEvent } from '@/lib/sticky-indexed'
 import {
   CHAIN,
   CREATED,
@@ -19,6 +21,7 @@ import {
   granterSet,
   staked,
   streakStarted,
+  timeAt,
   topic,
 } from './sticky-log-fixtures'
 
@@ -109,17 +112,33 @@ const historyKey = (projectId: bigint) => `sticky.history.v1:${CHAIN}:${HOOK.toL
 beforeEach(() => {
   localStorage.clear()
   for (const mock of [center.client, bendystraw.events, bendystraw.settings, bendystraw.createTx]) mock.mockReset()
+  // A read that falls back tells the console why; sticky-events.test.ts checks what it says.
+  vi.spyOn(console, 'warn').mockImplementation(() => {})
 })
 
 describe('stickyEvents through Center', () => {
-  it('completes Bendystraw\'s answer with a scan of the hook from the block after its own through the head', async () => {
+  it('completes Bendystraw\'s answer with a scan of the hook from 64 blocks below the block after its own through the head', async () => {
     const block = CREATED + 1_000n
-    bendystraw.events.mockResolvedValue(indexedAt(block))
+    const known = staked(HOLDER, HOLDER, 1n, 1n, { blockNumber: block })
+    // Bendystraw has the stick at its own block; the scan reads it again, and counts it once.
+    const row: IndexedStickyEvent = {
+      chainId: CHAIN,
+      projectId: 23n,
+      txHash: known.transactionHash,
+      logIndex: known.logIndex,
+      timestamp: timeAt(block),
+      holder: HOLDER,
+      type: 'staked',
+      payer: HOLDER,
+      count: 1n,
+      stakedBalance: 1n,
+    }
+    bendystraw.events.mockResolvedValue({ ...indexedAt(block), rows: [row] })
     bendystraw.settings.mockResolvedValue(indexedAt(block))
     const chain = node({
       head: block + 300n,
       logs: [
-        staked(HOLDER, HOLDER, 1n, 1n, { blockNumber: block }),
+        known,
         staked(HOLDER, HOLDER, 1n, 2n, { blockNumber: block + 5n }),
         staked(HOLDER, HOLDER, 1n, 1n, { blockNumber: block + 6n, project: 24n }),
       ],
@@ -129,11 +148,14 @@ describe('stickyEvents through Center', () => {
     const result = await stickyEvents(CHAIN, 23n, { signal })
 
     expect(result).toMatchObject({ source: 'indexed', degraded: null })
-    expect(result.events.map(event => [event.blockNumber, event.balance])).toEqual([[block + 5n, 2n]])
+    expect(result.events.map(event => [event.blockNumber, event.balance])).toEqual([
+      [null, 1n],
+      [block + 5n, 2n],
+    ])
     expect(bendystraw.events).toHaveBeenCalledWith({ chainId: CHAIN, projectId: 23n }, signal)
     expect(bendystraw.settings).toHaveBeenCalledWith(CHAIN, 23n, signal)
     expect(chain.requests).toEqual([
-      { address: HOOK, topics: [PROJECT_TOPICS, topic(23n)], fromBlock: toHex(block + 1n), toBlock: toHex(block + 300n) },
+      { address: HOOK, topics: [PROJECT_TOPICS, topic(23n)], fromBlock: toHex(block + 1n - 64n), toBlock: toHex(block + 300n) },
     ])
     expect(chain.request.mock.calls[0][1]).toEqual({ signal })
   })
@@ -166,6 +188,42 @@ describe('stickyEvents through Center', () => {
     expect(JSON.parse(localStorage.getItem(historyKey(25n))!)).toMatchObject({
       from: String(created),
       through: String(head - 64n),
+    })
+  })
+
+  describe('when neither Bendystraw nor the chain can place the project\'s creation', () => {
+    const outage = (head: bigint) => {
+      bendystraw.events.mockRejectedValue(new Error('down'))
+      bendystraw.settings.mockRejectedValue(new Error('down'))
+      bendystraw.createTx.mockRejectedValue(new Error('down'))
+      // No `count`: a node without archive state refuses every read at a past block.
+      return node({ head, logs: [staked(HOLDER, HOLDER, 1n, 2n, { project: 40n, blockNumber: head - 10n })] })
+    }
+
+    it('resumes the history this browser saved after its last block, and scans nothing before', async () => {
+      const created = CREATED + 9_000n
+      const through = created + 500n
+      const saved = [staked(HOLDER, HOLDER, 1n, 1n, { project: 40n, blockNumber: created + 20n })]
+      localStorage.setItem(
+        historyKey(40n),
+        JSON.stringify({ from: String(created), through: String(through), all: saved.map(rpcLog) }),
+      )
+      const chain = outage(through + 200n)
+
+      const result = await stickyEvents(CHAIN, 40n)
+
+      expect(result).toMatchObject({ source: 'scanned', degraded: 'indexer-error' })
+      expect(result.events.map(event => event.blockNumber)).toEqual([created + 20n, through + 190n])
+      expect(chain.requests.map(request => BigInt(request.fromBlock))).toEqual([through + 1n])
+    })
+
+    it('without a saved history, scans from the deployer\'s block', async () => {
+      const chain = outage(deployment.fromBlock + 400n)
+
+      const result = await stickyEvents(CHAIN, 41n)
+
+      expect(result.events).toEqual([])
+      expect(chain.requests.map(request => BigInt(request.fromBlock))).toEqual([deployment.fromBlock])
     })
   })
 
@@ -203,27 +261,29 @@ describe('stickyEvents through Center', () => {
 
 describe('projectCreationBlock through Center', () => {
   it('searches JBProjects.count() at past blocks, on the JBProjects the controller names, asked once a session', async () => {
-    const at27 = deployment.fromBlock + 777n
-    const at29 = deployment.fromBlock + 3_210n
+    // A chain no other case here reads JBProjects on, since the session keeps it.
+    const arbitrumSepolia = stickyDeployment(421614)!
+    const at27 = arbitrumSepolia.fromBlock + 777n
+    const at29 = arbitrumSepolia.fromBlock + 3_210n
     bendystraw.createTx.mockResolvedValue(null)
     const chain = node({
-      head: deployment.fromBlock + 5_000n,
+      head: arbitrumSepolia.fromBlock + 5_000n,
       count: block => (block >= at29 ? 29n : block >= at27 ? 27n : 26n),
     })
     const { signal } = new AbortController()
 
-    expect(await projectCreationBlock(CHAIN, 27n, { signal })).toBe(at27)
-    expect(await projectCreationBlock(CHAIN, 29n, { signal })).toBe(at29)
+    expect(await projectCreationBlock(421614, 27n, { signal })).toBe(at27)
+    expect(await projectCreationBlock(421614, 29n, { signal })).toBe(at29)
 
+    expect(center.client.mock.calls.every(([chainId]) => chainId === 421614)).toBe(true)
     const reads = chain.readContract.mock.calls.map(([read]) => read)
     expect(reads.filter(read => read.functionName === 'PROJECTS')).toEqual([
-      { address: deployment.controller, abi: controllerAbi, functionName: 'PROJECTS' },
+      { address: arbitrumSepolia.controller, abi: controllerAbi, functionName: 'PROJECTS' },
     ])
     const counts = reads.filter(read => read.functionName === 'count')
     expect(counts.length).toBeGreaterThan(0)
     expect(counts.every(read => read.address === PROJECTS && read.abi === projectsAbi && read.blockNumber !== undefined)).toBe(true)
   })
-
 })
 
 describe('cancelling', () => {
@@ -331,7 +391,7 @@ describe('cancelling', () => {
 })
 
 describe('stickyHolderEvents through Center', () => {
-  it('scans the hook for the holder\'s position events from the block after Bendystraw\'s', async () => {
+  it('scans the hook for the holder\'s position events from 64 blocks below the block after Bendystraw\'s', async () => {
     const block = CREATED + 4_000n
     bendystraw.events.mockResolvedValue(indexedAt(block))
     const chain = node({
@@ -346,13 +406,13 @@ describe('stickyHolderEvents through Center', () => {
 
     expect(result.events.map(event => [event.kind, event.projectId, event.holder])).toEqual([['streakStart', 30n, HOLDER]])
     expect(chain.requests).toEqual([
-      { address: HOOK, topics: [POSITION_TOPICS, null, topic(HOLDER)], fromBlock: toHex(block + 1n), toBlock: toHex(block + 100n) },
+      { address: HOOK, topics: [POSITION_TOPICS, null, topic(HOLDER)], fromBlock: toHex(block + 1n - 64n), toBlock: toHex(block + 100n) },
     ])
   })
 })
 
 describe('stickyProjectsOn through Center', () => {
-  it('scans the deployer for launches from the block after the index\'s', async () => {
+  it('scans the deployer for launches from 64 blocks below the block after the index\'s, counting each once', async () => {
     const block = CREATED + 5_000n
     const chain = node({
       head: block + 50n,
@@ -363,7 +423,7 @@ describe('stickyProjectsOn through Center', () => {
 
     expect(result.projects.map(project => project.projectId)).toEqual([9n, 31n])
     expect(chain.requests).toEqual([
-      { address: DEPLOYER, topics: [TOPIC.DeploySticky], fromBlock: toHex(block + 1n), toBlock: toHex(block + 50n) },
+      { address: DEPLOYER, topics: [TOPIC.DeploySticky], fromBlock: toHex(block + 1n - 64n), toBlock: toHex(block + 50n) },
     ])
   })
 })
