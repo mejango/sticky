@@ -1,0 +1,19 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "scripts/check-deployment-env.d.mts",
+    "scripts/start-production.mjs",
+    "src/app/**/page.browsertest.tsx",
+    "test/browser/fail-fast-service.mjs"
+  ],
+  "ignoreDependencies": [
+    "@coinbase/wallet-sdk",
+    "@safe-global/safe-apps-provider",
+    "@safe-global/safe-apps-sdk",
+    "@walletconnect/ethereum-provider",
+    "tsx"
+  ],
+  "ignoreUnresolved": [
+    "../server.js"
+  ]
+}

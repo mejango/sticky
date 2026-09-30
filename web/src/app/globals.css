@@ -1,0 +1,309 @@
+@config "../../tailwind.config.mjs";
+@import "tailwindcss";
+
+:root {
+  /* The blank strip above the header. A page loads scrolled past it (see SiteHeader). */
+  --top-fold-height: 50px;
+}
+
+@layer base {
+  body {
+    @apply bg-bg font-sans text-[15px] leading-normal text-ink;
+  }
+
+  :focus-visible {
+    outline: 2px solid theme('colors.accent');
+    outline-offset: 3px;
+  }
+
+  /* Tailwind 4 preflight dropped `cursor: pointer` on buttons; restore it so
+     every interactive control reads as clickable. Disabled controls keep the
+     default arrow (the .btn-* cursor-not-allowed rules still win). */
+  button:not(:disabled),
+  [role='button']:not([aria-disabled='true']),
+  summary,
+  select:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+@layer components {
+  /* --- Cards: the card surface with a thin Line border --- */
+  .card {
+    @apply rounded-xl border border-line bg-card;
+  }
+
+  /* --- Modals: one native <dialog> chrome for every overlay ---
+     `showModal()` promotes the element into the top layer, which is what makes
+     the page behind it inert and unreachable by assistive technology. The top
+     layer also paints above every stacking context, so modals need no z-index
+     at all. All this class does is strip the UA's boxed dialog defaults so the
+     element itself can be the full-viewport surface that catches backdrop
+     clicks, and paint `::backdrop` instead of a dimming overlay div. */
+  .modal-dialog {
+    display: none;
+    max-width: none;
+    max-height: none;
+    @apply fixed inset-0 m-0 h-full w-full overflow-y-auto border-0 bg-transparent p-0 text-ink;
+  }
+
+  .modal-dialog[open] {
+    display: flex;
+  }
+
+  .modal-dialog::backdrop {
+    background-color: rgb(33 30 26 / 0.55);
+  }
+
+  /* Dialogs replace rather than stack: while a newer dialog is open, the one
+     below it stays open in the top layer but paints nothing, so there is one
+     scrim at a time. ModalDialog sets and clears the attribute. */
+  dialog[data-covered],
+  dialog[data-covered]::backdrop {
+    visibility: hidden;
+  }
+
+  /* A placeholder shape while a first load is in flight. */
+  .skeleton-shimmer {
+    @apply relative overflow-hidden bg-line;
+    animation: skeleton-pulse 1.6s ease-in-out infinite;
+  }
+
+  /* A restored value that is still being confirmed against the chain. Unlike
+     .skeleton-shimmer this keeps the real text readable: it fades it and
+     sweeps a highlight across, so the number is usable immediately while
+     reading as not yet confirmed. */
+  .revalidating {
+    position: relative;
+    overflow: hidden;
+    opacity: 0.55;
+    transition: opacity 180ms ease-out;
+  }
+
+  .revalidating::after {
+    position: absolute;
+    inset: 0;
+    content: '';
+    background: linear-gradient(
+      100deg,
+      transparent 20%,
+      rgb(255 255 255 / 0.5) 50%,
+      transparent 80%
+    );
+    transform: translateX(-100%);
+    animation: skeleton-sweep 1.5s ease-in-out infinite;
+    pointer-events: none;
+  }
+
+  /* Buttons take their padding from the element; these set the look. */
+  .btn-primary {
+    @apply inline-flex items-center justify-center rounded-lg border border-transparent bg-teal font-semibold text-ink;
+  }
+
+  .btn-primary:disabled {
+    @apply cursor-not-allowed opacity-45;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center rounded-lg border border-ink bg-transparent font-semibold text-ink;
+  }
+
+  .btn-secondary:disabled {
+    @apply cursor-not-allowed opacity-45;
+  }
+
+  .btn-link {
+    @apply inline-flex min-h-6 items-center bg-transparent p-0 text-accent underline;
+  }
+
+  .btn-link:disabled {
+    @apply cursor-not-allowed opacity-45;
+  }
+
+  /* A row in a menu; put `text-err` on it for a dangerous one. */
+  .menu-item {
+    @apply block w-full rounded-sm px-2.5 py-1.5 text-left font-normal tracking-[.5px] text-ink hover:bg-card focus-visible:outline-offset-[-2px];
+  }
+
+  /* --- The page: the top fold, then a centered column ---
+     The fold is real document space. The page loads scrolled past it, so the
+     drip logo hangs from the top edge of the screen; scrolling up, or pulling
+     the page down, shows the reflected half of the drip in the fold. Even a
+     short page is a screen and a fold tall, so there is always room to scroll
+     past the fold. */
+  .site-fold {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-height: calc(100vh + var(--top-fold-height));
+    padding-top: var(--top-fold-height);
+  }
+
+  .site-page {
+    @apply relative z-[1] mx-auto w-full max-w-[1800px] flex-1 bg-bg px-4 pb-20 pt-5;
+  }
+
+  .site-header {
+    @apply mb-9 flex min-h-[35px] flex-wrap items-center gap-[14px];
+  }
+
+  .brand-slime {
+    @apply absolute left-4 top-0 h-[69px] w-[54px] overflow-hidden leading-none;
+  }
+
+  .brand-slime img {
+    @apply block h-auto w-full;
+    transform: translateY(-1px);
+  }
+
+  .brand-slime:focus-visible {
+    outline: 2px solid theme('colors.amber');
+    outline-offset: 3px;
+  }
+
+  .overscroll-slime {
+    @apply absolute left-4 z-0 w-[54px] overflow-hidden leading-none;
+    top: calc(-1 * var(--top-fold-height));
+    height: var(--top-fold-height);
+  }
+
+  .overscroll-slime img {
+    @apply absolute right-0 block h-auto w-full;
+    bottom: -9px;
+    transform: scaleY(-1);
+  }
+
+  .site-header-wallet {
+    @apply ml-auto flex items-center;
+  }
+
+  /* While the fold is in view the wallet control stays put on the screen,
+     where it sits once the fold is scrolled away. */
+  .site-header-wallet.top-fold-fixed {
+    position: fixed;
+    z-index: 20;
+    top: 20px;
+    right: max(16px, calc((100vw - 1800px) / 2 + 16px));
+  }
+}
+
+/* --- The sign-in dialog ---
+   The SDK injects its own unlayered `.jb-connect` defaults inside the dialog
+   at runtime, after this sheet. These rules therefore sit outside any layer
+   and name both classes to win. The --jb-connect-* tokens are also what
+   Signa's framed sign-in themes itself from. Title and close share one row,
+   the passkey button is compact, and the wallets are one row of tiles. */
+.jb-connect.sticky-connect {
+  --jb-connect-bg: theme('colors.card');
+  --jb-connect-fg: theme('colors.ink');
+  --jb-connect-muted: theme('colors.muted');
+  --jb-connect-line: theme('colors.line');
+  --jb-connect-accent: theme('colors.accent');
+  --jb-connect-accent-fg: #ffffff;
+  --jb-connect-radius: 8px;
+  --jb-connect-pad: 32px;
+  --jb-connect-font: var(--font-beatrice), 'Helvetica Neue', Arial, sans-serif;
+  --jb-connect-backdrop: rgb(33 30 26 / 0.55);
+  border-color: theme('colors.ink');
+}
+
+.jb-connect.sticky-connect > h2 {
+  padding-right: 36px;
+  font-family:
+    var(--font-agrandir-wide), var(--font-beatrice), 'Helvetica Neue', Arial,
+    sans-serif;
+  font-weight: 700;
+}
+
+.jb-connect.sticky-connect :is(.jb-connect-primary, .jb-connect-tile) {
+  border-radius: var(--jb-connect-radius);
+}
+
+.jb-connect.sticky-connect .jb-connect-primary {
+  display: inline-block;
+  width: auto;
+  min-height: 44px;
+  padding: 10px 20px;
+  background: theme('colors.teal');
+  color: theme('colors.ink');
+}
+
+.jb-connect.sticky-connect .jb-connect-powered {
+  display: none;
+}
+
+.jb-connect.sticky-connect .jb-connect-divider {
+  margin-top: 12px;
+}
+
+/* Keep the SDK's native cancellation control and handler, without its footer row. */
+.jb-connect.sticky-connect .jb-connect-footer {
+  display: contents;
+}
+
+.jb-connect.sticky-connect .jb-connect-footer > .jb-connect-text {
+  position: absolute;
+  top: calc(var(--jb-connect-pad) - 8px);
+  right: calc(var(--jb-connect-pad) - 8px);
+  width: 44px;
+  height: 44px;
+  margin: 0;
+  padding: 0;
+  border-radius: var(--jb-connect-radius);
+  color: var(--jb-connect-muted);
+  font-size: 0;
+  text-decoration: none;
+}
+
+.jb-connect.sticky-connect .jb-connect-footer > .jb-connect-text::before,
+.jb-connect.sticky-connect .jb-connect-footer > .jb-connect-text::after {
+  content: '';
+  position: absolute;
+  top: 21px;
+  left: 11px;
+  width: 22px;
+  height: 2px;
+  background: currentColor;
+  transform: rotate(45deg);
+}
+
+.jb-connect.sticky-connect .jb-connect-footer > .jb-connect-text::after {
+  transform: rotate(-45deg);
+}
+
+.jb-connect.sticky-connect .jb-connect-footer > .jb-connect-text:hover {
+  color: var(--jb-connect-fg);
+}
+
+/* The SDK's own `.jb-connect button { color: inherit }` is unlayered, so it
+   beats Tailwind's layers on a button inside the dialog. */
+.jb-connect.sticky-connect .btn-link {
+  color: theme('colors.accent');
+}
+
+.jb-connect.sticky-connect:has(.jb-connect-frame) {
+  padding-bottom: 0;
+}
+
+.jb-connect.sticky-connect .jb-connect-frame {
+  border-bottom: 0;
+}
+
+@keyframes skeleton-sweep {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes skeleton-pulse {
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-shimmer,
+  .revalidating::after {
+    animation: none;
+  }
+}
