@@ -9,22 +9,14 @@
 
 import type { JBChainId } from '@bananapus/nana-sdk-core'
 import { buildCashOutTx, buildPayTx } from '@bananapus/nana-sdk-core/v6'
-import { erc20Abi, formatUnits, maxUint256, type Abi, type Address } from 'viem'
+import { erc20Abi, formatUnits, maxUint256, type Address } from 'viem'
 import { stickyAutoStickAbi, stickyHookAbi, stickyTokenAbi } from '@/lib/sticky-abis'
 import { stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
 import type { AutoStickState } from '@/lib/sticky-autostick'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
+import type { TxRequest } from '@/hooks/useSafeTx'
 
-/** The request shape of useSafeTx's `send` (`src/hooks/useSafeTx.ts`). */
-export type TxRequest = {
-  chainId: number
-  address: Address
-  abi: Abi
-  functionName: string
-  args: readonly unknown[]
-  value?: bigint
-  label?: string
-}
+export type { TxRequest }
 
 function deploymentOn(chainId: number): StickyDeployment {
   const deployment = stickyDeployment(chainId)
