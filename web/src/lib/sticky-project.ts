@@ -18,6 +18,7 @@ import {
   terminalStoreAbi,
 } from '@/lib/sticky-abis'
 import { stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
+import { parseStickyUri } from '@/lib/sticky-metadata'
 
 /** One Sticky project on one chain, as of `blockNumber`. */
 export type StickyProjectInfo = {
@@ -110,32 +111,11 @@ function answered<T extends readonly Answer<unknown>[]>(answers: T): T {
   return answers
 }
 
-/** What a Sticky launch writes in its project's uri, a data URI of `{protocol: 'Sticky', version, launchId,
- * environment, chains}` (webclient/app.js:5020-5026): the launch id its copies share and the chains it was planned
- * on. A uri that is not a Sticky launch's has neither. */
+/** The launch id and the planned chains that a Sticky launch wrote in its project's uri (see `parseStickyUri`). A uri
+ * that is not a Sticky launch's has neither. */
 function launchIn(uri: string): Pick<StickyProjectInfo, 'launchId' | 'plannedChains'> {
-  const none = { launchId: null, plannedChains: null }
-  if (!uri.startsWith('data:application/json')) return none
-  const comma = uri.indexOf(',')
-  if (comma < 0) return none
-  try {
-    const payload = uri.slice(comma + 1)
-    const json = uri.slice(0, comma).includes(';base64') ? atob(payload) : decodeURIComponent(payload)
-    const metadata: unknown = JSON.parse(json)
-    if (typeof metadata !== 'object' || metadata === null) return none
-    const { protocol, launchId, chains } = metadata as { protocol?: unknown; launchId?: unknown; chains?: unknown }
-    if (protocol !== 'Sticky') return none
-    // A chain id is a whole number above 0, as the launch wrote it or as a numeric string; anything else is left out.
-    const planned = Array.isArray(chains)
-      ? [...new Set(chains.map(Number).filter(id => Number.isSafeInteger(id) && id > 0))]
-      : []
-    return {
-      launchId: typeof launchId === 'string' && launchId !== '' ? launchId : null,
-      plannedChains: planned.length ? planned : null,
-    }
-  } catch {
-    return none
-  }
+  const sticky = parseStickyUri(uri)
+  return { launchId: sticky?.launchId ?? null, plannedChains: sticky?.chains ?? null }
 }
 
 /** The launch id in a Sticky project's uri, which a launch stores as a data URI. Anything else has none. */

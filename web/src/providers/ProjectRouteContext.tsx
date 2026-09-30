@@ -9,7 +9,7 @@ import {
   type PropsWithChildren,
 } from 'react'
 import type { JBChainId } from '@bananapus/nana-sdk-core'
-import { projectRouteSegmentFromPathname } from '@/lib/project-handles'
+import { projectRouteSegmentFromPathname } from '@/lib/project-route'
 
 export type ResolvedProjectRoute = {
   chainId: JBChainId

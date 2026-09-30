@@ -511,7 +511,7 @@ async function timed(chainId: number, logs: ScannedLog[], signal: AbortSignal | 
 /** JBProjects on each chain, as the recorded controller names it. */
 const projectsContracts = new Map<number, Address>()
 
-async function projectsContract(chainId: number, signal: AbortSignal | undefined): Promise<Address> {
+export async function projectsContract(chainId: number, signal: AbortSignal | undefined): Promise<Address> {
   const known = projectsContracts.get(chainId)
   if (known) return known
   const read = jbCenterPublicClient(chainId).readContract({

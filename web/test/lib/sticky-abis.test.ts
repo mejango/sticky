@@ -1,12 +1,31 @@
 import * as sdk from '@bananapus/nana-sdk-core'
-import { toFunctionSelector, type Abi, type AbiFunction, type Hex } from 'viem'
+import { mainnet } from '@bananapus/nana-sdk-core/chains'
+import {
+  createPublicClient,
+  custom,
+  encodeFunctionResult,
+  parseAbi,
+  toFunctionSelector,
+  zeroAddress,
+  type Abi,
+  type AbiFunction,
+  type Hex,
+} from 'viem'
 import { formatAbiItem } from 'viem/utils'
 import { describe, expect, it } from 'vitest'
+import { jbProjectHandlesAbi } from '@/lib/project-handles'
 import * as sticky from '@/lib/sticky-abis'
+
+// The universal resolver's reverse lookup. viem's getEnsName makes the call and keeps its ABI to itself,
+// so it is written out here, and the last test of this file holds it to what viem sends.
+const ensUniversalResolverAbi = parseAbi([
+  'function reverseWithGateways(bytes reverseName, uint256 coinType, string[] gateways) view returns (string resolvedName, address resolver, address reverseResolver)',
+])
 
 // Where each function the old client calls lives now. The five Sticky ABIs come from the SDK, the
 // lists below them are this app's own, and the last is the SDK's full ABI for calls the old client
-// makes that Sticky's lists do not carry.
+// makes that Sticky's lists do not carry. JBProjectHandles' is the one project-handles.ts copies from
+// juicebox-money, and the ENS resolver's is the one above.
 const SOURCES: Record<string, Abi> = {
   stickyDeployerAbi: sticky.stickyDeployerAbi,
   stickyHookAbi: sticky.stickyHookAbi,
@@ -21,11 +40,13 @@ const SOURCES: Record<string, Abi> = {
   tokensAbi: sticky.tokensAbi,
   controllerAbi: sticky.controllerAbi,
   'jbMultiTerminalAbi (SDK)': sdk.jbMultiTerminalAbi,
+  jbProjectHandlesAbi,
+  ensUniversalResolverAbi,
 }
 
-// Every entry of the old client's SEL table (webclient/app.js, lines 8-80) except three this module has
-// no use for: `mint`, which that client never calls, and `handleOf` and `ensReverseWithGateways`, which
-// read JBProjectHandles and the ENS resolver and take their ABIs from the modules that use them.
+// Every entry of the old client's SEL table (webclient/app.js, lines 8-80) except `mint`, which that
+// client never calls. `handleOf` and `ensReverseWithGateways` read JBProjectHandles and the ENS
+// universal resolver, and their ABIs are the ones above.
 // Columns: the SEL name, where the function lives now, its signature, and the selector it had there.
 const SEL: [string, string, string, Hex][] = [
   ['HOOK', 'stickyDeployerAbi', 'HOOK()', '0xa54eb242'],
@@ -65,6 +86,13 @@ const SEL: [string, string, string, Hex][] = [
   ['tokenOf', 'tokensAbi', 'tokenOf(uint256)', '0xea78803f'],
   ['projectIdOf', 'tokensAbi', 'projectIdOf(address)', '0x0f85421b'],
   ['uriOf', 'controllerAbi', 'uriOf(uint256)', '0xa312889b'],
+  ['handleOf', 'jbProjectHandlesAbi', 'handleOf(uint256,uint256,address)', '0xd9b0da2d'],
+  [
+    'ensReverseWithGateways',
+    'ensUniversalResolverAbi',
+    'reverseWithGateways(bytes,uint256,string[])',
+    '0xb7d6ca64',
+  ],
   [
     'pay',
     'jbMultiTerminalAbi (SDK)',
@@ -191,5 +219,34 @@ describe('the lists this app writes', () => {
     expect(sticky.stickyDistributorAbi).toBe(sdk.stickyDistributorAbi)
     expect(sticky.stickyRewardReceiverFactoryAbi).toBe(sdk.stickyRewardReceiverFactoryAbi)
     expect(sticky.stickyAutoStickAbi).toBe(sdk.stickyAutoStickAbi)
+  })
+})
+
+describe('the ENS reverse lookup', () => {
+  it('is what viem\'s getEnsName sends to the universal resolver that the SDK\'s mainnet chain names', async () => {
+    const calls: { method: string; params: [{ to: string; data: Hex }, unknown] }[] = []
+    const client = createPublicClient({
+      chain: mainnet,
+      transport: custom({
+        async request(request) {
+          calls.push(request as (typeof calls)[number])
+          return encodeFunctionResult({
+            abi: ensUniversalResolverAbi,
+            functionName: 'reverseWithGateways',
+            result: ['vitalik.eth', zeroAddress, zeroAddress],
+          })
+        },
+      }),
+    })
+
+    expect(await client.getEnsName({ address: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045' })).toBe('vitalik.eth')
+
+    expect(calls).toHaveLength(1)
+    const [{ to, data }] = calls[0].params
+    expect(calls[0].method).toBe('eth_call')
+    expect(to.toLowerCase()).toBe('0xeeeeeeee14d718c2b47d9923deab1335e144eeee')
+    expect(to.toLowerCase()).toBe(mainnet.contracts.ensUniversalResolver.address)
+    expect(data.slice(0, 10)).toBe(toFunctionSelector(functionNamed(ensUniversalResolverAbi, 'reverseWithGateways(bytes,uint256,string[])')!))
+    expect(data.slice(0, 10)).toBe('0xb7d6ca64')
   })
 })
