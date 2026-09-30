@@ -5,7 +5,7 @@ import { useState } from 'react'
 import { assetUrl } from '@/lib/sticky-metadata'
 
 // Placeholder tiles in Sticky's colors, with checked contrast:
-// ink on teal = 8.5, amber = 5.7, line = 11.3.
+// ink on teal = 8.4, amber = 5.7, line = 11.2.
 const TILES = ['bg-teal text-ink', 'bg-amber text-ink', 'bg-line text-ink']
 
 /** Project logo image, or a colored initial tile when there's no usable logo. */

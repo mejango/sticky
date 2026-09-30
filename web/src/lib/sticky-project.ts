@@ -6,8 +6,10 @@ import {
   isAddressEqual,
   zeroAddress,
   type Address,
+  type ContractFunctionParameters,
   type Hex,
 } from 'viem'
+import { untilAborted } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import {
   controllerAbi,
@@ -128,17 +130,31 @@ export function launchIdIn(uri: string): string | null {
  * `'clamp'` reads it as all of the terminal's balance, so that nothing is claimable. */
 export type OrphanedPolicy = 'strict' | 'clamp'
 
-/** One Sticky project: its tokens, its terminal balance and its supply, all read at one block. The
- * deployment's own contracts are asked first, and they name the two tokens and the store; those are
- * asked second. Each round is one Multicall3 request, and both ask the same block. */
-export async function readStickyProject(
-  chainId: number,
-  projectId: bigint,
-  { orphans = 'strict' }: { orphans?: OrphanedPolicy } = {},
-): Promise<StickyProjectInfo> {
-  const deployment = deploymentOn(chainId)
-  const client = jbCenterPublicClient(chainId)
-  const blockNumber = await client.getBlockNumber()
+/** The most characters of a token's symbol or name that are kept: what the browser keeps of a project stays bounded,
+ * as a project's name from its metadata is (`sticky-metadata.ts`). A longer one is cut, never inside a character. */
+const MAX_TOKEN_TEXT = 256
+const capped = (text: string) =>
+  text.length <= MAX_TOKEN_TEXT ? text : Array.from(text).slice(0, MAX_TOKEN_TEXT).join('')
+
+/** How many projects one Multicall3 request carries. A project's second round is ten calls. */
+const PROJECTS_PER_REQUEST = 25
+
+/** A project's figures, or why it has none. */
+type ProjectRead = { projectId: bigint; info: StickyProjectInfo } | Failed
+
+/** What the deployment's contracts say of a project: the first round of its read. */
+type Recorded = {
+  projectId: bigint
+  stakedToken: Address
+  cashOutTaxRate: bigint
+  stToken: Address
+  savedOrphaned: bigint
+  store: Address
+  uriOf: Answer<string>
+}
+
+/** The reads of one project's answers, whose failures name the project and what could not be read. */
+function reading(chainId: number, projectId: bigint) {
   const where = `Sticky project ${projectId} on chain ${chainId}`
   const unreadable = (read: string, cause: Error): never => {
     throw new Error(`${where}: ${read} could not be read.`, { cause })
@@ -149,35 +165,124 @@ export async function readStickyProject(
   // (MKR). Reading a string's return as a bytes32 gives its offset word rather than an error, so the
   // string reading comes first and the bytes32 one only when it fails.
   const text = (asString: Answer<string>, asBytes32: Answer<Hex>, read: string): string => {
-    if (asString.status === 'success') return asString.result
+    if (asString.status === 'success') return capped(asString.result)
     if (asBytes32.status === 'success') return hexToString(asBytes32.result, { size: 32 }).replace(/\0+$/, '')
     return unreadable(read, asString.error)
   }
+  return { need, text }
+}
 
-  const [stakedTokenOf, taxRateOf, tokenOf, orphanedOf, storeOf, uriOf] = answered(
-    await client.multicall({
-      contracts: [
-        { address: deployment.deployer, abi: stickyDeployerAbi, functionName: 'stakedTokenOf', args: [projectId] },
-        { address: deployment.deployer, abi: stickyDeployerAbi, functionName: 'cashOutTaxRateOf', args: [projectId] },
-        // The hook binds each project to the one token allowed to report its transfers and burns.
-        { address: deployment.hook, abi: stickyHookAbi, functionName: 'tokenOf', args: [projectId] },
-        { address: deployment.hook, abi: stickyHookAbi, functionName: 'orphanedBalanceOf', args: [projectId] },
-        { address: deployment.terminal, abi: terminalAbi, functionName: 'STORE' },
-        { address: deployment.controller, abi: controllerAbi, functionName: 'uriOf', args: [projectId] },
-      ],
-      allowFailure: true,
-      blockNumber,
+type Failed = { projectId: bigint; error: Error }
+type Attempt<T> = { projectId: bigint; value: T } | Failed
+const failed = <T>(read: Attempt<T>): read is Failed => 'error' in read
+
+/** What `read` gives for `projectId`, or the error that says why it gives nothing. */
+function attempt<T>(projectId: bigint, read: () => T): Attempt<T> {
+  try {
+    return { projectId, value: read() }
+  } catch (error) {
+    return { projectId, error: error instanceof Error ? error : new Error(String(error)) }
+  }
+}
+
+/** Some of a chain's projects, read in two Multicall3 requests at `blockNumber`: first what the deployment's contracts
+ * say of each, and the store; then the tokens and store they name, for each project the first round could read. */
+async function readSome(
+  chainId: number,
+  deployment: StickyDeployment,
+  projectIds: readonly bigint[],
+  blockNumber: bigint,
+  orphans: OrphanedPolicy,
+  signal: AbortSignal | undefined,
+): Promise<ProjectRead[]> {
+  const client = jbCenterPublicClient(chainId)
+  const { deployer, hook, terminal, controller } = deployment
+  // Each round is one request: the projects are already counted out, so viem is told not to split it.
+  const ask = async (contracts: ContractFunctionParameters[]) =>
+    answered(
+      (await untilAborted(
+        client.multicall({ contracts, allowFailure: true, batchSize: 0, blockNumber }),
+        signal,
+      )) as Answer<unknown>[],
+    )
+  const first = await ask([
+    { address: terminal, abi: terminalAbi, functionName: 'STORE' },
+    ...projectIds.flatMap(projectId => [
+      { address: deployer, abi: stickyDeployerAbi, functionName: 'stakedTokenOf', args: [projectId] },
+      { address: deployer, abi: stickyDeployerAbi, functionName: 'cashOutTaxRateOf', args: [projectId] },
+      // The hook binds each project to the one token allowed to report its transfers and burns.
+      { address: hook, abi: stickyHookAbi, functionName: 'tokenOf', args: [projectId] },
+      { address: hook, abi: stickyHookAbi, functionName: 'orphanedBalanceOf', args: [projectId] },
+      { address: controller, abi: controllerAbi, functionName: 'uriOf', args: [projectId] },
+    ]),
+  ])
+  const [storeOf, ...perProject] = first
+  const recorded = projectIds.map((projectId, index) =>
+    attempt(projectId, (): Recorded => {
+      const [stakedTokenOf, taxRateOf, tokenOf, orphanedOf, uriOf] = perProject.slice(index * 5, index * 5 + 5) as [
+        Answer<Address>,
+        Answer<bigint>,
+        Answer<Address>,
+        Answer<bigint>,
+        Answer<string>,
+      ]
+      const { need } = reading(chainId, projectId)
+      const stakedToken = need(stakedTokenOf, 'the staked token')
+      if (stakedToken === zeroAddress) {
+        throw new Error(`Project ${projectId} is not a Sticky token of this deployer.`)
+      }
+      return {
+        projectId,
+        cashOutTaxRate: need(taxRateOf, 'the stickiness bonus'),
+        stToken: need(tokenOf, 'the Sticky token'),
+        savedOrphaned: need(orphanedOf, 'the unowned backing'),
+        store: need(storeOf as Answer<Address>, 'the store'),
+        stakedToken,
+        uriOf,
+      }
     }),
   )
-  const stakedToken = need(stakedTokenOf, 'the staked token')
-  if (stakedToken === zeroAddress) {
-    throw new Error(`Project ${projectId} is not a Sticky token of this deployer.`)
-  }
-  const cashOutTaxRate = need(taxRateOf, 'the stickiness bonus')
-  const stToken = need(tokenOf, 'the Sticky token')
-  const savedOrphaned = need(orphanedOf, 'the unowned backing')
-  const store = need(storeOf, 'the store')
+  const readable = recorded.flatMap(read => (failed(read) ? [] : [read.value]))
+  if (!readable.length) return recorded.filter(failed)
+  if (signal?.aborted) throw signal.reason
 
+  const second = await ask(
+    readable.flatMap(({ projectId, stakedToken, stToken, store }) => [
+      { address: stakedToken, abi: erc20Abi, functionName: 'symbol' },
+      { address: stakedToken, abi: erc20Abi, functionName: 'decimals' },
+      { address: stakedToken, abi: erc20Abi, functionName: 'name' },
+      { address: stakedToken, abi: erc20Abi_bytes32, functionName: 'symbol' },
+      { address: stakedToken, abi: erc20Abi_bytes32, functionName: 'name' },
+      { address: stToken, abi: stickyTokenAbi, functionName: 'symbol' },
+      { address: stToken, abi: stickyTokenAbi, functionName: 'name' },
+      { address: stToken, abi: stickyTokenAbi, functionName: 'SOULBOUND' },
+      { address: stToken, abi: stickyTokenAbi, functionName: 'totalSupply' },
+      { address: store, abi: terminalStoreAbi, functionName: 'balanceOf', args: [terminal, projectId, stakedToken] },
+    ]),
+  )
+  const figures = new Map(
+    readable.map((project, index) => [
+      project.projectId,
+      attempt(project.projectId, () =>
+        figuresOf(chainId, project, second.slice(index * 10, index * 10 + 10), orphans, blockNumber),
+      ),
+    ]),
+  )
+  return recorded.map(read => {
+    if (failed(read)) return read
+    const found = figures.get(read.projectId)!
+    return failed(found) ? found : { projectId: read.projectId, info: found.value }
+  })
+}
+
+/** A project's figures from its second round, as the old single read made them. */
+function figuresOf(
+  chainId: number,
+  { projectId, stakedToken, cashOutTaxRate, stToken, savedOrphaned, uriOf }: Recorded,
+  answers: Answer<unknown>[],
+  orphans: OrphanedPolicy,
+  blockNumber: bigint,
+): StickyProjectInfo {
   const [
     symbolOf,
     decimalsOf,
@@ -189,34 +294,25 @@ export async function readStickyProject(
     soulboundOf,
     totalSupplyOf,
     balanceOf,
-  ] = answered(
-    await client.multicall({
-      contracts: [
-        { address: stakedToken, abi: erc20Abi, functionName: 'symbol' },
-        { address: stakedToken, abi: erc20Abi, functionName: 'decimals' },
-        { address: stakedToken, abi: erc20Abi, functionName: 'name' },
-        { address: stakedToken, abi: erc20Abi_bytes32, functionName: 'symbol' },
-        { address: stakedToken, abi: erc20Abi_bytes32, functionName: 'name' },
-        { address: stToken, abi: stickyTokenAbi, functionName: 'symbol' },
-        { address: stToken, abi: stickyTokenAbi, functionName: 'name' },
-        { address: stToken, abi: stickyTokenAbi, functionName: 'SOULBOUND' },
-        { address: stToken, abi: stickyTokenAbi, functionName: 'totalSupply' },
-        {
-          address: store,
-          abi: terminalStoreAbi,
-          functionName: 'balanceOf',
-          args: [deployment.terminal, projectId, stakedToken],
-        },
-      ],
-      allowFailure: true,
-      blockNumber,
-    }),
-  )
+  ] = answers as [
+    Answer<string>,
+    Answer<number>,
+    Answer<string>,
+    Answer<Hex>,
+    Answer<Hex>,
+    Answer<string>,
+    Answer<string>,
+    Answer<boolean>,
+    Answer<bigint>,
+    Answer<bigint>,
+  ]
+  const { need, text } = reading(chainId, projectId)
   const symbol = text(symbolOf, symbolBytes32Of, 'the underlying symbol')
   const decimals = need(decimalsOf, 'the underlying decimals')
   const name = text(nameOf, nameBytes32Of, 'the underlying name')
-  const stSymbol = need(stSymbolOf, 'the Sticky symbol')
-  const stName = need(stNameOf, 'the Sticky name')
+  // A launch picks its Sticky token's symbol and name, so they are cut like any token's.
+  const stSymbol = capped(need(stSymbolOf, 'the Sticky symbol'))
+  const stName = capped(need(stNameOf, 'the Sticky name'))
   const totalSupply = need(totalSupplyOf, 'the Sticky supply')
   const held = need(balanceOf, 'the terminal balance')
 
@@ -249,6 +345,58 @@ export async function readStickyProject(
     ...(uriOf.status === 'success' ? launchIn(uriOf.result) : { launchId: null, plannedChains: null }),
     blockNumber,
   }
+}
+
+/** Each of a chain's `projectIds`, read at one block, PROJECTS_PER_REQUEST projects to a request, one request after
+ * another. A request that got no answer rejects: it says nothing about the projects it carried. */
+async function readEach(
+  chainId: number,
+  projectIds: readonly bigint[],
+  orphans: OrphanedPolicy,
+  signal: AbortSignal | undefined,
+): Promise<ProjectRead[]> {
+  const deployment = deploymentOn(chainId)
+  if (!projectIds.length) return []
+  const blockNumber = await untilAborted(jbCenterPublicClient(chainId).getBlockNumber(), signal)
+  const reads: ProjectRead[] = []
+  for (let at = 0; at < projectIds.length; at += PROJECTS_PER_REQUEST) {
+    if (signal?.aborted) throw signal.reason
+    const some = projectIds.slice(at, at + PROJECTS_PER_REQUEST)
+    reads.push(...(await readSome(chainId, deployment, some, blockNumber, orphans, signal)))
+  }
+  return reads
+}
+
+const PROJECT_UNREADABLE = 'Could not read a Sticky project; leaving it out.'
+
+/** Some of a chain's Sticky projects, in the order asked, all read at one block in two Multicall3 rounds (PROJECTS_PER_REQUEST
+ * projects to a request): what the deployment's contracts say of each, then the tokens and store they name. A project
+ * that cannot be read is left out, and the console hears which and why; the others are still read. */
+export async function readStickyProjects(
+  chainId: number,
+  projectIds: readonly bigint[],
+  { orphans = 'strict', signal }: { orphans?: OrphanedPolicy; signal?: AbortSignal } = {},
+): Promise<StickyProjectInfo[]> {
+  const reads = await readEach(chainId, projectIds, orphans, signal)
+  return reads.flatMap(read => {
+    if ('info' in read) return [read.info]
+    console.warn(PROJECT_UNREADABLE, { chainId, projectId: read.projectId }, read.error)
+    return []
+  })
+}
+
+/** One Sticky project: its tokens, its terminal balance and its supply, all read at one block. The
+ * deployment's own contracts are asked first, and they name the two tokens and the store; those are
+ * asked second. Each round is one Multicall3 request, and both ask the same block. It rejects with why the
+ * project cannot be read. */
+export async function readStickyProject(
+  chainId: number,
+  projectId: bigint,
+  { orphans = 'strict' }: { orphans?: OrphanedPolicy } = {},
+): Promise<StickyProjectInfo> {
+  const [read] = await readEach(chainId, [projectId], orphans, undefined)
+  if ('error' in read) throw read.error
+  return read.info
 }
 
 /** Checks that the deployer on this chain still reports the hook, terminal and controller this site

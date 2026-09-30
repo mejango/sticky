@@ -1,11 +1,19 @@
 import { QueryClient, QueryClientProvider, notifyManager } from '@tanstack/react-query'
 import { act, type AnchorHTMLAttributes, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { getAddress, type Address, type Hex } from 'viem'
+import { getAddress, type Address } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { FeedRow } from '@/lib/sticky-feed'
 import type { HomeCard, HomeChain, SecuredSeries } from '@/lib/sticky-home'
-import type { StickyProjectInfo } from '@/lib/sticky-project'
+import {
+  E18,
+  E6,
+  HOLDER,
+  TOKEN,
+  deferred,
+  feedRow as row,
+  homeCard as card,
+  homeChainOf as chainResult,
+} from '../home-fixtures'
 
 const mocks = vi.hoisted(() => ({
   index: vi.fn(),
@@ -15,6 +23,9 @@ const mocks = vi.hoisted(() => ({
   chainIds: vi.fn(),
   actualChainIds: null as null | ((environment: 'production' | 'testnet') => number[]),
   address: undefined as string | undefined,
+  /** The chains whose accounts ENS names, and the names it has. */
+  ensChains: new Set<number>(),
+  names: new Map<string, string>(),
 }))
 
 vi.mock('@/lib/sticky-home', async importOriginal => ({
@@ -36,7 +47,10 @@ vi.mock('@/hooks/useProjectMetadata', () => ({
   useProjectMetadata: () => ({ data: undefined, isPending: false, isError: false, error: null }),
 }))
 vi.mock('@/hooks/useWallet', () => ({ useWallet: () => ({ address: mocks.address }) }))
-vi.mock('@/lib/ens', () => ({ ensAvailable: () => false, lookupEnsName: async () => null }))
+vi.mock('@/lib/ens', () => ({
+  ensAvailable: (chainId: number) => mocks.ensChains.has(chainId),
+  lookupEnsName: async (address: string) => mocks.names.get(address.toLowerCase()) ?? null,
+}))
 
 import Home from '@/app/page'
 import { HomeLists } from '@/components/home/HomeLists'
@@ -44,74 +58,18 @@ import { SecuredChart } from '@/components/home/SecuredChart'
 import { StickiestCard } from '@/components/home/StickiestCard'
 import { StickyFeed } from '@/components/StickyFeed'
 
-const E18 = 10n ** 18n
-const E6 = 10n ** 6n
-const HOLDER = `0x${'a'.repeat(40)}` as Address
 const FUNDER = `0x${'b'.repeat(40)}` as Address
 const RECIPIENT = `0x${'c'.repeat(40)}` as Address
-const TOKEN = getAddress(`0x${'2'.repeat(40)}`)
 const short = (address: Address) => `${address.slice(0, 6)}…${address.slice(-4)}`
 
-function info(chainId: number, projectId: bigint, extra: Partial<StickyProjectInfo> = {}): StickyProjectInfo {
-  return {
-    chainId,
-    projectId,
-    stToken: `0x${'5'.repeat(40)}`,
-    stSymbol: 'STK',
-    stName: 'Sticky CPN',
-    stakedToken: TOKEN,
-    symbol: 'CPN',
-    name: 'Coupon',
-    decimals: 18,
-    cashOutTaxRate: 1_000n,
-    soulbound: false,
-    totalSupply: E18,
-    backing: E18,
-    orphaned: 0n,
-    rawBacking: E18,
-    savedOrphaned: 0n,
-    launchId: null,
-    plannedChains: null,
-    blockNumber: 1n,
-    ...extra,
-  }
-}
-const card = (chainId: number, projectId: bigint, extra: Partial<StickyProjectInfo> = {}, sticks = 1): HomeCard => ({
-  info: info(chainId, projectId, extra),
-  sticks,
-})
-const chainResult = (chainId: number, cards: HomeCard[] = [], extra: Partial<HomeChain> = {}): HomeChain => ({
-  chainId,
-  cards,
-  activity: [],
-  airdrops: [],
-  supply: [],
-  ...extra,
-})
-let txCount = 0
-function row(chainId: number, projectId: bigint, timestamp: number, extra: Partial<FeedRow> = {}): FeedRow {
-  txCount += 1
-  return {
-    chainId,
-    projectId,
-    timestamp,
-    txHash: `0x${txCount.toString(16).padStart(64, '0')}` as Hex,
-    logIndex: 0,
-    direction: 'in',
-    amount: { value: E18, decimals: 18, symbol: 'CPN' },
-    line: { kind: 'stuck', holder: HOLDER },
-    ...extra,
-  }
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  let reject!: (reason: unknown) => void
-  const promise = new Promise<T>((yes, no) => {
-    resolve = yes
-    reject = no
-  })
-  return { promise, resolve, reject }
+/** A viewport `width` px wide, for the home's `matchMedia` queries, which name Tailwind's breakpoints in rem. */
+function stubWidth(width: number) {
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: width >= Number(/min-width:\s*([\d.]+)rem/.exec(query)?.[1]) * 16,
+    media: query,
+    addEventListener() {},
+    removeEventListener() {},
+  }))
 }
 
 let host: HTMLDivElement
@@ -121,7 +79,10 @@ const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: fa
 
 beforeEach(() => {
   notifyManager.setScheduler(callback => queueMicrotask(callback))
+  stubWidth(1280)
   mocks.address = undefined
+  mocks.ensChains = new Set()
+  mocks.names = new Map()
   mocks.chainIds.mockReset().mockImplementation(mocks.actualChainIds!)
   mocks.index.mockReset().mockResolvedValue(null)
   mocks.latest.mockReset().mockResolvedValue(null)
@@ -411,6 +372,21 @@ describe('the home page\'s lists and tabs', () => {
     expect(classes(panel('airdrops'))).toEqual(expect.arrayContaining(['hidden', 'sm:hidden', 'xl:block']))
   })
 
+  it.each([
+    [390, { latest: 'home-tab-latest', stickiest: 'home-tab-stickiest', airdrops: 'home-tab-airdrops' }],
+    [768, { latest: null, stickiest: 'home-rank-stickiest', airdrops: 'home-rank-airdrops' }],
+    [1280, { latest: null, stickiest: null, airdrops: null }],
+  ])('at %i px names each list after the one tab that shows it, and makes no tab panel of a list no tab shows', async (width, labels) => {
+    stubWidth(width)
+    await renderHome()
+    for (const [name, label] of Object.entries(labels)) {
+      const list = panel(name)!
+      expect([name, list.getAttribute('role'), list.getAttribute('aria-labelledby')]).toEqual(
+        label ? [name, 'tabpanel', label] : [name, null, null],
+      )
+    }
+  })
+
   it('switches the phone list and the tablet ranking by their tabs', async () => {
     await renderHome()
     await act(async () => tabs('Homepage lists')[2].click())
@@ -560,6 +536,14 @@ describe('SecuredChart', () => {
     expect(active()).toBe(27)
   })
 
+  it('keeps the bar a tap picked when the plot takes focus after it', async () => {
+    await renderChart()
+    // A tap is a pointerdown, and then the plot takes focus.
+    await pointer('pointerdown', 145, 'touch')
+    await act(async () => plot().focus())
+    expect(active()).toBe(4)
+  })
+
   it('picks today\'s bar on focus, walks the bars with ← and →, and lets go on blur', async () => {
     await renderChart()
     await act(async () => plot().focus())
@@ -648,6 +632,18 @@ describe('StickyFeed', () => {
 
     await renderNode(<StickyFeed rows={[row(8453, 23n, NOW)]} empty="No activity yet" />)
     expect(items()[0].querySelector('a[href="/base:23"]')).toBeNull()
+  })
+
+  it('names an account by ENS on a production chain\'s rows only, even once the name is known', async () => {
+    mocks.ensChains = new Set([8453])
+    mocks.names = new Map([[HOLDER, 'alice.eth']])
+    await renderNode(<StickyFeed rows={[row(8453, 23n, NOW)]} empty="No activity yet" />)
+    await settle()
+    expect(items()[0].querySelector('p')!.textContent).toBe('stuck by alice.eth')
+
+    await renderNode(<StickyFeed rows={[row(84532, 23n, NOW)]} empty="No activity yet" />)
+    await settle()
+    expect(items()[0].querySelector('p')!.textContent).toBe(`stuck by ${short(HOLDER)}`)
   })
 
   it('marks the viewer\'s own airdrop', async () => {

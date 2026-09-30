@@ -18,6 +18,7 @@ import {
 } from '@/lib/sticky-home'
 import type { IndexedMove, IndexedProjects, IndexedRows, IndexedStickyEvent } from '@/lib/sticky-indexed'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
+import { E18, E6, TOKEN, homeCard as card, stickyInfo } from '../home-fixtures'
 import {
   CHAIN,
   CREATED,
@@ -26,7 +27,6 @@ import {
   OTHER,
   POSITION_TOPICS,
   SENDER,
-  STAKED_TOKEN,
   deployment,
   staked,
   streakStarted,
@@ -40,35 +40,12 @@ beforeEach(() => {
   vi.spyOn(console, 'warn').mockImplementation(() => {})
 })
 
-const E18 = 10n ** 18n
-const E6 = 10n ** 6n
 const ADAPTER = deployment.autoStick.toLowerCase() as Address
 const FUNDER = `0x${'f'.repeat(40)}` as Address
 
-function info(projectId: bigint, extra: Partial<StickyProjectInfo> = {}): StickyProjectInfo {
-  return {
-    chainId: CHAIN,
-    projectId,
-    stToken: `0x${'5'.repeat(40)}`,
-    stSymbol: 'STICKYCPN',
-    stName: 'Sticky CPN',
-    stakedToken: STAKED_TOKEN,
-    symbol: 'CPN',
-    name: 'Coupon',
-    decimals: 6,
-    cashOutTaxRate: 1_000n,
-    soulbound: false,
-    totalSupply: 10n * E18,
-    backing: 10n * E6,
-    orphaned: 0n,
-    rawBacking: 10n * E6,
-    savedOrphaned: 0n,
-    launchId: null,
-    plannedChains: null,
-    blockNumber: 1n,
-    ...extra,
-  }
-}
+/** A project on the tests' chain. Its Sticky symbol tells its share counts from the staked token's amounts. */
+const info = (projectId: bigint, extra: Partial<StickyProjectInfo> = {}) =>
+  stickyInfo(CHAIN, projectId, { stSymbol: 'STICKYCPN', ...extra })
 
 type Place = { tx: string; logIndex?: number; timestamp: number; projectId?: bigint }
 const hash = (tx: string) => `0x${tx.padStart(64, '0')}` as Hex
@@ -123,7 +100,7 @@ function fakes(projects: bigint[], overrides: Partial<Fakes> = {}): Fakes {
   })
   return {
     projectsOn: vi.fn(async (_chainId: number, index: IndexedProjects | null) => result(index ? 'indexed' : 'scanned')),
-    read: vi.fn(async (_chainId: number, projectId: bigint) => info(projectId)),
+    readProjects: vi.fn(async (_chainId: number, projectIds: readonly bigint[]) => projectIds.map(id => info(id))),
     indexedMoves: vi.fn(async () => moves([])),
     scan: vi.fn(async (): Promise<ScannedLog[]> => []),
     terminalMoves: vi.fn(async () => new Map<string, bigint>()),
@@ -148,7 +125,7 @@ describe('homeChain, with Bendystraw', () => {
     const chain = await homeChain(CHAIN, { index: indexedOn(100n), latest: null, ...deps(given) })
 
     expect(given.projectsOn).toHaveBeenCalledWith(CHAIN, indexedOn(100n), { signal: undefined })
-    expect(given.read).toHaveBeenCalledWith(CHAIN, 23n, { signal: undefined })
+    expect(given.readProjects).toHaveBeenCalledWith(CHAIN, [23n], { signal: undefined })
     expect(given.indexedMoves).toHaveBeenCalledWith(CHAIN, [23n], undefined)
     expect(chain.cards).toEqual<HomeCard[]>([{ info: info(23n), sticks: 3 }])
     expect(chain.supply).toEqual([
@@ -400,34 +377,23 @@ describe('homeChain, its projects', () => {
     const given = fakes([])
     const chain = await homeChain(CHAIN, { index: indexedOn(100n, []), latest: null, ...deps(given) })
     expect(chain).toEqual<HomeChain>({ chainId: CHAIN, cards: [], activity: [], airdrops: [], supply: [] })
-    expect(given.read).not.toHaveBeenCalled()
+    expect(given.readProjects).not.toHaveBeenCalled()
     expect(given.indexedMoves).not.toHaveBeenCalled()
     expect(given.scan).not.toHaveBeenCalled()
   })
 
-  it('reads the projects one after another, and leaves out one that cannot be read, telling the console which', async () => {
-    const failure = new Error('rpc down')
-    let reading = 0
-    const read = vi.fn(async (_chainId: number, projectId: bigint) => {
-      reading += 1
-      expect(reading).toBe(1)
-      await Promise.resolve()
-      reading -= 1
-      if (projectId === 24n) throw failure
-      return info(projectId)
-    })
-    const given = fakes([23n, 24n, 25n], { read })
+  it('reads all of the chain\'s projects together, and shows the ones that can be read', async () => {
+    // readStickyProjects leaves out, and tells the console of, a project it cannot read: 24 here.
+    const readProjects = vi.fn(async () => [info(23n), info(25n)])
+    const given = fakes([23n, 24n, 25n], { readProjects })
     const chain = await homeChain(CHAIN, { index: indexedOn(100n, [23n, 24n, 25n]), latest: null, ...deps(given) })
+    expect(readProjects).toHaveBeenCalledTimes(1)
+    expect(readProjects).toHaveBeenCalledWith(CHAIN, [23n, 24n, 25n], { signal: undefined })
     expect(chain.cards.map(card => card.info.projectId)).toEqual([23n, 25n])
-    expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/project/), { chainId: CHAIN, projectId: 24n }, failure)
   })
 
   it('is an error for the chain when none of its projects can be read', async () => {
-    const given = fakes([37n], {
-      read: vi.fn(async () => {
-        throw new Error('rpc down')
-      }),
-    })
+    const given = fakes([37n], { readProjects: vi.fn(async () => []) })
     await expect(homeChain(CHAIN, { index: null, latest: null, ...deps(given) })).rejects.toThrow(
       'Could not read any Sticky token on Base.',
     )
@@ -436,15 +402,14 @@ describe('homeChain, its projects', () => {
   it('rejects with the caller\'s reason once cancelled, and reads nothing more', async () => {
     const controller = new AbortController()
     const reason = new Error('left the page')
-    const read = vi.fn(async (_chainId: number, projectId: bigint) => {
+    const readProjects = vi.fn(async (_chainId: number, projectIds: readonly bigint[]) => {
       controller.abort(reason)
-      return info(projectId)
+      return projectIds.map(id => info(id))
     })
-    const given = fakes([23n, 24n], { read })
+    const given = fakes([23n, 24n], { readProjects })
     await expect(
       homeChain(CHAIN, { index: indexedOn(100n, [23n, 24n]), latest: null, signal: controller.signal, ...deps(given) }),
     ).rejects.toBe(reason)
-    expect(read).toHaveBeenCalledTimes(1)
     expect(given.indexedMoves).not.toHaveBeenCalled()
   })
 })
@@ -482,18 +447,14 @@ describe('the network\'s reads', () => {
   })
 
   it('homePrices is DexScreener\'s prices, or null when it cannot answer, which the console hears about', async () => {
-    const prices = new Map([[STAKED_TOKEN, 2]])
-    expect(await homePrices(CHAIN, [STAKED_TOKEN], { usdPrices: vi.fn(async () => prices) })).toBe(prices)
+    const prices = new Map([[TOKEN, 2]])
+    expect(await homePrices(CHAIN, [TOKEN], { usdPrices: vi.fn(async () => prices) })).toBe(prices)
     const failure = new Error('price request failed (503)')
-    expect(await homePrices(CHAIN, [STAKED_TOKEN], { usdPrices: vi.fn(async () => Promise.reject(failure)) })).toBeNull()
+    expect(await homePrices(CHAIN, [TOKEN], { usdPrices: vi.fn(async () => Promise.reject(failure)) })).toBeNull()
     expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/price/), { chainId: CHAIN }, failure)
   })
 })
 
-const card = (chainId: number, projectId: bigint, extra: Partial<StickyProjectInfo> = {}, sticks = 1): HomeCard => ({
-  info: info(projectId, { chainId, symbol: 'CPN', decimals: 18, totalSupply: E18, backing: E18, ...extra }),
-  sticks,
-})
 
 describe('groupHomeCards', () => {
   it('collapses one launch\'s projects into one card, one project per chain, and keeps the others apart', () => {
@@ -521,6 +482,20 @@ describe('groupHomeCards', () => {
     expect(groups.map(group => group.cards.map(({ info }) => info.chainId))).toEqual([[1, 8453], [10], [42161]])
   })
 
+  it('keeps a copy of a launch\'s uri on a chain the launch was not planned on apart, even when it comes first', () => {
+    const plan = { launchId: 'L', plannedChains: [84532, 11155420] }
+    const groups = groupHomeCards([
+      // Ethereum Sepolia comes first in the site's order of chains; the launch was planned on the other two.
+      card(11155111, 5n, plan),
+      card(11155420, 20n, plan),
+      card(84532, 37n, plan),
+    ])
+    expect(groups.map(group => group.cards.map(({ info: { chainId, projectId } }) => `${chainId}:${projectId}`))).toEqual([
+      ['11155420:20', '84532:37'],
+      ['11155111:5'],
+    ])
+  })
+
   it('ranks by Sticky supply, most first, and keeps the order of cards that tie', () => {
     const groups = groupHomeCards([
       card(1, 1n, { totalSupply: 1n }),
@@ -541,7 +516,7 @@ describe('homeSecuredSeries', () => {
     supply,
   })
   const priced = (price: number | undefined) => (chainId: number, token: Address) =>
-    chainId === CHAIN && token === STAKED_TOKEN ? price : undefined
+    chainId === CHAIN && token === TOKEN ? price : undefined
 
   it('values today\'s claimable backing at today\'s price, and past share counts at today\'s backing per share', () => {
     // 10 shares back 20 CPN (6 decimals) at $2: $40 now. Five of the shares were stuck at 100, the rest at 200.
@@ -560,6 +535,26 @@ describe('homeSecuredSeries', () => {
       { timestamp: 100, value: 20_000_000n },
       { timestamp: 200, value: 40_000_000n },
       { timestamp: NOW, value: 40_000_000n },
+    ])
+  })
+
+  it('adds up projects whose moves interleave, each at the last of its own points before a time', () => {
+    const chain = chainOf(
+      [
+        card(CHAIN, 23n, { decimals: 6, totalSupply: 10n * E18, backing: 20n * E6 }),
+        card(CHAIN, 24n, { decimals: 6, totalSupply: 4n * E18, backing: 4n * E6 }),
+      ],
+      [
+        { projectId: 23n, timestamp: 100, delta: 5n * E18 },
+        { projectId: 24n, timestamp: 200, delta: 4n * E18 },
+        { projectId: 23n, timestamp: 300, delta: 5n * E18 },
+      ],
+    )
+    expect(homeSecuredSeries([chain], priced(2), NOW).points).toEqual([
+      { timestamp: 100, value: 20_000_000n },
+      { timestamp: 200, value: 28_000_000n },
+      { timestamp: 300, value: 48_000_000n },
+      { timestamp: NOW, value: 48_000_000n },
     ])
   })
 

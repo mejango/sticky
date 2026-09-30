@@ -84,7 +84,8 @@ export function SecuredChart({ series, pending }: { series: SecuredSeries | null
             // A finger lifting off leaves its bar picked, so it can be read.
             if (event.pointerType !== 'touch') setActive(-1)
           }}
-          onFocus={() => pick(bars.length - 1)}
+          // A tap focuses the plot after picking its bar: focus picks today's bar only when none is picked.
+          onFocus={() => setActive(current => (current < 0 ? bars.length - 1 : current))}
           onBlur={() => setActive(-1)}
           onKeyDown={event => {
             if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return

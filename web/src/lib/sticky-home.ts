@@ -15,7 +15,7 @@
 import type { BendystrawNetwork } from '@bananapus/nana-sdk-core'
 import type { Address } from 'viem'
 import { displayChainName } from '@/lib/chainDisplay'
-import { untilAborted, type ScannedLog } from '@/lib/hook-logs'
+import type { ScannedLog } from '@/lib/hook-logs'
 import { stickyChainIds, stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
 import {
   POSITION_TOPICS,
@@ -53,7 +53,7 @@ import {
   type IndexedStickyEvent,
 } from '@/lib/sticky-indexed'
 import { usdPrices } from '@/lib/sticky-prices'
-import { readStickyProject, type StickyProjectInfo } from '@/lib/sticky-project'
+import { readStickyProjects, type StickyProjectInfo } from '@/lib/sticky-project'
 import { launchKey } from '@/lib/sticky-siblings'
 
 /** A Sticky project on the home, as the chain reads it now, and how many holders have shares stuck in it. */
@@ -86,8 +86,8 @@ type Cancel = { signal?: AbortSignal }
 /** Every read `homeChain` makes, so a test can stand in for Bendystraw and Center. */
 export type HomeReadDeps = {
   projectsOn: (chainId: number, index: IndexedProjects | null, opts: Cancel) => Promise<StickyProjectsResult>
-  /** A project's figures, read at one block. */
-  read: (chainId: number, projectId: bigint, opts: Cancel) => Promise<StickyProjectInfo>
+  /** The figures of the chain's projects that can be read, read together at one block. */
+  readProjects: (chainId: number, projectIds: readonly bigint[], opts: Cancel) => Promise<StickyProjectInfo[]>
   indexedMoves: typeof indexedStickyMoves
   /** A contract's logs through the head, each with its block's time. */
   scan: StickyReadDeps['scan']
@@ -106,7 +106,6 @@ const INDEX_UNAVAILABLE = 'Bendystraw could not list the Sticky projects; scanni
 const LATEST_UNAVAILABLE = 'Bendystraw could not list the newest Sticky events; Latest shows its pays and cash outs.'
 const MOVES_UNAVAILABLE = "Bendystraw could not list a chain's sticks and unsticks; scanning the chain instead."
 const TAIL_UNAVAILABLE = "Could not read a chain's newest blocks; Latest shows Bendystraw's pays and cash outs."
-const PROJECT_UNREADABLE = 'Could not read a Sticky project; the home leaves it out.'
 const PRICES_UNAVAILABLE = 'Could not price the tokens stuck on a chain; the secured chart leaves them out.'
 
 /** The most project IDs one request may list: the relay refuses a longer list (`bendystraw-operation.ts`). */
@@ -143,20 +142,16 @@ export function homePrices(
 const decoded = (chainId: number, logs: readonly ScannedLog[]) =>
   logs.flatMap(log => decodeHookLog(log, chainId) ?? [])
 
-/** Each project's figures, read one after another. One that cannot be read is left out; none is an error. */
+/** The figures of the chain's projects that can be read. `readStickyProjects` leaves out, and tells the console of,
+ * one that cannot be; a chain none of whose projects can be read is an error. */
 async function readProjects(
   chainId: number,
   ids: readonly bigint[],
   deps: HomeReadDeps,
   signal: AbortSignal | undefined,
 ): Promise<StickyProjectInfo[]> {
-  const infos: StickyProjectInfo[] = []
-  for (const projectId of ids) {
-    if (signal?.aborted) throw signal.reason
-    const read = () => deps.read(chainId, projectId, { signal })
-    const info = await orNull(read, signal, PROJECT_UNREADABLE, { chainId, projectId })
-    if (info) infos.push(info)
-  }
+  const infos = await deps.readProjects(chainId, ids, { signal })
+  if (signal?.aborted) throw signal.reason
   if (!infos.length) throw new Error(`Could not read any Sticky token on ${displayChainName(chainId)}.`)
   return infos
 }
@@ -278,8 +273,8 @@ async function fromScan(
 
 /**
  * One chain's part of the home: its Sticky projects as the chain reads them now, each with its Sticks, the chain's
- * newest rows of Latest and Airdrops, and the history of its Sticky shares. The projects are read one after another.
- * A project that cannot be read is left out; a chain none of whose projects can be read rejects.
+ * newest rows of Latest and Airdrops, and the history of its Sticky shares. The projects are read together, at one
+ * block. A project that cannot be read is left out; a chain none of whose projects can be read rejects.
  */
 export async function homeChain(chainId: number, options: HomeReadOptions): Promise<HomeChain> {
   const { signal, index, latest, ...given } = options
@@ -312,23 +307,30 @@ export async function homeChain(chainId: number, options: HomeReadOptions): Prom
 
 const live: HomeReadDeps = {
   projectsOn: (chainId, index, { signal }) => stickyProjectsOn(chainId, index, { signal }),
-  read: (chainId, projectId, { signal }) => untilAborted(readStickyProject(chainId, projectId), signal),
+  readProjects: (chainId, projectIds, { signal }) => readStickyProjects(chainId, projectIds, { signal }),
   indexedMoves: indexedStickyMoves,
   scan: scanToHead,
   terminalMoves: (events, { signal }) => terminalMoves(events, { signal }),
   creationBlock: (chainId, projectId, { signal }) => projectCreationBlock(chainId, projectId, { signal }),
 }
 
+/** A card's launch key when its chain is one its launch was planned on, or its uri names no chains; otherwise none, so
+ * a project on another chain whose uri copies a launch's cannot join it, or head it. */
+function plannedKey({ info }: HomeCard): string | null {
+  const onPlan = info.plannedChains === null || info.plannedChains.includes(info.chainId)
+  return onPlan ? launchKey(info) : null
+}
+
 /**
  * The Stickiest cards: a launch's projects share its launch id, stickiness bonus and transfer mode, and each chain
- * gives the first of its projects that does, so a copied uri cannot join a launch. Most Sticky shares first; cards
- * that tie keep the order they came in.
+ * of its plan gives the first of its projects that does, so a copied uri cannot join a launch. Most Sticky shares
+ * first; cards that tie keep the order they came in.
  */
 export function groupHomeCards(cards: readonly HomeCard[]): HomeCardGroup[] {
   const groups: HomeCardGroup[] = []
   const byLaunch = new Map<string, HomeCardGroup>()
   for (const card of cards) {
-    const key = launchKey(card.info)
+    const key = plannedKey(card)
     const launch = key === null ? undefined : byLaunch.get(key)
     if (launch && !launch.cards.some(other => other.info.chainId === card.info.chainId)) {
       launch.cards.push(card)
@@ -370,8 +372,8 @@ function micros(price: number | undefined): bigint | null {
 
 /** A project's Sticky shares over time: the running sum of its moves, never below zero, shifted so that it ends at
  * today's supply, then today's supply now. A move the reads missed only shifts older points. */
-function stakedHistory(supply: readonly SupplyMove[], info: StickyProjectInfo, now: number): SecuredPoint[] {
-  const moves = supply.filter(move => move.projectId === info.projectId).sort((a, b) => a.timestamp - b.timestamp)
+function stakedHistory(ownMoves: readonly SupplyMove[], info: StickyProjectInfo, now: number): SecuredPoint[] {
+  const moves = [...ownMoves].sort((a, b) => a.timestamp - b.timestamp)
   const today = { timestamp: now, value: info.totalSupply }
   if (!moves.length) return [{ timestamp: now - FLAT_HISTORY, value: info.totalSupply }, today]
   let running = 0n
@@ -397,24 +399,30 @@ export function homeSecuredSeries(
   priceOf: (chainId: number, token: Address) => number | undefined,
   now: number,
 ): SecuredSeries {
-  const valued = chains.flatMap(chain =>
-    chain.cards.flatMap(({ info }) => {
+  const valued = chains.flatMap(chain => {
+    const byProject = new Map<bigint, SupplyMove[]>()
+    for (const move of chain.supply) {
+      const own = byProject.get(move.projectId)
+      if (own) own.push(move)
+      else byProject.set(move.projectId, [move])
+    }
+    return chain.cards.flatMap(({ info }) => {
       const price = micros(priceOf(chain.chainId, info.stakedToken))
-      return price === null ? [] : [{ info, price, history: stakedHistory(chain.supply, info, now) }]
-    }),
-  )
+      return price === null ? [] : [{ info, price, history: stakedHistory(byProject.get(info.projectId) ?? [], info, now) }]
+    })
+  })
   const times = [...new Set(valued.flatMap(({ history }) => history.map(point => point.timestamp)))].sort((a, b) => a - b)
   if (!times.length) times.push(now - FLAT_HISTORY, now)
+  // The times only grow, so each history is walked once: `seen[at]` is how many of its points are at or before the
+  // time being valued.
+  const seen = valued.map(() => 0)
   const points = times.map(timestamp => {
     let value = 0n
-    for (const { info, price, history } of valued) {
-      let shares = 0n
-      for (const point of history) {
-        if (point.timestamp > timestamp) break
-        shares = point.value
-      }
+    valued.forEach(({ info, price, history }, at) => {
+      while (seen[at] < history.length && history[seen[at]].timestamp <= timestamp) seen[at] += 1
+      const shares = seen[at] ? history[seen[at] - 1].value : 0n
       if (info.totalSupply > 0n) value += (shares * info.backing * price) / info.totalSupply / 10n ** BigInt(info.decimals)
-    }
+    })
     return { timestamp, value }
   })
   const total = valued.reduce((sum, { info, price }) => sum + (info.backing * price) / 10n ** BigInt(info.decimals), 0n)

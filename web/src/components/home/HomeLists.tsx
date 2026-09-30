@@ -1,7 +1,7 @@
 'use client'
 
 import type { BendystrawNetwork } from '@bananapus/nana-sdk-core'
-import { useRef, useState, type KeyboardEvent } from 'react'
+import { useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react'
 import { HomeHero } from '@/components/home/HomeHero'
 import { SecuredChart } from '@/components/home/SecuredChart'
 import { StickiestCard } from '@/components/home/StickiestCard'
@@ -28,6 +28,32 @@ const STEPS = [
 ] as const
 
 type View = { state: 'loading' | 'empty' | 'error' | 'ready'; note: string; retry: boolean }
+
+/** Tailwind's `sm` and `xl`: from `sm` Latest stands on its own and the rankings share tabs; from `xl` every list
+ * shows. The classes lay the lists out; this names them for assistive technology, which CSS cannot. */
+const TABLET = '(min-width: 40rem)'
+const DESKTOP = '(min-width: 80rem)'
+type Tier = 'phone' | 'tablet' | 'desktop'
+
+function onTierChange(change: () => void) {
+  const queries = [TABLET, DESKTOP].map(query => window.matchMedia(query))
+  for (const query of queries) query.addEventListener('change', change)
+  return () => {
+    for (const query of queries) query.removeEventListener('change', change)
+  }
+}
+const tierNow = (): Tier =>
+  window.matchMedia(DESKTOP).matches ? 'desktop' : window.matchMedia(TABLET).matches ? 'tablet' : 'phone'
+/** The server names the lists as a desktop does, with no tabs; the browser names them for its own width. */
+const tierOnServer = (): Tier => 'desktop'
+
+/** A list's tab panel role and its one label, when a tab shows it at `tier`: a phone's list tab, a tablet's ranking
+ * tab. A list that no tab shows is no tab panel. */
+function tabbed(tier: Tier, name: List) {
+  if (tier === 'phone') return { role: 'tabpanel', 'aria-labelledby': `home-tab-${name}` }
+  if (tier === 'tablet' && name !== 'latest') return { role: 'tabpanel', 'aria-labelledby': `home-rank-${name}` }
+  return {}
+}
 
 /**
  * What the home shows. It loads until a chain has a card or every chain has answered. With no card it is empty when
@@ -134,6 +160,7 @@ export function HomeLists({ network }: { network: BendystrawNetwork }) {
   const home = useStickyHome(network)
   const { viewAs } = useViewAs()
   const { address } = useWallet()
+  const tier = useSyncExternalStore(onTierChange, tierNow, tierOnServer)
   const [list, setList] = useState<List>('latest')
   const [ranking, setRanking] = useState<Ranking>('stickiest')
   const { state, note, retry } = viewOf(home, network === 'testnet')
@@ -181,8 +208,7 @@ export function HomeLists({ network }: { network: BendystrawNetwork }) {
             />
             <div
               id="home-panel-latest"
-              role="tabpanel"
-              aria-labelledby="home-tab-latest"
+              {...tabbed(tier, 'latest')}
               className={`${shownOnPhone('latest')} order-4 min-w-0 sm:col-start-1 sm:row-span-2 sm:row-start-3 sm:block md:row-start-2 xl:row-span-1 xl:row-start-2`}
             >
               <h2 className={`${heading} hidden sm:block`}>Latest</h2>
@@ -192,8 +218,7 @@ export function HomeLists({ network }: { network: BendystrawNetwork }) {
             </div>
             <div
               id="home-panel-stickiest"
-              role="tabpanel"
-              aria-labelledby="home-tab-stickiest home-rank-stickiest"
+              {...tabbed(tier, 'stickiest')}
               className={`${shownOnPhone('stickiest')} ${shownOnTablet('stickiest')} order-4 min-w-0 sm:col-start-2 sm:row-start-4 sm:border-l sm:border-line sm:pl-5 md:row-start-3 xl:col-start-2 xl:row-start-2 xl:block`}
             >
               <h2 className={`${heading} hidden xl:block`}>Stickiest</h2>
@@ -213,8 +238,7 @@ export function HomeLists({ network }: { network: BendystrawNetwork }) {
             </div>
             <div
               id="home-panel-airdrops"
-              role="tabpanel"
-              aria-labelledby="home-tab-airdrops home-rank-airdrops"
+              {...tabbed(tier, 'airdrops')}
               className={`${shownOnPhone('airdrops')} ${shownOnTablet('airdrops')} order-4 min-w-0 sm:col-start-2 sm:row-start-4 sm:border-l sm:border-line sm:pl-5 md:row-start-3 xl:col-start-3 xl:row-span-2 xl:row-start-1 xl:block`}
             >
               <h2 className={`${heading} hidden xl:block`}>Airdrops</h2>

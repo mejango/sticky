@@ -1,104 +1,45 @@
 import { QueryClient, QueryClientProvider, notifyManager } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { getAddress, type Address, type Hex } from 'viem'
+import { getAddress, type Address } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { deserializeState, installQueryPersistence } from '@/lib/query-persist'
-import { FEED_WINDOW, type FeedRow } from '@/lib/sticky-feed'
-import { HOME_VERSION, type HomeCard, type HomeChain } from '@/lib/sticky-home'
+import { FEED_WINDOW } from '@/lib/sticky-feed'
+import { HOME_VERSION, type HomeChain } from '@/lib/sticky-home'
 import type { IndexedProjects, IndexedRows, IndexedStickyEvent } from '@/lib/sticky-indexed'
-import type { StickyProjectInfo } from '@/lib/sticky-project'
+import {
+  E18,
+  TOKEN,
+  deferred,
+  feedRow,
+  homeCard as card,
+  homeChainOf as chainResult,
+  memoryStorage,
+} from '../home-fixtures'
 
-const mocks = vi.hoisted(() => ({ index: vi.fn(), latest: vi.fn(), chain: vi.fn(), prices: vi.fn() }))
-vi.mock('@/lib/sticky-home', async importOriginal => ({
-  ...(await importOriginal<typeof import('@/lib/sticky-home')>()),
-  homeIndex: mocks.index,
-  homeLatest: mocks.latest,
-  homeChain: mocks.chain,
-  homePrices: mocks.prices,
-}))
+const mocks = vi.hoisted(() => ({ index: vi.fn(), latest: vi.fn(), chain: vi.fn(), prices: vi.fn(), series: vi.fn() }))
+vi.mock('@/lib/sticky-home', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/lib/sticky-home')>()
+  // The real series, counted.
+  mocks.series.mockImplementation(actual.homeSecuredSeries)
+  return {
+    ...actual,
+    homeIndex: mocks.index,
+    homeLatest: mocks.latest,
+    homeChain: mocks.chain,
+    homePrices: mocks.prices,
+    homeSecuredSeries: mocks.series,
+  }
+})
 
 import { refreshStickyHome, useStickyHome } from '@/hooks/useStickyHome'
 
-const E18 = 10n ** 18n
-const E6 = 10n ** 6n
-const TOKEN = getAddress(`0x${'2'.repeat(40)}`)
 const OTHER_TOKEN = getAddress(`0x${'3'.repeat(40)}`)
 const MAINNET = [1, 10, 8453, 42161]
 const INDEX: IndexedProjects = { blocks: new Map([[1, 5n]]), projects: [] }
 const LATEST: IndexedRows<IndexedStickyEvent> = { rows: [], blocks: new Map([[1, 5n]]) }
 const STORE_KEY = 'sticky:query-cache:v1'
-
-function info(chainId: number, projectId: bigint, extra: Partial<StickyProjectInfo> = {}): StickyProjectInfo {
-  return {
-    chainId,
-    projectId,
-    stToken: `0x${'5'.repeat(40)}`,
-    stSymbol: 'STK',
-    stName: 'Sticky CPN',
-    stakedToken: TOKEN,
-    symbol: 'CPN',
-    name: 'Coupon',
-    decimals: 6,
-    cashOutTaxRate: 0n,
-    soulbound: false,
-    totalSupply: E18,
-    backing: E6,
-    orphaned: 0n,
-    rawBacking: E6,
-    savedOrphaned: 0n,
-    launchId: null,
-    plannedChains: null,
-    blockNumber: 1n,
-    ...extra,
-  }
-}
-const card = (chainId: number, projectId: bigint, extra: Partial<StickyProjectInfo> = {}): HomeCard => ({
-  info: info(chainId, projectId, extra),
-  sticks: 1,
-})
-const chainResult = (chainId: number, cards: HomeCard[] = [], extra: Partial<HomeChain> = {}): HomeChain => ({
-  chainId,
-  cards,
-  activity: [],
-  airdrops: [],
-  supply: [],
-  ...extra,
-})
-const row = (chainId: number, timestamp: number, logIndex = 0): FeedRow => ({
-  chainId,
-  projectId: 1n,
-  timestamp,
-  txHash: `0x${timestamp.toString(16).padStart(64, '0')}` as Hex,
-  logIndex,
-  direction: 'in',
-  amount: { value: 1n, decimals: 6, symbol: 'CPN' },
-  line: { kind: 'stuck', holder: `0x${'a'.repeat(40)}` },
-})
-
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  let reject!: (reason: unknown) => void
-  const promise = new Promise<T>((yes, no) => {
-    resolve = yes
-    reject = no
-  })
-  return { promise, resolve, reject }
-}
-
-function memoryStorage(): Storage {
-  const map = new Map<string, string>()
-  return {
-    get length() {
-      return map.size
-    },
-    clear: () => map.clear(),
-    getItem: key => map.get(key) ?? null,
-    key: index => [...map.keys()][index] ?? null,
-    removeItem: key => void map.delete(key),
-    setItem: (key, value) => void map.set(key, value),
-  } as Storage
-}
+const row = (chainId: number, timestamp: number) => feedRow(chainId, 1n, timestamp)
 
 type Seen = ReturnType<typeof useStickyHome>
 let seen: Seen
@@ -316,6 +257,91 @@ describe('useStickyHome', () => {
     expect(seen.cards).toHaveLength(4)
     expect(mocks.index).toHaveBeenCalledTimes(2)
     expect(mocks.latest).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('useStickyHome, when a chain cannot be read', () => {
+  it('tells the console once which chain it could not read and why, and does not read it again on its own', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    // The app's client retries a failed query once; a chain's read already retries each of its requests.
+    client = new QueryClient({ defaultOptions: { queries: { retry: 1, retryDelay: 10 } } })
+    const failure = new Error('This history spans 600000 blocks, more than this RPC can scan in 1024 requests.')
+    mocks.chain.mockImplementation(async (chainId: number) => {
+      if (chainId === 10) throw failure
+      return chainResult(chainId)
+    })
+    await render()
+    await settle(1_000)
+
+    expect(mocks.chain.mock.calls.filter(([chainId]) => chainId === 10)).toHaveLength(1)
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/chain/), { network: 'mainnet', chainId: 10 }, failure)
+    expect(seen.failedChains).toEqual([10])
+  })
+
+  it('says nothing of a chain read that was cancelled', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const read = deferred<HomeChain>()
+    mocks.chain.mockImplementation(async (chainId: number) => (chainId === 1 ? read.promise : chainResult(chainId)))
+    await render()
+    await settle()
+    await act(async () => void client.cancelQueries({ queryKey: ['sticky-home', 'mainnet', 'chain', 1] }))
+    await act(async () => read.reject(new Error('The operation was aborted.')))
+    await settle()
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('lets go of a chain read cancelled while it waits for the network\'s reads, and never reads that chain', async () => {
+    const index = deferred<IndexedProjects | null>()
+    mocks.index.mockReturnValue(index.promise)
+    await render()
+    await settle()
+    await act(async () => void client.cancelQueries({ queryKey: ['sticky-home', 'mainnet', 'chain', 1] }))
+    await act(async () => index.resolve(INDEX))
+    await settle()
+    expect(mocks.chain.mock.calls.map(([chainId]) => chainId)).toEqual([10, 8453, 42161])
+  })
+})
+
+describe('useStickyHome\'s chart', () => {
+  it('keeps the chart, without a chain\'s new token, while that token is priced, then adds it', async () => {
+    mocks.chain.mockImplementation(async (chainId: number) => chainResult(chainId, chainId === 1 ? [card(1, 1n)] : []))
+    mocks.prices.mockResolvedValue(new Map([[TOKEN, 1]]))
+    await render()
+    await settle()
+    expect(seen.secured).toMatchObject({ total: 1_000_000n, missing: [] })
+
+    const priced = deferred<Map<Address, number> | null>()
+    mocks.prices.mockReturnValue(priced.promise)
+    mocks.chain.mockImplementation(async (chainId: number) =>
+      chainResult(chainId, chainId === 1 ? [card(1, 1n), card(1, 2n, { stakedToken: OTHER_TOKEN })] : []),
+    )
+    await act(async () => void client.invalidateQueries({ queryKey: ['sticky-home', 'mainnet', 'chain'] }))
+    await settle()
+    expect(seen.secured).toMatchObject({ total: 1_000_000n, missing: ['CPN'] })
+
+    await act(async () => priced.resolve(new Map([[TOKEN, 1], [OTHER_TOKEN, 3]])))
+    await settle()
+    expect(seen.secured).toMatchObject({ total: 4_000_000n, missing: [] })
+  })
+
+  it('values the chart again only when what it rests on changes, or the day does', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    vi.setSystemTime(new Date('2026-09-30T23:58:00Z'))
+    mocks.chain.mockImplementation(async (chainId: number) => chainResult(chainId, chainId === 1 ? [card(1, 1n)] : []))
+    mocks.prices.mockResolvedValue(new Map([[TOKEN, 1]]))
+    await render()
+    await settle()
+    const runs = mocks.series.mock.calls.length
+    expect(runs).toBeGreaterThan(0)
+
+    await render()
+    await render()
+    expect(mocks.series.mock.calls.length).toBe(runs)
+
+    vi.setSystemTime(new Date('2026-10-01T00:01:00Z'))
+    await render()
+    expect(mocks.series.mock.calls.length).toBe(runs + 1)
   })
 })
 
