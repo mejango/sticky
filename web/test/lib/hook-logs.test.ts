@@ -1,6 +1,6 @@
 import { getAddress, pad, toHex, type Address, type Hex, type PublicClient } from 'viem'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { projectHookLogs, scanLogs, statedRange, type ScannedLog } from '@/lib/hook-logs'
+import { keptLogs, projectHookLogs, scanLogs, statedRange, type ScannedLog } from '@/lib/hook-logs'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 
 const center = vi.hoisted(() => ({ client: vi.fn() }))
@@ -835,6 +835,30 @@ describe('projectHookLogs', () => {
   })
 
   describe('the history it keeps in the browser', () => {
+    it('keeps another filter\'s history under the key it is given, apart from the project\'s hook history', async () => {
+      // The terminal's ProcessFee, which indexes the project first as the hook's events do.
+      const FEE: Hex = '0xb514e730b3f8ad3aa94b6857bcc5ff4a46954bdcf8c4b0346705b1d0ac7a4325'
+      const terminal = deployment.terminal
+      const feeLog = (block: bigint) => log(block, 0, { address: terminal, topics: [FEE, word(7n)] })
+      const filter = { address: terminal, topics: [[FEE], word(7n)], fromBlock: 0x10n }
+      events = [feeLog(0x20n), hookLog(0x30n)]
+      serve()
+      expect(blocks(await keptLogs(CHAIN, 'fees of 7', filter))).toEqual([0x20n])
+      expect(JSON.parse(localStorage.getItem('sticky.history.v1:fees of 7') ?? 'null')).toMatchObject({
+        from: '16',
+        through: String(0x1000n - 64n),
+      })
+      expect(saved()).toBeNull()
+
+      expect(blocks(await projectHookLogs(CHAIN, 7n, 0x10n))).toEqual([0x30n])
+      // Each resumes its own: a later visit asks for neither's kept blocks again.
+      events = [...events, feeLog(0x1005n)]
+      head = 0x1100n
+      const node = serve()
+      expect(blocks(await keptLogs(CHAIN, 'fees of 7', filter))).toEqual([0x20n, 0x1005n])
+      expect(firstAsked(node)).toBe(0x1000n - 64n + 1n)
+    })
+
     it('keeps what a reorg cannot replace, 64 blocks below the head, and only that', async () => {
       events = [hookLog(0x20n), hookLog(0xff0n)]
       serve()

@@ -352,18 +352,19 @@ function writeHistory(key: string, from: bigint, through: bigint, logs: ScannedL
   }
 }
 
-/** Every hook event of one project on one chain, from `fromBlock` to the head, read through Center.
- * A project's history below a buried block cannot change, so this browser keeps it and the next visit
+/** The logs of one contract and topic filter on a chain Sticky is deployed on, from `fromBlock` to the head, read
+ * through Center. History below a buried block cannot change, so this browser keeps it under `key` and the next read
  * scans only what came after. Only public events are kept, and nothing that belongs to a wallet.
  * A history that began later than `fromBlock` lacks what came before, so it is not used and the scan
  * starts from `fromBlock`; one the old client kept has no start and counts as beginning at the project's.
  * A null `fromBlock` is a project whose start could not be found: a kept history is used whatever block
  * it began at, and without one the scan starts at the deployer's block, before which no project exists.
- * When `signal` aborts the call rejects with its reason and writes nothing. */
-export async function projectHookLogs(
+ * When `signal` aborts the call rejects with its reason and writes nothing. `key` names one filter's history: a read
+ * of another filter must use another key. */
+export async function keptLogs(
   chainId: number,
-  projectId: bigint,
-  fromBlock: bigint | null,
+  key: string,
+  { address, topics, fromBlock }: { address: Address; topics: (Hex | Hex[] | null)[]; fromBlock: bigint | null },
   opts: { signal?: AbortSignal } = {},
 ): Promise<ScannedLog[]> {
   const { signal } = opts
@@ -371,7 +372,6 @@ export async function projectHookLogs(
   if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
   throwIfAborted(signal)
   const client = jbCenterPublicClient(chainId)
-  const key = `${chainId}:${deployment.hook.toLowerCase()}:${projectId}`
   const saved = readHistory(key)
   const kept = saved && (fromBlock === null || saved.from === undefined || saved.from <= fromBlock) ? saved : null
   const start = fromBlock ?? deployment.fromBlock
@@ -379,12 +379,7 @@ export async function projectHookLogs(
   // The scan starts after what was kept, so the two never overlap.
   const fresh = await scanLogs(
     client,
-    {
-      address: deployment.hook,
-      topics: [PROJECT_TOPICS, pad(toHex(projectId), { size: 32 })],
-      fromBlock: kept ? kept.through + 1n : start,
-      toBlock: head,
-    },
+    { address, topics, fromBlock: kept ? kept.through + 1n : start, toBlock: head },
     { signal },
   )
   const all = tidy([...(kept?.logs ?? []), ...fresh])
@@ -396,4 +391,19 @@ export async function projectHookLogs(
     }
   }
   return all
+}
+
+/** Every hook event of one project on one chain, from `fromBlock` to the head, read through Center and kept in this
+ * browser as `keptLogs` keeps a history, under the key the old client kept it under. */
+export async function projectHookLogs(
+  chainId: number,
+  projectId: bigint,
+  fromBlock: bigint | null,
+  opts: { signal?: AbortSignal } = {},
+): Promise<ScannedLog[]> {
+  const deployment = stickyDeployment(chainId)
+  if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
+  const key = `${chainId}:${deployment.hook.toLowerCase()}:${projectId}`
+  const topics = [PROJECT_TOPICS, pad(toHex(projectId), { size: 32 })]
+  return keptLogs(chainId, key, { address: deployment.hook, topics, fromBlock }, opts)
 }

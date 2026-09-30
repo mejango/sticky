@@ -49,6 +49,9 @@ export type StickyProjectInfo = {
   savedOrphaned: bigint
   /** Shared by every chain's copy of one launch, so it groups them. Null when the uri names none. */
   launchId: string | null
+  /** The chains the launch was planned on, as its uri lists them: where the Chains card expects a copy. Null when the
+   * uri lists none. */
+  plannedChains: number[] | null
   blockNumber: bigint
 }
 
@@ -107,21 +110,37 @@ function answered<T extends readonly Answer<unknown>[]>(answers: T): T {
   return answers
 }
 
-/** The launch id in a Sticky project's uri, which a launch stores as a data URI. Anything else has none. */
-export function launchIdIn(uri: string): string | null {
-  if (!uri.startsWith('data:application/json')) return null
+/** What a Sticky launch writes in its project's uri, a data URI of `{protocol: 'Sticky', version, launchId,
+ * environment, chains}` (webclient/app.js:5020-5026): the launch id its copies share and the chains it was planned
+ * on. A uri that is not a Sticky launch's has neither. */
+function launchIn(uri: string): Pick<StickyProjectInfo, 'launchId' | 'plannedChains'> {
+  const none = { launchId: null, plannedChains: null }
+  if (!uri.startsWith('data:application/json')) return none
   const comma = uri.indexOf(',')
-  if (comma < 0) return null
+  if (comma < 0) return none
   try {
     const payload = uri.slice(comma + 1)
     const json = uri.slice(0, comma).includes(';base64') ? atob(payload) : decodeURIComponent(payload)
     const metadata: unknown = JSON.parse(json)
-    if (typeof metadata !== 'object' || metadata === null) return null
-    const { protocol, launchId } = metadata as { protocol?: unknown; launchId?: unknown }
-    return protocol === 'Sticky' && typeof launchId === 'string' && launchId !== '' ? launchId : null
+    if (typeof metadata !== 'object' || metadata === null) return none
+    const { protocol, launchId, chains } = metadata as { protocol?: unknown; launchId?: unknown; chains?: unknown }
+    if (protocol !== 'Sticky') return none
+    // A chain id is a whole number above 0, as the launch wrote it or as a numeric string; anything else is left out.
+    const planned = Array.isArray(chains)
+      ? [...new Set(chains.map(Number).filter(id => Number.isSafeInteger(id) && id > 0))]
+      : []
+    return {
+      launchId: typeof launchId === 'string' && launchId !== '' ? launchId : null,
+      plannedChains: planned.length ? planned : null,
+    }
   } catch {
-    return null
+    return none
   }
+}
+
+/** The launch id in a Sticky project's uri, which a launch stores as a data URI. Anything else has none. */
+export function launchIdIn(uri: string): string | null {
+  return launchIn(uri).launchId
 }
 
 /** How a read takes an unowned balance the hook recorded above what the terminal holds, which consistent
@@ -246,8 +265,8 @@ export async function readStickyProject(
     orphaned,
     rawBacking: held,
     savedOrphaned,
-    // The launch id only groups sibling chains, so a uri that will not read means no siblings.
-    launchId: uriOf.status === 'success' ? launchIdIn(uriOf.result) : null,
+    // The launch id only groups sibling chains, so a uri that will not read means no siblings, and no planned chains.
+    ...(uriOf.status === 'success' ? launchIn(uriOf.result) : { launchId: null, plannedChains: null }),
     blockNumber,
   }
 }

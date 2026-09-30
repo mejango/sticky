@@ -22,12 +22,14 @@ const INDEX_QUERY = `query StickyIndex($owners: [String!], $after: String) {
     }
   }`
 const PAY_QUERY = `query StickyPays($where: payEventFilter, $after: String) {
+    _meta { status }
     payEvents(where: $where, orderBy: "timestamp", orderDirection: "asc", limit: 1000, after: $after) {
       items { chainId projectId version txHash logIndex timestamp caller beneficiary amount newlyIssuedTokenCount }
       pageInfo { hasNextPage endCursor }
     }
   }`
 const CASH_OUT_QUERY = `query StickyCashOuts($where: cashOutTokensEventFilter, $after: String) {
+    _meta { status }
     cashOutTokensEvents(where: $where, orderBy: "timestamp", orderDirection: "asc", limit: 1000, after: $after) {
       items { chainId projectId version txHash logIndex timestamp caller holder beneficiary cashOutCount reclaimAmount }
       pageInfo { hasNextPage endCursor }
@@ -466,21 +468,23 @@ function unixTime(seconds: number): number {
 }
 
 /**
- * The sticks (pays) and unsticks (cash outs) of some of a chain's projects, oldest first. `since`, in Unix seconds,
- * asks only for those at or after it, so a feed that shows a project's newest events does not read every older one.
- * It goes in the filter each document takes as a variable: the documents themselves do not change. A move from before
- * it that an indexer sends anyway is dropped, like a row of another project.
+ * The sticks (pays) and unsticks (cash outs) of some of a chain's projects, oldest first, with the block the chain is
+ * indexed through: the older of the two lists' blocks, since each list comes in an answer of its own. A chain either
+ * answer has no status for is absent from `blocks`, and its moves are left out with it. `since`, in Unix seconds, asks
+ * only for those at or after it, so a feed that shows a project's newest events does not read every older one. It goes
+ * in the filter each document takes as a variable: the documents themselves do not change. A move from before it that
+ * an indexer sends anyway is dropped, like a row of another project.
  */
 export async function indexedStickyMoves(
   chainId: number,
   projectIds: readonly bigint[],
   signal?: AbortSignal,
   since?: number,
-): Promise<IndexedMove[]> {
+): Promise<IndexedRows<IndexedMove>> {
   const from = since === undefined ? 0 : unixTime(since)
   const time = since === undefined ? {} : { timestamp_gte: from }
   const ids = [...new Set(projectIds.map(projectNumber))]
-  if (!ids.length) return []
+  if (!ids.length) return { rows: [], blocks: new Map() }
   const scope = { chains: new Set([chainId]), projects: new Set(ids) }
   // One chain per filter: an independent projectId_in with chainId_in would match every chain's project of that ID.
   const variables = { where: { chainId, version: VERSION, projectId_in: ids, ...time } }
@@ -489,12 +493,17 @@ export async function indexedStickyMoves(
       allPages('payEvents', PAY_QUERY, variables, { chainId }, within),
       allPages('cashOutTokensEvents', CASH_OUT_QUERY, variables, { chainId }, within),
     ])
-    return [
-      ...accept(pays.items, scope, payOf, 'Sticky event'),
-      ...accept(cashOuts.items, scope, cashOutOf, 'Sticky event'),
-    ]
-      .filter(({ timestamp }) => timestamp >= from)
+    const paid = withBlocks(pays.items, pays.first, scope, payOf, 'Sticky event')
+    const cashedOut = withBlocks(cashOuts.items, cashOuts.first, scope, cashOutOf, 'Sticky event')
+    const blocks = new Map<number, bigint>()
+    for (const [chain, block] of paid.blocks) {
+      const other = cashedOut.blocks.get(chain)
+      if (other !== undefined) blocks.set(chain, block < other ? block : other)
+    }
+    const rows = [...paid.rows, ...cashedOut.rows]
+      .filter(move => blocks.has(move.chainId) && move.timestamp >= from)
       .sort(byTime)
+    return { rows, blocks }
   })
 }
 

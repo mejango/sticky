@@ -194,16 +194,15 @@ export function siblingTotals(rows: readonly ({ info: Figures } | ChainFailure)[
   }
 }
 
-/** The chains `planned` names (a launch's uri lists the chains it launched on) that are in `chainId`'s environment and
- * that no row stands for: the card's "Planned at launch. Not deployed yet." rows. */
+/** The chains the page's launch was planned on (its uri's `chains`), in the page chain's environment, that no row
+ * stands for: the card's "Planned at launch. Not deployed yet." rows. A launch whose uri lists none has none. */
 export function missingChains(
-  planned: readonly number[],
+  { chainId, plannedChains }: Pick<StickyProjectInfo, 'chainId' | 'plannedChains'>,
   rows: readonly { chainId: number }[],
-  chainId: number,
 ): number[] {
   const environment = environmentForChainIds([chainId])
   const supported = (id: number) => SUPPORTED_CHAINS.some(chain => chain.id === id)
-  return [...new Set(planned)].filter(
+  return (plannedChains ?? []).filter(
     id => supported(id) && environmentForChainIds([id]) === environment && !rows.some(row => row.chainId === id),
   )
 }

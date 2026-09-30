@@ -143,6 +143,7 @@ describe('readStickyProject', () => {
       rawBacking: 10n,
       savedOrphaned: 4n,
       launchId: LAUNCH,
+      plannedChains: [84532, 11155420],
       blockNumber: HEAD,
     })
     expect(getBlockNumber).toHaveBeenCalledOnce()
@@ -347,6 +348,45 @@ describe('readStickyProject', () => {
   it('has no launch id when uriOf reverts, since siblings are only a convenience', async () => {
     fakeCenter(world({ [at(deployment.controller, 'uriOf')]: reverted('uriOf') }))
     expect((await readStickyProject(CHAIN, 12n)).launchId).toBeNull()
+  })
+
+  // The old client wrote a launch's uri as
+  // `data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify({protocol: "Sticky", version: 1,
+  // launchId, environment, chains}))}` (webclient/app.js:5020-5026).
+  const oldClientUri = (chains: unknown) =>
+    `data:application/json;charset=utf-8,${encodeURIComponent(
+      JSON.stringify({ protocol: 'Sticky', version: 1, launchId: LAUNCH, environment: 'production', chains }),
+    )}`
+  it.each([
+    ['the chains the old client wrote', oldClientUri([8453, 10, 42161]), [8453, 10, 42161]],
+    ['one chain', oldClientUri([84532]), [84532]],
+    ['chains written as numeric strings', oldClientUri(['8453', '10']), [8453, 10]],
+    ['a chain listed twice, once', oldClientUri([8453, 10, 8453]), [8453, 10]],
+    ['only the entries that are chain ids', oldClientUri([8453, 0, -1, 1.5, 'base', null, 10]), [8453, 10]],
+    ['a base64 data uri', base64({ protocol: 'Sticky', launchId: LAUNCH, chains: [1, 10] }), [1, 10]],
+    ['no chains', oldClientUri(undefined), null],
+    ['an empty list', oldClientUri([]), null],
+    ['a list with no chain ids', oldClientUri(['base']), null],
+    ['chains that are not a list', oldClientUri('8453,10'), null],
+    ['another protocol', `data:application/json,${encodeURIComponent('{"protocol":"Other","chains":[8453]}')}`, null],
+    ['a uri that is not a data uri', 'ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi', null],
+  ])('takes the planned chains from %s', async (_what, uri, plannedChains) => {
+    fakeCenter(world({ [at(deployment.controller, 'uriOf')]: uri }))
+    const info = await readStickyProject(CHAIN, 12n)
+    expect(info.plannedChains).toEqual(plannedChains)
+  })
+
+  it('reads the launch id and the planned chains from the same uri, each without the other', async () => {
+    const chainsOnly = `data:application/json,${encodeURIComponent('{"protocol":"Sticky","chains":[8453]}')}`
+    fakeCenter(world({ [at(deployment.controller, 'uriOf')]: chainsOnly }))
+    expect(await readStickyProject(CHAIN, 12n)).toMatchObject({ launchId: null, plannedChains: [8453] })
+    fakeCenter(world({ [at(deployment.controller, 'uriOf')]: oldClientUri(undefined) }))
+    expect(await readStickyProject(CHAIN, 12n)).toMatchObject({ launchId: LAUNCH, plannedChains: null })
+  })
+
+  it('has no planned chains when uriOf reverts', async () => {
+    fakeCenter(world({ [at(deployment.controller, 'uriOf')]: reverted('uriOf') }))
+    expect((await readStickyProject(CHAIN, 12n)).plannedChains).toBeNull()
   })
 
   it('does not read a request that got no answer as a project without a launch id', async () => {

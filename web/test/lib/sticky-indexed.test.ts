@@ -122,6 +122,8 @@ const TESTNET_CHAINS: [string, number, number][] = [
   ['baseSepolia', 84532, 500],
   ['optimismSepolia', 11155420, 900],
 ]
+/** The indexing status each pays or cash-outs answer carries: Base Sepolia is indexed through block 500. */
+const META = { status: status(TESTNET_CHAINS) }
 
 const pay = (projectId: number, extra: Variables = {}) => ({
   chainId: 84532,
@@ -448,6 +450,7 @@ describe('sticks and unsticks', () => {
       // Bendystraw has ignored filters before: a row outside the request must not reach the page.
       StickyPays: () => ({
         data: {
+          _meta: META,
           payEvents: page([
             pay(37),
             pay(99),
@@ -457,11 +460,12 @@ describe('sticks and unsticks', () => {
           ]),
         },
       }),
-      StickyCashOuts: () => ({ data: { cashOutTokensEvents: page([cashOut(37)]) } }),
+      StickyCashOuts: () => ({ data: { _meta: META, cashOutTokensEvents: page([cashOut(37)]) } }),
     })
 
-    const moves = await indexedStickyMoves(84532, [37n])
+    const { rows: moves, blocks } = await indexedStickyMoves(84532, [37n])
 
+    expect(blocks).toEqual(new Map([[84532, 500n]]))
     expect(sent.map(({ operation, variables }) => [operation, variables]).sort()).toEqual([
       ['StickyCashOuts', { where: { chainId: 84532, version: 6, projectId_in: [37] }, after: null }],
       ['StickyPays', { where: { chainId: 84532, version: 6, projectId_in: [37] }, after: null }],
@@ -474,33 +478,69 @@ describe('sticks and unsticks', () => {
     ])
   })
 
+  it('says the block the moves are as of: the older of the two lists\' blocks, each from its own answer', async () => {
+    indexer({
+      StickyPays: () => listed('payEvents', [pay(37)], undefined, [['baseSepolia', 84532, 500]]),
+      StickyCashOuts: () => listed('cashOutTokensEvents', [cashOut(37)], undefined, [['baseSepolia', 84532, 480]]),
+    })
+    const { rows, blocks } = await indexedStickyMoves(84532, [37n])
+    expect(blocks).toEqual(new Map([[84532, 480n]]))
+    expect(rows).toHaveLength(2)
+  })
+
+  it('leaves out the moves of a chain either answer has no status for, since nothing says what they are as of', async () => {
+    const elsewhere: [string, number, number][] = [['optimismSepolia', 11155420, 900]]
+    indexer({
+      StickyPays: () => listed('payEvents', [pay(37)], undefined, elsewhere),
+      StickyCashOuts: () => listed('cashOutTokensEvents', [cashOut(37)]),
+    })
+    expect(await indexedStickyMoves(84532, [37n])).toEqual({ rows: [], blocks: new Map() })
+
+    indexer({
+      StickyPays: () => listed('payEvents', [pay(37)]),
+      StickyCashOuts: () => listed('cashOutTokensEvents', [cashOut(37)], undefined, elsewhere),
+    })
+    expect(await indexedStickyMoves(84532, [37n])).toEqual({ rows: [], blocks: new Map() })
+  })
+
+  it('rejects an answer with no usable indexing status, never answering with moves and no block', async () => {
+    for (const meta of [null, { status: null }, { status: 'up' }, { status: [] }]) {
+      indexer({
+        StickyPays: () => ({ data: { _meta: META, payEvents: page([pay(37)]) } }),
+        StickyCashOuts: () => ({ data: { _meta: meta, cashOutTokensEvents: page([]) } }),
+      })
+      await expect(indexedStickyMoves(84532, [37n])).rejects.toThrow('no indexing status')
+    }
+  })
+
   it('lowercases addresses and reads amounts past 2^53 exactly', async () => {
     indexer({
       StickyPays: () => ({
         data: {
+          _meta: META,
           payEvents: page([
             pay(37, { caller: OTHER.toUpperCase().replace('0X', '0x'), beneficiary: HOLDER.toUpperCase().replace('0X', '0x'), amount: '123456789012345678901', newlyIssuedTokenCount: '9007199254740993' }),
           ]),
         },
       }),
-      StickyCashOuts: () => ({ data: { cashOutTokensEvents: page([]) } }),
+      StickyCashOuts: () => ({ data: { _meta: META, cashOutTokensEvents: page([]) } }),
     })
 
-    expect(await indexedStickyMoves(84532, [37n])).toEqual([
+    expect((await indexedStickyMoves(84532, [37n])).rows).toEqual([
       expect.objectContaining({ payer: OTHER, holder: HOLDER, amount: 123456789012345678901n, tokens: 9007199254740993n }),
     ])
   })
 
   it('reads an amount that came as a JSON number, and rejects one that is not a whole number', async () => {
     indexer({
-      StickyPays: () => ({ data: { payEvents: page([pay(37, { amount: 5, newlyIssuedTokenCount: 50 })]) } }),
-      StickyCashOuts: () => ({ data: { cashOutTokensEvents: page([]) } }),
+      StickyPays: () => ({ data: { _meta: META, payEvents: page([pay(37, { amount: 5, newlyIssuedTokenCount: 50 })]) } }),
+      StickyCashOuts: () => ({ data: { _meta: META, cashOutTokensEvents: page([]) } }),
     })
-    expect(await indexedStickyMoves(84532, [37n])).toEqual([expect.objectContaining({ amount: 5n, tokens: 50n })])
+    expect((await indexedStickyMoves(84532, [37n])).rows).toEqual([expect.objectContaining({ amount: 5n, tokens: 50n })])
 
     indexer({
-      StickyPays: () => ({ data: { payEvents: page([pay(37, { amount: 1.5 })]) } }),
-      StickyCashOuts: () => ({ data: { cashOutTokensEvents: page([]) } }),
+      StickyPays: () => ({ data: { _meta: META, payEvents: page([pay(37, { amount: 1.5 })]) } }),
+      StickyCashOuts: () => ({ data: { _meta: META, cashOutTokensEvents: page([]) } }),
     })
     await expect(indexedStickyMoves(84532, [37n])).rejects.toThrow('incomplete Sticky event')
   })
@@ -508,14 +548,14 @@ describe('sticks and unsticks', () => {
   it('asks Bendystraw nothing, and answers no moves, for no projects', async () => {
     const sent = indexer({})
 
-    expect(await indexedStickyMoves(84532, [])).toEqual([])
+    expect(await indexedStickyMoves(84532, [])).toEqual({ rows: [], blocks: new Map() })
     expect(sent).toHaveLength(0)
   })
 
   it('names each project once', async () => {
     const sent = indexer({
-      StickyPays: () => ({ data: { payEvents: page([]) } }),
-      StickyCashOuts: () => ({ data: { cashOutTokensEvents: page([]) } }),
+      StickyPays: () => ({ data: { _meta: META, payEvents: page([]) } }),
+      StickyCashOuts: () => ({ data: { _meta: META, cashOutTokensEvents: page([]) } }),
     })
 
     await indexedStickyMoves(84532, [37n, 38n, 37n])
@@ -528,8 +568,8 @@ describe('sticks and unsticks', () => {
 
     it('asks for the moves at or after it in the filter of both lists, and for no time otherwise', async () => {
       const sent = indexer({
-        StickyPays: () => ({ data: { payEvents: page([]) } }),
-        StickyCashOuts: () => ({ data: { cashOutTokensEvents: page([]) } }),
+        StickyPays: () => ({ data: { _meta: META, payEvents: page([]) } }),
+        StickyCashOuts: () => ({ data: { _meta: META, cashOutTokensEvents: page([]) } }),
       })
 
       await indexedStickyMoves(84532, [37n], undefined, SINCE)
@@ -546,16 +586,16 @@ describe('sticks and unsticks', () => {
 
     it('changes no document: each is still the text its ID is the SHA-256 of', async () => {
       const sent = indexer({
-        StickyPays: () => ({ data: { payEvents: page([]) } }),
-        StickyCashOuts: () => ({ data: { cashOutTokensEvents: page([]) } }),
+        StickyPays: () => ({ data: { _meta: META, payEvents: page([]) } }),
+        StickyCashOuts: () => ({ data: { _meta: META, cashOutTokensEvents: page([]) } }),
       })
 
       await indexedStickyMoves(84532, [37n], undefined, SINCE)
 
       const idOf = (query: string) => createHash('sha256').update(query, 'utf8').digest('hex')
       expect(sent.map(({ operation, query }) => [operation, idOf(query)]).sort()).toEqual([
-        ['StickyCashOuts', '80dd411715bb2f4eab91eb0549fc69c0aaf8e1252d7f251aed0d8ceecb0d233d'],
-        ['StickyPays', 'ee745e235eef8f9a5ef97616351badc4ac2f1cb3e4e596c3e158c1057e85c741'],
+        ['StickyCashOuts', '8497b97a5f08df0cb2f44ce7a55c255e5c67757bb144ff23dd8a606d6ac068fd'],
+        ['StickyPays', '010ca8477471daaae12c1926d0ddd3b7023518dd061d0cfa23dd9455ea1c27f8'],
       ])
       expect(sent.every(({ query }) => !query.includes('timestamp_gte'))).toBe(true)
     })
@@ -564,6 +604,7 @@ describe('sticks and unsticks', () => {
       indexer({
         StickyPays: () => ({
           data: {
+            _meta: META,
             payEvents: page([
               pay(37, { timestamp: SINCE - 1, txHash: tx(1) }),
               pay(37, { timestamp: SINCE, txHash: tx(3) }),
@@ -573,6 +614,7 @@ describe('sticks and unsticks', () => {
         }),
         StickyCashOuts: () => ({
           data: {
+            _meta: META,
             cashOutTokensEvents: page([
               cashOut(37, { timestamp: SINCE - 5 }),
               cashOut(37, { timestamp: SINCE + 2, txHash: tx(5) }),
@@ -581,7 +623,7 @@ describe('sticks and unsticks', () => {
         }),
       })
 
-      const moves = await indexedStickyMoves(84532, [37n], undefined, SINCE)
+      const { rows: moves } = await indexedStickyMoves(84532, [37n], undefined, SINCE)
 
       expect(moves.map(({ kind, timestamp }) => [kind, timestamp])).toEqual([
         ['stick', SINCE],
@@ -602,11 +644,11 @@ describe('sticks and unsticks', () => {
     it('reaches the indexer through the relay with the filter, which the operation contract accepts', async () => {
       vi.stubGlobal('window', {})
       const sent = indexer({
-        StickyPays: () => ({ data: { payEvents: page([pay(37, { timestamp: SINCE + 1 })]) } }),
-        StickyCashOuts: () => ({ data: { cashOutTokensEvents: page([]) } }),
+        StickyPays: () => ({ data: { _meta: META, payEvents: page([pay(37, { timestamp: SINCE + 1 })]) } }),
+        StickyCashOuts: () => ({ data: { _meta: META, cashOutTokensEvents: page([]) } }),
       })
 
-      const moves = await indexedStickyMoves(84532, [37n], undefined, SINCE)
+      const { rows: moves } = await indexedStickyMoves(84532, [37n], undefined, SINCE)
 
       expect(moves).toHaveLength(1)
       expect(new Set(sent.map(({ url }) => url))).toEqual(new Set(['/api/bendystraw/testnet/query']))
@@ -619,12 +661,12 @@ describe('sticks and unsticks', () => {
     const sent = indexer({
       StickyPays: ({ after }) =>
         after === null
-          ? { data: { payEvents: page([pay(37, { txHash: tx(1) })], 'p1') } }
-          : { data: { payEvents: page([pay(37, { txHash: tx(3), timestamp: 40 })]) } },
-      StickyCashOuts: () => ({ data: { cashOutTokensEvents: page([cashOut(37)]) } }),
+          ? { data: { _meta: META, payEvents: page([pay(37, { txHash: tx(1) })], 'p1') } }
+          : { data: { _meta: META, payEvents: page([pay(37, { txHash: tx(3), timestamp: 40 })]) } },
+      StickyCashOuts: () => ({ data: { _meta: META, cashOutTokensEvents: page([cashOut(37)]) } }),
     })
 
-    const moves = await indexedStickyMoves(84532, [37n])
+    const { rows: moves } = await indexedStickyMoves(84532, [37n])
 
     expect(moves.map(({ txHash }) => txHash)).toEqual([tx(1), tx(2), tx(3)])
     expect(sent.filter(({ operation }) => operation === 'StickyPays').map(({ variables }) => variables.after)).toEqual([null, 'p1'])
@@ -633,15 +675,15 @@ describe('sticks and unsticks', () => {
   it('stops at 20 pages of either list with an error', async () => {
     let next = 0
     indexer({
-      StickyPays: () => ({ data: { payEvents: page([pay(37)], `p${(next += 1)}`) } }),
-      StickyCashOuts: () => ({ data: { cashOutTokensEvents: page([]) } }),
+      StickyPays: () => ({ data: { _meta: META, payEvents: page([pay(37)], `p${(next += 1)}`) } }),
+      StickyCashOuts: () => ({ data: { _meta: META, cashOutTokensEvents: page([]) } }),
     })
     await expect(indexedStickyMoves(84532, [37n])).rejects.toThrow('more payEvents than one page load reads')
 
     next = 0
     indexer({
-      StickyPays: () => ({ data: { payEvents: page([]) } }),
-      StickyCashOuts: () => ({ data: { cashOutTokensEvents: page([cashOut(37)], `c${(next += 1)}`) } }),
+      StickyPays: () => ({ data: { _meta: META, payEvents: page([]) } }),
+      StickyCashOuts: () => ({ data: { _meta: META, cashOutTokensEvents: page([cashOut(37)], `c${(next += 1)}`) } }),
     })
     await expect(indexedStickyMoves(84532, [37n])).rejects.toThrow('more cashOutTokensEvents than one page load reads')
   })
@@ -649,12 +691,12 @@ describe('sticks and unsticks', () => {
   it('rejects when either list fails, rather than answering with half the moves', async () => {
     indexer({
       StickyPays: () => ({ errors: [{ message: 'timeout' }] }),
-      StickyCashOuts: () => ({ data: { cashOutTokensEvents: page([]) } }),
+      StickyCashOuts: () => ({ data: { _meta: META, cashOutTokensEvents: page([]) } }),
     })
     await expect(indexedStickyMoves(84532, [37n])).rejects.toThrow('timeout')
 
     indexer({
-      StickyPays: () => ({ data: { payEvents: page([pay(37)]) } }),
+      StickyPays: () => ({ data: { _meta: META, payEvents: page([pay(37)]) } }),
       StickyCashOuts: () => ({ errors: [{ message: 'database is down' }] }),
     })
     await expect(indexedStickyMoves(84532, [37n])).rejects.toThrow('database is down')
@@ -668,7 +710,7 @@ describe('sticks and unsticks', () => {
       StickyCashOuts: async () => {
         asked += 1
         await new Promise(resolve => setTimeout(resolve, 10))
-        return { data: { cashOutTokensEvents: page([cashOut(37)], `c${asked}`) } }
+        return { data: { _meta: META, cashOutTokensEvents: page([cashOut(37)], `c${asked}`) } }
       },
     })
 
@@ -693,8 +735,10 @@ describe('sticks and unsticks', () => {
     ['a cash out with no count', 'cashOut', { cashOutCount: 'many' }],
   ])('rejects the whole read for %s', async (_name, kind, extra) => {
     indexer({
-      StickyPays: () => ({ data: { payEvents: page(kind === 'pay' ? [pay(37, extra)] : []) } }),
-      StickyCashOuts: () => ({ data: { cashOutTokensEvents: page(kind === 'cashOut' ? [cashOut(37, extra)] : []) } }),
+      StickyPays: () => ({ data: { _meta: META, payEvents: page(kind === 'pay' ? [pay(37, extra)] : []) } }),
+      StickyCashOuts: () => ({
+        data: { _meta: META, cashOutTokensEvents: page(kind === 'cashOut' ? [cashOut(37, extra)] : []) },
+      }),
     })
 
     await expect(indexedStickyMoves(84532, [37n])).rejects.toThrow('incomplete Sticky event')
@@ -1428,8 +1472,8 @@ describe('the documents', () => {
   async function readEverything() {
     const sent = indexer({
       StickyIndex: () => indexOf(TESTNET_CHAINS, []),
-      StickyPays: () => ({ data: { payEvents: page([]) } }),
-      StickyCashOuts: () => ({ data: { cashOutTokensEvents: page([]) } }),
+      StickyPays: () => ({ data: { _meta: META, payEvents: page([]) } }),
+      StickyCashOuts: () => ({ data: { _meta: META, cashOutTokensEvents: page([]) } }),
       StickyCreate: () => ({ data: { projectCreateEvents: { items: [] } } }),
       StickyEvents: () => listed('stickyEvents', []),
       StickyPositions: () => listed('stickyPositions', []),
@@ -1457,22 +1501,32 @@ describe('the documents', () => {
     }
   })
 
-  it('keep the IDs the first four had in the old client\'s registry', async () => {
+  it('are the old client\'s four documents, with the indexing status added to the pays and cash outs', async () => {
     const sent = await readEverything()
 
-    const idOf = (operation: string) =>
-      createHash('sha256').update(sent.find(request => request.operation === operation)!.query, 'utf8').digest('hex')
-    expect(idOf('StickyIndex')).toBe('6d883ec5d783d0ca340af5ffe0ed30da99af1f0fc7f148e557cf4b844a014f45')
-    expect(idOf('StickyPays')).toBe('ee745e235eef8f9a5ef97616351badc4ac2f1cb3e4e596c3e158c1057e85c741')
-    expect(idOf('StickyCashOuts')).toBe('80dd411715bb2f4eab91eb0549fc69c0aaf8e1252d7f251aed0d8ceecb0d233d')
-    expect(idOf('StickyCreate')).toBe('991f63433092a9e84526f9d09ad62bcbfe172488b6872089aaacdc7c2cdae6fc')
+    const sha = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex')
+    const queryOf = (operation: string) => sent.find(request => request.operation === operation)!.query
+    // The old client's registry held these IDs. The pays and cash outs also select the status, so a chart that reads
+    // them can scan the terminal past the block they are as of; without that line they are the old documents exactly.
+    const withoutStatus = (operation: string) => queryOf(operation).replace('\n    _meta { status }', '')
+    expect(sha(queryOf('StickyIndex'))).toBe('6d883ec5d783d0ca340af5ffe0ed30da99af1f0fc7f148e557cf4b844a014f45')
+    expect(sha(withoutStatus('StickyPays'))).toBe('ee745e235eef8f9a5ef97616351badc4ac2f1cb3e4e596c3e158c1057e85c741')
+    expect(sha(withoutStatus('StickyCashOuts'))).toBe('80dd411715bb2f4eab91eb0549fc69c0aaf8e1252d7f251aed0d8ceecb0d233d')
+    expect(sha(queryOf('StickyCreate'))).toBe('991f63433092a9e84526f9d09ad62bcbfe172488b6872089aaacdc7c2cdae6fc')
   })
 
-  it('select the indexing status in the index and in the three new documents, and in no other', async () => {
+  it('select the indexing status in every list document, and not in the creation lookup', async () => {
     const sent = await readEverything()
 
     const withStatus = sent.filter(({ query }) => query.includes('_meta { status }')).map(({ operation }) => operation)
-    expect([...new Set(withStatus)].sort()).toEqual(['StickyEvents', 'StickyIndex', 'StickyPositions', 'StickySettings'])
+    expect([...new Set(withStatus)].sort()).toEqual([
+      'StickyCashOuts',
+      'StickyEvents',
+      'StickyIndex',
+      'StickyPays',
+      'StickyPositions',
+      'StickySettings',
+    ])
   })
 
   it('are read with the live cache policy', async () => {
@@ -1487,8 +1541,8 @@ describe('the documents', () => {
     vi.stubGlobal('window', {})
     const sent = indexer({
       StickyIndex: () => indexOf(TESTNET_CHAINS, [project(84532, 37)]),
-      StickyPays: () => ({ data: { payEvents: page([pay(37)]) } }),
-      StickyCashOuts: () => ({ data: { cashOutTokensEvents: page([]) } }),
+      StickyPays: () => ({ data: { _meta: META, payEvents: page([pay(37)]) } }),
+      StickyCashOuts: () => ({ data: { _meta: META, cashOutTokensEvents: page([]) } }),
       StickyCreate: () => ({ data: { projectCreateEvents: { items: [{ txHash: tx(7), timestamp: 1 }] } } }),
       StickyEvents: () => listed('stickyEvents', [staked()]),
       StickyPositions: () => listed('stickyPositions', [positionRow()]),

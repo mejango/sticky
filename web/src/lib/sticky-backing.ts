@@ -6,14 +6,25 @@
  * miss only shifts older points. When the terminal's history cannot be read, or is longer than a scan may read, the
  * chart shows the Sticky share supply instead, and says so.
  *
- * Bendystraw has no fee a project paid, so the terminal's logs are the one source of the history.
+ * The pays and cash outs come from Bendystraw, and a scan of the terminal from just below the block it is indexed
+ * through adds the newer ones. Bendystraw records no fee a project paid, so the fees, and the additions to the balance
+ * that share their layout, come from one scan of the terminal over the project's life, which this browser keeps so that
+ * a return visit scans only the blocks since. When Bendystraw cannot answer, the pays and cash outs are scanned too.
  */
 
-import { decodeEventLog, getAbiItem, pad, toEventSelector, toHex, type AbiEvent } from 'viem'
+import { decodeEventLog, getAbiItem, pad, toEventSelector, toHex, type AbiEvent, type Hex } from 'viem'
 import type { ScannedLog } from '@/lib/hook-logs'
 import { terminalEventsAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
-import { scanToHead, type StickyEvent, type StickyReadDeps } from '@/lib/sticky-events'
+import {
+  keptScanToHead,
+  orNull,
+  scanFrom,
+  scanToHead,
+  type StickyEvent,
+  type StickyReadDeps,
+} from '@/lib/sticky-events'
+import { indexedStickyMoves, type IndexedMove } from '@/lib/sticky-indexed'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
 
 /** A change to the project's terminal balance, in the staked token's units, at a time in Unix seconds. */
@@ -48,8 +59,18 @@ export type BackingInputs = {
   orphans?: readonly OrphanExclusion[]
 }
 
-/** A caller's signal, and in tests the scan to use instead of Center. */
-export type FlowReadOptions = { signal?: AbortSignal; scan?: StickyReadDeps['scan'] }
+/** Every read `backingFlows` makes, so a test can stand in for Bendystraw and Center. */
+export type FlowReadDeps = {
+  /** Bendystraw's pays and cash outs of a project, with the block they are as of. */
+  indexedMoves: typeof indexedStickyMoves
+  /** The terminal's logs that match a filter, from its block through the head, each with its block's time. */
+  scan: StickyReadDeps['scan']
+  /** The same, with the history kept in this browser under a key, so a return visit scans only the blocks since. */
+  keptScan: typeof keptScanToHead
+}
+
+/** A caller's signal, which every read gets, and in tests the reads to use instead of the real ones. */
+export type FlowReadOptions = { signal?: AbortSignal } & Partial<FlowReadDeps>
 
 /** Sticky shares always have 18 decimals. */
 const SHARE_DECIMALS = 18
@@ -151,12 +172,15 @@ export function backingSeries(
   return { points, unit: { decimals: info.decimals, symbol: info.symbol }, supplyFallback: false }
 }
 
+/** A flow with where it happened, so flows in one block keep the chain's order. */
+type Placed = Flow & { logIndex: number }
+
 /** What a terminal log did to the project's balance, or null for one that did nothing to it or is another project's.
  * A pay adds its amount, an addition its amount and the held fees it returned, a cash out takes away what the holder
  * got, and a fee processed with it takes away the fee (CashOutTokens reports the amount after the fee). A held fee
  * left the balance when it was held, so processing it later moves nothing. A fee that fails to process is credited
  * back and emits no ProcessFee, so it nets out. */
-function flowOf(chainId: number, projectId: bigint, log: ScannedLog): Flow | null {
+function flowOf(chainId: number, projectId: bigint, log: ScannedLog): Placed | null {
   const { eventName, args } = decodeEventLog({ abi: terminalEventsAbi, topics: log.topics, data: log.data })
   if (args.projectId !== projectId) return null
   if (log.blockTimestamp === undefined) {
@@ -172,35 +196,86 @@ function flowOf(chainId: number, projectId: bigint, log: ScannedLog): Flow | nul
           : args.wasHeld
             ? 0n
             : -args.amount
-  return delta === 0n ? null : { timestamp: Number(log.blockTimestamp), delta }
+  return delta === 0n ? null : { timestamp: Number(log.blockTimestamp), logIndex: log.logIndex, delta }
 }
 
-/** By block, then log: the chain's order. */
-const inChainOrder = (a: ScannedLog, b: ScannedLog) =>
-  a.blockNumber === b.blockNumber ? a.logIndex - b.logIndex : a.blockNumber < b.blockNumber ? -1 : 1
+/** What one of Bendystraw's pays or cash outs did to the balance: the amount the terminal took in, or paid out. */
+function flowOfMove(move: IndexedMove): Placed | null {
+  const delta = move.kind === 'stick' ? move.amount : -move.amount
+  return delta === 0n ? null : { timestamp: move.timestamp, logIndex: move.logIndex, delta }
+}
+
+/** One event's identity in either source: its transaction and its place in the transaction's receipt. */
+const identity = (txHash: Hex, logIndex: number) => `${txHash.toLowerCase()}:${logIndex}`
+
+/** Bendystraw's pays and cash outs, and those of the terminal's logs (from a scan that reads again the blocks just
+ * below the one Bendystraw is indexed through) that Bendystraw does not have. An event both have counts once. */
+function mergedMoves(
+  chainId: number,
+  projectId: bigint,
+  indexed: readonly IndexedMove[],
+  tail: readonly ScannedLog[],
+): Placed[] {
+  const ours = indexed.filter(move => move.chainId === chainId && move.projectId === projectId)
+  const known = new Set(ours.map(move => identity(move.txHash, move.logIndex)))
+  const newer = tail.filter(log => !known.has(identity(log.transactionHash, log.logIndex)))
+  return [
+    ...ours.flatMap(move => flowOfMove(move) ?? []),
+    ...newer.flatMap(log => flowOf(chainId, projectId, log) ?? []),
+  ]
+}
+
+const live: FlowReadDeps = { indexedMoves: indexedStickyMoves, scan: scanToHead, keptScan: keptScanToHead }
+
+const MOVES_UNAVAILABLE = 'Bendystraw could not list the pays and cash outs; scanning the terminal for them instead.'
 
 /**
  * Every change to a project's balance on its terminal since `fromBlock` (its creation block), in the staked token's
- * units, in the chain's order. Two scans of the terminal through Center, one after the other: its pays and cash outs,
- * which index the project third, and its fees and additions, which index it first. A scan that fails, or a history
- * longer than a scan may read, rejects, and the page charts the share supply instead.
+ * units, in the order of their time.
+ * - The pays and cash outs are Bendystraw's, with a scan of the terminal's from just below the block it is indexed
+ *   through to the head. When Bendystraw cannot answer, or has no status for the chain, the terminal's are scanned from
+ *   `fromBlock` instead.
+ * - The fees and additions to the balance come from one scan of the terminal from `fromBlock`, which index the project
+ *   first, kept in this browser like a project's hook history: a return visit scans only the blocks since.
+ * Scans run one after the other. A null `fromBlock` is a creation block that could not be found: the kept history is
+ * used whatever block it began at, and otherwise the scans start at the deployer's block. A scan that fails, or a
+ * history longer than a scan may read, rejects, and the page charts the share supply instead.
  */
 export async function backingFlows(
   chainId: number,
   projectId: bigint,
-  fromBlock: bigint,
-  { signal, scan = scanToHead }: FlowReadOptions = {},
+  fromBlock: bigint | null,
+  options: FlowReadOptions = {},
 ): Promise<Flow[]> {
+  const { signal, ...given } = options
+  const deps: FlowReadDeps = { ...live, ...given }
   const deployment = stickyDeployment(chainId)
   if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
   const address = deployment.terminal
   const project = pad(toHex(projectId))
-  const moves = await scan(chainId, { address, topics: [[PAY, CASH_OUT], null, null, project], fromBlock }, { signal })
+  const moveTopics = [[PAY, CASH_OUT], null, null, project]
+
+  const read = () => deps.indexedMoves(chainId, [projectId], signal)
+  const indexed = await orNull(read, signal, MOVES_UNAVAILABLE, { chainId, projectId })
+  const asOf = indexed?.blocks.get(chainId)
+  let moves: Placed[]
+  if (indexed && asOf !== undefined) {
+    const filter = { address, topics: moveTopics, fromBlock: scanFrom(asOf, deployment) }
+    moves = mergedMoves(chainId, projectId, indexed.rows, await deps.scan(chainId, filter, { signal }))
+  } else {
+    const filter = { address, topics: moveTopics, fromBlock: fromBlock ?? deployment.fromBlock }
+    const logs = await deps.scan(chainId, filter, { signal })
+    moves = logs.flatMap(log => flowOf(chainId, projectId, log) ?? [])
+  }
   if (signal?.aborted) throw signal.reason
-  const others = await scan(
-    chainId,
-    { address, topics: [[PROCESS_FEE, ADD_TO_BALANCE], project], fromBlock },
-    { signal },
+
+  const key = `${chainId}:${address.toLowerCase()}:${projectId}:fees`
+  const filter = { address, topics: [[PROCESS_FEE, ADD_TO_BALANCE], project], fromBlock }
+  const others = (await deps.keptScan(chainId, key, filter, { signal })).flatMap(
+    log => flowOf(chainId, projectId, log) ?? [],
   )
-  return [...moves, ...others].sort(inChainOrder).flatMap(log => flowOf(chainId, projectId, log) ?? [])
+  // In the order of their time, and in one block in the order of their logs.
+  return [...moves, ...others]
+    .sort((a, b) => a.timestamp - b.timestamp || a.logIndex - b.logIndex)
+    .map(({ timestamp, delta }) => ({ timestamp, delta }))
 }

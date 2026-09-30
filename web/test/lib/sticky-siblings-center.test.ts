@@ -51,6 +51,7 @@ const figures = (chainId: number, projectId: bigint, cashOutTaxRate: bigint): St
   rawBacking: 10n,
   savedOrphaned: 11n,
   launchId: LAUNCH,
+  plannedChains: [BASE_SEPOLIA, OP_SEPOLIA],
   blockNumber: 1n,
 })
 

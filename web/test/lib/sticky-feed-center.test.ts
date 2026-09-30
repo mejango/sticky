@@ -156,7 +156,10 @@ describe('terminalMoves through Center', () => {
   })
 
   it("asks Bendystraw for the projects' pays and cash outs, with the caller's signal, and not Center", async () => {
-    bendystraw.moves.mockResolvedValue([indexedStick(1010n * E6, 1000n * E18, 'a1')])
+    bendystraw.moves.mockResolvedValue({
+      rows: [indexedStick(1010n * E6, 1000n * E18, 'a1')],
+      blocks: new Map([[CHAIN, 1n]]),
+    })
     const events = [stick(1000n * E18, 'a1', null)]
     const { signal } = new AbortController()
 
@@ -169,7 +172,10 @@ describe('terminalMoves through Center', () => {
   })
 
   it('reads both for a list that has both', async () => {
-    bendystraw.moves.mockResolvedValue([indexedStick(11n * E6, 1n * E18, 'a1')])
+    bendystraw.moves.mockResolvedValue({
+      rows: [indexedStick(11n * E6, 1n * E18, 'a1')],
+      blocks: new Map([[CHAIN, 1n]]),
+    })
     const chain = node(2_000n, [payLog(HOLDER, 12n * E6, 2n * E18, 'a2', 1_900n)])
     const events = [stick(1n * E18, 'a1', null), stick(2n * E18, 'a2', 1_900n)]
 

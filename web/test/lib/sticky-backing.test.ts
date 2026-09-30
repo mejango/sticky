@@ -8,14 +8,15 @@ import {
   orphanExclusions,
   supplyPoints,
   type BackingSeries,
-  type FlowReadOptions,
+  type FlowReadDeps,
   type SupplyPoint,
 } from '@/lib/sticky-backing'
 import type { StickyEvent } from '@/lib/sticky-events'
+import type { IndexedMove } from '@/lib/sticky-indexed'
 import { CHAIN, HOLDER, TOPIC, deployment, raw, topic, words } from './sticky-log-fixtures'
 
-// The chart's series is pure; backingFlows reads through the `scan` each call is given. Its default read, through
-// Center, has tests of its own in sticky-backing-center.test.ts.
+// The chart's series is pure; backingFlows reads through the deps each call is given. Its default reads, through
+// Center and Bendystraw, have tests of their own in sticky-backing-center.test.ts.
 
 const E18 = 10n ** 18n
 const E6 = 10n ** 6n
@@ -243,8 +244,14 @@ const PROCESS_FEE = '0xb514e730b3f8ad3aa94b6857bcc5ff4a46954bdcf8c4b0346705b1d0a
 const ADD_TO_BALANCE = '0x9ecaf7fc3dfffd6867c175d6e684b1f1e3aef019398ba8db2c1ffab4a09db253'
 const TOKEN = `0x${'e'.repeat(40)}` as Address
 
-type Place = { block: bigint; logIndex?: number; project?: bigint }
-const on = ({ block, logIndex = 0 }: Place) => ({ address: TERMINAL, blockNumber: block, logIndex, time: block })
+type Place = { block: bigint; logIndex?: number; project?: bigint; time?: bigint; txHash?: string }
+const on = ({ block, logIndex = 0, time = block, txHash }: Place) => ({
+  address: TERMINAL,
+  blockNumber: block,
+  logIndex,
+  time,
+  ...(txHash === undefined ? {} : { txHash }),
+})
 const id = (project = 42n) => topic(project)
 
 // Each event's fields that are not topics, in the ABI's layout, with an empty memo or metadata where it has one.
@@ -265,62 +272,241 @@ const feeLog = (amount: bigint, wasHeld: boolean, at: Place) =>
 const addLog = (amount: bigint, returnedFees: bigint, at: Place) =>
   raw([ADD_TO_BALANCE, id(at.project)], words(amount, returnedFees, 160n, 192n, HOLDER, 0n, 0n), on(at))
 
-type Filter = Parameters<NonNullable<FlowReadOptions['scan']>>[1]
+// Bendystraw's pays and cash outs of project 42, as indexedStickyMoves gives them.
+type MoveAt = { txHash: string; logIndex: number; timestamp: number; projectId?: bigint }
+const indexedPay = (amount: bigint, tokens: bigint, { projectId = 42n, ...at }: MoveAt): IndexedMove => ({
+  kind: 'stick',
+  chainId: CHAIN,
+  projectId,
+  ...at,
+  txHash: at.txHash as Hex,
+  holder: HOLDER,
+  payer: HOLDER,
+  amount,
+  tokens,
+})
+const indexedCashOut = (amount: bigint, tokens: bigint, { projectId = 42n, ...at }: MoveAt): IndexedMove => ({
+  kind: 'unstick',
+  chainId: CHAIN,
+  projectId,
+  ...at,
+  txHash: at.txHash as Hex,
+  holder: HOLDER,
+  amount,
+  tokens,
+})
+const hash = (n: number) => `0x${n.toString(16).padStart(64, '0')}`
 
-/** A scan that answers from `logs` by topic, the way a node filters them, and lists what each scan asked for. */
-function fakeScan(logs: ScannedLog[] | Error) {
-  const filters: Filter[] = []
-  const scan = vi.fn<NonNullable<FlowReadOptions['scan']>>(async (_chainId, filter) => {
-    filters.push(filter)
-    if (logs instanceof Error) throw logs
-    const [signatures] = filter.topics
-    return logs.filter(log => Array.isArray(signatures) && signatures.includes(log.topics[0]!))
-  })
-  return { scan, filters }
+type Filter = Parameters<FlowReadDeps['scan']>[1]
+type KeptFilter = Parameters<FlowReadDeps['keptScan']>[2]
+const FEES_KEY = `${CHAIN}:${TERMINAL.toLowerCase()}:42:fees`
+const MOVE_TOPICS = [[PAY, CASH_OUT], null, null, id()]
+const FEE_TOPICS = [[PROCESS_FEE, ADD_TO_BALANCE], id()]
+
+type Spec = {
+  /** Bendystraw's pays and cash outs and the block they are as of (none: no status for the chain), or how it fails. */
+  indexed?: { rows: IndexedMove[]; block?: bigint } | Error
+  /** The terminal's logs. Each scan answers with those of the events it asks for, by topic, as a node would. */
+  logs?: ScannedLog[]
+  /** How the plain scan fails, and how the kept one does. */
+  scanFails?: Error
+  keptFails?: Error
 }
+
+/** Fakes of the three reads. `scans` lists what each plain scan asked for, and `kept` each kept scan's key and filter. */
+function fakeDeps({ indexed = new Error('Bendystraw is down'), logs = [], scanFails, keptFails }: Spec = {}) {
+  const scans: Filter[] = []
+  const kept: { key: string; filter: KeptFilter }[] = []
+  const answering = (topics: Filter['topics']) => {
+    const [signatures] = topics
+    return logs.filter(log => Array.isArray(signatures) && signatures.includes(log.topics[0]!))
+  }
+  const deps = {
+    indexedMoves: vi.fn<FlowReadDeps['indexedMoves']>(async () => {
+      if (indexed instanceof Error) throw indexed
+      return { rows: indexed.rows, blocks: new Map(indexed.block === undefined ? [] : [[CHAIN, indexed.block]]) }
+    }),
+    scan: vi.fn<FlowReadDeps['scan']>(async (_chainId, filter) => {
+      scans.push(filter)
+      if (scanFails) throw scanFails
+      return answering(filter.topics)
+    }),
+    keptScan: vi.fn<FlowReadDeps['keptScan']>(async (_chainId, key, filter) => {
+      kept.push({ key, filter })
+      if (keptFails) throw keptFails
+      return answering(filter.topics)
+    }),
+  } satisfies FlowReadDeps
+  return { ...deps, scans, kept }
+}
+
+/** Where Bendystraw's pays and cash outs are indexed through in these tests, well past the deployer's block. */
+const AS_OF = deployment.fromBlock + 10_000n
+const MOVES_UNAVAILABLE = 'Bendystraw could not list the pays and cash outs; scanning the terminal for them instead.'
 
 describe('backingFlows', () => {
   beforeEach(() => {
     nextIndex = 0
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
   })
 
   it('balance flows come from the terminal\'s Pay, CashOutTokens, AddToBalance and unheld ProcessFee', async () => {
-    const { scan, filters } = fakeScan([
-      payLog(100n * E6, 100n * E18, { block: 1n }),
-      // The terminal takes a cash out's fee before it records the cash out, and a held fee moves nothing when paid.
-      feeLog(1n * E6, false, { block: 3n, logIndex: 4 }),
-      cashOutLog(40n * E18, 39n * E6, { block: 3n, logIndex: 5 }),
-      feeLog(7n * E6, true, { block: 4n }),
-      addLog(5n * E6, 2n * E6, { block: 2n }),
-    ])
-    const flows = await backingFlows(CHAIN, 42n, 9n, { scan })
+    // Bendystraw cannot answer here, so the pays and cash outs are scanned too: the old client's two scans.
+    const deps = fakeDeps({
+      logs: [
+        payLog(100n * E6, 100n * E18, { block: 1n }),
+        // The terminal takes a cash out's fee before it records the cash out, and a held fee moves nothing when paid.
+        feeLog(1n * E6, false, { block: 3n, logIndex: 4 }),
+        cashOutLog(40n * E18, 39n * E6, { block: 3n, logIndex: 5 }),
+        feeLog(7n * E6, true, { block: 4n }),
+        addLog(5n * E6, 2n * E6, { block: 2n }),
+      ],
+    })
+    const flows = await backingFlows(CHAIN, 42n, 9n, deps)
     expect(flows).toEqual([
       { timestamp: 1, delta: 100n * E6 },
       { timestamp: 2, delta: 7n * E6 },
       { timestamp: 3, delta: -1n * E6 },
       { timestamp: 3, delta: -39n * E6 },
     ])
-    expect(scan).toHaveBeenCalledTimes(2)
-    expect(scan.mock.calls.map(([chainId]) => chainId)).toEqual([CHAIN, CHAIN])
-    expect(filters).toEqual([
-      { address: TERMINAL, topics: [[PAY, CASH_OUT], null, null, id()], fromBlock: 9n },
-      { address: TERMINAL, topics: [[PROCESS_FEE, ADD_TO_BALANCE], id()], fromBlock: 9n },
+    expect(deps.scans).toEqual([{ address: TERMINAL, topics: MOVE_TOPICS, fromBlock: 9n }])
+    expect(deps.kept).toEqual([{ key: FEES_KEY, filter: { address: TERMINAL, topics: FEE_TOPICS, fromBlock: 9n } }])
+    expect([...deps.scan.mock.calls, ...deps.keptScan.mock.calls].map(([chainId]) => chainId)).toEqual([CHAIN, CHAIN])
+    expect(vi.mocked(console.warn).mock.calls).toEqual([
+      [MOVES_UNAVAILABLE, { chainId: CHAIN, projectId: 42n }, new Error('Bendystraw is down')],
     ])
   })
 
-  it('a failed balance read rejects, so the page charts share supply instead', async () => {
-    const { scan } = fakeScan(new Error('rpc down'))
-    await expect(backingFlows(CHAIN, 42n, 9n, { scan })).rejects.toThrow('rpc down')
-    // What the page charts then: the Sticky supply, in shares, marked as the fallback.
-    const series = backingSeries(null, { supply: points([0, 0n], [10, 5n * E18]), info: info(5n * E6, 0n) })
-    expect(series).toMatchObject({ supplyFallback: true, unit: { decimals: 18, symbol: 'STICKYSLOPSHOP' } })
-    expect(values(series)).toEqual([0n, 5n * E18])
+  it('the indexed path sends no Pay/CashOut scan of the project\'s history, only the tail past Bendystraw\'s block', async () => {
+    const deps = fakeDeps({
+      indexed: {
+        rows: [
+          indexedPay(100n * E6, 100n * E18, { txHash: hash(1), logIndex: 1, timestamp: 10 }),
+          indexedCashOut(39n * E6, 40n * E18, { txHash: hash(3), logIndex: 5, timestamp: 30 }),
+        ],
+        block: AS_OF,
+      },
+      logs: [
+        feeLog(1n * E6, false, { block: 3n, logIndex: 4, time: 30n }),
+        addLog(5n * E6, 2n * E6, { block: 2n, time: 20n }),
+      ],
+    })
+    const flows = await backingFlows(CHAIN, 42n, 9n, deps)
+    expect(flows).toEqual([
+      { timestamp: 10, delta: 100n * E6 },
+      { timestamp: 20, delta: 7n * E6 },
+      { timestamp: 30, delta: -1n * E6 },
+      { timestamp: 30, delta: -39n * E6 },
+    ])
+    // One scan for pays and cash outs, from 64 blocks below the block after Bendystraw's, and the kept fee scan.
+    expect(deps.scans).toEqual([{ address: TERMINAL, topics: MOVE_TOPICS, fromBlock: AS_OF + 1n - 64n }])
+    expect(deps.kept).toEqual([{ key: FEES_KEY, filter: { address: TERMINAL, topics: FEE_TOPICS, fromBlock: 9n } }])
+    expect(console.warn).not.toHaveBeenCalled()
   })
 
-  it('rejects a history too long to scan, so the page charts share supply instead', async () => {
-    const { scan } = fakeScan(new Error('This history spans 9000000 blocks, more than this RPC can scan in 1024 requests.'))
-    await expect(backingFlows(CHAIN, 42n, 9n, { scan })).rejects.toThrow('more than this RPC can scan')
-    expect(scan).toHaveBeenCalledTimes(1)
+  it('counts once an event both Bendystraw and the tail have, at the boundary, and adds the ones only the tail has', async () => {
+    const deps = fakeDeps({
+      indexed: {
+        rows: [
+          indexedPay(1n, 1n, { txHash: hash(0xa0), logIndex: 2, timestamp: 100 }),
+          // Written in capitals: the same transaction as the tail's.
+          indexedPay(5n, 5n, { txHash: hash(0xab).toUpperCase().replace('0X', '0x'), logIndex: 3, timestamp: 190 }),
+          indexedCashOut(2n, 2n, { txHash: hash(0xac), logIndex: 7, timestamp: 195 }),
+        ],
+        block: AS_OF,
+      },
+      logs: [
+        // Below Bendystraw's block, which the tail reads again, and which Bendystraw already has.
+        payLog(5n, 5n, { block: AS_OF - 10n, logIndex: 3, time: 190n, txHash: hash(0xab) }),
+        cashOutLog(2n, 2n, { block: AS_OF - 5n, logIndex: 7, time: 195n, txHash: hash(0xac) }),
+        // The same transaction as one Bendystraw has, another event of it: not the same event.
+        payLog(4n, 4n, { block: AS_OF - 5n, logIndex: 8, time: 195n, txHash: hash(0xac) }),
+        // Past it: only the tail has these.
+        payLog(8n, 8n, { block: AS_OF + 5n, time: 205n, txHash: hash(0xad) }),
+        cashOutLog(3n, 3n, { block: AS_OF + 6n, time: 206n, txHash: hash(0xae) }),
+      ],
+    })
+    expect(await backingFlows(CHAIN, 42n, 9n, deps)).toEqual([
+      { timestamp: 100, delta: 1n },
+      { timestamp: 190, delta: 5n },
+      { timestamp: 195, delta: -2n },
+      { timestamp: 195, delta: 4n },
+      { timestamp: 205, delta: 8n },
+      { timestamp: 206, delta: -3n },
+    ])
+  })
+
+  it('scans the terminal for the pays and cash outs of a chain Bendystraw has no status for, as when it fails', async () => {
+    const deps = fakeDeps({
+      indexed: { rows: [indexedPay(999n, 999n, { txHash: hash(9), logIndex: 0, timestamp: 1 })] },
+      logs: [payLog(5n, 5n, { block: 2n })],
+    })
+    expect(await backingFlows(CHAIN, 42n, 9n, deps)).toEqual([{ timestamp: 2, delta: 5n }])
+    expect(deps.scans).toEqual([{ address: TERMINAL, topics: MOVE_TOPICS, fromBlock: 9n }])
+  })
+
+  it('reads a creation block it could not find as the deployer\'s for a plain scan, and hands it on as unknown to the kept one', async () => {
+    const down = fakeDeps()
+    await backingFlows(CHAIN, 42n, null, down)
+    expect(down.scans.map(filter => filter.fromBlock)).toEqual([deployment.fromBlock])
+    expect(down.kept.map(({ filter }) => filter.fromBlock)).toEqual([null])
+
+    const indexed = fakeDeps({ indexed: { rows: [], block: AS_OF } })
+    await backingFlows(CHAIN, 42n, null, indexed)
+    expect(indexed.scans.map(filter => filter.fromBlock)).toEqual([AS_OF + 1n - 64n])
+    expect(indexed.kept.map(({ filter }) => filter.fromBlock)).toEqual([null])
+  })
+
+  it('leaves out Bendystraw\'s moves of another project and moves of nothing', async () => {
+    const deps = fakeDeps({
+      indexed: {
+        rows: [
+          indexedPay(7n, 7n, { txHash: hash(1), logIndex: 0, timestamp: 10, projectId: 43n }),
+          indexedPay(0n, 0n, { txHash: hash(2), logIndex: 0, timestamp: 11 }),
+          indexedCashOut(0n, 1n, { txHash: hash(3), logIndex: 0, timestamp: 12 }),
+          indexedPay(3n, 3n, { txHash: hash(4), logIndex: 0, timestamp: 13 }),
+        ],
+        block: AS_OF,
+      },
+    })
+    expect(await backingFlows(CHAIN, 42n, 9n, deps)).toEqual([{ timestamp: 13, delta: 3n }])
+  })
+
+  describe('charts the share supply instead only when no path can read the history', () => {
+    it('rejects when Bendystraw cannot answer and the terminal cannot be scanned either', async () => {
+      const deps = fakeDeps({ scanFails: new Error('rpc down') })
+      await expect(backingFlows(CHAIN, 42n, 9n, deps)).rejects.toThrow('rpc down')
+      expect(deps.keptScan).not.toHaveBeenCalled()
+    })
+
+    it('rejects when the tail past Bendystraw\'s block cannot be read', async () => {
+      const deps = fakeDeps({ indexed: { rows: [], block: AS_OF }, scanFails: new Error('429') })
+      await expect(backingFlows(CHAIN, 42n, 9n, deps)).rejects.toThrow('429')
+    })
+
+    it('rejects when the fees cannot be read, which only the terminal records', async () => {
+      const deps = fakeDeps({
+        indexed: { rows: [], block: AS_OF },
+        keptFails: new Error('This history spans 9000000 blocks'),
+      })
+      await expect(backingFlows(CHAIN, 42n, 9n, deps)).rejects.toThrow('This history spans 9000000 blocks')
+    })
+
+    it('a failed balance read rejects, so the page charts share supply instead', async () => {
+      const deps = fakeDeps({ scanFails: new Error('rpc down') })
+      await expect(backingFlows(CHAIN, 42n, 9n, deps)).rejects.toThrow('rpc down')
+      // What the page charts then: the Sticky supply, in shares, marked as the fallback.
+      const series = backingSeries(null, { supply: points([0, 0n], [10, 5n * E18]), info: info(5n * E6, 0n) })
+      expect(series).toMatchObject({ supplyFallback: true, unit: { decimals: 18, symbol: 'STICKYSLOPSHOP' } })
+      expect(values(series)).toEqual([0n, 5n * E18])
+    })
+
+    it('rejects a history too long to scan, so the page charts share supply instead', async () => {
+      const tooLong = new Error('This history spans 9000000 blocks, more than this RPC can scan in 1024 requests.')
+      const deps = fakeDeps({ scanFails: tooLong })
+      await expect(backingFlows(CHAIN, 42n, 9n, deps)).rejects.toThrow('more than this RPC can scan')
+      expect(deps.scan).toHaveBeenCalledTimes(1)
+    })
   })
 
   it('the new topics are the terminal\'s and the hook\'s event hashes', () => {
@@ -331,29 +517,41 @@ describe('backingFlows', () => {
     expect(TOPIC.ExcludeOrphanedBalance).toBe('0xa0b9b2db99d31a6b0fbb43cedfc627f78ae7c1b1f39d286ed7c61b5c9bba83fa')
   })
 
-  it('reads the second scan only after the first has answered', async () => {
+  it('reads one source after another: Bendystraw, then the tail, then the fees', async () => {
+    const order: string[] = []
     let answer: (logs: ScannedLog[]) => void = () => {}
-    const scan = vi.fn<NonNullable<FlowReadOptions['scan']>>()
-    scan.mockImplementationOnce(() => new Promise(resolve => (answer = resolve)))
-    scan.mockImplementationOnce(async () => [])
-    const flows = backingFlows(CHAIN, 42n, 9n, { scan })
-    await Promise.resolve()
-    expect(scan).toHaveBeenCalledTimes(1)
-    answer([payLog(1n, 1n, { block: 10n })])
-    expect(await flows).toEqual([{ timestamp: 10, delta: 1n }])
-    expect(scan).toHaveBeenCalledTimes(2)
+    const deps = fakeDeps({ indexed: { rows: [], block: AS_OF } })
+    deps.indexedMoves.mockImplementationOnce(async () => {
+      order.push('bendystraw')
+      return { rows: [], blocks: new Map([[CHAIN, AS_OF]]) }
+    })
+    deps.scan.mockImplementationOnce(() => {
+      order.push('tail')
+      return new Promise(resolve => (answer = resolve))
+    })
+    deps.keptScan.mockImplementationOnce(async () => {
+      order.push('fees')
+      return []
+    })
+    const flows = backingFlows(CHAIN, 42n, 9n, deps)
+    await vi.waitFor(() => expect(order).toEqual(['bendystraw', 'tail']))
+    answer([payLog(1n, 1n, { block: AS_OF + 1n, time: 50n })])
+    expect(await flows).toEqual([{ timestamp: 50, delta: 1n }])
+    expect(order).toEqual(['bendystraw', 'tail', 'fees'])
   })
 
   it('leaves out a pay of nothing and another project\'s events that a node sent anyway', async () => {
-    const { scan } = fakeScan([
-      payLog(0n, 0n, { block: 1n }),
-      payLog(5n, 5n, { block: 2n, project: 43n }),
-      addLog(5n, 0n, { block: 3n, project: 43n }),
-      feeLog(1n, false, { block: 4n, project: 43n }),
-      addLog(0n, 0n, { block: 5n }),
-      payLog(3n, 3n, { block: 6n }),
-    ])
-    expect(await backingFlows(CHAIN, 42n, 1n, { scan })).toEqual([{ timestamp: 6, delta: 3n }])
+    const deps = fakeDeps({
+      logs: [
+        payLog(0n, 0n, { block: 1n }),
+        payLog(5n, 5n, { block: 2n, project: 43n }),
+        addLog(5n, 0n, { block: 3n, project: 43n }),
+        feeLog(1n, false, { block: 4n, project: 43n }),
+        addLog(0n, 0n, { block: 5n }),
+        payLog(3n, 3n, { block: 6n }),
+      ],
+    })
+    expect(await backingFlows(CHAIN, 42n, 1n, deps)).toEqual([{ timestamp: 6, delta: 3n }])
   })
 
   it('refuses a terminal log that came without its block\'s time', async () => {
@@ -362,26 +560,41 @@ describe('backingFlows', () => {
       blockNumber: 7n,
       time: null,
     })
-    await expect(backingFlows(CHAIN, 42n, 1n, fakeScan([untimed]))).rejects.toThrow(
+    await expect(backingFlows(CHAIN, 42n, 1n, fakeDeps({ logs: [untimed] }))).rejects.toThrow(
       `A terminal log on chain ${CHAIN} came without its block's time.`,
     )
   })
 
-  it('hands the caller\'s signal to both scans, and rejects with its reason once it cancels', async () => {
+  it('hands the caller\'s signal to every read, and rejects with its reason once it cancels', async () => {
     const controller = new AbortController()
-    const { scan } = fakeScan([])
-    await backingFlows(CHAIN, 42n, 9n, { scan, signal: controller.signal })
-    expect(scan.mock.calls.map(([, , opts]) => opts)).toEqual([{ signal: controller.signal }, { signal: controller.signal }])
+    const { signal } = controller
+    const deps = fakeDeps({ indexed: { rows: [], block: AS_OF } })
+    await backingFlows(CHAIN, 42n, 9n, { ...deps, signal })
+    expect(deps.indexedMoves).toHaveBeenCalledWith(CHAIN, [42n], signal)
+    expect(deps.scan.mock.calls.map(([, , opts]) => opts)).toEqual([{ signal }])
+    expect(deps.keptScan.mock.calls.map(([, , , opts]) => opts)).toEqual([{ signal }])
 
-    scan.mockImplementationOnce(async () => {
+    deps.scan.mockImplementationOnce(async () => {
       controller.abort(new Error('left the page'))
       return []
     })
-    await expect(backingFlows(CHAIN, 42n, 9n, { scan, signal: controller.signal })).rejects.toThrow('left the page')
-    expect(scan).toHaveBeenCalledTimes(3)
+    await expect(backingFlows(CHAIN, 42n, 9n, { ...deps, signal })).rejects.toThrow('left the page')
+    expect(deps.keptScan).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects with the caller\'s reason when it cancels during Bendystraw\'s read, and scans nothing', async () => {
+    const controller = new AbortController()
+    const deps = fakeDeps({ indexed: { rows: [], block: AS_OF } })
+    deps.indexedMoves.mockImplementationOnce(async () => {
+      controller.abort(new Error('left the page'))
+      throw new Error('aborted')
+    })
+    await expect(backingFlows(CHAIN, 42n, 9n, { ...deps, signal: controller.signal })).rejects.toThrow('left the page')
+    expect(deps.scan).not.toHaveBeenCalled()
+    expect(deps.keptScan).not.toHaveBeenCalled()
   })
 
   it('refuses a chain Sticky is not deployed on', async () => {
-    await expect(backingFlows(999, 42n, 9n, fakeScan([]))).rejects.toThrow('Sticky is not deployed on chain 999.')
+    await expect(backingFlows(999, 42n, 9n, fakeDeps())).rejects.toThrow('Sticky is not deployed on chain 999.')
   })
 })

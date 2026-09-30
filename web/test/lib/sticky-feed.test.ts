@@ -166,9 +166,9 @@ type Spec = { terminal?: ScannedLog[] | Error; moves?: IndexedMove[] | Error }
 /** Fakes of the two reads terminalMoves makes: Bendystraw's pays and cash outs, and what a scan of the terminal
  * finds, each or an error. */
 function readers({ terminal = [], moves = [] }: Spec = {}) {
-  const indexedMoves = vi.fn<MoveReaders['indexedMoves']>(async () => {
+  const indexedMoves = vi.fn<MoveReaders['indexedMoves']>(async chainId => {
     if (moves instanceof Error) throw moves
-    return moves
+    return { rows: moves, blocks: new Map([[chainId, 100n]]) }
   })
   const scan = vi.fn<MoveReaders['scan']>(async () => {
     if (terminal instanceof Error) throw terminal
@@ -1131,7 +1131,7 @@ describe('terminalMoves', () => {
     const reads: MoveReaders = {
       indexedMoves: async chainId => {
         order.push(`bendystraw ${chainId}`)
-        return slow()
+        return { rows: await slow(), blocks: new Map() }
       },
       scan: async (chainId, { address, fromBlock }) => {
         order.push(`terminal ${chainId} ${address} from ${fromBlock}`)

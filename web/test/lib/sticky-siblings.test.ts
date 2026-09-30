@@ -111,6 +111,7 @@ function infoOf(chainId: number, project: Launch, figures: Partial<StickyProject
     rawBacking: 10n,
     savedOrphaned: 0n,
     launchId: project.launchId,
+    plannedChains: project.launchId === null ? null : [BASE_SEPOLIA, OP_SEPOLIA],
     blockNumber: 1n,
     ...figures,
   }
@@ -411,9 +412,19 @@ describe('siblingTotals', () => {
 describe('missingChains', () => {
   it('is the chains the launch planned, in the page\'s environment, that no row stands for', () => {
     const rows = [{ chainId: BASE_SEPOLIA }, { chainId: ARB_SEPOLIA }]
-    const planned = [BASE_SEPOLIA, OP_SEPOLIA, ARB_SEPOLIA, SEPOLIA, OP_SEPOLIA, 8453, 999]
-    expect(missingChains(planned, rows, BASE_SEPOLIA)).toEqual([OP_SEPOLIA, SEPOLIA])
-    expect(missingChains([8453, 999, 10, BASE_SEPOLIA], [{ chainId: 8453 }], 8453)).toEqual([10])
-    expect(missingChains([], rows, BASE_SEPOLIA)).toEqual([])
+    const plannedChains = [BASE_SEPOLIA, OP_SEPOLIA, ARB_SEPOLIA, SEPOLIA, 8453, 999]
+    expect(missingChains({ chainId: BASE_SEPOLIA, plannedChains }, rows)).toEqual([OP_SEPOLIA, SEPOLIA])
+    const production = { chainId: 8453, plannedChains: [8453, 999, 10, BASE_SEPOLIA] }
+    expect(missingChains(production, [{ chainId: 8453 }])).toEqual([10])
+  })
+
+  it('has none for a launch whose uri lists no chains', () => {
+    expect(missingChains({ chainId: BASE_SEPOLIA, plannedChains: null }, [{ chainId: BASE_SEPOLIA }])).toEqual([])
+    expect(missingChains({ chainId: BASE_SEPOLIA, plannedChains: [] }, [])).toEqual([])
+  })
+
+  it('reads the chains of the project info, as its uri listed them', () => {
+    const info = infoOf(BASE_SEPOLIA, { id: 12, tax: 500n, soulbound: false, launchId: LAUNCH })
+    expect(missingChains(info, [{ chainId: BASE_SEPOLIA }])).toEqual([OP_SEPOLIA])
   })
 })

@@ -25,7 +25,7 @@ import {
   type Hex,
   type Log,
 } from 'viem'
-import { projectHookLogs, scanLogs, untilAborted, type ScannedLog } from '@/lib/hook-logs'
+import { keptLogs, projectHookLogs, scanLogs, untilAborted, type ScannedLog } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { controllerAbi, projectsAbi, stickyDeployerAbi, stickyHookAbi } from '@/lib/sticky-abis'
 import { stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
@@ -530,6 +530,18 @@ export async function scanToHead(chainId: number, filter: LogFilter, { signal }:
   const client = jbCenterPublicClient(chainId)
   const toBlock = await untilAborted(client.getBlockNumber(), signal)
   return timed(chainId, await scanLogs(client, { ...filter, toBlock }, { signal }), signal)
+}
+
+/** Like `scanToHead`, with the part of the history a reorg can no longer replace kept in this browser under `key`, so
+ * the next read scans only the blocks after it (`keptLogs`). A null `fromBlock` is a start that could not be found: a
+ * kept history is used whatever block it began at. */
+export async function keptScanToHead(
+  chainId: number,
+  key: string,
+  filter: Omit<LogFilter, 'fromBlock'> & { fromBlock: bigint | null },
+  { signal }: Cancel,
+): Promise<ScannedLog[]> {
+  return timed(chainId, await keptLogs(chainId, key, filter, { signal }), signal)
 }
 
 const live: StickyReadDeps = {

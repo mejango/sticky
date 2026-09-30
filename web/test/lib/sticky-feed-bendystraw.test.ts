@@ -14,6 +14,8 @@ type Sent = { operation: string; query: string; variables: { where: Record<strin
 const tx = (short: string) => `0x${short.padStart(64, '0')}`
 const options: FeedOptions = { adapter: null, tokens: () => ({ symbol: 'USDC', stSymbol: 'stUSDC', decimals: 6 }) }
 const page = (items: unknown[]) => ({ items, pageInfo: { hasNextPage: false, endCursor: null } })
+/** The indexing status each answer carries: the test chain, indexed through block 5,000. */
+const meta = { status: { chain: { id: CHAIN, block: { number: 5_000, timestamp: 1 } } } }
 
 const pay = (short: string, timestamp: number, amount: string, tokens: string) => ({
   chainId: CHAIN,
@@ -55,8 +57,8 @@ function indexer(pays: ReturnType<typeof pay>[], cashOuts: ReturnType<typeof cas
       const { where } = body.variables
       const answer =
         operation === 'StickyPays'
-          ? { payEvents: page(pays.filter(row => row.timestamp >= since(where))) }
-          : { cashOutTokensEvents: page(cashOuts.filter(row => row.timestamp >= since(where))) }
+          ? { _meta: meta, payEvents: page(pays.filter(row => row.timestamp >= since(where))) }
+          : { _meta: meta, cashOutTokensEvents: page(cashOuts.filter(row => row.timestamp >= since(where))) }
       return new Response(JSON.stringify({ data: answer }), { headers: { 'content-type': 'application/json' } })
     }),
   )

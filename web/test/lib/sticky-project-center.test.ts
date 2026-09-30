@@ -41,7 +41,9 @@ const STORE = address('4')
 const LAUNCH = '11111111-2222-4333-8444-555555555555'
 const URI =
   'data:application/json;charset=utf-8,' +
-  encodeURIComponent(JSON.stringify({ protocol: 'Sticky', version: 1, launchId: LAUNCH }))
+  encodeURIComponent(
+    JSON.stringify({ protocol: 'Sticky', version: 1, launchId: LAUNCH, environment: 'testnet', chains: [84532, 11155420] }),
+  )
 
 type Call = { target: Address; callData: Hex }
 type Request = { method: string; block?: unknown; calls?: readonly Call[] }
@@ -168,6 +170,7 @@ describe('readStickyProject through the Center reader', () => {
       rawBacking: 10n,
       savedOrphaned: 4n,
       launchId: LAUNCH,
+      plannedChains: [84532, 11155420],
       blockNumber: HEAD,
     })
     expect(chain.requests.map(({ method, block, calls }) => [method, block, calls?.length])).toEqual([

@@ -143,7 +143,7 @@ function lengthOf(event: StickyEvent): bigint {
  * The stick or unstick each of Bendystraw's pays and cash outs records, as the event it stands for, for the feed the
  * pays and cash outs make alone: a stick has its payer, which is the pay's caller, and the shares it issued as its
  * count, and neither has a block or a balance. The events come out in the order the moves are given: oldest first, as
- * `indexedStickyMoves` gives them.
+ * `indexedStickyMoves` gives its rows.
  */
 export function moveEvents(moves: readonly IndexedMove[]): StickyEvent[] {
   return moves.map(move => {
@@ -257,9 +257,8 @@ export async function terminalMoves(
     if (indexed.length) {
       const since = indexed.reduce((oldest, { timestamp }) => Math.min(oldest, timestamp), Infinity)
       const read = () => readers.indexedMoves(chainId, projectsOf(indexed), signal, since)
-      for (const [key, amount] of moveAmounts((await orNull(read, signal, AMOUNTS_UNAVAILABLE, about)) ?? [])) {
-        amounts.set(key, amount)
-      }
+      const answer = await orNull(read, signal, AMOUNTS_UNAVAILABLE, about)
+      for (const [key, amount] of moveAmounts(answer?.rows ?? [])) amounts.set(key, amount)
     }
 
     const found = moves.filter((move): move is Move & { blockNumber: bigint } => move.blockNumber !== null)
