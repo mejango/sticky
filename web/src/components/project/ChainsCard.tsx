@@ -1,13 +1,13 @@
 'use client'
 
-import Link from 'next/link'
 import type { ReactNode } from 'react'
+import { ProjectLink } from '@/components/ProjectLink'
 import { Revalidating } from '@/components/ui/Revalidating'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { useProjectSiblings } from '@/hooks/useStickyOverview'
 import { formatAmount } from '@/lib/sticky-format'
 import { missingChains, siblingTotals, type SiblingRow } from '@/lib/sticky-siblings'
-import { chainName, projectPath } from '@/lib/urn'
+import { chainName } from '@/lib/urn'
 
 const CELL = 'whitespace-nowrap border-b border-line py-[5px] pr-2'
 
@@ -23,15 +23,9 @@ function Chain({ row }: { row: SiblingRow }) {
     )
   }
   return (
-    <Link
-      href={projectPath(row.chainId, row.projectId)}
-      // Not prefetched in view: once more than four links to different project pages are in view, Next 16.3's
-      // prefetch scheduler cancels and resends their prefetches without end.
-      prefetch={false}
-      className="text-accent underline decoration-amber"
-    >
+    <ProjectLink chainId={row.chainId} projectId={row.projectId} className="text-accent underline decoration-amber">
       {chainName(row.chainId)} #{row.projectId.toString()}
-    </Link>
+    </ProjectLink>
   )
 }
 

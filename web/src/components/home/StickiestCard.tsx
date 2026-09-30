@@ -1,12 +1,12 @@
 'use client'
 
-import Link from 'next/link'
 import { ChainIcon } from '@/components/ChainIcon'
+import { ProjectLink } from '@/components/ProjectLink'
 import { ProjectLogo } from '@/components/ProjectLogo'
 import { useProjectMetadata } from '@/hooks/useProjectMetadata'
 import { formatAmount, stickyLabel } from '@/lib/sticky-format'
 import type { HomeCardGroup } from '@/lib/sticky-home'
-import { chainName, projectPath } from '@/lib/urn'
+import { chainName } from '@/lib/urn'
 
 /**
  * A Stickiest card: its rank, the logo of the project behind the staked token and the Sticky token's name, its
@@ -25,12 +25,10 @@ export function StickiestCard({ group, rank }: { group: HomeCardGroup; rank: num
   const sticks = group.cards.reduce((sum, card) => sum + card.sticks, 0)
   const chains = group.cards.map(card => card.info.chainId)
   return (
-    <Link
+    <ProjectLink
       data-card
-      href={projectPath(info.chainId, info.projectId)}
-      // Not prefetched in view: once more than four links to different project pages are in view, Next 16.3's
-      // prefetch scheduler cancels and resends their prefetches without end.
-      prefetch={false}
+      chainId={info.chainId}
+      projectId={info.projectId}
       className="block border-b border-line px-3.5 py-3 text-ink no-underline last:border-b-0 hover:bg-[#e6f0f3]"
     >
       <div className="flex items-start gap-2.5">
@@ -57,6 +55,6 @@ export function StickiestCard({ group, rank }: { group: HomeCardGroup; rank: num
           </div>
         </div>
       </div>
-    </Link>
+    </ProjectLink>
   )
 }

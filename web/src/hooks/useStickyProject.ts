@@ -1,7 +1,8 @@
 'use client'
 
-import { queryOptions, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { queryOptions, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import type { Address } from 'viem'
+import { useKeptQuery } from '@/hooks/useKeptQuery'
 import { untilAborted } from '@/lib/hook-logs'
 import { inTurn } from '@/lib/in-turn'
 import { PERSIST } from '@/lib/query-persist'
@@ -145,7 +146,7 @@ const latestOptions = (client: QueryClient, chainId: number, projectId: number) 
  * copy's word. `failed` says the read failed with nothing verified to show, and `retry` reads it again.
  */
 export function useStickyProject(chainId: number, projectId: number) {
-  const read = useQuery(infoOptions(chainId, projectId))
+  const read = useKeptQuery(infoOptions(chainId, projectId))
   const verified = read.data !== undefined && readThisVisit.has(read.data)
   return {
     info: read.data,
@@ -156,12 +157,12 @@ export function useStickyProject(chainId: number, projectId: number) {
 }
 
 /** Whether the project has been read, in this visit or an earlier one: its history waits for that. */
-const useKnown = (chainId: number, projectId: number) => useQuery(infoOptions(chainId, projectId)).data !== undefined
+const useKnown = (chainId: number, projectId: number) => useKeptQuery(infoOptions(chainId, projectId)).data !== undefined
 
 /** Every event of a project's hook history, through the head (`stickyEvents`), read once for the whole page. */
 export function useStickyEvents(chainId: number, projectId: number) {
   const known = useKnown(chainId, projectId)
-  return useQuery({ ...eventsOptions(useQueryClient(), chainId, projectId), enabled: known })
+  return useKeptQuery({ ...eventsOptions(useQueryClient(), chainId, projectId), enabled: known })
 }
 
 /** The holders of a project with shares staked, most shares first, and the block time their streaks are measured at.
@@ -169,21 +170,21 @@ export function useStickyEvents(chainId: number, projectId: number) {
 export function useStickyHolders(chainId: number, projectId: number) {
   const known = useKnown(chainId, projectId)
   useStickyEvents(chainId, projectId)
-  return useQuery({ ...holdersOptions(useQueryClient(), chainId, projectId), enabled: known })
+  return useKeptQuery({ ...holdersOptions(useQueryClient(), chainId, projectId), enabled: known })
 }
 
 /** The header's holder figures, which the browser keeps. */
 export function useProjectSticks(chainId: number, projectId: number) {
   const known = useKnown(chainId, projectId)
   useStickyHolders(chainId, projectId)
-  return useQuery({ ...sticksOptions(useQueryClient(), chainId, projectId), enabled: known })
+  return useKeptQuery({ ...sticksOptions(useQueryClient(), chainId, projectId), enabled: known })
 }
 
 /** A project's Latest list, newest first, which the browser keeps. */
 export function useProjectLatest(chainId: number, projectId: number) {
   const known = useKnown(chainId, projectId)
   useStickyEvents(chainId, projectId)
-  return useQuery({ ...latestOptions(useQueryClient(), chainId, projectId), enabled: known })
+  return useKeptQuery({ ...latestOptions(useQueryClient(), chainId, projectId), enabled: known })
 }
 
 /**
@@ -197,7 +198,7 @@ export function useStickyPosition(
   holder: Address | null,
   info: StickyProjectInfo | undefined,
 ) {
-  return useQuery<StickyPosition>({
+  return useKeptQuery<StickyPosition>({
     queryKey: ['sticky-position', chainId, projectId, holder],
     queryFn: ({ signal }) =>
       warned(POSITION_UNREADABLE, { chainId, projectId }, signal, () =>

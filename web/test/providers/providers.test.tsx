@@ -146,19 +146,9 @@ describe('Providers', () => {
       window.localStorage.setItem('sticky:query-cache:v1', serializeState(dehydrate(seed)))
     }
 
-    // Each restore waits for the browser to be idle: a route's loading boundary still hydrates after the page loads.
-    function idleQueue() {
-      const waiting: IdleRequestCallback[] = []
-      vi.stubGlobal('requestIdleCallback', (run: IdleRequestCallback) => waiting.push(run))
-      vi.stubGlobal('cancelIdleCallback', () => {})
-      return () => act(async () => {
-        for (const run of waiting.splice(0)) run({ didTimeout: false, timeRemaining: () => 50 })
-      })
-    }
-
-    it('restores last session’s reads, from Sticky’s own cache key, once the browser is idle', async () => {
+    it('restores last session’s reads from Sticky’s own cache key at once, before the page has loaded', async () => {
       await seedCache()
-      const idle = idleQueue()
+      vi.spyOn(document, 'readyState', 'get').mockReturnValue('interactive')
       const { Providers } = await load()
       let client!: QueryClient
       function Probe() {
@@ -167,47 +157,7 @@ describe('Providers', () => {
       }
 
       await mount(<Providers><Probe /></Providers>)
-      expect(client.getQueryData(['ruleset', 1])).toBeUndefined()
 
-      await idle()
-      expect(client.getQueryData(['ruleset', 1])).toEqual({ weight: 5n })
-    })
-
-    it('restores after a moment where the browser has no idle callback', async () => {
-      await seedCache()
-      vi.stubGlobal('requestIdleCallback', undefined)
-      const { Providers } = await load()
-      let client!: QueryClient
-      function Probe() {
-        client = useQueryClient()
-        return null
-      }
-
-      await mount(<Providers><Probe /></Providers>)
-      await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)) })
-
-      expect(client.getQueryData(['ruleset', 1])).toEqual({ weight: 5n })
-    })
-
-    it('waits for the page to finish loading, so streamed content hydrates first', async () => {
-      await seedCache()
-      const idle = idleQueue()
-      const readyState = vi.spyOn(document, 'readyState', 'get').mockReturnValue('interactive')
-      const { Providers } = await load()
-      let client!: QueryClient
-      function Probe() {
-        client = useQueryClient()
-        return null
-      }
-
-      await mount(<Providers><Probe /></Providers>)
-      await idle()
-      expect(client.getQueryData(['ruleset', 1])).toBeUndefined()
-
-      readyState.mockReturnValue('complete')
-      await act(async () => { window.dispatchEvent(new Event('load')) })
-      expect(client.getQueryData(['ruleset', 1])).toBeUndefined()
-      await idle()
       expect(client.getQueryData(['ruleset', 1])).toEqual({ weight: 5n })
     })
   })

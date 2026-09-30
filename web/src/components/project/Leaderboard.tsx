@@ -243,7 +243,7 @@ export function Leaderboard({
             ))}
           </div>
           <div role="region" aria-label="Holders" tabIndex={0} className="w-full overflow-x-auto overscroll-x-contain">
-            <table aria-label="Holders" className="w-max min-w-[400px] border-collapse">
+            <table className="w-max min-w-[400px] border-collapse">
               <thead>
                 <tr>
                   {['#', 'ACCOUNT', '%', 'STUCK', 'AGE'].map(heading => (

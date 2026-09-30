@@ -1,7 +1,8 @@
 'use client'
 
-import { queryOptions, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { queryOptions, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo } from 'react'
+import { useKeptQuery } from '@/hooks/useKeptQuery'
 import { useProjectLatest, useStickyEvents, useStickyHolders, useStickyProject } from '@/hooks/useStickyProject'
 import { inTurn } from '@/lib/in-turn'
 import { PERSIST } from '@/lib/query-persist'
@@ -111,7 +112,7 @@ function useOverviewReads(chainId: number, projectId: number) {
   const holders = useStickyHolders(chainId, projectId)
   const latest = useProjectLatest(chainId, projectId)
   const turn = settled(holders) && settled(latest)
-  const flows = useQuery({
+  const flows = useKeptQuery({
     ...flowsOptions(client, chainId, projectId),
     enabled: project.info !== undefined && events.isSuccess && turn,
   })
@@ -172,6 +173,6 @@ export function useProjectSiblings(chainId: number, projectId: number) {
   const { info, failed } = project
   const wanted =
     info !== undefined && (info.launchId !== null || missingChains(info, [{ chainId: info.chainId }]).length > 0)
-  const siblings = useQuery({ ...siblingsOptions(client, chainId, projectId, info), enabled: wanted && turn })
+  const siblings = useKeptQuery({ ...siblingsOptions(client, chainId, projectId, info), enabled: wanted && turn })
   return { info, failed, wanted, waiting: !turn, siblings }
 }

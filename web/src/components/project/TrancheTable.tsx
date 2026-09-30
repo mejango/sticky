@@ -49,7 +49,7 @@ export function TrancheTable({
   return (
     <div aria-busy={loading}>
       <div role="region" aria-label="Your tranches" tabIndex={0} className="w-full overflow-x-auto overscroll-x-contain">
-        <table aria-label="Your tranches" className="w-max min-w-[520px] border-collapse">
+        <table className="w-max min-w-[520px] border-collapse">
           <thead>
             <tr>
               <th className={HEADING}>{info ? `AMOUNT (${info.stSymbol})` : 'AMOUNT'}</th>

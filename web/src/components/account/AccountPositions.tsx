@@ -1,10 +1,10 @@
 'use client'
 
 import type { BendystrawNetwork } from '@bananapus/nana-sdk-core'
-import Link from 'next/link'
 import type { Address } from 'viem'
 import { AccountNote } from '@/components/account/AccountNote'
 import { ChainIcon } from '@/components/ChainIcon'
+import { ProjectLink } from '@/components/ProjectLink'
 import { ProjectLogo } from '@/components/ProjectLogo'
 import { FeedPlaceholder } from '@/components/StickyFeed'
 import { useProjectMetadata } from '@/hooks/useProjectMetadata'
@@ -12,7 +12,7 @@ import { useAccountPositions } from '@/hooks/useStickyAccount'
 import type { AccountPosition } from '@/lib/sticky-account'
 import { formatAmount, formatDuration, stickyLabel } from '@/lib/sticky-format'
 import { backingOfShares } from '@/lib/sticky-project'
-import { chainName, projectPath } from '@/lib/urn'
+import { chainName } from '@/lib/urn'
 
 /** A position: the project's logo, its Sticky token and ID and chain, what the shares can claim of its backing in the
  * underlying token (never the shares themselves), how long the active streak has lasted and the longest one. It opens
@@ -22,12 +22,10 @@ function PositionCard({ position: { info, staked, start, longest } }: { position
   const age = start ? Math.max(0, Math.floor(Date.now() / 1_000) - start) : 0
   return (
     <li className="border-b border-line last:border-b-0">
-      <Link
+      <ProjectLink
         data-position
-        href={projectPath(info.chainId, info.projectId)}
-        // Not prefetched in view: once more than four links to different project pages are in view, Next 16.3's
-        // prefetch scheduler cancels and resends their prefetches without end.
-        prefetch={false}
+        chainId={info.chainId}
+        projectId={info.projectId}
         className="block px-3.5 py-3 text-ink no-underline hover:bg-[#e6f0f3]"
       >
         <div className="flex items-start gap-2.5">
@@ -51,7 +49,7 @@ function PositionCard({ position: { info, staked, start, longest } }: { position
             </div>
           </div>
         </div>
-      </Link>
+      </ProjectLink>
     </li>
   )
 }

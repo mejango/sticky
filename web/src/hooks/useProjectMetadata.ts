@@ -1,7 +1,7 @@
 'use client'
 
-import { useQuery } from '@tanstack/react-query'
 import type { Address } from 'viem'
+import { useKeptQuery } from '@/hooks/useKeptQuery'
 import { immutableQuery } from '@/lib/query-persist'
 import { METADATA_VERSION, ipfsGatewayUrl, metadataOfUri, projectUriOf } from '@/lib/sticky-metadata'
 
@@ -20,13 +20,13 @@ import { METADATA_VERSION, ipfsGatewayUrl, metadataOfUri, projectUriOf } from '@
  * METADATA_VERSION, which changes when what is kept of a document does.
  */
 export function useProjectMetadata(chainId: number, stakedToken: Address) {
-  const uri = useQuery({
+  const uri = useKeptQuery({
     queryKey: ['project-uri', chainId, stakedToken],
     queryFn: ({ signal }) => projectUriOf(chainId, stakedToken, { signal }),
   })
   const found = uri.data ?? null
 
-  const document = useQuery({
+  const document = useKeptQuery({
     queryKey: ['project-metadata', METADATA_VERSION, found],
     queryFn: ({ signal }) => metadataOfUri(found!, { signal }),
     enabled: found !== null,

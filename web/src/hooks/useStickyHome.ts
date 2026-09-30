@@ -4,13 +4,13 @@ import type { BendystrawNetwork } from '@bananapus/nana-sdk-core'
 import {
   queryOptions,
   skipToken,
-  useQueries,
   useQueryClient,
   type QueryClient,
   type QueryObserverResult,
 } from '@tanstack/react-query'
 import { useMemo } from 'react'
 import type { Address } from 'viem'
+import { useKeptQueries } from '@/hooks/useKeptQuery'
 import { chainsForEnvironment } from '@/lib/chains'
 import { untilAborted } from '@/lib/hook-logs'
 import { inTurn } from '@/lib/in-turn'
@@ -149,7 +149,7 @@ export function useStickyHome(network: BendystrawNetwork): StickyHome {
       .filter(chainId => deployed.includes(chainId))
   }, [environment])
 
-  const reads = useQueries({
+  const reads = useKeptQueries({
     queries: chains.map(chainId => ({
       queryKey: ['sticky-home', network, 'chain', chainId, HOME_VERSION],
       queryFn: ({ signal }: { signal: AbortSignal }) =>
@@ -191,13 +191,13 @@ export function useStickyHome(network: BendystrawNetwork): StickyHome {
     combine: chainsRead,
   })
   // Only a chain's read puts its history here.
-  const histories = useQueries({
+  const histories = useKeptQueries({
     queries: chains.map(chainId =>
       queryOptions<SupplyMove[]>({ queryKey: ['sticky-home', network, 'history', chainId], queryFn: skipToken }),
     ),
     combine: historiesRead,
   })
-  const prices = useQueries({
+  const prices = useKeptQueries({
     queries: chains.map((chainId, at) => {
       const tokens = tokensOf(reads.shown[at])
       return {

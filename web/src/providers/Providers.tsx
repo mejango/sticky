@@ -35,22 +35,9 @@ export function Providers({ children }: PropsWithChildren) {
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: {
     staleTime: 30_000, gcTime: 10 * 60_000, retry: 1, refetchOnWindowFocus: false,
   } } }))
-  // Restore cached client data only after streamed server content has hydrated. A route's loading boundary hydrates
-  // after the root commits, even once the page has loaded, and a view that first renders with restored data there no
-  // longer matches its server HTML. The browser is idle only when React has no hydration left to do.
-  useEffect(() => {
-    let teardown: (() => void) | undefined
-    let idle: number | undefined
-    const restore = () => { teardown = installQueryPersistence(queryClient) }
-    const whenIdle = () => { idle = window.requestIdleCallback?.(restore) ?? window.setTimeout(restore, 1) }
-    if (document.readyState === 'complete') whenIdle()
-    else window.addEventListener('load', whenIdle, { once: true })
-    return () => {
-      window.removeEventListener('load', whenIdle)
-      if (idle !== undefined) (window.cancelIdleCallback ?? window.clearTimeout)(idle)
-      teardown?.()
-    }
-  }, [queryClient])
+  // What the browser kept of earlier visits is restored at once. Its reads go through useKeptQuery, which renders what
+  // the server rendered until the component has hydrated, whatever the cache holds, and the kept copy right after.
+  useEffect(() => installQueryPersistence(queryClient), [queryClient])
   const [walletOpen, setWalletOpen] = useState(false)
   const waiting = useRef<(() => void)[]>([])
   const requestSignIn = useCallback(() => {

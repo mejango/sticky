@@ -1,15 +1,15 @@
 'use client'
 
-import Link from 'next/link'
 import type { ReactNode } from 'react'
 import type { Address } from 'viem'
 import { ChainIcon } from '@/components/ChainIcon'
+import { ProjectLink } from '@/components/ProjectLink'
 import { AddressLabel } from '@/components/ui/AddressLabel'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { explorerTxUrl } from '@/lib/chainDisplay'
 import type { FeedLine, FeedRow } from '@/lib/sticky-feed'
 import { ago, formatAmount, formatDuration } from '@/lib/sticky-format'
-import { chainName, projectPath } from '@/lib/urn'
+import { chainName } from '@/lib/urn'
 
 type Who = (address: Address) => ReactNode
 
@@ -135,15 +135,13 @@ function FeedItem({ row, label, you }: { row: FeedRow; label: string | undefined
       </div>
       {label ? (
         <div className="mt-1 truncate text-sm font-medium">
-          <Link
-            href={projectPath(row.chainId, row.projectId)}
-            // Not prefetched in view: once more than four links to different project pages are in view, Next 16.3's
-            // prefetch scheduler cancels and resends their prefetches without end.
-            prefetch={false}
+          <ProjectLink
+            chainId={row.chainId}
+            projectId={row.projectId}
             className="text-accent no-underline hover:underline"
           >
             {label}
-          </Link>
+          </ProjectLink>
         </div>
       ) : null}
       {row.amount ? <p className="mt-1 text-xs text-muted">{sentence(row.line, who, you)}</p> : null}
