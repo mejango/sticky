@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { extname, join } from 'node:path'
 import ts from 'typescript'
 import { describe, expect, it, vi } from 'vitest'
-import { installQueryPersistence } from '@/lib/query-persist'
+import * as queryPersist from '@/lib/query-persist'
 
 /**
  * Persisted queries outlive the session in localStorage. Anything keyed to a wallet must never go there: a later
@@ -19,7 +19,8 @@ import { installQueryPersistence } from '@/lib/query-persist'
  * writes every query whose `meta.persist` is truthy, whatever the type says of it, so a `persist` that is anything but
  * false, null, undefined or '' is a tag. What the scan cannot read fails: a key that is not an array literal, one with a
  * spread in it, or a tag with no key to be found. ALLOWED excuses one key in one file, with the reason it is safe, and
- * does the same for a key with an account word in it that is about something public.
+ * does the same for a key with an account word in it that is about something public. TAG_NAMES and NOT_TAGS list every
+ * export of query-persist.ts, so a new helper fails a test until someone says whether it tags.
  */
 
 /** Words that say a key is about an account, matched anywhere in the key's text and in any letter case, so
@@ -42,10 +43,16 @@ const ACCOUNT_HINTS = [
   'recipient',
   'staker',
   'signer',
+  'operator',
+  'authority',
 ]
 
 /** The helpers of query-persist.ts that tag a query for the persister. The other tag is a `persist` property. */
 const TAG_NAMES = ['PERSIST', 'immutableQuery', 'cachedQuery']
+
+/** The other exports of query-persist.ts. Each export is in one of the two lists, and the test that says so fails for
+ * one that is in neither. */
+const NOT_TAGS = ['deserializeState', 'installQueryPersistence', 'serializeState']
 
 /** The source of query-persist.ts writes the tags themselves; it tags no query. */
 const TAG_DEFINITIONS = join('src', 'lib', 'query-persist.ts')
@@ -253,6 +260,10 @@ describe('persisted query scope', () => {
     const used = new Set(results.flatMap(result => [...result.used]))
     expect(ALLOWED.filter(entry => !used.has(entry))).toEqual([])
     expect(ALLOWED.filter(entry => entry.reason.trim().length < 20)).toEqual([])
+  })
+
+  it('knows every export of query-persist.ts as a tag or as not one', () => {
+    expect(Object.keys(queryPersist).sort()).toEqual([...TAG_NAMES, ...NOT_TAGS].sort())
   })
 
   it('finds the tagged queries at all, so the scan cannot silently pass', () => {
@@ -485,6 +496,8 @@ export const useThing = () => useQuery({ queryKey: ['x', address], queryFn, meta
     'recipient',
     'staker',
     'signer',
+    'operator',
+    'authority',
   ])('fails a key that has %s in it, in any letter case, whatever the rest of it says', word => {
     for (const spelled of [word, word.toUpperCase(), `${word}Of`, `current${word[0].toUpperCase()}${word.slice(1)}`]) {
       const source = hook(`  return useQuery({ queryKey: ['stake', ${spelled}], queryFn, meta: PERSIST })`)
@@ -666,20 +679,31 @@ function memoryStorage(): Storage {
   } as Storage
 }
 
-/** Whether the real persister writes a wallet-keyed query with `meta: { persist: value }` to the browser's storage. */
-async function persisterWrites(value: unknown): Promise<boolean> {
+/** The keys of the queries that the real persister writes to the browser's storage once `queries` have settled in one
+ * client, each as its text. */
+async function persistedKeys(queries: { queryKey: unknown[]; meta?: Record<string, unknown> }[]): Promise<string[]> {
   vi.useFakeTimers()
   try {
     const storage = memoryStorage()
     const client = new QueryClient()
-    const stop = installQueryPersistence(client, storage)
-    await client.fetchQuery({ queryKey: ['balance', '0x1111111111111111111111111111111111111111'], queryFn: async () => 1, meta: { persist: value } })
+    const stop = queryPersist.installQueryPersistence(client, storage)
+    for (const query of queries) await client.fetchQuery({ ...query, queryFn: async () => 1 })
     await vi.advanceTimersByTimeAsync(1_500)
     stop()
-    return storage.getItem('sticky:query-cache:v1') !== null
+    const stored = storage.getItem('sticky:query-cache:v1')
+    if (stored === null) return []
+    return (JSON.parse(stored) as { queries: { queryKey: unknown[] }[] }).queries.map(query => JSON.stringify(query.queryKey))
   } finally {
     vi.useRealTimers()
   }
+}
+
+const PROBE = ['balance', '0x1111111111111111111111111111111111111111']
+
+/** Whether the real persister writes a wallet-keyed query with `meta: { persist: value }`: whether the query itself is
+ * in what it stores. */
+async function persisterWrites(value: unknown): Promise<boolean> {
+  return (await persistedKeys([{ queryKey: PROBE, meta: { persist: value } }])).includes(JSON.stringify(PROBE))
 }
 
 describe('a persist tier', () => {
@@ -712,5 +736,13 @@ describe('a persist tier', () => {
     // literal false, null, undefined or '' is read as on.)
     expect(offenders.length > 0 || !written).toBe(true)
     if (OFF.includes(literal)) expect(offenders).toEqual([])
+  })
+})
+
+describe('an untagged query', () => {
+  it('is left out of what the persister writes for the tagged query beside it', async () => {
+    const tagged = ['project', 1, 2]
+    const written = await persistedKeys([{ queryKey: ['balance', '0xabc'] }, { queryKey: tagged, meta: { persist: 'revalidate' } }])
+    expect(written).toEqual([JSON.stringify(tagged)])
   })
 })
