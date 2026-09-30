@@ -1,4 +1,4 @@
-import { decodeFunctionData, encodeFunctionData, erc20Abi, getAddress, maxUint256, type Abi } from 'viem'
+import { decodeFunctionData, decodeFunctionResult, encodeFunctionData, erc20Abi, getAddress, maxUint256, type Abi } from 'viem'
 import { describe, expect, it } from 'vitest'
 import {
   stickyAutoStickAbi,
@@ -48,7 +48,7 @@ const calls = (txs: readonly TxRequest[]) => txs.map(({ address: to, functionNam
 describe('calldata', () => {
   it('is what cast calldata encoded, byte for byte, for every call these builders make', () => {
     const tx = (txs: TxRequest[]) => encoded(txs.at(-1)!)
-    expect(tx(approveSteps(CHAIN, A, A, 0n, maxUint256, ART))).toBe(fixtures.approve)
+    expect(tx(approveSteps(CHAIN, A, A, 0n, maxUint256, { ...ART, mode: 'exact' }))).toBe(fixtures.approve)
     expect(encoded(transferTx(info, B, 5n * 10n ** 18n))).toBe(fixtures.transfer)
     expect(encoded(stickTx(info, B, 10_000_000n, 9_990_000_000_000_000_000n))).toBe(fixtures.pay)
     expect(tx(unstickTxs(info, B, 10n ** 18n, 975_000n))).toBe(fixtures.cashOutTokensOf)
@@ -76,7 +76,7 @@ describe('calldata', () => {
 })
 
 describe('approveSteps', () => {
-  const steps = (allowance: bigint, amount: bigint, mode?: 'exact' | 'covering') =>
+  const steps = (allowance: bigint, amount: bigint, mode: 'exact' | 'covering' = 'exact') =>
     approveSteps(CHAIN, A, B, allowance, amount, { ...ART, mode })
 
   it('approves the exact amount when nothing is approved yet', () => {
@@ -85,11 +85,17 @@ describe('approveSteps', () => {
     expect(approval).toMatchObject({
       chainId: CHAIN,
       address: A,
-      abi: erc20Abi,
       functionName: 'approve',
       args: [B, 100_000_000n],
       label: 'Approve 100 ART',
     })
+  })
+
+  it('declares no output for approve, so a token that returns nothing (USDT) still simulates, with the same calldata as erc20Abi', () => {
+    const [approval] = steps(0n, 100_000_000n)
+    expect(encoded(approval)).toBe(encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args: [B, 100_000_000n] }))
+    expect(decodeFunctionResult({ abi: approval.abi, functionName: 'approve', data: '0x' })).toBeUndefined()
+    expect(() => decodeFunctionResult({ abi: erc20Abi, functionName: 'approve', data: '0x' })).toThrow()
   })
 
   it('resets a nonzero allowance that is not the amount first, then approves the exact amount', () => {
@@ -245,7 +251,7 @@ describe('what a builder returns', () => {
   it('names the chain, the project and the amounts it was built for, and cannot be changed afterwards', () => {
     const project = { ...info }
     const txs = [
-      ...approveSteps(CHAIN, A, B, 1n, 9n, ART),
+      ...approveSteps(CHAIN, A, B, 1n, 9n, { ...ART, mode: 'exact' }),
       stickTx(project, B, 9n, 1n),
       ...unstickTxs(project, B, 9n, 1n),
       ...autoStickOffTxs(project, { minimum: 1n, cooldown: 86_400, personallyTrusted: true, allowance: 1n }),

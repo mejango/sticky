@@ -9,7 +9,7 @@
 
 import type { JBChainId } from '@bananapus/nana-sdk-core'
 import { buildCashOutTx, buildPayTx } from '@bananapus/nana-sdk-core/v6'
-import { erc20Abi, formatUnits, maxUint256, type Address } from 'viem'
+import { formatUnits, maxUint256, parseAbi, type Address } from 'viem'
 import { stickyAutoStickAbi, stickyHookAbi, stickyTokenAbi } from '@/lib/sticky-abis'
 import { stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
 import type { AutoStickState } from '@/lib/sticky-autostick'
@@ -27,8 +27,12 @@ function deploymentOn(chainId: number): StickyDeployment {
 /** The request as it stands, frozen with its arguments. */
 const frozen = (request: TxRequest): TxRequest => Object.freeze({ ...request, args: Object.freeze([...request.args]) })
 
+/** ERC-20 `approve` with no declared output, so a token that returns nothing (mainnet USDT, the reason for the reset to
+ * zero) still simulates: its calldata is the same as erc20Abi's. */
+const approveAbi = parseAbi(['function approve(address spender, uint256 amount)'])
+
 const approval = (chainId: number, token: Address, spender: Address, amount: bigint, label: string): TxRequest =>
-  frozen({ chainId, address: token, abi: erc20Abi, functionName: 'approve', args: [spender, amount], label })
+  frozen({ chainId, address: token, abi: approveAbi, functionName: 'approve', args: [spender, amount], label })
 
 /** `'exact'` leaves the allowance at the amount, and `'covering'` leaves one that already covers it. */
 export type ApprovalMode = 'exact' | 'covering'
@@ -45,7 +49,7 @@ export function approveSteps(
   spender: Address,
   allowance: bigint,
   amount: bigint,
-  { symbol, decimals, mode = 'exact' }: { symbol: string; decimals: number; mode?: ApprovalMode },
+  { symbol, decimals, mode }: { symbol: string; decimals: number; mode: ApprovalMode },
 ): TxRequest[] {
   if (mode === 'covering' ? allowance >= amount : allowance === amount) return []
   const reset = `Reset ${symbol} allowance`
