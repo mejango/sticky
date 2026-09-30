@@ -23,8 +23,11 @@ export type ScannedLog = Log<bigint, number, false>
 /** JB Center refuses an eth_getLogs range of more than 500 blocks with JSON-RPC -32005 and no range in
  * its message, so a scan asks for 500 at a time instead of asking for more and splitting. */
 const WINDOW = 500n
-/** What a range waits before each retry after a 429. A range is retried at most this many times. */
+/** What a range waits before each retry after a 429 that says nothing about how long. A range is retried at
+ * most this many times. */
 const BACKOFF_MS = [1_000, 2_000, 4_000] as const
+/** Center counts requests in a window of a minute, so it never asks for a longer wait. */
+const MAX_WAIT_MS = 60_000
 /** Center applies one rate limit to every chain, so a scan keeps at most this many requests in flight. */
 const MAX_IN_FLIGHT = 2
 const MAX_REQUESTS = 1_024
@@ -40,7 +43,7 @@ export function statedRange(message: string): bigint {
   return span >= 10n && span <= 10_000_000n ? span : 0n
 }
 
-type Failure = { status?: unknown; code?: unknown; message?: unknown; details?: unknown }
+type Failure = { status?: unknown; code?: unknown; message?: unknown; details?: unknown; retryAfter?: unknown }
 
 /** An error and what it wraps, outermost first. viem wraps whatever its transport throws, so the HTTP
  * status or the JSON-RPC code Center answered with usually sits on a cause. */
@@ -69,7 +72,48 @@ const statedIn = (error: unknown) =>
     .map(link => statedRange(said(link)))
     .find(span => span > 0n) ?? 0n
 
-const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+/** How long a range waits before its next try after a 429. Center's window is a fixed minute in which refused
+ * requests count too, so a retry sooner than Center says lands in the same window and is refused again. The SDK
+ * reads Center's Retry-After header into `retryAfter`, in seconds, on the error it throws: the range waits that
+ * long, never less than the schedule and never more than a minute. With none it waits as the schedule says. */
+function waitAfter(error: unknown, retry: number): number {
+  const asked = failures(error)
+    .map(link => link.retryAfter)
+    .find((seconds): seconds is number => typeof seconds === 'number' && Number.isFinite(seconds))
+  return asked === undefined ? BACKOFF_MS[retry] : Math.min(Math.max(asked * 1_000, BACKOFF_MS[retry]), MAX_WAIT_MS)
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw signal.reason
+}
+
+/** Waits `ms`, or rejects with the signal's reason the moment it aborts, leaving no timer behind. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason)
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', abort)
+      resolve()
+    }, ms)
+    function abort() {
+      clearTimeout(timer)
+      reject(signal?.reason)
+    }
+    signal?.addEventListener('abort', abort, { once: true })
+  })
+}
+
+/** What `work` gives, or the signal's reason the moment it aborts. Neither viem nor the SDK cancels a request
+ * that is under way, so `work` is left to finish on its own, its answer or failure unheeded. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return work
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason)
+    if (signal.aborted) abort()
+    else signal.addEventListener('abort', abort, { once: true })
+    work.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort))
+  })
+}
 
 /** [from, to] ranges of at most `span` blocks that cover `from` to `to` exactly. */
 function windowsOf(from: bigint, to: bigint, span: bigint): [bigint, bigint][] {
@@ -154,15 +198,16 @@ function tidy(found: ScannedLog[]): ScannedLog[] {
 
 /** Every log of an address and topic filter from `fromBlock` to `toBlock`, in order, or an error: never a
  * part of them. Ranges are read 500 blocks at a time with at most `maxInFlight` requests at once. A
- * refused range is split, a 429 waits and retries, and no more than `maxRequests` are sent in all: a
- * history that would take more is refused before the first one. Once one range has failed, no more are
- * sent. */
+ * refused range is split, a 429 waits as long as Center asks and retries, and no more than `maxRequests`
+ * are sent in all: a history that would take more is refused before the first one. Once one range has
+ * failed, no more are sent. When `signal` aborts, the scan rejects with its reason at once, in the middle
+ * of a request or a wait too, and sends nothing more. */
 export async function scanLogs(
   client: PublicClient,
   q: { address: Address; topics: (Hex | Hex[] | null)[]; fromBlock: bigint; toBlock: bigint },
-  opts: { maxInFlight?: number; maxRequests?: number } = {},
+  opts: { maxInFlight?: number; maxRequests?: number; signal?: AbortSignal } = {},
 ): Promise<ScannedLog[]> {
-  const { maxInFlight = MAX_IN_FLIGHT, maxRequests = MAX_REQUESTS } = opts
+  const { maxInFlight = MAX_IN_FLIGHT, maxRequests = MAX_REQUESTS, signal } = opts
   if (!Number.isInteger(maxInFlight) || maxInFlight < 1) {
     throw new RangeError(`maxInFlight must be a whole number of at least 1, not ${maxInFlight}.`)
   }
@@ -189,10 +234,13 @@ export async function scanLogs(
   }
 
   async function ask(from: bigint, to: bigint): Promise<ScannedLog[]> {
-    const answer: unknown = await client.request({
-      method: 'eth_getLogs',
-      params: [{ address, topics, fromBlock: numberToHex(from), toBlock: numberToHex(to) }],
-    })
+    const answer: unknown = await untilAborted(
+      client.request(
+        { method: 'eth_getLogs', params: [{ address, topics, fromBlock: numberToHex(from), toBlock: numberToHex(to) }] },
+        signal && { signal },
+      ),
+      signal,
+    )
     if (!Array.isArray(answer)) throw new Error('The RPC returned invalid project history.')
     return answer.filter(raw => !isRemoved(raw)).map(readLog)
   }
@@ -204,13 +252,14 @@ export async function scanLogs(
     try {
       for (let retry = 0; ; retry += 1) {
         if (failed) throw failed.error
+        throwIfAborted(signal)
         if (sent >= maxRequests) throw overBudget()
         sent += 1
         try {
           return await ask(from, to)
         } catch (error) {
           if (retry === BACKOFF_MS.length || sent >= maxRequests || !isRateLimited(error)) throw error
-          await sleep(BACKOFF_MS[retry])
+          await sleep(waitAfter(error, retry), signal)
         }
       }
     } finally {
@@ -270,7 +319,10 @@ const PROJECT_EVENTS = [
 ] as const
 const PROJECT_TOPICS = PROJECT_EVENTS.map(name => toEventSelector(getAbiItem({ abi: stickyHookAbi, name }) as AbiEvent))
 
-type Kept = { through: bigint; logs: ScannedLog[] }
+/** A kept history holds every log from block `from` through block `through`. The old client wrote none. */
+type Kept = { from: bigint | undefined; through: bigint; logs: ScannedLog[] }
+
+const isBlockNumber = (value: unknown): value is string => typeof value === 'string' && /^[0-9]+$/.test(value)
 
 /** The history this browser kept for a project, or null when there is none or it cannot be trusted:
  * a history with one log in doubt is not used at all. */
@@ -278,19 +330,21 @@ function readHistory(key: string): Kept | null {
   try {
     const kept: unknown = JSON.parse(localStorage.getItem(HISTORY_KEY + key) ?? 'null')
     if (typeof kept !== 'object' || kept === null) return null
-    const { through, all } = kept as { through?: unknown; all?: unknown }
-    if (typeof through !== 'string' || !/^[0-9]+$/.test(through) || !Array.isArray(all)) return null
+    const { from, through, all } = kept as { from?: unknown; through?: unknown; all?: unknown }
+    if (!isBlockNumber(through) || !Array.isArray(all) || (from !== undefined && !isBlockNumber(from))) return null
+    const start = from === undefined ? undefined : BigInt(from)
     const bound = BigInt(through)
     const logs = all.map(readLog)
-    return logs.every(log => log.blockNumber <= bound) ? { through: bound, logs } : null
+    const inside = (log: ScannedLog) => log.blockNumber <= bound && (start === undefined || log.blockNumber >= start)
+    return logs.every(inside) ? { from: start, through: bound, logs } : null
   } catch {
     return null
   }
 }
 
-function writeHistory(key: string, through: bigint, logs: ScannedLog[]): void {
+function writeHistory(key: string, from: bigint, through: bigint, logs: ScannedLog[]): void {
   try {
-    const payload = JSON.stringify({ through: through.toString(), all: logs.map(toRpc) })
+    const payload = JSON.stringify({ from: from.toString(), through: through.toString(), all: logs.map(toRpc) })
     if (payload.length > HISTORY_MAX_CHARS) localStorage.removeItem(HISTORY_KEY + key)
     else localStorage.setItem(HISTORY_KEY + key, payload)
   } catch {
@@ -300,26 +354,43 @@ function writeHistory(key: string, through: bigint, logs: ScannedLog[]): void {
 
 /** Every hook event of one project on one chain, from `fromBlock` to the head, read through Center.
  * A project's history below a buried block cannot change, so this browser keeps it and the next visit
- * scans only what came after. Only public events are kept, and nothing that belongs to a wallet. */
-export async function projectHookLogs(chainId: number, projectId: bigint, fromBlock: bigint): Promise<ScannedLog[]> {
+ * scans only what came after. Only public events are kept, and nothing that belongs to a wallet.
+ * A history that began later than `fromBlock` lacks what came before, so it is not used and the scan
+ * starts from `fromBlock`; one the old client kept has no start and counts as beginning at the project's.
+ * When `signal` aborts the call rejects with its reason and writes nothing. */
+export async function projectHookLogs(
+  chainId: number,
+  projectId: bigint,
+  fromBlock: bigint,
+  opts: { signal?: AbortSignal } = {},
+): Promise<ScannedLog[]> {
+  const { signal } = opts
   const deployment = stickyDeployment(chainId)
   if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
+  throwIfAborted(signal)
   const client = jbCenterPublicClient(chainId)
   const key = `${chainId}:${deployment.hook.toLowerCase()}:${projectId}`
-  const kept = readHistory(key)
-  const head = await client.getBlockNumber()
+  const saved = readHistory(key)
+  const kept = saved && (saved.from === undefined || saved.from <= fromBlock) ? saved : null
+  const head = await untilAborted(client.getBlockNumber(), signal)
   // The scan starts after what was kept, so the two never overlap.
-  const fresh = await scanLogs(client, {
-    address: deployment.hook,
-    topics: [PROJECT_TOPICS, pad(toHex(projectId), { size: 32 })],
-    fromBlock: kept ? kept.through + 1n : fromBlock,
-    toBlock: head,
-  })
+  const fresh = await scanLogs(
+    client,
+    {
+      address: deployment.hook,
+      topics: [PROJECT_TOPICS, pad(toHex(projectId), { size: 32 })],
+      fromBlock: kept ? kept.through + 1n : fromBlock,
+      toBlock: head,
+    },
+    { signal },
+  )
   const all = tidy([...(kept?.logs ?? []), ...fresh])
   if (head > REORG_DEPTH) {
     const buried = head - REORG_DEPTH
     // A kept history never moves backwards, and keeps nothing a reorg could still replace.
-    if (!kept || buried > kept.through) writeHistory(key, buried, all.filter(log => log.blockNumber <= buried))
+    if (!kept || buried > kept.through) {
+      writeHistory(key, kept?.from ?? fromBlock, buried, all.filter(log => log.blockNumber <= buried))
+    }
   }
   return all
 }

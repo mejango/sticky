@@ -9,7 +9,7 @@ vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: center.client }))
 type Topics = (Hex | Hex[] | null)[]
 type Filter = { address: Address; topics: Topics; fromBlock: Hex; toBlock: Hex }
 type Asked = { fromBlock: bigint; toBlock: bigint; address: Address; topics: Topics }
-type FakeClient = PublicClient & { asked: Asked[]; filters: Filter[] }
+type FakeClient = PublicClient & { asked: Asked[]; filters: Filter[]; options: unknown[] }
 
 const HOOK = getAddress(`0x${'a'.repeat(40)}`)
 const hash = (n: bigint): Hex => pad(toHex(n), { size: 32 })
@@ -52,18 +52,20 @@ const rangeOf = (filter: Filter): Asked => ({
 })
 
 /** A node that answers eth_getLogs with whatever `respond` says, on the wire, and nothing else: any other
- * way of reaching the chain is an error. `asked` lists every range requested, refused ones too, and
- * `filters` the same as they were sent. */
+ * way of reaching the chain is an error. `asked` lists every range requested, refused ones too, `filters`
+ * the same as they were sent, and `options` what came with each request besides the filter. */
 function wire(respond: (filter: Filter) => unknown): FakeClient {
   const asked: Asked[] = []
   const filters: Filter[] = []
-  const request = vi.fn(async ({ method, params }: { method: string; params: [Filter] }) => {
+  const options: unknown[] = []
+  const request = vi.fn(async ({ method, params }: { method: string; params: [Filter] }, sent?: unknown) => {
     if (method !== 'eth_getLogs') throw new Error(`the fake node only answers eth_getLogs, not ${method}`)
     asked.push(rangeOf(params[0]))
     filters.push(params[0])
+    options.push(sent)
     return respond(params[0])
   })
-  return { request, asked, filters } as unknown as FakeClient
+  return { request, asked, filters, options } as unknown as FakeClient
 }
 
 function fakeClient(answer: (range: Asked) => ScannedLog[] | Promise<ScannedLog[]>): FakeClient {
@@ -87,6 +89,11 @@ const blocks = (found: ScannedLog[]) => found.map(entry => entry.blockNumber)
 const size = ({ fromBlock, toBlock }: Asked) => toBlock - fromBlock + 1n
 const tooMany = () => Object.assign(new Error('Too Many Requests'), { status: 429 })
 const refusal = (message: string, extra: Record<string, unknown> = {}) => Object.assign(new Error(message), extra)
+// A 429 as viem reports it: the SDK's error, which carries the status and Center's Retry-After in seconds, wrapped.
+const limited = (retryAfter?: unknown) => () =>
+  new Error('An unknown RPC error occurred.', {
+    cause: Object.assign(new Error('Request limit exceeded'), { status: 429, retryAfter }),
+  })
 
 describe('statedRange', () => {
   it.each([
@@ -411,19 +418,22 @@ describe('scanLogs', () => {
       expect(client.asked).toHaveLength(2)
     })
 
-    it('keeps its slot while it backs off, so nothing waiting for one is asked in the meantime', async () => {
+    it.each([
+      ['a second, with no Retry-After', tooMany, 1_000],
+      ['a minute, when Center says Retry-After: 60', limited(60), 60_000],
+    ])('keeps its slot while it backs off for %s, so nothing waiting for one is asked meanwhile', async (_said, make, wait) => {
       // A refused 500 leaves five parts of 100 waiting for the one slot; the first is refused with a 429.
-      let limited = false
+      let refused = false
       const client = fakeClient(range => {
         if (size(range) > 100n) throw refusal('eth_getLogs is limited to a 100 range', { status: 413 })
-        if (range.fromBlock === 0n && !limited) {
-          limited = true
-          throw tooMany()
+        if (range.fromBlock === 0n && !refused) {
+          refused = true
+          throw make()
         }
         return [log(range.fromBlock)]
       })
       const done = scanLogs(client, query(0n, 499n), { maxInFlight: 1 })
-      await vi.advanceTimersByTimeAsync(999)
+      await vi.advanceTimersByTimeAsync(wait - 1)
       expect(client.asked.map(range => [range.fromBlock, range.toBlock])).toEqual([
         [0n, 499n],
         [0n, 99n],
@@ -451,6 +461,58 @@ describe('scanLogs', () => {
       })
       await expect(ran(scanLogs(client, query(0n, 10n), { maxRequests: 3 }))).rejects.toMatchObject({ status: 429 })
       expect(client.asked).toHaveLength(3)
+    })
+  })
+
+  describe('a rate limit that says how long to wait (Retry-After)', () => {
+    /** The waits, in ms, between the tries of one range that is refused three times and then read. */
+    async function waits(make: () => Error) {
+      const times: number[] = []
+      const client = fakeClient(({ fromBlock }) => {
+        times.push(Date.now())
+        if (times.length <= 3) throw make()
+        return [log(fromBlock)]
+      })
+      expect(blocks(await ran(scanLogs(client, query(0n, 9n))))).toEqual([0n])
+      return times.slice(1).map((time, at) => time - times[at])
+    }
+
+    it.each([
+      [60, [60_000, 60_000, 60_000]],
+      [2, [2_000, 2_000, 4_000]],
+      [3.5, [3_500, 3_500, 4_000]],
+      [0, [1_000, 2_000, 4_000]],
+      [500, [60_000, 60_000, 60_000]],
+    ])('waits as long as Center asks, within the schedule and a minute: Retry-After %s gives %j', async (seconds, expected) => {
+      expect(await waits(limited(seconds))).toEqual(expected)
+    })
+
+    it.each([[undefined], [Number.NaN], [-1], ['60'], [Number.POSITIVE_INFINITY], [null]])(
+      'falls back to 1 s, 2 s and 4 s when the Retry-After it finds is %j',
+      async seconds => {
+        expect(await waits(limited(seconds))).toEqual([1_000, 2_000, 4_000])
+      },
+    )
+
+    it('reads Retry-After wherever on the chain of causes it sits', async () => {
+      const deep = () => new Error('outer', { cause: new Error('middle', { cause: limited(60)() }) })
+      expect(await waits(deep)).toEqual([60_000, 60_000, 60_000])
+    })
+
+    it('still gives up after the third retry, and reports the 429', async () => {
+      const client = fakeClient(() => {
+        throw limited(60)()
+      })
+      await expect(ran(scanLogs(client, query(0n, 9n)))).rejects.toMatchObject({ cause: { status: 429 } })
+      expect(client.asked).toHaveLength(4)
+    })
+
+    it('counts the retries it waited for toward the request budget', async () => {
+      const client = fakeClient(() => {
+        throw limited(60)()
+      })
+      await expect(ran(scanLogs(client, query(0n, 9n), { maxRequests: 2 }))).rejects.toMatchObject({ cause: { status: 429 } })
+      expect(client.asked).toHaveLength(2)
     })
   })
 
@@ -502,6 +564,113 @@ describe('scanLogs', () => {
 
     it.each([0, -1, 1.5, Number.NaN])('refuses a maxInFlight of %s, which could never make progress', async cap => {
       await expect(scanLogs(fakeClient(() => []), query(0n, 9n), { maxInFlight: cap })).rejects.toThrow(RangeError)
+    })
+  })
+
+  describe('a signal that cancels the scan', () => {
+    const reason = new Error('left the page')
+
+    it('sends the signal on to viem with every request, and nothing when it has none', async () => {
+      const controller = new AbortController()
+      const client = fakeClient(() => [])
+      await ran(scanLogs(client, query(0n, 999n), { signal: controller.signal }))
+      expect(client.options).toHaveLength(2)
+      expect(client.options.every(sent => (sent as { signal?: AbortSignal })?.signal === controller.signal)).toBe(true)
+
+      const plain = fakeClient(() => [])
+      await ran(scanLogs(plain, query(0n, 999n)))
+      expect(plain.options).toEqual([undefined, undefined])
+    })
+
+    it('rejects with the reason, asking nobody, when it is already aborted', async () => {
+      const controller = new AbortController()
+      controller.abort(reason)
+      const client = fakeClient(() => [log(1n)])
+      await expect(scanLogs(client, query(0n, 999n), { signal: controller.signal })).rejects.toBe(reason)
+      expect(client.asked).toEqual([])
+    })
+
+    it('rejects with the abort error the signal makes when it is given no reason', async () => {
+      const controller = new AbortController()
+      controller.abort()
+      await expect(scanLogs(fakeClient(() => []), query(0n, 999n), { signal: controller.signal })).rejects.toMatchObject({
+        name: 'AbortError',
+      })
+    })
+
+    it('stops in the middle of a scan: rejects with the reason and sends nothing more', async () => {
+      const controller = new AbortController()
+      const client = fakeClient(range => {
+        if (range.fromBlock === 1_000n) controller.abort(reason)
+        return [log(range.fromBlock)]
+      })
+      await expect(ran(scanLogs(client, query(0n, 4_999n), { maxInFlight: 1, signal: controller.signal }))).rejects.toBe(reason)
+      expect(client.asked.map(range => range.fromBlock)).toEqual([0n, 500n, 1_000n])
+    })
+
+    it('rejects at once when it aborts with a request in flight, without waiting for the request', async () => {
+      const controller = new AbortController()
+      // A node that takes half a minute and then fails: the scan must not wait for it, and its failure must
+      // not go unhandled when it comes.
+      const client = fakeClient(async () => {
+        await sleep(30_000)
+        throw new Error('late failure')
+      })
+      const scan = scanLogs(client, query(0n, 499n), { signal: controller.signal })
+      const outcome = expect(scan).rejects.toBe(reason)
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(client.asked).toHaveLength(1)
+      controller.abort(reason)
+      await outcome
+      await vi.runAllTimersAsync()
+      expect(client.asked).toHaveLength(1)
+    })
+
+    it('rejects at once when it aborts during the wait for a 429, and leaves no timer behind', async () => {
+      const controller = new AbortController()
+      const client = fakeClient(() => {
+        throw limited(60)()
+      })
+      const scan = scanLogs(client, query(0n, 9n), { signal: controller.signal })
+      const outcome = expect(scan).rejects.toBe(reason)
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(client.asked).toHaveLength(1)
+      expect(vi.getTimerCount()).toBe(1)
+      controller.abort(reason)
+      await outcome
+      expect(vi.getTimerCount()).toBe(0)
+      expect(client.asked).toHaveLength(1)
+    })
+
+    it.each([
+      ['a rate limit', Object.assign(new Error('slow down'), { status: 429 })],
+      ['a refused range', new Error('range limit exceeded')],
+      ['both', Object.assign(new Error('range limit exceeded'), { status: 429 })],
+    ])('does not retry or split for an abort whose reason looks like %s', async (_what, looksLike) => {
+      const controller = new AbortController()
+      const client = fakeClient(range => {
+        controller.abort(looksLike)
+        return [log(range.fromBlock)]
+      })
+      // Time is not advanced: a scan that waited for a retry would wait for ever.
+      await expect(scanLogs(client, query(0n, 499n), { signal: controller.signal })).rejects.toBe(looksLike)
+      // No wait for a retry, and no halves.
+      expect(client.asked).toHaveLength(1)
+      expect(vi.getTimerCount()).toBe(0)
+    })
+
+    it('sends nothing more for a range that waited for a slot when the signal aborted', async () => {
+      const controller = new AbortController()
+      const client = fakeClient(range => {
+        if (size(range) > 100n) throw refusal('eth_getLogs is limited to a 100 range', { status: 413 })
+        controller.abort(reason)
+        return [log(range.fromBlock)]
+      })
+      await expect(ran(scanLogs(client, query(0n, 499n), { maxInFlight: 1, signal: controller.signal }))).rejects.toBe(reason)
+      expect(client.asked.map(range => [range.fromBlock, range.toBlock])).toEqual([
+        [0n, 499n],
+        [0n, 99n],
+      ])
     })
   })
 
@@ -608,10 +777,11 @@ describe('projectHookLogs', () => {
   let events: ScannedLog[]
   let head: bigint
   let failWith: Error | null
-  function serve() {
+  function serve(hooks: { onHead?: () => void; onRequest?: (range: Asked) => void } = {}) {
     const node = wire(filter => {
-      if (failWith) throw failWith
       const wanted = rangeOf(filter)
+      hooks.onRequest?.(wanted)
+      if (failWith) throw failWith
       return events
         .filter(
           entry =>
@@ -624,11 +794,16 @@ describe('projectHookLogs', () => {
         )
         .map(rpcLog)
     })
-    const client = { request: node.request, asked: node.asked, getBlockNumber: vi.fn(async () => head) }
+    const getBlockNumber = vi.fn(async () => {
+      hooks.onHead?.()
+      return head
+    })
+    const client = { request: node.request, asked: node.asked, getBlockNumber }
     center.client.mockReturnValue(client as unknown as PublicClient)
-    return node
+    return Object.assign(node, { getBlockNumber })
   }
-  const saved = () => JSON.parse(localStorage.getItem(KEY) ?? 'null') as { through: string; all: Record<string, unknown>[] } | null
+  const saved = () =>
+    JSON.parse(localStorage.getItem(KEY) ?? 'null') as { from?: string; through: string; all: Record<string, unknown>[] } | null
   const savedBlocks = () => saved()?.all.map(entry => BigInt(entry.blockNumber as string))
   const firstAsked = (node: FakeClient) => node.asked[0]?.fromBlock
 
@@ -743,11 +918,12 @@ describe('projectHookLogs', () => {
       expect(firstAsked(node)).toBe(0x1000n - 64n + 1n)
     })
 
-    it('writes what the old client wrote: the block after `through`, as JSON-RPC logs', async () => {
+    it('writes the old client\'s format, JSON-RPC logs through a block, and adds the block it scanned from', async () => {
       events = [hookLog(0x20n, 7n, 2)]
       serve()
       await projectHookLogs(CHAIN, 7n, 0n)
       expect(saved()).toEqual({
+        from: '0',
         through: '4032',
         all: [
           {
@@ -777,6 +953,131 @@ describe('projectHookLogs', () => {
       expect(blocks(found)).toEqual([0x20n, 0xf80n])
       expect(firstAsked(node)).toBe(0xf01n)
       expect(found[0]).toEqual(hookLog(0x20n))
+      // It has no start of its own, so it is written back with the one it was asked for.
+      expect(saved()).toMatchObject({ from: '0', through: '4032' })
+    })
+
+    describe('where a saved history starts', () => {
+      // A history as this code writes it: from block 0x100 through 0xfc0, holding what it is given.
+      const keep = (from: bigint, ...kept: ScannedLog[]) =>
+        localStorage.setItem(KEY, JSON.stringify({ from: from.toString(), through: '4032', all: kept.map(rpcLog) }))
+
+      it('scans from an earlier block than the history began at, rather than trust it', async () => {
+        keep(0x100n, hookLog(0x200n))
+        events = [hookLog(0x80n), hookLog(0x200n), hookLog(0xf80n)]
+        const node = serve()
+
+        const found = await projectHookLogs(CHAIN, 7n, 0x40n)
+
+        // The event before the saved start is found, which the saved history could not have had.
+        expect(blocks(found)).toEqual([0x80n, 0x200n, 0xf80n])
+        expect(firstAsked(node)).toBe(0x40n)
+        expect(saved()).toMatchObject({ from: String(0x40), through: '4032' })
+        expect(savedBlocks()).toEqual([0x80n, 0x200n, 0xf80n])
+      })
+
+      it.each([[0x100n], [0x180n]])('trusts a history that began at or before block %s, and scans only after it', async asked => {
+        keep(0x100n, hookLog(0x200n))
+        events = [hookLog(0x200n), hookLog(0x1005n)]
+        head = 0x1100n
+        const node = serve()
+
+        expect(blocks(await projectHookLogs(CHAIN, 7n, asked))).toEqual([0x200n, 0x1005n])
+
+        expect(firstAsked(node)).toBe(4033n)
+        // It still begins where it did, whatever it was asked from.
+        expect(saved()).toMatchObject({ from: String(0x100), through: String(0x1100 - 64) })
+        expect(savedBlocks()).toEqual([0x200n, 0x1005n])
+      })
+
+      it('counts a history the old client saved, which has no start, as beginning at the project\'s start', async () => {
+        localStorage.setItem(KEY, JSON.stringify({ through: '4032', all: [rpcLog(hookLog(0x200n))] }))
+        events = [hookLog(0x200n), hookLog(0x1005n)]
+        head = 0x1100n
+        const node = serve()
+
+        expect(blocks(await projectHookLogs(CHAIN, 7n, 0x40n))).toEqual([0x200n, 0x1005n])
+
+        expect(firstAsked(node)).toBe(4033n)
+        expect(saved()).toMatchObject({ from: String(0x40), through: String(0x1100 - 64) })
+      })
+
+      it('keeps what it had when the scan from the earlier block fails', async () => {
+        keep(0x100n, hookLog(0x200n))
+        const before = localStorage.getItem(KEY)
+        failWith = new Error('archive unavailable')
+        serve()
+        await expect(projectHookLogs(CHAIN, 7n, 0x40n)).rejects.toThrow('archive unavailable')
+        expect(localStorage.getItem(KEY)).toBe(before)
+      })
+    })
+
+    describe('a signal that cancels the scan', () => {
+      const reason = new Error('left the page')
+
+      it('rejects at once, asking nobody, when the signal is already aborted', async () => {
+        const node = serve()
+        const controller = new AbortController()
+        controller.abort(reason)
+        await expect(projectHookLogs(CHAIN, 7n, 0n, { signal: controller.signal })).rejects.toBe(reason)
+        expect(node.getBlockNumber).not.toHaveBeenCalled()
+        expect(node.asked).toEqual([])
+        expect(localStorage.getItem(KEY)).toBeNull()
+      })
+
+      it('sends the signal on with every request of the scan', async () => {
+        events = [hookLog(0x20n)]
+        const node = serve()
+        const controller = new AbortController()
+        await projectHookLogs(CHAIN, 7n, 0n, { signal: controller.signal })
+        expect(node.options.length).toBeGreaterThan(1)
+        expect(node.options.every(sent => (sent as { signal?: AbortSignal })?.signal === controller.signal)).toBe(true)
+      })
+
+      it('does not scan when the signal aborts while the head is being read', async () => {
+        const controller = new AbortController()
+        const node = serve({ onHead: () => controller.abort(reason) })
+        await expect(projectHookLogs(CHAIN, 7n, 0n, { signal: controller.signal })).rejects.toBe(reason)
+        expect(node.asked).toEqual([])
+        expect(localStorage.getItem(KEY)).toBeNull()
+      })
+
+      it('does not wait for a head read that is slow when the signal aborts', async () => {
+        vi.useFakeTimers()
+        const controller = new AbortController()
+        const node = serve()
+        // A head read that takes a minute, and a signal that aborts a second in.
+        node.getBlockNumber.mockImplementation(() => new Promise<bigint>(resolve => setTimeout(() => resolve(head), 60_000)))
+        const outcome = expect(projectHookLogs(CHAIN, 7n, 0n, { signal: controller.signal })).rejects.toBe(reason)
+        await vi.advanceTimersByTimeAsync(1_000)
+        controller.abort(reason)
+        await outcome
+        expect(node.asked).toEqual([])
+      })
+
+      it('writes nothing when it is aborted in the middle of a scan', async () => {
+        events = [hookLog(0x20n)]
+        head = 0x2000n
+        const controller = new AbortController()
+        const node = serve({ onRequest: range => range.fromBlock >= 0x800n && controller.abort(reason) })
+        await expect(projectHookLogs(CHAIN, 7n, 0n, { signal: controller.signal })).rejects.toBe(reason)
+        // A full scan of 8,193 blocks is 17 requests.
+        expect(node.asked.length).toBeLessThan(17)
+        expect(localStorage.getItem(KEY)).toBeNull()
+      })
+
+      it('leaves what it had kept as it was when it is aborted in the middle of a scan', async () => {
+        events = [hookLog(0x20n)]
+        serve()
+        await projectHookLogs(CHAIN, 7n, 0n)
+        const before = localStorage.getItem(KEY)
+
+        head = 0x2000n
+        const controller = new AbortController()
+        serve({ onRequest: range => range.fromBlock >= 0x800n && controller.abort(reason) })
+        await expect(projectHookLogs(CHAIN, 7n, 0n, { signal: controller.signal })).rejects.toBe(reason)
+        expect(localStorage.getItem(KEY)).toBe(before)
+      })
     })
 
     it('keeps its history per chain, hook and project', async () => {
@@ -852,6 +1153,9 @@ describe('projectHookLogs', () => {
         ['no list of logs', '{"through":"4032"}'],
         ['a log with fields missing', '{"through":"4032","all":[{"blockNumber":"0x20"}]}'],
         ['a log past `through`', `{"through":"1","all":[${JSON.stringify(rpcLog(kept()))}]}`],
+        ['a `from` that is not text', '{"from":5,"through":"4032","all":[]}'],
+        ['a `from` that is not a block number', '{"from":"abc","through":"4032","all":[]}'],
+        ['a log before `from`', `{"from":"10","through":"4032","all":[${JSON.stringify(rpcLog(hookLog(5n)))}]}`],
       ])('scans everything again when it finds %s', async (_what, garbage) => {
         localStorage.setItem(KEY, garbage)
         events = [hookLog(0x20n), hookLog(0x30n)]

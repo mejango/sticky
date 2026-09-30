@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import type { Address, Hex } from 'viem'
+import { pad, toHex, type Address, type Hex } from 'viem'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 
@@ -29,8 +29,18 @@ const CENTER_LOG = {
 }
 const AT = BigInt(CENTER_LOG.blockNumber)
 
-type Call = { from: bigint; to: bigint; at: number }
+/** A request that reached Center: its range, the time, and how many requests were in flight then, itself included. */
+type Call = { from: bigint; to: bigint; at: number; inFlight: number }
 const json = { 'content-type': 'application/json' }
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+const hash = (n: bigint): Hex => pad(toHex(n), { size: 32 })
+/** The fixture's log, moved to another block. */
+const centerLogAt = (block: bigint) => ({
+  ...CENTER_LOG,
+  blockNumber: toHex(block),
+  blockHash: hash(block + 0x1000n),
+  transactionHash: hash(block),
+})
 const answer = (id: number, result: unknown) => new Response(JSON.stringify({ jsonrpc: '2.0', id, result }), { headers: json })
 const rpcError = (id: number, code: number, message: string) =>
   new Response(JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }), { headers: json })
@@ -40,8 +50,9 @@ const refuse = (status: number, code: string, message: string, headers: Record<s
 
 /** Center answering eth_getLogs, and nothing else. `respond` gets each request, with the log of the fixture
  * to hand back when its range holds one. `calls` lists every request that reached Center, and when. */
-function center(respond: (id: number, call: Call, holds: boolean) => Response) {
+function center(respond: (id: number, call: Call, holds: boolean) => Response | Promise<Response>) {
   const calls: Call[] = []
+  let running = 0
   vi.stubGlobal(
     'fetch',
     vi.fn(async (_url: string, init: RequestInit) => {
@@ -51,24 +62,49 @@ function center(respond: (id: number, call: Call, holds: boolean) => Response) {
         params: [{ address: string; fromBlock: Hex; toBlock: Hex }]
       }
       if (method !== 'eth_getLogs') throw new Error(`unexpected ${method}`)
-      const call = { from: BigInt(params[0].fromBlock), to: BigInt(params[0].toBlock), at: Date.now() }
+      running += 1
+      const call = { from: BigInt(params[0].fromBlock), to: BigInt(params[0].toBlock), at: Date.now(), inFlight: running }
       calls.push(call)
-      return respond(id, call, call.from <= AT && AT <= call.to)
+      try {
+        return await respond(id, call, call.from <= AT && AT <= call.to)
+      } finally {
+        running -= 1
+      }
     }),
   )
   return calls
+}
+
+/** Center's rate limit for one client: a count for each window aligned to the epoch minute, in which refused
+ * requests count too, and every refusal says to retry in a minute. A request let through takes `latency` ms
+ * and answers with one log at the start of its range. `refusals` lists the time of each refused request. */
+function rateLimited(perMinute: number, latency: number) {
+  const counts = new Map<number, number>()
+  const refusals: number[] = []
+  const respond = async (id: number, call: Call) => {
+    const window = Math.floor(Date.now() / 60_000)
+    const count = (counts.get(window) ?? 0) + 1
+    counts.set(window, count)
+    if (count > perMinute) {
+      refusals.push(Date.now())
+      return refuse(429, 'rate_limit', 'Request limit exceeded', { 'retry-after': '60' })
+    }
+    await sleep(latency)
+    return answer(id, [centerLogAt(call.from)])
+  }
+  return { respond, refusals }
 }
 
 // The Center reader is made once per chain, so each test loads its own copy.
 async function load() {
   vi.resetModules()
   const [{ scanLogs }, { jbCenterPublicClient }] = await Promise.all([import('@/lib/hook-logs'), import('@/lib/jbcenter-rpc')])
-  return {
-    scan: (fromBlock: bigint, toBlock: bigint, options?: { maxInFlight?: number; maxRequests?: number }) => {
-      const scan = scanLogs(jbCenterPublicClient(CHAIN), { address: HOOK as Address, topics: [], fromBlock, toBlock }, options)
-      return ran(scan)
-    },
-  }
+  type Options = { maxInFlight?: number; maxRequests?: number; signal?: AbortSignal }
+  /** A scan that has begun, for a test that acts while it is under way. */
+  const begin = (fromBlock: bigint, toBlock: bigint, options?: Options) =>
+    scanLogs(jbCenterPublicClient(CHAIN), { address: HOOK as Address, topics: [], fromBlock, toBlock }, options)
+  /** A scan run to its end. */
+  return { begin, scan: (fromBlock: bigint, toBlock: bigint, options?: Options) => ran(begin(fromBlock, toBlock, options)) }
 }
 
 /** Runs a scan to its end on fake time, so viem's retry and the scan's backoff cost no real waiting. */
@@ -130,10 +166,30 @@ describe('scanLogs through the Center reader', () => {
     const found = await scan(AT - 100n, AT + 399n)
 
     expect(found).toHaveLength(1)
-    // Never split: every request was for the whole range, and the scan itself waited a second before its retry.
+    // Never split: every request was for the whole range. Center said Retry-After: 60, which the SDK puts on its
+    // error as 60, so the scan waited the minute rather than a second before its retry.
     expect(calls).toHaveLength(3)
     expect(calls.every(({ from, to }) => from === AT - 100n && to === AT + 399n)).toBe(true)
-    expect(calls[2].at - calls[1].at).toBeGreaterThanOrEqual(1_000)
+    expect(calls[2].at - calls[1].at).toBe(60_000)
+  })
+
+  it('waits 1 s, then 2 s, then 4 s when Center sends a 429 with no Retry-After', async () => {
+    let refused = 0
+    const calls = center((id, _call, holds) => {
+      // Three refusals by the scan, each two requests with viem's own retry.
+      if (refused < 6) {
+        refused += 1
+        return refuse(429, 'rate_limit', 'Request limit exceeded')
+      }
+      return answer(id, holds ? [CENTER_LOG] : [])
+    })
+    const { scan } = await load()
+
+    expect(await scan(AT - 100n, AT + 399n)).toHaveLength(1)
+
+    expect(calls).toHaveLength(7)
+    // From the second request of one try to the first of the next.
+    expect([2, 4, 6].map(at => calls[at].at - calls[at - 1].at)).toEqual([1_000, 2_000, 4_000])
   })
 
   it('backs off on a 429 sent as a JSON-RPC error too', async () => {
@@ -157,9 +213,35 @@ describe('scanLogs through the Center reader', () => {
 
     await expect(scan(AT - 100n, AT + 399n)).rejects.toMatchObject({ cause: { status: 429 } })
 
-    // Four tries by the scan, two requests each with viem's own retry, all for the one range.
+    // Four tries by the scan, two requests each with viem's own retry, all for the one range, and a minute, as
+    // Center asked, before each retry.
     expect(calls).toHaveLength(8)
     expect(calls.every(({ from, to }) => from === AT - 100n && to === AT + 399n)).toBe(true)
+    expect([2, 4, 6].map(at => calls[at].at - calls[at - 1].at)).toEqual([60_000, 60_000, 60_000])
+  })
+
+  it('completes a scan of 138 windows that runs into the rate window, waiting out the minute with at most 2 in flight', async () => {
+    // At 2 requests in flight of 750 ms each a scan runs at 160 requests a minute, and this client is allowed 120:
+    // from the start of a window, the 121st request at 45 s is refused and so are the ones after it.
+    vi.setSystemTime(new Date('2026-09-29T12:00:00.000Z'))
+    const limit = rateLimited(120, 750)
+    const calls = center(limit.respond)
+    const { scan } = await load()
+
+    const found = await scan(1_000n, 1_000n + 138n * 500n - 1n)
+
+    // Every window was read, in order.
+    expect(found.map(entry => entry.blockNumber)).toEqual(Array.from({ length: 138 }, (_, at) => 1_000n + BigInt(at) * 500n))
+    // It did run into the limit, and never had more than two requests in flight, waiting or not.
+    expect(limit.refusals.length).toBeGreaterThan(0)
+    expect(Math.max(...calls.map(call => call.inFlight))).toBe(2)
+    // After the last refusal nothing was sent for a minute, so the retries fell in the next window.
+    const lastRefusal = Math.max(...limit.refusals)
+    expect(calls.filter(call => call.at > lastRefusal).every(call => call.at >= lastRefusal + 60_000)).toBe(true)
+    // No window was tried more than three times: once refused twice by viem, then read.
+    const tries = new Map<bigint, number>()
+    for (const call of calls) tries.set(call.from, (tries.get(call.from) ?? 0) + 1)
+    expect(Math.max(...tries.values())).toBeLessThanOrEqual(3)
   })
 
   it('halves a range Center refuses with -32005 "RPC request failed", which states no span', async () => {
@@ -192,6 +274,42 @@ describe('scanLogs through the Center reader', () => {
       expect(calls.filter(({ from, to }) => to - from + 1n === 100n)).toHaveLength(5)
       expect(calls.filter(({ from, to }) => to - from + 1n > 100n)).toHaveLength(2)
     }
+  })
+
+  describe('a signal that cancels the scan', () => {
+    const reason = new Error('left the page')
+
+    it('stops waiting out a Retry-After the moment it aborts, and sends nothing more', async () => {
+      const calls = center(() => refuse(429, 'rate_limit', 'Request limit exceeded', { 'retry-after': '60' }))
+      const { begin } = await load()
+      const controller = new AbortController()
+
+      const scan = begin(AT - 100n, AT + 399n, { signal: controller.signal })
+      const outcome = expect(scan).rejects.toBe(reason)
+      // viem has tried again by itself, and the scan is now waiting out the minute.
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(calls).toHaveLength(2)
+      controller.abort(reason)
+      await outcome
+      await vi.runAllTimersAsync()
+      expect(calls).toHaveLength(2)
+    })
+
+    it('reaches viem, whose own retry then does not go out', async () => {
+      const calls = center(() => refuse(429, 'rate_limit', 'Request limit exceeded'))
+      const { begin } = await load()
+      const controller = new AbortController()
+
+      const scan = begin(AT - 100n, AT + 399n, { signal: controller.signal })
+      const outcome = expect(scan).rejects.toBe(reason)
+      // The first request was refused and viem is waiting to send it again.
+      await vi.advanceTimersByTimeAsync(20)
+      expect(calls).toHaveLength(1)
+      controller.abort(reason)
+      await outcome
+      await vi.runAllTimersAsync()
+      expect(calls).toHaveLength(1)
+    })
   })
 
   it.each([
