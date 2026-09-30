@@ -7,7 +7,7 @@
  */
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, type ReactNode } from 'react'
+import { act, Profiler, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { erc20Abi, getAddress, zeroAddress, type Address } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   writeContract: vi.fn(),
   confirming: { on: true, status: 'success' as 'success' | 'reverted' },
   safe: { on: false, execution: undefined as undefined | PromiseWithResolvers<string> },
+  engine: { silent: false },
 }))
 
 vi.mock('@wagmi/core', () => ({ getAccount: mocks.getAccount }))
@@ -53,6 +54,18 @@ vi.mock('@/lib/transaction-review', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/transaction-review')>()),
   requestContractTransactionReview: mocks.requestReview,
 }))
+vi.mock('@/hooks/useSafeTx', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/hooks/useSafeTx')>()
+  return {
+    ...actual,
+    // While the engine's send lock is held its send answers nothing, and changes nothing.
+    useSafeTx: (chainId: number) => {
+      const tx = actual.useSafeTx(chainId)
+      const send = (...asked: Parameters<typeof tx.send>) => (mocks.engine.silent ? Promise.resolve(null) : tx.send(...asked))
+      return { ...tx, send }
+    },
+  }
+})
 vi.mock('@/providers/Providers', () => ({ wagmiConfig: {} }))
 vi.mock('@/lib/safe-connector', () => ({
   isSafeConnection: () => mocks.safe.on,
@@ -148,9 +161,11 @@ const requestSignIn = vi.fn()
 let hashes = 0
 beforeEach(() => {
   hashes = 0
+  commits.length = 0
   mocks.wallet = { address: HOLDER, isCenterWallet: false }
   mocks.confirming = { on: true, status: 'success' }
   mocks.safe = { on: false, execution: Promise.withResolvers<string>() }
+  mocks.engine.silent = false
   mocks.getAccount.mockImplementation(() => ({ address: mocks.wallet.address, chainId: CHAIN }))
   mocks.requestReview.mockResolvedValue(true)
   mocks.switchChain.mockResolvedValue(undefined)
@@ -173,10 +188,19 @@ afterEach(async () => {
   clearViewAs()
 })
 
+/** What the confirmation's main button said and could do in every commit that reached the screen. */
+const commits: string[] = []
+function seen() {
+  const button = document.querySelector<HTMLButtonElement>('[data-tx-confirm] footer button:last-child')
+  if (button) commits.push(`${button.textContent}|${button.disabled ? 'disabled' : 'enabled'}`)
+}
+
 const flow = (info = INFO): ReactNode => (
   <QueryClientProvider client={client}>
     <WalletAuthContext.Provider value={{ requestSignIn }}>
-      <UnstickFlow chainId={CHAIN} projectId={Number(PROJECT)} info={info} onClose={closed} />
+      <Profiler id="unstick" onRender={seen}>
+        <UnstickFlow chainId={CHAIN} projectId={Number(PROJECT)} info={info} onClose={closed} />
+      </Profiler>
     </WalletAuthContext.Provider>
   </QueryClientProvider>
 )
@@ -324,15 +348,11 @@ describe('a full exit', () => {
     expect(titles()).toEqual(['Turn off auto-stick', 'Unstick'])
   })
 
-  it('finishes what an earlier exit left half done: auto-stick off, its trust and allowance still standing', async () => {
+  it('takes nothing apart while auto-stick is off, however much of its trust and allowance stands, when nothing went through here', async () => {
     world({ enabled: false, trusted: true, allowance: 100n })
     await review('1')
-    // Turning it off again would be sending what already went through.
-    expect(titles()).toEqual([
-      'Stop the auto-stick contract from sticking ART for you',
-      "Remove the auto-stick contract's ART allowance",
-      'Unstick',
-    ])
+    expect(titles()).toEqual(['Unstick'])
+    expect(confirm()!.textContent).not.toContain('auto-stick is taken apart')
   })
 })
 
@@ -573,6 +593,73 @@ describe('a send that stops halfway', () => {
     expect(called()).toEqual(['setConfigFor'])
   })
 
+  it('counts a step only once the engine has taken it: a send that answers nothing counts nothing, however the page renders after it', async () => {
+    world(on)
+    await review('1')
+    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
+
+    // The engine's lock is still held: its send answers nothing and changes nothing.
+    mocks.engine.silent = true
+    await press('Remove auto-stick permission', confirm()!)
+    client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    await render()
+    await render()
+    expect(steps().map(step => step.state)).toEqual(['complete', 'active', 'pending', 'pending'])
+    expect(confirm()!.textContent).toContain('3 transactions left.')
+    expect(called()).toEqual(['setConfigFor'])
+
+    // Nothing was skipped, and nothing is sent twice.
+    mocks.engine.silent = false
+    await sendStep('Remove auto-stick permission', 'Remove auto-stick allowance')
+    await sendStep('Remove auto-stick allowance', 'Confirm & unstick')
+    await sendStep('Confirm & unstick')
+    expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor', 'approve', 'cashOutTokensOf'])
+  })
+
+  it('keeps a confirmed step from being sent again in the commit that shows it confirmed, before it is counted', async () => {
+    world(on)
+    await review('1')
+    commits.length = 0
+    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
+
+    // From the press on, no commit shows the step that is being sent, or that has just been confirmed, as one to press.
+    const shown = commits.filter(commit => commit.startsWith('Turn off auto-stick|'))
+    expect(shown.length).toBeGreaterThan(0)
+    expect(shown.every(commit => commit.endsWith('|disabled'))).toBe(true)
+    expect(called()).toEqual(['setConfigFor'])
+  })
+
+  it('says what went through for the old account when the account changes partway', async () => {
+    world(on)
+    await review('1')
+    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
+    mocks.wallet = { address: OTHER, isCenterWallet: false }
+    await render()
+    await until(() => confirm() === null, 'the plan to go')
+    expect(formText()).toContain('Connected account changed. Review the unstick again.')
+    expect(formText()).toContain(
+      "Went through: Turn off auto-stick. Not sent yet: Stop the auto-stick contract from sticking ART for you; Remove the auto-stick contract's ART allowance; Unstick.",
+    )
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
+  })
+
+  it('stops saying it unsticks everything once a new plan keeps some of the tokens', async () => {
+    const { set } = world(on)
+    await review('1')
+    expect(confirm()!.textContent).toContain('This unsticks everything you hold')
+    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
+    expect(confirm()!.textContent).toContain('This unsticks everything you hold')
+
+    // Tokens came in: the same amount is now part of what the holder has.
+    set({ balance: 2n * E18 })
+    await press('Remove auto-stick permission', confirm()!)
+    await until(() => nameOf(confirm()!).includes('Retry'), 'the stop')
+    await press('Retry', confirm()!)
+    await until(planned(2), 'the new plan')
+    expect(rowsOf()).toMatchObject({ 'You keep': '1 STICKYART' })
+    expect(confirm()!.textContent).not.toContain('This unsticks everything you hold')
+  })
+
   it('says which transaction it is waiting for, and which are still to send', async () => {
     world(on)
     await review('1')
@@ -707,6 +794,81 @@ describe('a send that stops halfway', () => {
     expect(buttonsOf(dialog).find(each => each.textContent === 'Cancel')!.disabled).toBe(true)
     expect(called()).toEqual(['setConfigFor'])
     expect(dialog.textContent).not.toContain('Went through')
+  })
+})
+
+describe('a confirmation that was closed partway', () => {
+  const on = { enabled: true, trusted: true, allowance: 100n }
+
+  it.each([
+    ['has caught up with it', { enabled: false }],
+    ['is still behind it', {}],
+  ])('keeps what went through: Unstick again plans only what is left when the chain %s', async (_when, chain) => {
+    const { set } = world(on)
+    await review('1')
+    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
+    await press('Close', confirm()!)
+    expect(confirm()).toBeNull()
+
+    set(chain)
+    await press('Unstick', form())
+    await until(planned(4), 'the new plan')
+    expect(steps()).toEqual([
+      { title: 'Turn off auto-stick', state: 'complete' },
+      { title: 'Stop the auto-stick contract from sticking ART for you', state: 'active' },
+      { title: "Remove the auto-stick contract's ART allowance", state: 'pending' },
+      { title: 'Unstick', state: 'pending' },
+    ])
+    expect(confirm()!.textContent).toContain('3 transactions left.')
+    expect(nameOf(confirm()!)).toContain('Remove auto-stick permission')
+
+    await sendStep('Remove auto-stick permission', 'Remove auto-stick allowance')
+    await sendStep('Remove auto-stick allowance', 'Confirm & unstick')
+    await sendStep('Confirm & unstick')
+    expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor', 'approve', 'cashOutTokensOf'])
+  })
+
+  it('does not carry it to another account', async () => {
+    world(on)
+    await review('1')
+    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
+    await press('Close', confirm()!)
+
+    mocks.wallet = { address: OTHER, isCenterWallet: false }
+    await render()
+    await press('Unstick', form())
+    await until(planned(4), 'the plan for the other account')
+    expect(steps().map(step => step.state)).toEqual(['active', 'pending', 'pending', 'pending'])
+    expect(titles()[0]).toBe('Turn off auto-stick')
+  })
+
+  it('forgets it when the account changes, even if the first account comes back', async () => {
+    world(on)
+    await review('1')
+    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
+    await press('Close', confirm()!)
+
+    mocks.wallet = { address: OTHER, isCenterWallet: false }
+    await render()
+    mocks.wallet = { address: HOLDER, isCenterWallet: false }
+    await render()
+    await press('Unstick', form())
+    await until(planned(4), 'the new plan')
+    // The chain still says auto-stick is on, and nothing is known to have gone through for this account now.
+    expect(steps().map(step => step.state)).toEqual(['active', 'pending', 'pending', 'pending'])
+  })
+
+  it('starts again once the unstick itself is confirmed and the confirmation is done', async () => {
+    world({ enabled: false })
+    await review('1')
+    await sendStep('Confirm & unstick')
+    await press('Done', confirm()!)
+    expect(closed).toHaveBeenCalledOnce()
+    // The flow is still mounted here, as a host that keeps it open would leave it: nothing went through for it now.
+    expect(formText()).not.toContain('Went through')
+    await press('Unstick', form())
+    await until(planned(1), 'the new plan')
+    expect(steps().map(step => step.state)).toEqual(['active'])
   })
 })
 

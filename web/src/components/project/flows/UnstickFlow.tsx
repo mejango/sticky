@@ -31,8 +31,10 @@ import { EXTERNAL_WALLET_REQUIRED } from '@/providers/WalletAuthContext'
  * An unstick of everything the holder has, while auto-stick is on, takes auto-stick apart first: it is turned off, and
  * the trust and the allowance the holder gave it are taken back, so that it keeps neither for a position that is gone.
  * Each of those is a transaction of its own and the unstick is the last. One that fails leaves the ones before it on
- * the chain; the confirmation says which went through and which did not, and a retry plans again from the chain, so
- * that what went through is never sent twice and what a full exit still has to take apart is not forgotten.
+ * the chain; the confirmation says which went through and which did not. What went through is kept, for the account
+ * that sent it, for as long as the flow is open, across a closed confirmation and a retry, which plan again from the
+ * chain: what went through is never sent twice, and once one step of the teardown has gone through, the rest of it is
+ * still planned, whatever a node that has not caught up says of auto-stick.
  *
  * The plan is for one account. The minimum the unstick sends is the net of a quote read from the terminal for this
  * plan, the unstick is tried against the chain before the plan is shown, and before each send the holder's balance
@@ -55,6 +57,11 @@ const REFRESH_AFTER_MS = [0, 4_000, 12_000]
 /** Sticky tokens have 18 decimals. */
 const SHARE_DECIMALS = 18
 
+/** What went through in this flow, and for which account (lowercase). */
+type Sent = { holder: string; steps: readonly TxRequest[] }
+const NOTHING: readonly TxRequest[] = []
+const NOTHING_SENT: Sent = { holder: '', steps: NOTHING }
+
 /** What each step of an unstick says on the button that sends it. */
 const ACTIONS: Record<string, string> = {
   setConfigFor: 'Turn off auto-stick',
@@ -64,6 +71,10 @@ const ACTIONS: Record<string, string> = {
 const actionFor = (step: TxRequest) => ACTIONS[step.functionName] ?? 'Confirm & unstick'
 const titleOf = (step: TxRequest) => step.label ?? step.functionName
 const titlesOf = (steps: readonly TxRequest[]) => steps.map(titleOf).join('; ')
+/** A step that takes auto-stick apart: every step but the unstick itself. */
+const isTeardown = (step: TxRequest) => step.functionName !== 'cashOutTokensOf'
+const sameStep = (step: TxRequest) => (other: TxRequest) =>
+  other.address === step.address && other.functionName === step.functionName
 
 /**
  * What a review is made of: the account it is for, the amount, what the chain said the holder has of it, the quote, and
@@ -143,14 +154,15 @@ async function preflight(step: TxRequest, holder: Address, signal: AbortSignal):
 /**
  * The transactions an unstick of `count` takes, from what the chain says now, at one block for the holder's balance and
  * what auto-stick keeps of theirs: a full exit takes auto-stick apart first, and the unstick is last, with the quote's
- * net as its minimum. Auto-stick counts as standing while it is on, and while the trust and the allowance the holder
- * gave it are, which is what an exit that failed after turning it off leaves. An adapter that is off is not turned off
- * again.
+ * net as its minimum. `went` is what has gone through in this flow for the holder. Once a step of the teardown has,
+ * auto-stick counts as on whatever the chain says (it reads as off after the first step), so that the rest of the
+ * teardown is planned, and no step that went through is planned again, nor an adapter that is already off turned off.
  */
 async function planUnstick(
   info: StickyProjectInfo,
   holder: Address,
   count: bigint,
+  went: readonly TxRequest[],
   signal: AbortSignal,
 ): Promise<Plan> {
   const { chainId, projectId, stToken, stakedToken, stSymbol } = info
@@ -181,13 +193,13 @@ async function planUnstick(
     const allowance = need(allowed as Answer<bigint>, 'what the auto-stick contract may move for you')
     off = !enabled
     standing = {
-      state: { enabled: enabled || personallyTrusted || allowance > 0n, minimum, cooldown, personallyTrusted, allowance },
+      state: { enabled: enabled || went.some(isTeardown), minimum, cooldown, personallyTrusted, allowance },
       balance,
     }
   }
   const quote = await quoteUnstick(chainId, projectId, stakedToken, holder, count, { signal })
   const steps = unstickTxs(info, holder, count, quote.net, standing).filter(
-    step => !(off && step.functionName === 'setConfigFor'),
+    step => !(off && step.functionName === 'setConfigFor') && !(isTeardown(step) && went.some(sameStep(step))),
   )
   await preflight(steps[steps.length - 1], holder, signal)
   return { holder, count, balance, quote, steps }
@@ -260,6 +272,11 @@ function progress(went: readonly TxRequest[], left: readonly TxRequest[], state:
   return `${head} ${state === 'failed' ? 'Did not go through' : 'Not sent yet'}: ${titlesOf(left)}.`
 }
 
+/** The account changed under a plan: what went through for the one that sent it is said, when anything did. */
+function accountChanged(went: readonly TxRequest[], left: readonly TxRequest[]): string {
+  return went.length > 0 ? `${ACCOUNT_CHANGED} ${progress(went, left, 'idle')}` : ACCOUNT_CHANGED
+}
+
 /** The value, once it has stayed the same for `ms`. */
 function useSettled<T>(value: T, ms: number): T {
   const [settled, setSettled] = useState(value)
@@ -289,16 +306,19 @@ export function UnstickFlow({
   const [amount, setAmount] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [plan, setPlan] = useState<Plan | null>(null)
-  const [landed, setLanded] = useState<readonly TxRequest[]>([])
+  const [sent, setSent] = useState<Sent>(NOTHING_SENT)
+  const [accepted, setAccepted] = useState<{ step: TxRequest; holder: Address } | null>(null)
   const [preparing, setPreparing] = useState(false)
   const preparation = useRef<AbortController | null>(null)
-  const sent = useRef<{ step: TxRequest; holder: Address } | null>(null)
   const waiting = useRef(false)
   const reviewAgain = useRef<() => void>(() => undefined)
 
-  const sending = tx.busy || tx.phase === 'review'
-  const complete = plan !== null && plan.steps.length === 0
   const who = address?.toLowerCase()
+  // What went through is the plan's account's while there is a plan, and the connected account's otherwise.
+  const landed = sent.holder === (plan?.holder ?? address)?.toLowerCase() ? sent.steps : NOTHING
+  // A step the engine has taken and the chain has confirmed is busy until it is counted.
+  const sending = tx.busy || tx.phase === 'review' || (tx.phase === 'success' && accepted !== null)
+  const complete = plan !== null && plan.steps.length === 0
 
   const count = sharesOf(amount)
   const typed = useSettled(amount, QUOTE_SETTLE_MS)
@@ -331,23 +351,29 @@ export function UnstickFlow({
     [],
   )
 
-  // What went through is recorded once, for the send that made it; the next send is for the next step.
+  // A step is counted once the engine has taken it and the chain has confirmed it; the next send is for the next step.
   useEffect(() => {
-    if (tx.phase !== 'success' || sent.current === null) return
-    const { step, holder } = sent.current
-    sent.current = null
-    setLanded(list => [...list, step])
+    if (tx.phase !== 'success' || accepted === null) return
+    const { step, holder } = accepted
+    const key = holder.toLowerCase()
+    setAccepted(null)
+    setSent(record => ({ holder: key, steps: record.holder === key ? [...record.steps, step] : [step] }))
     setPlan(current => current && { ...current, steps: current.steps.slice(1) })
     setError(null)
     refreshAfterSend(client, chainId, projectId, holder, step)
-  }, [tx.phase, client, chainId, projectId])
+  }, [tx.phase, accepted, client, chainId, projectId])
 
   // A plan is for one account. One whose account has gone is dropped, unless its send is on its way.
   useEffect(() => {
     if (!plan || complete || sending || plan.holder.toLowerCase() === who) return
     setPlan(null)
-    setError(ACCOUNT_CHANGED)
-  }, [who, plan, complete, sending])
+    setError(accountChanged(landed, plan.steps))
+  }, [who, plan, complete, sending, landed])
+
+  // Another account starts with nothing gone through, once the plan of the last one is gone.
+  useEffect(() => {
+    if (!plan) setSent(record => (record.holder === who ? record : NOTHING_SENT))
+  }, [who, plan])
 
   // A press that was refused for want of a wallet that can send goes on once there is an account to send from.
   useEffect(() => {
@@ -356,19 +382,17 @@ export function UnstickFlow({
     reviewAgain.current()
   }, [address, isCenterWallet])
 
-  /** Plans `shares` from the chain and shows it. What `went` through in this visit to the dialog is not planned again,
-   * whatever a node that has not caught up with it says. */
-  async function prepare(shares: bigint, went: readonly TxRequest[]) {
+  /** Plans `shares` from the chain and shows it. */
+  async function prepare(shares: bigint) {
     if (!address) return
     preparation.current?.abort()
     const controller = new AbortController()
     preparation.current = controller
     setPreparing(true)
     try {
-      const next = await planUnstick(info, address, shares, controller.signal)
+      const next = await planUnstick(info, address, shares, landed, controller.signal)
       if (controller.signal.aborted) return
-      const done = (step: TxRequest) => went.some(ran => ran.address === step.address && ran.functionName === step.functionName)
-      setPlan({ ...next, steps: next.steps.filter(step => !done(step)) })
+      setPlan(next)
       setError(null)
     } catch (reason) {
       if (controller.signal.aborted) return
@@ -399,9 +423,8 @@ export function UnstickFlow({
       return
     }
     if (count === null || count <= 0n) return
-    setLanded([])
     tx.reset()
-    await prepare(count, [])
+    await prepare(count)
   }
   reviewAgain.current = () => void review()
 
@@ -415,29 +438,33 @@ export function UnstickFlow({
     }
   }
 
-  function sendNext() {
+  async function sendNext() {
     if (!plan || sending || preparing) return
     if (address?.toLowerCase() !== plan.holder.toLowerCase()) {
       setPlan(null)
-      setError(ACCOUNT_CHANGED)
+      setError(accountChanged(landed, plan.steps))
       return
     }
     const [step] = plan.steps
-    sent.current = { step, holder: plan.holder }
     setError(null)
-    void tx.send(step, { reverify: () => stillFits(info, plan, step) })
+    // The engine's send answers nothing while its lock is held, and a step it did not answer has not been taken.
+    const hash = await tx.send(step, { reverify: () => stillFits(info, plan, step) })
+    if (hash !== null) setAccepted({ step, holder: plan.holder })
   }
 
   function retry() {
     if (!plan || sending) return
     setError(null)
     tx.reset()
-    void prepare(plan.count, landed)
+    void prepare(plan.count)
   }
 
   function closeReview() {
     if (sending) return
-    if (complete) return onClose()
+    if (complete) {
+      setSent(NOTHING_SENT)
+      return onClose()
+    }
     preparation.current?.abort()
     preparation.current = null
     setPreparing(false)
@@ -455,7 +482,7 @@ export function UnstickFlow({
   const flowError = error ?? tx.error
   const inFlight = txPhaseLabel(tx.phase, { idle: '', pending: 'Waiting for confirmation…' })
   const steps = [...landed, ...(plan?.steps ?? [])]
-  const takesAutoStickApart = steps.some(step => step.functionName !== 'cashOutTokensOf')
+  const takesAutoStickApart = plan !== null && plan.count === plan.balance && steps.some(isTeardown)
   const partway = landed.length > 0 && plan !== null && !complete
   const showsLink = complete || (tx.phase === 'pending' && !tx.safeProposalHash)
 
@@ -542,7 +569,7 @@ export function UnstickFlow({
           stepsIntro={stepsIntro(steps.length, landed.length)}
           action={txPhaseLabel(tx.phase, { idle: actionLabel, pending: 'Confirming…' })}
           cancelLabel={landed.length > 0 ? 'Close' : 'Cancel'}
-          onConfirm={() => (failed ? retry() : sendNext())}
+          onConfirm={() => (failed ? retry() : void sendNext())}
           busy={sending}
           complete={complete}
           status={status}
