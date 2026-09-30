@@ -1,16 +1,19 @@
 /** The most digits before the decimal point that fit in a uint256: 2^256 has 78. */
 const MAX_WHOLE_DIGITS = 78
 
+/** Sticky tokens always have 18 decimals. */
+export const SHARE_DECIMALS = 18
+
 /**
- * An amount a holder typed, in the smallest units of a token with `decimals` (at most 255, a byte). It is digits with
- * at most one decimal point: no sign, exponent or separator. An amount with more decimal places than the token has is
- * refused and never rounded, and so is one that does not fit in a uint256. The messages are for the holder and start
- * in lowercase, to be used as the start of a sentence or after a prefix.
+ * An amount a holder typed, in the smallest units of a token with `decimals` (at most 255, a byte). It is ASCII digits
+ * with at most one decimal point: no sign, exponent, separator or other script's digits. An amount with more decimal
+ * places than the token has is refused and never rounded, and so is one that does not fit in a uint256. The messages
+ * are for the holder and start in lowercase, to be used as the start of a sentence or after a prefix.
  */
 export function parseAmount(text: string, decimals: number): bigint {
   if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) throw new Error('invalid token decimals')
   const input = text.trim()
-  if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(input)) throw new Error('enter a valid amount')
+  if (!/^(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$/.test(input)) throw new Error('enter a valid amount')
   const [whole, fraction = ''] = input.split('.')
   if (fraction.length > decimals) throw new Error(`this token supports at most ${decimals} decimal places`)
   // Checked before the digits become a number, so that a long paste is never built into a huge one.
@@ -18,4 +21,13 @@ export function parseAmount(text: string, decimals: number): bigint {
   const amount = BigInt(whole || '0') * 10n ** BigInt(decimals) + BigInt(fraction.padEnd(decimals, '0') || '0')
   if (amount >= 1n << 256n) throw new Error('that amount is too large')
   return amount
+}
+
+/** The Sticky tokens `text` names, to the last of their 18 places, or null for anything `parseAmount` refuses. */
+export function parseShares(text: string): bigint | null {
+  try {
+    return parseAmount(text, SHARE_DECIMALS)
+  } catch {
+    return null
+  }
 }

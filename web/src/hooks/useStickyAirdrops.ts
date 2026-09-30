@@ -9,6 +9,7 @@ import { useWallet } from '@/hooks/useWallet'
 import { inTurn } from '@/lib/in-turn'
 import { FRESH_MS, VIEWER_REFRESH, warned } from '@/lib/query-reads'
 import { readAutoStick, trustCandidates, trustedSenders } from '@/lib/sticky-autostick'
+import { holderReadKey, projectKey } from '@/lib/sticky-keys'
 import { discoverFunding, readRewards, rewardRows, type RewardPot } from '@/lib/sticky-rewards'
 import { useViewAs } from '@/lib/viewAs'
 
@@ -40,7 +41,7 @@ export function useRewardFunding(chainId: number, projectId: number) {
   const client = useQueryClient()
   const { info, verified } = useStickyProject(chainId, projectId)
   return useQuery({
-    queryKey: ['sticky-project', chainId, projectId, 'funding'],
+    queryKey: projectKey(chainId, projectId, 'funding'),
     queryFn: ({ signal }) =>
       warned(FUNDING_UNREADABLE, { chainId, projectId }, signal, () =>
         inTurn(client, signal, () => discoverFunding(chainId, info!.stToken, BigInt(projectId), { signal })),
@@ -83,7 +84,11 @@ export function useRewards(chainId: number, projectId: number, holder: Address |
   const { info, verified } = useStickyProject(chainId, projectId)
   const showing = useShowing()
   return useQuery({
-    queryKey: ['sticky-rewards', chainId, projectId, holder, rows.map(row => `${row.groupId}:${row.token}`).join(',')],
+    queryKey: [
+      ...holderReadKey('sticky-rewards', chainId, projectId),
+      holder,
+      rows.map(row => `${row.groupId}:${row.token}`).join(','),
+    ],
     queryFn: ({ signal }) =>
       warned(REWARDS_UNREADABLE, { chainId, projectId }, signal, () => {
         const staked = info!.stakedToken.toLowerCase() as Address
@@ -103,7 +108,7 @@ export function useAutoStick(chainId: number, projectId: number, holder: Address
   const { groups, funding } = useRewardPots(chainId, projectId)
   const showing = useShowing()
   return useQuery({
-    queryKey: ['sticky-autostick', chainId, projectId, holder, groups.join(',')],
+    queryKey: [...holderReadKey('sticky-autostick', chainId, projectId), holder, groups.join(',')],
     queryFn: ({ signal }) =>
       warned(AUTOSTICK_UNREADABLE, { chainId, projectId }, signal, () =>
         readAutoStick(chainId, BigInt(projectId), holder!, { info: info!, groups, signal }),
@@ -122,7 +127,7 @@ export function useTrustedSenders(chainId: number, projectId: number, holder: Ad
     [events, holder, chainId, projectId],
   )
   return useQuery({
-    queryKey: ['sticky-trusted', chainId, projectId, holder, candidates.join(',')],
+    queryKey: [...holderReadKey('sticky-trusted', chainId, projectId), holder, candidates.join(',')],
     queryFn: ({ signal }) =>
       warned(TRUSTED_UNREADABLE, { chainId, projectId }, signal, () =>
         trustedSenders(events!, { chainId, projectId: BigInt(projectId), holder: holder!, signal }),

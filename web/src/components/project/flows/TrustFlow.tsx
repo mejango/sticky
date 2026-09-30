@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import type { Address } from 'viem'
 import { AddressInput, EnsName, parseAddress } from '@/components/project/flows/AddressInput'
-import { refreshAfterTrust } from '@/components/project/flows/refresh-after-send'
+import { reviewGate } from '@/components/project/flows/review-gate'
 import { ModalShell } from '@/components/ui/ModalShell'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
@@ -13,11 +13,11 @@ import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
 import { useWallet } from '@/hooks/useWallet'
 import { stickyHookAbi } from '@/lib/sticky-abis'
 import { trustTx } from '@/lib/sticky-builders'
-import type { Answer } from '@/lib/sticky-project'
+import { stickyLabel } from '@/lib/sticky-format'
+import type { Answer, StickyProjectInfo } from '@/lib/sticky-project'
+import { refreshAfterTrust } from '@/lib/sticky-refresh'
 import { need, readAt } from '@/lib/sticky-rewards'
 import { chainName } from '@/lib/urn'
-import { getViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
-import { EXTERNAL_WALLET_REQUIRED } from '@/providers/WalletAuthContext'
 
 const ALREADY_TRUSTED = 'This sender is already trusted.'
 const NOT_TRUSTED = 'This sender is not trusted.'
@@ -54,11 +54,14 @@ type Review = { account: Address; plan: TxRequest | null; preparing: boolean; er
 export function TrustFlow({
   chainId,
   projectId,
+  info,
   sender,
   onClose,
 }: {
   chainId: number
   projectId: number
+  /** The project, which the confirmation names: its Sticky token's symbol, once the page has read it. */
+  info: StickyProjectInfo | undefined
   /** The sender to stop trusting. With none, the holder names one to trust. */
   sender: Address | null
   onClose: () => void
@@ -82,11 +85,11 @@ export function TrustFlow({
   }, [complete, client, chainId, projectId])
 
   async function startReview() {
-    if (!isConnected || !address) return void openSignIn()
-    const account = address
+    const gate = reviewGate({ address, isConnected, isCenterWallet })
+    if (!gate) return void openSignIn()
+    const { account } = gate
     const refuse = (error: string) => setReview({ account, plan: null, preparing: false, error })
-    if (isCenterWallet) return refuse(EXTERNAL_WALLET_REQUIRED)
-    if (getViewAs()) return refuse(VIEW_AS_WRITE_BLOCKED)
+    if (gate.refusal) return refuse(gate.refusal)
     const target = trusting ? parseAddress(typed) : shown
     if (!target) return refuse('Enter a valid sender address.')
 
@@ -169,6 +172,7 @@ export function TrustFlow({
           rows={
             planSender
               ? [
+                  { label: 'Project', value: info ? `${stickyLabel(info)} #${projectId}` : `#${projectId}` },
                   { label: 'Sender', value: planSender, mono: true },
                   {
                     label: 'Trusted',

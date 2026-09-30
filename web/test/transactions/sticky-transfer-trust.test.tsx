@@ -206,7 +206,9 @@ describe('a transfer', () => {
 })
 
 describe('a change of trust', () => {
-  const trust = (sender: Address | null) => <TrustFlow chainId={CHAIN} projectId={12} sender={sender} onClose={() => {}} />
+  const trust = (sender: Address | null) => (
+    <TrustFlow chainId={CHAIN} projectId={12} info={info} sender={sender} onClose={() => {}} />
+  )
 
   it('reaches the wallet as setTrustedSenderFor(project, sender, true), after the hook was read again', async () => {
     mocks.read.mockResolvedValue(answer(false))

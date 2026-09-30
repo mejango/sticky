@@ -1,26 +1,29 @@
 'use client'
 
-import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { BaseError, ContractFunctionRevertedError, erc20Abi, formatUnits, parseUnits, type Address } from 'viem'
+import { BaseError, ContractFunctionRevertedError, erc20Abi, formatUnits, type Address } from 'viem'
+import { reviewGate } from '@/components/project/flows/review-gate'
 import { ModalShell } from '@/components/ui/ModalShell'
 import { Revalidating } from '@/components/ui/Revalidating'
 import { TxConfirmDialog, type TxConfirmRow } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
 import { stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { txPhaseLabel, useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
+import { useSettled } from '@/hooks/useSettled'
 import { useWallet } from '@/hooks/useWallet'
 import { untilAborted } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { warned } from '@/lib/query-reads'
 import { stickyAutoStickAbi, stickyHookAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
+import { parseShares, SHARE_DECIMALS } from '@/lib/sticky-amount'
 import { unstickTxs } from '@/lib/sticky-builders'
 import type { Answer, StickyProjectInfo } from '@/lib/sticky-project'
 import { quoteUnstick, unstickQuoteSentence, type UnstickQuote } from '@/lib/sticky-quotes'
+import { refreshAfterAutoStickOff, refreshAfterUnstick } from '@/lib/sticky-refresh'
 import { need, readAt } from '@/lib/sticky-rewards'
 import { chainName } from '@/lib/urn'
-import { getViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 import { EXTERNAL_WALLET_REQUIRED } from '@/providers/WalletAuthContext'
 
 /**
@@ -51,11 +54,6 @@ const BALANCE_UNREADABLE = "Could not read the holder's Sticky token balance; th
 const QUOTE_UNREADABLE = "Could not quote an unstick; the dialog's quote line says why."
 /** A full bonus returns nothing, so there is nothing for the terminal to quote. */
 const FULL_BONUS = 10_000n
-/** How long typing settles before the amount is quoted. */
-const QUOTE_SETTLE_MS = 250
-const REFRESH_AFTER_MS = [0, 4_000, 12_000]
-/** Sticky tokens have 18 decimals. */
-const SHARE_DECIMALS = 18
 
 /** What went through in this flow, and for which account (lowercase). */
 type Sent = { holder: string; steps: readonly TxRequest[] }
@@ -93,14 +91,6 @@ class Refusal extends Error {}
 
 /** A reason that starts a sentence. */
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
-
-/** The Sticky tokens an amount field names, or null for anything else: a sign, an exponent, a digit past the 18th. */
-function sharesOf(text: string): bigint | null {
-  const value = text.trim()
-  return /^(\d+\.?\d*|\.\d+)$/.test(value) && (value.split('.')[1]?.length ?? 0) <= SHARE_DECIMALS
-    ? parseUnits(value, SHARE_DECIMALS)
-    : null
-}
 
 function deploymentOn(chainId: number) {
   const deployment = stickyDeployment(chainId)
@@ -236,33 +226,6 @@ async function stillFits(info: StickyProjectInfo, plan: Plan, step: TxRequest): 
   }
 }
 
-/**
- * The reads a confirmed step changes, and no others. The unstick changes the project's figures, holders and Latest, the
- * holder's own stick, tranches, rewards and auto-stick, and the holder's account page; a step that takes auto-stick
- * apart changes the holder's auto-stick and who they trust, and nothing else. The Overview's scans are in neither.
- */
-function changedBy(chainId: number, projectId: number, holder: Address, unstick: boolean) {
-  const who = holder.toLowerCase()
-  const ofProject = unstick ? ['info', 'events', 'holders', 'sticks', 'latest', 'page-balances'] : []
-  const ofHolder = unstick
-    ? ['sticky-position', 'sticky-tranches', 'sticky-rewards', 'sticky-autostick']
-    : ['sticky-autostick', 'sticky-trusted']
-  return ({ queryKey: key }: { queryKey: readonly unknown[] }) =>
-    (key[0] === 'sticky-project' && key[1] === chainId && key[2] === projectId && ofProject.includes(String(key[3]))) ||
-    (ofHolder.includes(String(key[0])) && key[1] === chainId && key[2] === projectId && String(key[3]).toLowerCase() === who) ||
-    (unstick && key[0] === 'sticky-account' && String(key[2]).toLowerCase() === who)
-}
-
-/** Reads what `step` changed again, now and at +4 s and +12 s: the node that answered first may not have its block yet. */
-function refreshAfterSend(client: QueryClient, chainId: number, projectId: number, holder: Address, step: TxRequest): void {
-  const changed = changedBy(chainId, projectId, holder, step.functionName === 'cashOutTokensOf')
-  const again = () => void client.invalidateQueries({ predicate: changed })
-  for (const delay of REFRESH_AFTER_MS) {
-    if (delay === 0) again()
-    else setTimeout(again, delay)
-  }
-}
-
 /** Which transactions went through and which did not, in words. `left` is what has not: one being sent is waited for,
  * and after a failure none of it went through, and otherwise it has not been sent yet. */
 function progress(went: readonly TxRequest[], left: readonly TxRequest[], state: 'sending' | 'failed' | 'idle'): string {
@@ -275,16 +238,6 @@ function progress(went: readonly TxRequest[], left: readonly TxRequest[], state:
 /** The account changed under a plan: what went through for the one that sent it is said, when anything did. */
 function accountChanged(went: readonly TxRequest[], left: readonly TxRequest[]): string {
   return went.length > 0 ? `${ACCOUNT_CHANGED} ${progress(went, left, 'idle')}` : ACCOUNT_CHANGED
-}
-
-/** The value, once it has stayed the same for `ms`. */
-function useSettled<T>(value: T, ms: number): T {
-  const [settled, setSettled] = useState(value)
-  useEffect(() => {
-    const timer = setTimeout(() => setSettled(value), ms)
-    return () => clearTimeout(timer)
-  }, [value, ms])
-  return settled
 }
 
 const pct = (basisPoints: bigint) => `${Number(basisPoints) / 100}%`
@@ -300,7 +253,7 @@ export function UnstickFlow({
   info: StickyProjectInfo
   onClose: () => void
 }) {
-  const { address, isCenterWallet, openSignIn } = useWallet()
+  const { address, isConnected, isCenterWallet, openSignIn } = useWallet()
   const tx = useSafeTx(chainId)
   const client = useQueryClient()
   const [amount, setAmount] = useState('')
@@ -320,9 +273,9 @@ export function UnstickFlow({
   const sending = tx.busy || tx.phase === 'review' || (tx.phase === 'success' && accepted !== null)
   const complete = plan !== null && plan.steps.length === 0
 
-  const count = sharesOf(amount)
-  const typed = useSettled(amount, QUOTE_SETTLE_MS)
-  const settled = sharesOf(typed)
+  const count = parseShares(amount)
+  const typed = useSettled(amount)
+  const settled = parseShares(typed)
   const quotable =
     address !== undefined && settled !== null && settled > 0n && info.totalSupply > 0n && info.cashOutTaxRate !== FULL_BONUS
   const quote = useQuery({
@@ -360,7 +313,9 @@ export function UnstickFlow({
     setSent(record => ({ holder: key, steps: record.holder === key ? [...record.steps, step] : [step] }))
     setPlan(current => current && { ...current, steps: current.steps.slice(1) })
     setError(null)
-    refreshAfterSend(client, chainId, projectId, holder, step)
+    // What the step changed is read again: a step of the teardown changes only the holder's auto-stick and trust.
+    if (isTeardown(step)) refreshAfterAutoStickOff(client, chainId, projectId, holder)
+    else refreshAfterUnstick(client, chainId, projectId, holder)
   }, [tx.phase, accepted, client, chainId, projectId])
 
   // A plan is for one account. One whose account has gone is dropped, unless its send is on its way.
@@ -408,18 +363,16 @@ export function UnstickFlow({
 
   async function review() {
     setError(null)
-    if (!address) {
+    const gate = reviewGate({ address, isConnected, isCenterWallet })
+    if (!gate) {
       waiting.current = true
       await openSignIn()
       return
     }
-    if (isCenterWallet) {
-      waiting.current = true
-      setError(EXTERNAL_WALLET_REQUIRED)
-      return
-    }
-    if (getViewAs()) {
-      setError(VIEW_AS_WRITE_BLOCKED)
+    if (gate.refusal) {
+      // A Signa session's press goes on once an external wallet connects.
+      if (gate.refusal === EXTERNAL_WALLET_REQUIRED) waiting.current = true
+      setError(gate.refusal)
       return
     }
     if (count === null || count <= 0n) return

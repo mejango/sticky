@@ -1,8 +1,7 @@
 import { erc20Abi, type Address } from 'viem'
-import { freshHead } from '@/lib/hook-logs'
+import { asked, freshHead } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import type { Answer } from '@/lib/sticky-project'
-import { asked } from '@/lib/sticky-quotes'
 import { need, readAt } from '@/lib/sticky-rewards'
 
 /**

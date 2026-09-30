@@ -54,8 +54,20 @@ vi.mock('@/components/project/flows/StickFlow', () => ({
   ),
 }))
 vi.mock('@/components/project/flows/TrustFlow', () => ({
-  TrustFlow: ({ chainId, projectId, sender, onClose }: { chainId: number; projectId: number; sender: Address | null; onClose: () => void }) => (
-    <div data-flow="trust" data-chain={chainId} data-project={projectId} data-sender={sender ?? ''}>
+  TrustFlow: ({
+    chainId,
+    projectId,
+    info,
+    sender,
+    onClose,
+  }: {
+    chainId: number
+    projectId: number
+    info: { stSymbol: string } | undefined
+    sender: Address | null
+    onClose: () => void
+  }) => (
+    <div data-flow="trust" data-chain={chainId} data-project={projectId} data-token={info?.stSymbol ?? ''} data-sender={sender ?? ''}>
       <button type="button" onClick={onClose}>
         Close trust
       </button>
@@ -64,8 +76,8 @@ vi.mock('@/components/project/flows/TrustFlow', () => ({
 }))
 
 import { AirdropsTab } from '@/components/project/AirdropsTab'
-import { refreshAfterTrust } from '@/components/project/flows/refresh-after-send'
 import { AS_STATUS, type AutoStickState } from '@/lib/sticky-autostick'
+import { refreshAfterTrust } from '@/lib/sticky-refresh'
 import { type FundedPot, type RewardCard, type RewardPot } from '@/lib/sticky-rewards'
 
 const CHAIN = 8453
@@ -907,6 +919,8 @@ describe('who can stick for the viewer', () => {
     const flow = trusted().querySelector('[data-flow="trust"]')!
     expect(flow.getAttribute('data-chain')).toBe(String(CHAIN))
     expect(flow.getAttribute('data-project')).toBe('23')
+    // The project the page has read, which the confirmation names.
+    expect(flow.getAttribute('data-token')).toBe('STICKYSLOPSHOP')
     expect(flow.getAttribute('data-sender')).toBe('')
 
     await act(async () => buttonNamed(flow as HTMLElement, 'Close trust').click())

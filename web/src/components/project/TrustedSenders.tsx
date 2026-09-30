@@ -5,7 +5,7 @@ import type { Address } from 'viem'
 import { TrustFlow } from '@/components/project/flows/TrustFlow'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { useTrustedSenders, useViewer } from '@/hooks/useStickyAirdrops'
-import { useStickyEvents } from '@/hooks/useStickyProject'
+import { useStickyEvents, useStickyProject } from '@/hooks/useStickyProject'
 
 /**
  * The addresses the viewer trusts to stick tokens for them in this project, as the hook has them now. The auto-stick
@@ -16,6 +16,7 @@ export function TrustedSenders({ chainId, projectId }: { chainId: number; projec
   const holder = useViewer()
   /** The flow that is open: for a sender to untrust, or (with none) to trust one. */
   const [flow, setFlow] = useState<{ sender: Address | null } | null>(null)
+  const { info } = useStickyProject(chainId, projectId)
   const events = useStickyEvents(chainId, projectId)
   const trusted = useTrustedSenders(chainId, projectId, holder)
   const senders = trusted.data
@@ -64,7 +65,14 @@ export function TrustedSenders({ chainId, projectId }: { chainId: number; projec
         Trust
       </button>
       {flow ? (
-        <TrustFlow key={flow.sender ?? 'trust'} chainId={chainId} projectId={projectId} sender={flow.sender} onClose={() => setFlow(null)} />
+        <TrustFlow
+          key={flow.sender ?? 'trust'}
+          chainId={chainId}
+          projectId={projectId}
+          info={info}
+          sender={flow.sender}
+          onClose={() => setFlow(null)}
+        />
       ) : null}
     </section>
   )

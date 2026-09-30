@@ -18,6 +18,7 @@ import {
   type StickyHoldersResult,
   type StickyPosition,
 } from '@/lib/sticky-holders'
+import { holderReadKey, projectKey } from '@/lib/sticky-keys'
 import { readStickyProject, type StickyProjectInfo } from '@/lib/sticky-project'
 
 /**
@@ -35,7 +36,8 @@ import { readStickyProject, type StickyProjectInfo } from '@/lib/sticky-project'
 
 /** The version of what the browser keeps of a project's page, in each kept key. Change it whenever
  * `StickyProjectInfo`, `FeedRow` or `ProjectSticks` changes shape, or a page renders a kept copy in an older shape
- * until it is read again. */
+ * until it is read again. A kept key is written out, `projectKey`'s parts and then the version, as the persist-scope
+ * test reads it. */
 const PROJECT_VERSION = 'v1'
 /** How often the viewer's stick is read again while the page is in view. */
 const POSITION_REFRESH_MS = 15_000
@@ -78,7 +80,7 @@ const infoOptions = (chainId: number, projectId: number) =>
 
 const eventsOptions = (client: QueryClient, chainId: number, projectId: number) =>
   queryOptions<StickyEventsResult>({
-    queryKey: ['sticky-project', chainId, projectId, 'events'],
+    queryKey: projectKey(chainId, projectId, 'events'),
     queryFn: ({ signal }) =>
       warned(HISTORY_UNREADABLE, { chainId, projectId }, signal, () =>
         inTurn(client, signal, () => stickyEvents(chainId, BigInt(projectId), { signal })),
@@ -89,7 +91,7 @@ const eventsOptions = (client: QueryClient, chainId: number, projectId: number) 
 
 const holdersOptions = (client: QueryClient, chainId: number, projectId: number) =>
   queryOptions<ProjectHolders>({
-    queryKey: ['sticky-project', chainId, projectId, 'holders'],
+    queryKey: projectKey(chainId, projectId, 'holders'),
     queryFn: ({ signal }) =>
       warned(HOLDERS_UNREADABLE, { chainId, projectId }, signal, async () => {
         // The history is read first: the holders fall back on it when Bendystraw's positions cannot answer, and its
@@ -199,7 +201,7 @@ export function useStickyPosition(
   info: StickyProjectInfo | undefined,
 ) {
   return useKeptQuery<StickyPosition>({
-    queryKey: ['sticky-position', chainId, projectId, holder],
+    queryKey: [...holderReadKey('sticky-position', chainId, projectId), holder],
     queryFn: ({ signal }) =>
       warned(POSITION_UNREADABLE, { chainId, projectId }, signal, () =>
         readStickyPosition(chainId, info!, holder!, { signal }),

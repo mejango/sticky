@@ -993,61 +993,69 @@ describe('the wallet', () => {
 
 describe('after a confirmed send', () => {
   const p = ['sticky-project', CHAIN, 12]
-  const ofProject = ['info', 'events', 'holders', 'sticks', 'latest', 'page-balances']
+  const PAGE = ['info', 'events', 'holders', 'sticks', 'latest', 'page balances']
+  /** Reads the page and the account pages hold, by name: the holder's (the tranches keyed in lowercase, since a
+   * refresh finds the holder's reads in any case), another holder's, and others that no unstick changes. */
+  const KEYS: Record<string, readonly unknown[]> = {
+    info: [...p, 'info', 'v1'],
+    events: [...p, 'events'],
+    holders: [...p, 'holders'],
+    sticks: [...p, 'sticks', 'v1'],
+    latest: [...p, 'latest', 'v1'],
+    'page balances': [...p, 'page-balances', [HOLDER]],
+    position: ['sticky-position', CHAIN, 12, HOLDER],
+    tranches: ['sticky-tranches', CHAIN, 12, HOLDER.toLowerCase(), 0, '100'],
+    rewards: ['sticky-rewards', CHAIN, 12, HOLDER, '0:0x'],
+    'auto-stick': ['sticky-autostick', CHAIN, 12, HOLDER, '0'],
+    trusted: ['sticky-trusted', CHAIN, 12, HOLDER, ''],
+    'account page': ['sticky-account', 'mainnet', HOLDER.toLowerCase(), 'positions', CHAIN],
+    flows: [...p, 'flows'],
+    siblings: [...p, 'siblings', 'v1'],
+    funding: [...p, 'funding'],
+    'another project': ['sticky-project', CHAIN, 13, 'holders'],
+    'another chain': ['sticky-project', 1, 12, 'holders'],
+    "another's position": ['sticky-position', CHAIN, 12, OTHER],
+    "another's auto-stick": ['sticky-autostick', CHAIN, 12, OTHER, '0'],
+    "another's account page": ['sticky-account', 'mainnet', OTHER.toLowerCase(), 'positions', CHAIN],
+    "a chain's projects": ['sticky-account', 'mainnet', 'deployed', CHAIN],
+    home: ['sticky-home', 'mainnet', 'chain', CHAIN],
+    'the whole project': p,
+  }
+  /** Marks every read as just made, as a refetch would. */
+  const readAgain = () => Object.values(KEYS).forEach(key => client.setQueryData(key, 'read'))
+  /** The reads a refresh has marked to be made again. */
+  const invalidated = () => Object.keys(KEYS).filter(name => client.getQueryState(KEYS[name])?.isInvalidated)
+  const UNSTICK = [...PAGE, 'position', 'tranches', 'rewards', 'auto-stick', 'account page']
 
   it('reads again what an unstick changed, now and at +4 s and +12 s, and nothing else: never the whole project', async () => {
     world({ enabled: false })
-    const invalidate = vi.spyOn(client, 'invalidateQueries')
+    readAgain()
     const timers = vi.spyOn(globalThis, 'setTimeout')
     await review('1')
     await sendStep('Confirm & unstick')
+    expect(invalidated()).toEqual(UNSTICK)
+    readAgain()
 
-    expect(invalidate).toHaveBeenCalledTimes(1)
     const later = timers.mock.calls.filter(([, delay]) => delay === 4_000 || delay === 12_000)
     expect(later.map(([, delay]) => delay)).toEqual([4_000, 12_000])
-    for (const [callback] of later) (callback as () => void)()
-    expect(invalidate).toHaveBeenCalledTimes(3)
-
-    const changed = invalidate.mock.calls[0][0]!.predicate!
-    const matches = (queryKey: unknown[]) => changed({ queryKey } as never)
-    for (const part of ofProject) expect(matches([...p, part, 'v1'])).toBe(true)
-    // The holder's own reads, in any case, and their account page.
-    expect(matches(['sticky-position', CHAIN, 12, HOLDER])).toBe(true)
-    expect(matches(['sticky-tranches', CHAIN, 12, HOLDER.toLowerCase(), 0, '100'])).toBe(true)
-    expect(matches(['sticky-rewards', CHAIN, 12, HOLDER, '0:0x'])).toBe(true)
-    expect(matches(['sticky-autostick', CHAIN, 12, HOLDER, '0'])).toBe(true)
-    expect(matches(['sticky-account', 'mainnet', HOLDER, 'positions', CHAIN])).toBe(true)
-    // Not the Overview's scans, nor another project, another chain or another holder.
-    expect(matches([...p, 'flows'])).toBe(false)
-    expect(matches([...p, 'siblings', 'v1'])).toBe(false)
-    expect(matches([...p, 'funding'])).toBe(false)
-    expect(matches(['sticky-project', CHAIN, 13, 'holders'])).toBe(false)
-    expect(matches(['sticky-project', 1, 12, 'holders'])).toBe(false)
-    expect(matches(['sticky-position', CHAIN, 12, OTHER])).toBe(false)
-    expect(matches(['sticky-account', 'mainnet', OTHER, 'positions', CHAIN])).toBe(false)
-    expect(matches(['sticky-home', 'mainnet', 'chain', CHAIN])).toBe(false)
-    expect(matches(['sticky-project', CHAIN, 12])).toBe(false)
+    for (const [callback] of later) {
+      const again = callback as () => void
+      again()
+      expect(invalidated()).toEqual(UNSTICK)
+      readAgain()
+    }
   })
 
-  it('reads only the holder\'s auto-stick again after a step that takes it apart, and everything the unstick changed after the unstick', async () => {
+  it("reads only the holder's auto-stick again after a step that takes it apart, and everything the unstick changed after the unstick", async () => {
     world({ enabled: true })
-    const invalidate = vi.spyOn(client, 'invalidateQueries')
+    readAgain()
     await review('1')
     await sendStep('Turn off auto-stick', 'Confirm & unstick')
-
-    expect(invalidate).toHaveBeenCalledTimes(1)
-    const teardown = invalidate.mock.calls[0][0]!.predicate!
-    const after = (queryKey: unknown[]) => teardown({ queryKey } as never)
-    expect(after(['sticky-autostick', CHAIN, 12, HOLDER, '0'])).toBe(true)
-    expect(after(['sticky-trusted', CHAIN, 12, HOLDER, ''])).toBe(true)
-    expect(after(['sticky-autostick', CHAIN, 12, OTHER, '0'])).toBe(false)
-    for (const part of ofProject) expect(after([...p, part, 'v1'])).toBe(false)
-    expect(after(['sticky-position', CHAIN, 12, HOLDER])).toBe(false)
-    expect(after(['sticky-account', 'mainnet', HOLDER, 'positions', CHAIN])).toBe(false)
+    expect(invalidated()).toEqual(['auto-stick', 'trusted'])
+    readAgain()
 
     await sendStep('Confirm & unstick')
-    expect(invalidate).toHaveBeenCalledTimes(2)
-    const unstick = invalidate.mock.calls[1][0]!.predicate!
-    for (const part of ofProject) expect(unstick({ queryKey: [...p, part, 'v1'] } as never)).toBe(true)
+    expect(invalidated()).toEqual(expect.arrayContaining(UNSTICK))
+    expect(invalidated().filter(name => !UNSTICK.includes(name) && name !== 'trusted')).toEqual([])
   })
 })

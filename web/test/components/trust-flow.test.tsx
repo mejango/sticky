@@ -9,6 +9,7 @@ import { stickyHookAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 import { EXTERNAL_WALLET_REQUIRED, WalletAuthContext } from '@/providers/WalletAuthContext'
+import { stickyInfo } from '../home-fixtures'
 import fixtures from '../lib/calldata-fixtures.json'
 
 // The Trust flow, for trusting a sender and for untrusting one: who is asked, what it reads before it asks the wallet,
@@ -45,6 +46,8 @@ const ALICE = getAddress(`0x${'a1'.repeat(20)}`)
 const SENDER = getAddress(`0x${'b2'.repeat(20)}`)
 const CAROL = getAddress(`0x${'c4'.repeat(20)}`)
 const HASH = `0x${'c3'.repeat(32)}`
+/** Project 12 on Base Sepolia, whose Sticky token is STICKYART. */
+const INFO = stickyInfo(CHAIN, BigInt(PROJECT), { symbol: 'ART', stSymbol: 'STICKYART' })
 
 const idle = () => ({
   phase: 'idle',
@@ -98,13 +101,14 @@ afterEach(async () => {
 
 const settle = (ms = 0) => act(async () => void (await vi.advanceTimersByTimeAsync(ms)))
 
-/** `sender` is the one to untrust; without it the flow trusts the one the holder names. */
-async function render(sender: Address | null = null, chainId = CHAIN) {
+/** `sender` is the one to untrust; without it the flow trusts the one the holder names. `unread` renders it before the
+ * page has read the project. */
+async function render(sender: Address | null = null, chainId = CHAIN, { unread = false } = {}) {
   await act(async () =>
     root.render(
       <QueryClientProvider client={client}>
         <WalletAuthContext.Provider value={{ requestSignIn: mocks.requestSignIn }}>
-          <TrustFlow chainId={chainId} projectId={PROJECT} sender={sender} onClose={onClose} />
+          <TrustFlow chainId={chainId} projectId={PROJECT} info={unread ? undefined : INFO} sender={sender} onClose={onClose} />
         </WalletAuthContext.Provider>
       </QueryClientProvider>,
     ),
@@ -133,6 +137,15 @@ async function type(label: string, text: string) {
   })
 }
 const errorText = () => modal().querySelector('p.wrap-anywhere')?.textContent ?? null
+/** The confirmation's rows, by label. */
+const rowsOf = () =>
+  Object.fromEntries(
+    [...confirm()!.querySelectorAll('.grid > span')].reduce<string[][]>((pairs, cell, at) => {
+      if (at % 2 === 0) pairs.push([cell.textContent ?? ''])
+      else pairs[pairs.length - 1].push(cell.textContent ?? '')
+      return pairs
+    }, []),
+  )
 
 /** Names the sender and asks for the review. */
 async function reviewTrust(sender: string) {
@@ -227,6 +240,24 @@ describe('trusting a sender: the review', () => {
     expect(buttonIn(confirm(), 'Confirm & trust')).toBeDefined()
     expect(modal().contains(confirm())).toBe(true)
     expect(document.querySelectorAll('dialog')).toHaveLength(1)
+  })
+
+  it('names the project the trust is for, as the old client did, and its ID alone while the project is unread', async () => {
+    await render()
+    await reviewTrust(SENDER)
+    expect(rowsOf()).toEqual({
+      Project: 'STICKYART #12',
+      Sender: SENDER,
+      Trusted: 'Yes, they can add stakes to your position.',
+      On: 'Base Sepolia',
+    })
+
+    await act(async () => root.unmount())
+    root = createRoot(host)
+    mocks.read.mockResolvedValue(trusted(true))
+    await render(SENDER, CHAIN, { unread: true })
+    await press(modal(), 'Review untrust')
+    expect(rowsOf()).toMatchObject({ Project: '#12', Sender: SENDER })
   })
 
   it('says the sender is trusted already, and sends nothing', async () => {

@@ -5,6 +5,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { encodeFunctionData, erc20Abi, getAddress, zeroAddress, type Address } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { stickyDeployment } from '@/lib/sticky-addresses'
 import type { StickyPosition } from '@/lib/sticky-holders'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
@@ -277,6 +278,28 @@ describe('the recipient', () => {
     expect(confirm()).toBeNull()
     expect(mocks.read).not.toHaveBeenCalled()
     expect(tx().send).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['the Sticky token itself', STICKY],
+    ['the hook', stickyDeployment(CHAIN)!.hook],
+    ['the terminal', stickyDeployment(CHAIN)!.terminal],
+  ])('refuses %s, which would keep the tokens for good, in any case, before it reads or asks anything', async (_name, contract) => {
+    await render()
+    for (const recipient of [contract, contract.toLowerCase()]) {
+      await review(recipient, '1')
+      expect(errorText()).toBe('Tokens sent to this Sticky contract are lost. Choose a different recipient.')
+    }
+    expect(confirm()).toBeNull()
+    expect(mocks.read).not.toHaveBeenCalled()
+    expect(tx().send).not.toHaveBeenCalled()
+  })
+
+  it("takes another project's Sticky token as a recipient: only this project's own contracts are refused", async () => {
+    await render(artInfo({ stToken: CAROL }))
+    await review(STICKY, '1')
+    expect(errorText()).toBeNull()
+    expect(confirm()!.textContent).toContain(STICKY)
   })
 })
 

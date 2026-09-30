@@ -1,28 +1,95 @@
-import type { QueryClient } from '@tanstack/react-query'
+import type { InvalidateQueryFilters, QueryClient } from '@tanstack/react-query'
+import type { Address } from 'viem'
+import {
+  ACCOUNT_PAGES,
+  accountOfKey,
+  holderReadKey,
+  projectKey,
+  type HolderRead,
+  type ProjectPart,
+} from '@/lib/sticky-keys'
 
 /** When a refresh reads again: now, and twice more, since the index and the nodes behind Center can be a few seconds
  * behind the block that was just confirmed. */
-const REFRESH_AFTER_MS = [0, 4_000, 12_000]
+export const REFRESH_AFTER_MS = [0, 4_000, 12_000] as const
 
-/** The parts of a project's page that a write changes: its figures, and what its holders and Latest are read from. */
-const PROJECT_PARTS = ['info', 'events', 'holders', 'sticks', 'latest', 'page-balances']
-/** What the page reads of a viewer, under the keys that follow the chain and the project. */
-const VIEWER_READS = ['sticky-position', 'sticky-tranches', 'sticky-rewards']
-
-/**
- * Reads again what a confirmed write to a Sticky project changed: the project's figures, its history, holders and Latest
- * list, the viewer's stick, tranches and rewards, and the account pages' positions and activity, now and at +4 s and
- * +12 s. Only those: the keys that start with the chain and the project also hold the Overview's scans, which a write
- * must not queue ahead of the holders and Latest, and the account pages' list of every project on a chain is a scan too.
- */
-export function refreshStickyProject(client: QueryClient, chainId: number, projectId: number): void {
+/** Invalidates what each of `filters` names, now and at +4 s and +12 s. */
+export function refreshOnSchedule(client: QueryClient, filters: readonly InvalidateQueryFilters[]): void {
   const again = () => {
-    for (const part of PROJECT_PARTS) void client.invalidateQueries({ queryKey: ['sticky-project', chainId, projectId, part] })
-    for (const read of VIEWER_READS) void client.invalidateQueries({ queryKey: [read, chainId, projectId] })
-    void client.invalidateQueries({ queryKey: ['sticky-account'], predicate: query => query.queryKey[2] !== 'deployed' })
+    for (const filter of filters) void client.invalidateQueries(filter)
   }
   for (const delay of REFRESH_AFTER_MS) {
     if (delay === 0) again()
     else setTimeout(again, delay)
   }
+}
+
+/** What a stick or an unstick changes of a project's page: its figures, and what its holders and Latest are read from.
+ * Each refresh below reads again what its send changed and nothing else, and none reads a project's whole key again: it
+ * also holds the Overview's scans, which a send must not queue ahead of the holders and Latest. */
+const PAGE: readonly ProjectPart[] = ['info', 'events', 'holders', 'sticks', 'latest', 'page-balances']
+/** What a transfer changes of it: who holds what, and the history that says so. The supply and backing stay. */
+const HOLDINGS: readonly ProjectPart[] = ['events', 'holders', 'sticks', 'latest', 'page-balances']
+/** What shares minted, burned or moved change of an account in a project. */
+const STAKE: readonly HolderRead[] = ['sticky-position', 'sticky-tranches', 'sticky-rewards']
+
+const ofPage = (chainId: number, projectId: number, parts: readonly ProjectPart[]): InvalidateQueryFilters[] =>
+  parts.map(part => ({ queryKey: projectKey(chainId, projectId, part) }))
+
+const ofEveryone = (chainId: number, projectId: number, reads: readonly HolderRead[]): InvalidateQueryFilters[] =>
+  reads.map(read => ({ queryKey: holderReadKey(read, chainId, projectId) }))
+
+/** `holder`'s own reads, whatever the case of the address in their keys. */
+function ofHolder(chainId: number, projectId: number, holder: Address, reads: readonly HolderRead[]): InvalidateQueryFilters[] {
+  const who = holder.toLowerCase()
+  return reads.map(read => ({
+    queryKey: holderReadKey(read, chainId, projectId),
+    predicate: query => accountOfKey(query.queryKey) === who,
+  }))
+}
+
+/** A stick: the project's figures, holders and Latest, every account's stick, tranches and rewards in it (a stick can
+ * be for someone else), and the account pages' positions and activity, but not each chain's list of every Sticky
+ * project, a scan that no stick changes. */
+export function refreshAfterStick(client: QueryClient, chainId: number, projectId: number): void {
+  refreshOnSchedule(client, [
+    ...ofPage(chainId, projectId, PAGE),
+    ...ofEveryone(chainId, projectId, STAKE),
+    { queryKey: ACCOUNT_PAGES, predicate: query => accountOfKey(query.queryKey) !== 'deployed' },
+  ])
+}
+
+/** An unstick: the project's figures, holders and Latest, and the holder's own stick, tranches, rewards, auto-stick and
+ * account page. */
+export function refreshAfterUnstick(client: QueryClient, chainId: number, projectId: number, holder: Address): void {
+  const who = holder.toLowerCase()
+  refreshOnSchedule(client, [
+    ...ofPage(chainId, projectId, PAGE),
+    ...ofHolder(chainId, projectId, holder, [...STAKE, 'sticky-autostick']),
+    { queryKey: ACCOUNT_PAGES, predicate: query => accountOfKey(query.queryKey) === who },
+  ])
+}
+
+/** A step that takes a holder's auto-stick apart: their auto-stick and who they trust, and nothing else. */
+export function refreshAfterAutoStickOff(client: QueryClient, chainId: number, projectId: number, holder: Address): void {
+  refreshOnSchedule(client, ofHolder(chainId, projectId, holder, ['sticky-autostick', 'sticky-trusted']))
+}
+
+/** A transfer: who holds what and the history that says so, the sender's and the recipient's stick, tranches and
+ * rewards, and the account pages. */
+export function refreshAfterTransfer(client: QueryClient, chainId: number, projectId: number): void {
+  refreshOnSchedule(client, [
+    ...ofPage(chainId, projectId, HOLDINGS),
+    ...ofEveryone(chainId, projectId, STAKE),
+    { queryKey: ACCOUNT_PAGES },
+  ])
+}
+
+/** A change of trust is one hook event: the list of trusted senders is read from the history and confirmed with the
+ * hook, and the auto-stick card reads whether the holder trusts the adapter. */
+export function refreshAfterTrust(client: QueryClient, chainId: number, projectId: number): void {
+  refreshOnSchedule(client, [
+    ...ofPage(chainId, projectId, ['events']),
+    ...ofEveryone(chainId, projectId, ['sticky-trusted', 'sticky-autostick']),
+  ])
 }

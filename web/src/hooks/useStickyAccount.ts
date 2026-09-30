@@ -19,6 +19,7 @@ import {
   type AccountPosition,
 } from '@/lib/sticky-account'
 import { FEED_WINDOW, type FeedRow } from '@/lib/sticky-feed'
+import { accountKey, deployedKey } from '@/lib/sticky-keys'
 
 // None of these queries is kept in the browser: each is about one account's positions or activity.
 
@@ -37,7 +38,7 @@ const ACTIVITY_UNREADABLE = "Could not read an account's Sticky activity on a ch
 function indexOf(client: QueryClient, network: BendystrawNetwork, holder: Address, signal: AbortSignal) {
   return untilAborted(
     client.fetchQuery({
-      queryKey: ['sticky-account', network, holder, 'index'],
+      queryKey: accountKey(network, holder, 'index'),
       queryFn: ({ signal: own }) => accountIndex(network, holder, { signal: own }),
       staleTime: INDEX_FRESH_MS,
     }),
@@ -49,7 +50,7 @@ function indexOf(client: QueryClient, network: BendystrawNetwork, holder: Addres
 function deployedOf(client: QueryClient, network: BendystrawNetwork, chainId: number, index: AccountIndex, signal: AbortSignal) {
   return untilAborted(
     client.fetchQuery({
-      queryKey: ['sticky-account', network, 'deployed', chainId],
+      queryKey: deployedKey(network, chainId),
       queryFn: ({ signal: own }) => deployedProjects(chainId, index, { signal: own }),
       staleTime: DEPLOYED_FRESH_MS,
     }),
@@ -98,7 +99,7 @@ export function useAccountPositions(network: BendystrawNetwork, address: Address
 
   const reads = useQueries({
     queries: chains.map(chainId => ({
-      queryKey: ['sticky-account', network, holder, 'positions', chainId],
+      queryKey: [...accountKey(network, holder, 'positions'), chainId],
       queryFn: ({ signal }: { signal: AbortSignal }) =>
         inTurn(client, signal, async () => {
           try {
@@ -125,7 +126,7 @@ export function useAccountPositions(network: BendystrawNetwork, address: Address
     skipped: loaded.reduce((sum, chain) => sum + chain.skipped, 0),
     failedChains: chains.filter((_, at) => reads.failed[at]),
     pending: reads.pending,
-    retry: () => void client.refetchQueries({ queryKey: ['sticky-account', network, holder, 'positions'] }),
+    retry: () => void client.refetchQueries({ queryKey: accountKey(network, holder, 'positions') }),
   }
 }
 
@@ -153,7 +154,7 @@ export function useAccountActivity(network: BendystrawNetwork, address: Address)
 
   const reads = useQueries({
     queries: chains.map(chainId => ({
-      queryKey: ['sticky-account', network, holder, 'activity', chainId],
+      queryKey: [...accountKey(network, holder, 'activity'), chainId],
       queryFn: ({ signal }: { signal: AbortSignal }) =>
         inTurn(client, signal, async () => {
           try {
@@ -188,6 +189,6 @@ export function useAccountActivity(network: BendystrawNetwork, address: Address)
     ),
     failedChains: chains.filter((_, at) => reads.failed[at]),
     pending: reads.pending,
-    retry: () => void client.refetchQueries({ queryKey: ['sticky-account', network, holder, 'activity'] }),
+    retry: () => void client.refetchQueries({ queryKey: accountKey(network, holder, 'activity') }),
   }
 }

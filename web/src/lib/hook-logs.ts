@@ -121,6 +121,18 @@ export function freshHead(client: Pick<PublicClient, 'getBlockNumber'>, signal: 
   return untilAborted(client.getBlockNumber({ cacheTime: 0 }), signal)
 }
 
+/** What `work` gives, or an error that names `what` and keeps the cause. A signal that has aborted stops it before it
+ * starts, and its reason, like any it aborts with, is the caller's own and goes through as it is. */
+export async function asked<T>(what: string, work: () => Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  try {
+    if (signal?.aborted) throw signal.reason
+    return await untilAborted(work(), signal)
+  } catch (cause) {
+    if (signal?.aborted) throw cause
+    throw new Error(`${what} could not be read.`, { cause })
+  }
+}
+
 /** [from, to] ranges of at most `span` blocks that cover `from` to `to` exactly. */
 function windowsOf(from: bigint, to: bigint, span: bigint): [bigint, bigint][] {
   const windows: [bigint, bigint][] = []

@@ -30,13 +30,12 @@ import {
   type SecuredSeries,
   type SupplyMove,
 } from '@/lib/sticky-home'
+import { refreshOnSchedule } from '@/lib/sticky-refresh'
 
 /** How long the network's project list and newest events stay fresh: one read of them serves every chain's. */
 const NETWORK_FRESH_MS = 30_000
 const DAY_MS = 86_400_000
 const CHAIN_UNREADABLE = "Could not read a chain's Sticky tokens; the home names the chain in its note."
-/** When a refresh reads the home again: Bendystraw lists a launch a few seconds after it lands. */
-const REFRESH_AFTER_MS = [0, 4_000, 12_000]
 
 export type StickyHome = {
   /** The network's Sticky chains. None when Sticky is not deployed on it. */
@@ -237,9 +236,5 @@ export function useStickyHome(network: BendystrawNetwork): StickyHome {
 /** Reads every network's home again now, at +4 s and at +12 s, with its project list and newest events: after a
  * launch, Bendystraw lists the new project a few seconds after it lands. */
 export function refreshStickyHome(client: QueryClient): void {
-  const again = () => void client.invalidateQueries({ queryKey: ['sticky-home'] })
-  for (const delay of REFRESH_AFTER_MS) {
-    if (delay === 0) again()
-    else setTimeout(again, delay)
-  }
+  refreshOnSchedule(client, [{ queryKey: ['sticky-home'] }])
 }

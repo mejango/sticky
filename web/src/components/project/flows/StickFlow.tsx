@@ -3,11 +3,13 @@
 import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { formatUnits, getAddress, isAddress, isAddressEqual, zeroAddress, type Address } from 'viem'
+import { reviewGate } from '@/components/project/flows/review-gate'
 import { Revalidating } from '@/components/ui/Revalidating'
 import { TxConfirmDialog, type TxConfirmRow } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
 import { stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { useSafeTx } from '@/hooks/useSafeTx'
+import { useSettled } from '@/hooks/useSettled'
 import { useStickyPosition, useStickyProject } from '@/hooks/useStickyProject'
 import { useWallet } from '@/hooks/useWallet'
 import { stickyDeployment } from '@/lib/sticky-addresses'
@@ -17,13 +19,11 @@ import { approveSteps, stickTx, type TxRequest } from '@/lib/sticky-builders'
 import { formatAmount } from '@/lib/sticky-format'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { assertCanStickFor, quoteStick, stickQuoteSentence } from '@/lib/sticky-quotes'
-import { refreshStickyProject } from '@/lib/sticky-refresh'
+import { refreshAfterStick } from '@/lib/sticky-refresh'
 import { chainName } from '@/lib/urn'
 import { useViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 import { EXTERNAL_WALLET_REQUIRED } from '@/providers/WalletAuthContext'
 
-/** How long typing settles before the amount is quoted. */
-const QUOTE_SETTLE_MS = 250
 /** How long a quote shown under the amount stays fresh. A review asks again. */
 const QUOTE_FRESH_MS = 10_000
 
@@ -46,16 +46,6 @@ function told(label: string, about: object, reason: unknown): Error {
   const error = reason instanceof Error ? reason : new Error(String(reason))
   if (error.cause !== undefined) console.warn(label, about, error)
   return error
-}
-
-/** `value`, once it has stopped changing for `ms`. */
-function useSettled(value: string, ms: number): string {
-  const [settled, setSettled] = useState(value)
-  useEffect(() => {
-    const timer = setTimeout(() => setSettled(value), ms)
-    return () => clearTimeout(timer)
-  }, [value, ms])
-  return settled
 }
 
 /** What the fields hold: the amount, and who it is for. An amount of 0n is an empty or unusable one; a beneficiary of
@@ -103,8 +93,8 @@ export function StickFlow({
   const amountId = useId()
   const [amount, setAmount] = useState('')
   const [recipient, setRecipient] = useState('')
-  const settledAmount = useSettled(amount, QUOTE_SETTLE_MS)
-  const settledRecipient = useSettled(recipient, QUOTE_SETTLE_MS)
+  const settledAmount = useSettled(amount)
+  const settledRecipient = useSettled(recipient)
   const [plan, setPlan] = useState<Plan | null>(null)
   const [preparing, setPreparing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -190,19 +180,17 @@ export function StickFlow({
 
   async function review() {
     if (!info || !verified || !terminal) return
-    if (!isConnected || !address) {
+    const gate = reviewGate({ address, isConnected, isCenterWallet })
+    if (!gate) {
       void openSignIn()
       return
     }
     // The engine refuses these too; saying so now keeps a plan from being built for an account that cannot send it.
-    if (isCenterWallet) {
-      setError(EXTERNAL_WALLET_REQUIRED)
+    if (gate.refusal) {
+      setError(gate.refusal)
       return
     }
-    if (viewAs) {
-      setError(VIEW_AS_WRITE_BLOCKED)
-      return
-    }
+    const { account } = gate
     if (typed.amount <= 0n || typed.beneficiary === null) return
     const { beneficiary, amount: value } = typed
     reading.current?.abort()
@@ -217,16 +205,16 @@ export function StickFlow({
     confirmedAt.current = undefined
     setPreparing(true)
     try {
-      if (!isAddressEqual(beneficiary, address)) {
-        await assertCanStickFor(chainId, info.projectId, address, beneficiary, { signal })
+      if (!isAddressEqual(beneficiary, account)) {
+        await assertCanStickFor(chainId, info.projectId, account, beneficiary, { signal })
       }
       const { balance, allowance } = await readBalanceAndAllowance(
         chainId,
-        { token: info.stakedToken, owner: address, spender: terminal },
+        { token: info.stakedToken, owner: account, spender: terminal },
         { signal },
       )
       if (balance < value) throw new Error(MORE_THAN_HELD)
-      const minted = await quoteStick(chainId, info.projectId, info.stakedToken, value, address, beneficiary, { signal })
+      const minted = await quoteStick(chainId, info.projectId, info.stakedToken, value, account, beneficiary, { signal })
       const steps = [
         ...approveSteps(chainId, info.stakedToken, terminal, allowance, value, {
           symbol: info.symbol,
@@ -236,7 +224,7 @@ export function StickFlow({
         stickTx(info, beneficiary, value, minted),
       ]
       if (signal.aborted) return
-      setPlan({ info, terminal, account: address, beneficiary, amount: value, minted, steps })
+      setPlan({ info, terminal, account, beneficiary, amount: value, minted, steps })
     } catch (reason) {
       if (!signal.aborted) setError(sentence(told(REVIEW_UNREADABLE, { chainId, projectId }, reason).message))
     } finally {
@@ -305,7 +293,7 @@ export function StickFlow({
 
   // What a stick changed is read again once its transaction has confirmed.
   useEffect(() => {
-    if (complete) refreshStickyProject(client, chainId, projectId)
+    if (complete) refreshAfterStick(client, chainId, projectId)
   }, [complete, client, chainId, projectId])
 
   useEffect(() => () => reading.current?.abort(), [])

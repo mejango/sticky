@@ -90,9 +90,9 @@ vi.mock('@/components/project/flows/TransferFlow', () => ({
 
 import ProjectPage from '@/app/[urn]/page'
 import { BonusSplit } from '@/components/project/BonusSplit'
-import { refreshAfterTransfer } from '@/components/project/flows/refresh-after-send'
 import { TokensTab } from '@/components/project/TokensTab'
 import { useHolderTranches } from '@/hooks/useStickyTokens'
+import { refreshAfterTransfer } from '@/lib/sticky-refresh'
 import { ProjectRouteProvider } from '@/providers/ProjectRouteContext'
 
 const NOW = 1_800_000_000

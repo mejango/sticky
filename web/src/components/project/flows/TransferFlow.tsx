@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useId, useRef, useState } from 'react'
 import { erc20Abi, formatUnits, isAddressEqual, type Address } from 'viem'
 import { AddressInput, parseAddress } from '@/components/project/flows/AddressInput'
-import { refreshAfterTransfer } from '@/components/project/flows/refresh-after-send'
+import { reviewGate } from '@/components/project/flows/review-gate'
 import { ModalShell } from '@/components/ui/ModalShell'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
@@ -12,30 +12,28 @@ import { stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
 import { useStickyPosition } from '@/hooks/useStickyProject'
 import { useWallet } from '@/hooks/useWallet'
+import { stickyDeployment } from '@/lib/sticky-addresses'
+import { parseShares, SHARE_DECIMALS } from '@/lib/sticky-amount'
 import { transferTx } from '@/lib/sticky-builders'
 import { formatAmount, stickyLabel } from '@/lib/sticky-format'
 import type { Answer, StickyProjectInfo } from '@/lib/sticky-project'
+import { refreshAfterTransfer } from '@/lib/sticky-refresh'
 import { need, readAt } from '@/lib/sticky-rewards'
 import { chainName } from '@/lib/urn'
-import { getViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
-import { EXTERNAL_WALLET_REQUIRED } from '@/providers/WalletAuthContext'
-
-/** Sticky shares always have 18 decimals. */
-const DECIMALS = 18
 
 const LOCKED = 'This Sticky token is locked and cannot be transferred.'
 const MORE_THAN_HELD = 'That is more than you hold.'
 const BALANCE_CHANGED = 'Your token balance changed. Review the amount.'
 const BALANCE_UNREADABLE = 'Could not read your Sticky balance. Try again.'
+const LOST = 'Tokens sent to this Sticky contract are lost. Choose a different recipient.'
 
-/** The shares `text` writes, to the last of their 18 places, or null: a decimal number, with no sign or exponent, that
- * is not cut short or rounded. */
-function parseShares(text: string): bigint | null {
-  const match = /^(?:(\d+)(?:\.(\d*))?|\.(\d+))$/.exec(text.trim())
-  if (!match) return null
-  const whole = match[1] ?? ''
-  const fraction = match[2] ?? match[3] ?? ''
-  return fraction.length > DECIMALS ? null : BigInt(whole + fraction.padEnd(DECIMALS, '0'))
+/** Sticky's own contracts that Sticky tokens can be sent to and never come back from: the Sticky token itself, the hook
+ * and the terminal. */
+function losesTokens(info: StickyProjectInfo, recipient: Address): boolean {
+  const deployment = stickyDeployment(info.chainId)
+  return [info.stToken, deployment?.hook, deployment?.terminal].some(
+    contract => contract !== undefined && isAddressEqual(contract, recipient),
+  )
 }
 
 /** What `holder` holds of the project's Sticky token now, from the token itself: a read that cannot be made is an
@@ -106,19 +104,20 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
   const editRecipient = edit(setRecipient)
   const editAmount = edit(setAmount)
   const fillMax = () => {
-    if (held !== undefined) editAmount(formatUnits(held, DECIMALS))
+    if (held !== undefined) editAmount(formatUnits(held, SHARE_DECIMALS))
   }
 
   async function startReview() {
-    if (!isConnected || !address) return void openSignIn()
-    const account = address
+    const gate = reviewGate({ address, isConnected, isCenterWallet })
+    if (!gate) return void openSignIn()
+    const { account } = gate
     const refuse = (error: string) => setReview({ account, plan: null, whole: false, preparing: false, error })
-    if (isCenterWallet) return refuse(EXTERNAL_WALLET_REQUIRED)
-    if (getViewAs()) return refuse(VIEW_AS_WRITE_BLOCKED)
+    if (gate.refusal) return refuse(gate.refusal)
     if (info.soulbound) return refuse(LOCKED)
     const to = parseAddress(recipient)
     if (!to) return refuse('Enter a valid recipient address.')
     if (isAddressEqual(to, account)) return refuse('Choose a different recipient.')
+    if (losesTokens(info, to)) return refuse(LOST)
     const count = amount.trim() === '' ? 0n : parseShares(amount)
     if (count === null) return refuse('Enter a valid amount.')
     if (count === 0n) return refuse('Enter an amount greater than zero.')
@@ -158,7 +157,7 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
     address === undefined
       ? null
       : held !== undefined
-        ? `You hold ${formatAmount(held, DECIMALS)} ${label}.`
+        ? `You hold ${formatAmount(held, SHARE_DECIMALS)} ${label}.`
         : position.isError
           ? 'Could not read your balance.'
           : 'Checking your balance…'
@@ -167,7 +166,7 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
     <ModalShell title="Transfer" onClose={onClose} busy={sending} maxWidth="max-w-md">
       <div className="space-y-4">
         {holding ? (
-          <p className="text-sm text-muted" title={held === undefined ? undefined : `${formatUnits(held, DECIMALS)} ${label}`}>
+          <p className="text-sm text-muted" title={held === undefined ? undefined : `${formatUnits(held, SHARE_DECIMALS)} ${label}`}>
             {holding}
           </p>
         ) : null}
@@ -225,7 +224,7 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
           rows={
             planTo && planCount !== undefined
               ? [
-                  { label: 'Transfer', value: `${formatUnits(planCount, DECIMALS)} ${label}`, strong: true },
+                  { label: 'Transfer', value: `${formatUnits(planCount, SHARE_DECIMALS)} ${label}`, strong: true },
                   { label: 'To', value: planTo, mono: true },
                   { label: 'On', value: chainName(chainId) },
                 ]

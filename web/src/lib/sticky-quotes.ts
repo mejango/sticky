@@ -7,7 +7,7 @@
 
 import { cashOutProtocolFee } from '@bananapus/nana-sdk-core/v6'
 import { encodeFunctionData, type Address, type Hex } from 'viem'
-import { untilAborted } from '@/lib/hook-logs'
+import { asked } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { feelessAddressesAbi, stickyHookAbi, terminalAbi } from '@/lib/sticky-abis'
 import { stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
@@ -31,18 +31,6 @@ const HOOK_LIST_AT = 384n
 
 /** The `index`th 32-byte word of an answer. */
 const word = (data: Hex, index: number) => BigInt(`0x${data.slice(2 + index * 64, 2 + (index + 1) * 64)}`)
-
-/** What `work` gives, or an error that names `what` and keeps the cause. A signal that has aborted stops it before it
- * starts, and its reason, like any it aborts with, is the caller's own and goes through as it is. */
-export async function asked<T>(what: string, work: () => Promise<T>, signal: AbortSignal | undefined): Promise<T> {
-  try {
-    if (signal?.aborted) throw signal.reason
-    return await untilAborted(work(), signal)
-  } catch (cause) {
-    if (signal?.aborted) throw cause
-    throw new Error(`${what} could not be read.`, { cause })
-  }
-}
 
 /** The raw answer of a preview asked as `account`, which a read through Multicall3 cannot do: there the terminal sees
  * Multicall3 as its caller. Both previews depend on the caller: a stick's on the payer the hook must trust, and an
