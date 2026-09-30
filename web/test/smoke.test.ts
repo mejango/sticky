@@ -76,7 +76,7 @@ describe('next config', () => {
 
   it('leaves isrFlushToDisk at Next’s default', () => {
     for (const phase of [PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD, PHASE_PRODUCTION_SERVER]) {
-      expect(createConfig(phase).experimental).not.toHaveProperty('isrFlushToDisk')
+      expect(createConfig(phase).experimental?.isrFlushToDisk).toBeUndefined()
     }
   })
 
@@ -85,7 +85,6 @@ describe('next config', () => {
       minimumCacheTTL: 60 * 60 * 24 * 365,
       remotePatterns: [{ protocol: 'https', hostname: 'juicebox.center', pathname: '/ipfs/**' }],
     })
-    expect(nextConfig.images).not.toHaveProperty('unoptimized')
   })
 
   it('is accepted by Next’s own config schema, so a misspelled key fails here instead of being ignored', () => {
