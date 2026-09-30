@@ -4,9 +4,12 @@ import type { ScannedLog } from '@/lib/hook-logs'
 import { terminalEventsAbi } from '@/lib/sticky-abis'
 import type { StickyEvent } from '@/lib/sticky-events'
 import {
+  FEED_WINDOW,
   airdropEvents,
   airdropRows,
   feedRows,
+  moveAmounts,
+  moveEvents,
   moveKey,
   terminalMoves,
   type FeedAmount,
@@ -18,10 +21,10 @@ import {
 import type { IndexedMove } from '@/lib/sticky-indexed'
 import { CHAIN, deployment, HOLDER, raw, topic, words } from './sticky-log-fixtures'
 
-// Ported from the old client's test/feed-amounts.test.cjs: rows in place of the HTML it rendered, and
-// StickyEvents in place of the hook logs it decoded. Every read goes through the readers a call is given, so
-// nothing here reaches Bendystraw or Center; the default reads have tests of their own in
-// sticky-feed-center.test.ts.
+// Ported from the old client's test/feed-amounts.test.cjs and, for the feed built from Bendystraw's pays and cash
+// outs, test/bendystraw.test.cjs: rows in place of the HTML it rendered, and StickyEvents in place of the hook logs it
+// decoded. Every read goes through the readers a call is given, so nothing here reaches Bendystraw or Center; the
+// default reads have tests of their own in sticky-feed-center.test.ts and sticky-feed-bendystraw.test.ts.
 
 // A read that fails tells the console why. The tests that care read what it said.
 beforeEach(() => {
@@ -119,7 +122,7 @@ function cashOutLog(
 }
 
 // Bendystraw's pays and cash outs. A pay's holder is its beneficiary and its `tokens` are the shares it issued.
-type IndexedAt = { chainId?: number; projectId?: bigint }
+type IndexedAt = { chainId?: number; projectId?: bigint; timestamp?: number; logIndex?: number }
 const indexedStick = (
   holder: Address,
   payer: Address,
@@ -176,14 +179,24 @@ function readers({ terminal = [], moves = [] }: Spec = {}) {
 
 const slop = (value: bigint): FeedAmount => ({ value, decimals: 6, symbol: 'SLOPSHOP' })
 const shares = (value: bigint): FeedAmount => ({ value, decimals: 18, symbol: 'STICKYSLOPSHOP' })
-/** The row the events of transaction `short`, at time 100 on the test chain and project, make. */
+/** The row the events of transaction `short`, at time 100 and log index 0 on the test chain and project, make. */
 const row = (
   short: string,
   direction: FeedRow['direction'],
   amount: FeedRow['amount'],
   line: FeedLine,
-  extra: Partial<Pick<FeedRow, 'chainId' | 'projectId' | 'timestamp'>> = {},
-): FeedRow => ({ chainId: CHAIN, projectId: 42n, timestamp: 100, txHash: tx(short), direction, amount, line, ...extra })
+  extra: Partial<Pick<FeedRow, 'chainId' | 'projectId' | 'timestamp' | 'logIndex'>> = {},
+): FeedRow => ({
+  chainId: CHAIN,
+  projectId: 42n,
+  timestamp: 100,
+  logIndex: 0,
+  txHash: tx(short),
+  direction,
+  amount,
+  line,
+  ...extra,
+})
 
 /** The rows a page shows for `events`, reading their amounts as it would. */
 async function rowsFor(events: StickyEvent[], spec?: Spec) {
@@ -236,11 +249,14 @@ describe('sticks and unsticks', () => {
   })
 
   it('in a transfer between holders move no underlying tokens and keep their Sticky token count', async () => {
-    const events = [unstick(HOLDER, 10n * E18, 90n * E18, 'b1'), stick(RECIPIENT, HOLDER, 10n * E18, 'b1')]
+    const events = [
+      unstick(HOLDER, 10n * E18, 90n * E18, 'b1', { logIndex: 1 }),
+      stick(RECIPIENT, HOLDER, 10n * E18, 'b1', { logIndex: 2 }),
+    ]
 
     expect(await rowsFor(events)).toStrictEqual([
-      row('b1', 'in', shares(10n * E18), { kind: 'gift', holder: RECIPIENT, payer: HOLDER }),
-      row('b1', 'out', shares(10n * E18), { kind: 'removed', holder: HOLDER }),
+      row('b1', 'in', shares(10n * E18), { kind: 'gift', holder: RECIPIENT, payer: HOLDER }, { logIndex: 2 }),
+      row('b1', 'out', shares(10n * E18), { kind: 'removed', holder: HOLDER }, { logIndex: 1 }),
     ])
   })
 
@@ -314,12 +330,12 @@ describe('sticks and unsticks', () => {
 describe('a streak', () => {
   it('that starts or ends in a stick or unstick transaction reads on that row', async () => {
     const events = [
-      stick(HOLDER, HOLDER, 10n * E18, 'e1'),
-      streakStart(HOLDER, 'e1', { txHash: cased('e1') }),
+      stick(HOLDER, HOLDER, 10n * E18, 'e1', { logIndex: 1 }),
+      streakStart(HOLDER, 'e1', { txHash: cased('e1'), logIndex: 2 }),
       // Another holder's streak in the same transaction keeps its own row.
-      streakStart(RECIPIENT, 'e1'),
-      unstick(HOLDER, 10n * E18, 0n, 'e2'),
-      streakEnd(HOLDER, 86_400n, 'e2'),
+      streakStart(RECIPIENT, 'e1', { logIndex: 3 }),
+      unstick(HOLDER, 10n * E18, 0n, 'e2', { logIndex: 4 }),
+      streakEnd(HOLDER, 86_400n, 'e2', { logIndex: 5 }),
     ]
 
     const rows = await rowsFor(events)
@@ -328,30 +344,36 @@ describe('a streak', () => {
     expect(rows[0]).toMatchObject({ line: { kind: 'removed', holder: HOLDER, streak: { endedAfter: 86_400n } } })
     expect(rows[1]).toMatchObject({ line: { kind: 'gotSticky', holder: RECIPIENT } })
     expect(rows[2]).toMatchObject({ line: { kind: 'stuck', holder: HOLDER, streak: 'started' } })
+    // A folded row is the stick or unstick's, so it has that log's index.
     expect(rows).toStrictEqual([
-      row('e2', 'out', shares(10n * E18), { kind: 'removed', holder: HOLDER, streak: { endedAfter: 86_400n } }),
-      row('e1', null, null, { kind: 'gotSticky', holder: RECIPIENT }),
-      row('e1', 'in', shares(10n * E18), { kind: 'stuck', holder: HOLDER, streak: 'started' }),
+      row(
+        'e2',
+        'out',
+        shares(10n * E18),
+        { kind: 'removed', holder: HOLDER, streak: { endedAfter: 86_400n } },
+        { logIndex: 4 },
+      ),
+      row('e1', null, null, { kind: 'gotSticky', holder: RECIPIENT }, { logIndex: 3 }),
+      row('e1', 'in', shares(10n * E18), { kind: 'stuck', holder: HOLDER, streak: 'started' }, { logIndex: 1 }),
     ])
   })
 
-  it('reads on its stick whichever of the two the events list first', async () => {
+  it.each<[string, StickyEvent[], number]>([
     // The hook emits a streak just before the stick or unstick that causes it. A source may list them either way.
-    const before = [streakStart(HOLDER, 'e3'), stick(HOLDER, HOLDER, 1n, 'e3')]
-    const after = [stick(HOLDER, HOLDER, 1n, 'e3'), streakStart(HOLDER, 'e3')]
-    for (const events of [before, after]) {
-      expect(await rowsFor(events)).toStrictEqual([
-        row('e3', 'in', shares(1n), { kind: 'stuck', holder: HOLDER, streak: 'started' }),
-      ])
-    }
+    ['before it', [streakStart(HOLDER, 'e3', { logIndex: 1 }), stick(HOLDER, HOLDER, 1n, 'e3', { logIndex: 2 })], 2],
+    ['after it', [stick(HOLDER, HOLDER, 1n, 'e3', { logIndex: 1 }), streakStart(HOLDER, 'e3', { logIndex: 2 })], 1],
+  ])('reads on its stick when the events list it %s', async (_when, events, logIndex) => {
+    expect(await rowsFor(events)).toStrictEqual([
+      row('e3', 'in', shares(1n), { kind: 'stuck', holder: HOLDER, streak: 'started' }, { logIndex }),
+    ])
   })
 
   it('reads on the row of an underlying amount, and on a gift', async () => {
     const events = [
-      stick(RECIPIENT, FUNDER, 5n * E18, 'e4'),
-      streakStart(RECIPIENT, 'e4'),
-      unstick(HOLDER, 100n * E18, 0n, 'e5'),
-      streakEnd(HOLDER, 60n, 'e5'),
+      stick(RECIPIENT, FUNDER, 5n * E18, 'e4', { logIndex: 1 }),
+      streakStart(RECIPIENT, 'e4', { logIndex: 2 }),
+      unstick(HOLDER, 100n * E18, 0n, 'e5', { logIndex: 3 }),
+      streakEnd(HOLDER, 60n, 'e5', { logIndex: 4 }),
     ]
     const terminal = [
       payLog(RECIPIENT, 5n * E6, 5n * E18, tx('e4')),
@@ -359,17 +381,29 @@ describe('a streak', () => {
     ]
 
     expect(await rowsFor(events, { terminal })).toStrictEqual([
-      row('e5', 'out', slop(99n * E6), { kind: 'unstuck', holder: HOLDER, streak: { endedAfter: 60n } }),
-      row('e4', 'in', slop(5n * E6), { kind: 'gift', holder: RECIPIENT, payer: FUNDER, streak: 'started' }),
+      row(
+        'e5',
+        'out',
+        slop(99n * E6),
+        { kind: 'unstuck', holder: HOLDER, streak: { endedAfter: 60n } },
+        { logIndex: 3 },
+      ),
+      row(
+        'e4',
+        'in',
+        slop(5n * E6),
+        { kind: 'gift', holder: RECIPIENT, payer: FUNDER, streak: 'started' },
+        { logIndex: 1 },
+      ),
     ])
   })
 
   it('alone is a row of its own, with no amount and no direction', async () => {
-    const events = [streakStart(HOLDER, 'e6'), streakEnd(RECIPIENT, 3_600n, 'e7')]
+    const events = [streakStart(HOLDER, 'e6', { logIndex: 8 }), streakEnd(RECIPIENT, 3_600n, 'e7', { logIndex: 9 })]
 
     expect(await rowsFor(events)).toStrictEqual([
-      row('e7', null, null, { kind: 'cameUnstuck', holder: RECIPIENT, length: 3_600n }),
-      row('e6', null, null, { kind: 'gotSticky', holder: HOLDER }),
+      row('e7', null, null, { kind: 'cameUnstuck', holder: RECIPIENT, length: 3_600n }, { logIndex: 9 }),
+      row('e6', null, null, { kind: 'gotSticky', holder: HOLDER }, { logIndex: 8 }),
     ])
   })
 
@@ -394,47 +428,63 @@ describe('a streak', () => {
   it('goes with the unstick it ends and the stick it starts when one transaction has both', async () => {
     // A holder cashes out everything and pays in again in one transaction: the hook's events, in its order.
     const events = [
-      streakEnd(HOLDER, 500n, 'aa'),
-      unstick(HOLDER, 10n * E18, 0n, 'aa'),
-      streakStart(HOLDER, 'aa'),
-      stick(HOLDER, HOLDER, 20n * E18, 'aa'),
+      streakEnd(HOLDER, 500n, 'aa', { logIndex: 1 }),
+      unstick(HOLDER, 10n * E18, 0n, 'aa', { logIndex: 2 }),
+      streakStart(HOLDER, 'aa', { logIndex: 3 }),
+      stick(HOLDER, HOLDER, 20n * E18, 'aa', { logIndex: 4 }),
     ]
 
     expect(await rowsFor(events)).toStrictEqual([
-      row('aa', 'in', shares(20n * E18), { kind: 'stuck', holder: HOLDER, streak: 'started' }),
-      row('aa', 'out', shares(10n * E18), { kind: 'removed', holder: HOLDER, streak: { endedAfter: 500n } }),
+      row('aa', 'in', shares(20n * E18), { kind: 'stuck', holder: HOLDER, streak: 'started' }, { logIndex: 4 }),
+      row(
+        'aa',
+        'out',
+        shares(10n * E18),
+        { kind: 'removed', holder: HOLDER, streak: { endedAfter: 500n } },
+        { logIndex: 2 },
+      ),
     ])
   })
 
   it('that ends after a partial unstick goes with the unstick that ended it', async () => {
     const events = [
-      unstick(HOLDER, 1n * E18, 9n * E18, 'ab'),
-      streakEnd(HOLDER, 500n, 'ab'),
-      unstick(HOLDER, 9n * E18, 0n, 'ab'),
+      unstick(HOLDER, 1n * E18, 9n * E18, 'ab', { logIndex: 1 }),
+      streakEnd(HOLDER, 500n, 'ab', { logIndex: 2 }),
+      unstick(HOLDER, 9n * E18, 0n, 'ab', { logIndex: 3 }),
     ]
 
     expect(await rowsFor(events)).toStrictEqual([
-      row('ab', 'out', shares(9n * E18), { kind: 'removed', holder: HOLDER, streak: { endedAfter: 500n } }),
-      row('ab', 'out', shares(1n * E18), { kind: 'removed', holder: HOLDER }),
+      row(
+        'ab',
+        'out',
+        shares(9n * E18),
+        { kind: 'removed', holder: HOLDER, streak: { endedAfter: 500n } },
+        { logIndex: 3 },
+      ),
+      row('ab', 'out', shares(1n * E18), { kind: 'removed', holder: HOLDER }, { logIndex: 1 }),
     ])
   })
 
   it('that starts with the first of two sticks goes with that one only', async () => {
-    const events = [streakStart(HOLDER, 'ac'), stick(HOLDER, HOLDER, 1n, 'ac'), stick(HOLDER, HOLDER, 2n, 'ac')]
+    const events = [
+      streakStart(HOLDER, 'ac', { logIndex: 1 }),
+      stick(HOLDER, HOLDER, 1n, 'ac', { logIndex: 2 }),
+      stick(HOLDER, HOLDER, 2n, 'ac', { logIndex: 3 }),
+    ]
 
     expect(await rowsFor(events)).toStrictEqual([
-      row('ac', 'in', shares(2n), { kind: 'stuck', holder: HOLDER }),
-      row('ac', 'in', shares(1n), { kind: 'stuck', holder: HOLDER, streak: 'started' }),
+      row('ac', 'in', shares(2n), { kind: 'stuck', holder: HOLDER }, { logIndex: 3 }),
+      row('ac', 'in', shares(1n), { kind: 'stuck', holder: HOLDER, streak: 'started' }, { logIndex: 2 }),
     ])
   })
 
   it('with no stick or unstick of its kind in its transaction keeps a row of its own', async () => {
     // A start beside an unstick, which the hook never emits: the row that says it happened is not lost.
-    const events = [unstick(HOLDER, 1n, 0n, 'ad'), streakStart(HOLDER, 'ad')]
+    const events = [unstick(HOLDER, 1n, 0n, 'ad', { logIndex: 1 }), streakStart(HOLDER, 'ad', { logIndex: 2 })]
 
     expect(await rowsFor(events)).toStrictEqual([
-      row('ad', null, null, { kind: 'gotSticky', holder: HOLDER }),
-      row('ad', 'out', shares(1n), { kind: 'removed', holder: HOLDER }),
+      row('ad', null, null, { kind: 'gotSticky', holder: HOLDER }, { logIndex: 2 }),
+      row('ad', 'out', shares(1n), { kind: 'removed', holder: HOLDER }, { logIndex: 1 }),
     ])
   })
 })
@@ -453,6 +503,7 @@ describe('feedRows', () => {
 
     expect(rows.map(({ line }) => line.holder)).toEqual([FUNDER, HOLDER, RECIPIENT])
     expect(rows[1].line).toEqual({ kind: 'stuck', holder: HOLDER, streak: 'started' })
+    expect(rows[1].logIndex).toBe(0)
   })
 
   it('leaves the list of events it was given as it was', () => {
@@ -561,6 +612,95 @@ describe('feedRows', () => {
   })
 })
 
+describe('a row', () => {
+  const key = ({ chainId, txHash, logIndex }: FeedRow) => `${chainId}:${txHash}:${logIndex}`
+
+  it('has a key of its own: two sticks by one holder in one transaction differ by their log index', async () => {
+    const events = [
+      stick(HOLDER, HOLDER, 3n, 'f0', { logIndex: 6 }),
+      stick(HOLDER, HOLDER, 3n, 'f0', { logIndex: 9 }),
+      unstick(HOLDER, 3n, 3n, 'f0', { logIndex: 11 }),
+    ]
+
+    const rows = await rowsFor(events)
+
+    expect(rows.map(({ direction, amount }) => [direction, amount?.value])).toEqual([
+      ['out', 3n],
+      ['in', 3n],
+      ['in', 3n],
+    ])
+    expect(rows.map(({ logIndex }) => logIndex)).toEqual([11, 9, 6])
+    expect(new Set(rows.map(key)).size).toBe(rows.length)
+  })
+
+  it("is the stick or unstick's log when a streak folds into it, and the streak's own when it stands alone", () => {
+    const events = [
+      streakStart(HOLDER, 'f1', { logIndex: 4 }),
+      stick(HOLDER, HOLDER, 1n, 'f1', { logIndex: 5 }),
+      streakEnd(RECIPIENT, 60n, 'f1', { logIndex: 7 }),
+    ]
+
+    expect(feedRows(events, new Map(), options).map(({ line, logIndex }) => [line.kind, logIndex])).toEqual([
+      ['cameUnstuck', 7],
+      ['stuck', 5],
+    ])
+  })
+
+  it('keeps the log index of a Bendystraw pay or cash out on the row it makes', () => {
+    const moves = [
+      indexedStick(HOLDER, HOLDER, 5n, 50n, tx('f2'), { logIndex: 31 }),
+      indexedCashOut(HOLDER, 4n, 40n, tx('f2'), { logIndex: 38 }),
+    ]
+
+    expect(feedRows(moveEvents(moves), moveAmounts(moves), options).map(({ logIndex }) => logIndex)).toEqual([38, 31])
+  })
+})
+
+describe('a folded streak', () => {
+  it("is typed by the line it is on: a start on a stick, an end on an unstick", () => {
+    // tsc checks these directives: an unused one is an error, so the types cannot allow what they name.
+    const lines: FeedLine[] = [
+      { kind: 'stuck', holder: HOLDER, streak: 'started' },
+      { kind: 'autoStuck', holder: HOLDER, streak: 'started' },
+      { kind: 'gift', holder: HOLDER, payer: FUNDER, streak: 'started' },
+      { kind: 'unstuck', holder: HOLDER, streak: { endedAfter: 1n } },
+      { kind: 'removed', holder: HOLDER, streak: { endedAfter: 1n } },
+      // @ts-expect-error a stick cannot have ended a streak
+      { kind: 'stuck', holder: HOLDER, streak: { endedAfter: 1n } },
+      // @ts-expect-error nor an autoStuck
+      { kind: 'autoStuck', holder: HOLDER, streak: { endedAfter: 1n } },
+      // @ts-expect-error nor a gift
+      { kind: 'gift', holder: HOLDER, payer: FUNDER, streak: { endedAfter: 1n } },
+      // @ts-expect-error an unstick cannot have started one
+      { kind: 'unstuck', holder: HOLDER, streak: 'started' },
+      // @ts-expect-error nor a removal
+      { kind: 'removed', holder: HOLDER, streak: 'started' },
+      // @ts-expect-error a streak alone has no streak to fold
+      { kind: 'gotSticky', holder: HOLDER, streak: 'started' },
+    ]
+    expect(lines).toHaveLength(11)
+  })
+
+  it('only ever comes out of feedRows as a start on a stick and an end on an unstick', async () => {
+    const events = [
+      streakEnd(HOLDER, 500n, 'f3', { logIndex: 1 }),
+      unstick(HOLDER, 1n, 0n, 'f3', { logIndex: 2 }),
+      streakStart(HOLDER, 'f3', { logIndex: 3 }),
+      stick(HOLDER, HOLDER, 2n, 'f3', { logIndex: 4 }),
+      streakStart(RECIPIENT, 'f4', { logIndex: 5 }),
+      stick(RECIPIENT, FUNDER, 2n, 'f4', { logIndex: 6 }),
+    ]
+
+    const lines = (await rowsFor(events)).map(({ line }) => line)
+
+    expect(lines.map(line => ('streak' in line ? [line.kind, line.streak] : [line.kind]))).toEqual([
+      ['gift', 'started'],
+      ['stuck', 'started'],
+      ['removed', { endedAfter: 500n }],
+    ])
+  })
+})
+
 describe('airdrops', () => {
   it("are the sticks someone else paid for, newest first, without the auto-stick adapter's compounding", async () => {
     const feed = { ...options, adapter: ADAPTER }
@@ -581,22 +721,240 @@ describe('airdrops', () => {
   })
 
   it("count a transfer's stake, which its sender paid for, with its Sticky token count", async () => {
-    const events = [unstick(HOLDER, 10n * E18, 0n, 'd5'), stick(RECIPIENT, HOLDER, 10n * E18, 'd5')]
+    const events = [
+      unstick(HOLDER, 10n * E18, 0n, 'd5', { logIndex: 1 }),
+      stick(RECIPIENT, HOLDER, 10n * E18, 'd5', { logIndex: 2 }),
+    ]
 
     expect(airdropRows(events, await terminalMoves(events, readers()), options)).toStrictEqual([
-      row('d5', 'in', shares(10n * E18), { kind: 'gift', holder: RECIPIENT, payer: HOLDER }),
+      row('d5', 'in', shares(10n * E18), { kind: 'gift', holder: RECIPIENT, payer: HOLDER }, { logIndex: 2 }),
     ])
   })
 
   it('are their sticks only: the streak a gift started stays on the Latest row', () => {
-    const events = [stick(RECIPIENT, FUNDER, 1n, 'd6'), streakStart(RECIPIENT, 'd6')]
+    const events = [
+      streakStart(RECIPIENT, 'd6', { logIndex: 1 }),
+      stick(RECIPIENT, FUNDER, 1n, 'd6', { logIndex: 2 }),
+    ]
 
     expect(airdropRows(events, new Map(), options)).toStrictEqual([
-      row('d6', 'in', shares(1n), { kind: 'gift', holder: RECIPIENT, payer: FUNDER }),
+      row('d6', 'in', shares(1n), { kind: 'gift', holder: RECIPIENT, payer: FUNDER }, { logIndex: 2 }),
     ])
     expect(feedRows(events, new Map(), options)).toStrictEqual([
-      row('d6', 'in', shares(1n), { kind: 'gift', holder: RECIPIENT, payer: FUNDER, streak: 'started' }),
+      row(
+        'd6',
+        'in',
+        shares(1n),
+        { kind: 'gift', holder: RECIPIENT, payer: FUNDER, streak: 'started' },
+        { logIndex: 2 },
+      ),
     ])
+  })
+})
+
+// Until Bendystraw indexes the hook's events, its pays and cash outs are the only indexed source of a feed: a stick is
+// a pay, an unstick a cash out, and both amounts are in the rows themselves. These are the old client's
+// indexedActivityItems and indexedAirdropItems, which showed the newest 40 events and the newest 40 airdrops.
+describe("a feed built from Bendystraw's pays and cash outs", () => {
+  const AUTO = `0x${'5'.repeat(40)}` as Address
+  /** The old test's beneficiary of a pay that FUNDER made: FUNDER with its first digit changed. */
+  const GIVEN = `0xc${'b'.repeat(39)}` as Address
+  const USDC = { symbol: 'USDC', stSymbol: 'stUSDC', decimals: 6 }
+  const feed: FeedOptions = { adapter: AUTO, tokens: () => USDC }
+  const usdc = (value: bigint): FeedAmount => ({ value, decimals: 6, symbol: 'USDC' })
+  const on84532 = { chainId: 84532, projectId: 37n }
+  const at = (timestamp: number, logIndex = 1) => ({ ...on84532, timestamp, logIndex })
+  /** The feed a home page shows for a chain's moves: the newest window of events, and of airdrops. */
+  const homeFeed = (moves: IndexedMove[], forChain: FeedOptions = feed) => {
+    const events = moveEvents(moves)
+    const amounts = moveAmounts(moves)
+    return {
+      activity: feedRows(events.slice(-FEED_WINDOW), amounts, forChain),
+      airdrops: airdropRows(airdropEvents(events, forChain).slice(-FEED_WINDOW), amounts, forChain),
+    }
+  }
+  const at84532 = (
+    short: string,
+    timestamp: number,
+    direction: FeedRow['direction'],
+    amount: FeedAmount,
+    line: FeedLine,
+  ) => row(short, direction, amount, line, { chainId: 84532, projectId: 37n, timestamp, logIndex: 1 })
+
+  it('lists sticks and unsticks with the underlying amounts, and a stick someone else paid for as an airdrop', () => {
+    const pays = [
+      indexedStick(HOLDER, HOLDER, 5n, 50n, tx('1'), at(10)),
+      indexedStick(GIVEN, FUNDER, 1n, 10n, tx('2'), at(11)),
+      indexedStick(FUNDER, FUNDER, 1n, 10n, tx('3'), at(12)),
+    ]
+    const cashOuts = [indexedCashOut(FUNDER, 1n, 10n, tx('4'), at(13))]
+
+    const { activity, airdrops } = homeFeed([...pays, ...cashOuts])
+
+    expect(activity).toHaveLength(4)
+    // Amounts are the underlying tokens: what each pay brought in and each cash out reclaimed, not Sticky tokens.
+    expect(activity[0]).toMatchObject({ amount: usdc(1n), direction: 'out', line: { kind: 'unstuck', holder: FUNDER } })
+    expect(activity[3]).toMatchObject({ amount: usdc(5n), direction: 'in', line: { kind: 'stuck', holder: HOLDER } })
+    expect(airdrops).toHaveLength(1)
+    expect(airdrops[0]).toMatchObject({
+      amount: usdc(1n),
+      direction: 'in',
+      line: { kind: 'gift', holder: GIVEN, payer: FUNDER },
+    })
+    expect(activity).toStrictEqual([
+      at84532('4', 13, 'out', usdc(1n), { kind: 'unstuck', holder: FUNDER }),
+      at84532('3', 12, 'in', usdc(1n), { kind: 'stuck', holder: FUNDER }),
+      at84532('2', 11, 'in', usdc(1n), { kind: 'gift', holder: GIVEN, payer: FUNDER }),
+      at84532('1', 10, 'in', usdc(5n), { kind: 'stuck', holder: HOLDER }),
+    ])
+    expect(airdrops).toStrictEqual([at84532('2', 11, 'in', usdc(1n), { kind: 'gift', holder: GIVEN, payer: FUNDER })])
+  })
+
+  it('reads a stick the auto-stick adapter paid as auto-stuck, and leaves it out of the airdrops', () => {
+    const moves = [
+      indexedStick(HOLDER, AUTO, 3n, 30n, tx('5'), at(20)),
+      indexedStick(GIVEN, FUNDER, 1n, 10n, tx('6'), at(21)),
+    ]
+
+    const { activity, airdrops } = homeFeed(moves)
+
+    expect(activity.map(({ line }) => line)).toEqual([
+      { kind: 'gift', holder: GIVEN, payer: FUNDER },
+      { kind: 'autoStuck', holder: HOLDER },
+    ])
+    expect(airdrops.map(({ line }) => line)).toEqual([{ kind: 'gift', holder: GIVEN, payer: FUNDER }])
+    // Where a chain has no adapter, the same stick is a gift from whoever paid.
+    expect(homeFeed(moves, { ...feed, adapter: null }).airdrops).toHaveLength(2)
+  })
+
+  it('shows the underlying token in its own decimals and symbol, for a stick and for an unstick', () => {
+    const moves = [
+      indexedStick(HOLDER, HOLDER, 1010n * E6, 1000n * E18, tx('7'), at(30)),
+      indexedCashOut(HOLDER, 99n * E6, 100n * E18, tx('8'), at(31)),
+    ]
+
+    const { activity } = homeFeed(moves, options)
+
+    expect(activity.map(({ amount }) => amount)).toEqual([slop(99n * E6), slop(1010n * E6)])
+  })
+
+  it('shows the newest window of events, and the newest window of airdrops, which reach back further', () => {
+    // 50 gifts, then 10 sticks of a holder's own: the newest 40 events are the 10 and the newest 30 gifts, and the
+    // newest 40 airdrops are the gifts alone.
+    const gifts = Array.from({ length: 50 }, (_, n) => indexedStick(GIVEN, FUNDER, 1n, 10n, tx(`a${n}`), at(100 + n)))
+    const own = Array.from({ length: 10 }, (_, n) => indexedStick(HOLDER, HOLDER, 1n, 10n, tx(`b${n}`), at(200 + n)))
+
+    const { activity, airdrops } = homeFeed([...gifts, ...own])
+
+    expect(FEED_WINDOW).toBe(40)
+    expect(activity).toHaveLength(FEED_WINDOW)
+    expect(activity.map(({ timestamp }) => timestamp)).toEqual([
+      ...own.map(({ timestamp }) => timestamp).reverse(),
+      ...gifts.slice(-30).map(({ timestamp }) => timestamp).reverse(),
+    ])
+    expect(airdrops).toHaveLength(FEED_WINDOW)
+    const newestGifts = gifts.slice(-FEED_WINDOW).map(({ timestamp }) => timestamp)
+    expect(airdrops.map(({ timestamp }) => timestamp)).toEqual(newestGifts.reverse())
+  })
+
+  it('leaves out the rows of a project it has no tokens for, as the old client did for another deployer\'s', () => {
+    const moves = [
+      indexedStick(HOLDER, HOLDER, 1n, 10n, tx('c1'), { ...at(40), projectId: 99n }),
+      indexedStick(HOLDER, HOLDER, 2n, 20n, tx('c2'), at(41)),
+    ]
+    const tokens = (_chainId: number, projectId: bigint) => (projectId === 37n ? USDC : undefined)
+
+    expect(homeFeed(moves, { ...feed, tokens }).activity.map(({ projectId }) => projectId)).toEqual([37n])
+  })
+
+  it('has no streak rows, and keeps a pay and a cash out of one holder in one transaction as two rows', () => {
+    const moves = [
+      indexedCashOut(HOLDER, 4n, 40n, tx('c3'), at(50, 3)),
+      indexedStick(HOLDER, HOLDER, 5n, 50n, tx('c3'), at(50, 8)),
+    ]
+
+    const { activity } = homeFeed(moves)
+
+    expect(activity.map(({ line, logIndex }) => [line.kind, logIndex])).toEqual([['stuck', 8], ['unstuck', 3]])
+  })
+
+  describe('moveEvents', () => {
+    it('makes a stick of a pay, with its payer and its shares as the count, and an unstick of a cash out', () => {
+      const pay = indexedStick(HOLDER, FUNDER, 5n, 50n, cased('d1'), { ...at(10), logIndex: 4 })
+      const cashOut = indexedCashOut(RECIPIENT, 2n, 20n, cased('d2'), { ...at(11), logIndex: 6 })
+
+      expect(moveEvents([pay, cashOut])).toStrictEqual([
+        {
+          kind: 'stick',
+          chainId: 84532,
+          projectId: 37n,
+          holder: HOLDER,
+          payer: FUNDER,
+          count: 50n,
+          txHash: tx('d1'),
+          logIndex: 4,
+          blockNumber: null,
+          timestamp: 10,
+        },
+        {
+          kind: 'unstick',
+          chainId: 84532,
+          projectId: 37n,
+          holder: RECIPIENT,
+          count: 20n,
+          txHash: tx('d2'),
+          logIndex: 6,
+          blockNumber: null,
+          timestamp: 11,
+        },
+      ])
+    })
+
+    it('keeps the order it was given, and is empty for no moves', () => {
+      const moves = [
+        indexedStick(HOLDER, HOLDER, 1n, 1n, tx('d3'), at(9)),
+        indexedCashOut(HOLDER, 1n, 1n, tx('d4'), at(3)),
+        indexedStick(HOLDER, HOLDER, 1n, 1n, tx('d5'), at(7)),
+      ]
+
+      expect(moveEvents(moves).map(({ txHash }) => txHash)).toEqual([tx('d3'), tx('d4'), tx('d5')])
+      expect(moveEvents([])).toEqual([])
+    })
+
+    it('makes events that terminalMoves asks Bendystraw about, since they have no block', async () => {
+      const moves = [indexedStick(HOLDER, HOLDER, 5n, 50n, tx('d6'), at(60))]
+      const reads = readers({ moves })
+
+      await terminalMoves(moveEvents(moves), reads)
+
+      expect(reads.indexedMoves).toHaveBeenCalledWith(84532, [37n], undefined, 60)
+      expect(reads.scan).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('moveAmounts', () => {
+    it('gives each pay and cash out its amount under the key of the event moveEvents makes of it', () => {
+      const moves = [
+        indexedStick(HOLDER, FUNDER, 5n, 50n, cased('e1'), at(10)),
+        indexedCashOut(HOLDER, 2n, 20n, cased('e2'), at(11)),
+      ]
+
+      const amounts = moveAmounts(moves)
+
+      expect(amounts.size).toBe(2)
+      const [stickEvent, unstickEvent] = moveEvents(moves)
+      expect(amounts.get(moveKey({ ...stickEvent, kind: 'stick', count: 50n }))).toBe(5n)
+      expect(amounts.get(moveKey({ ...unstickEvent, kind: 'unstick', count: 20n }))).toBe(2n)
+    })
+
+    it('is the map terminalMoves reads from Bendystraw for the same rows', async () => {
+      const moves = [
+        indexedStick(HOLDER, FUNDER, 5n, 50n, tx('e3'), at(10)),
+        indexedCashOut(HOLDER, 2n, 20n, tx('e4'), at(11)),
+      ]
+
+      expect(await terminalMoves(moveEvents(moves), readers({ moves }))).toEqual(moveAmounts(moves))
+    })
   })
 })
 
@@ -623,11 +981,11 @@ describe('moveKey', () => {
 describe('terminalMoves', () => {
   it("reads Bendystraw's pays and cash outs for the events Bendystraw indexed, and scans nothing", async () => {
     const events = [
-      stick(HOLDER, HOLDER, 1000n * E18, 'a1', { blockNumber: null }),
-      unstick(HOLDER, 100n * E18, 900n * E18, 'a3', { blockNumber: null }),
-      stick(RECIPIENT, FUNDER, 5n * E18, 'a2', { blockNumber: null }),
+      stick(HOLDER, HOLDER, 1000n * E18, 'a1', { blockNumber: null, timestamp: 100 }),
+      unstick(HOLDER, 100n * E18, 900n * E18, 'a3', { blockNumber: null, timestamp: 120 }),
+      stick(RECIPIENT, FUNDER, 5n * E18, 'a2', { blockNumber: null, timestamp: 90 }),
       // A project is asked about once, however many of its events there are.
-      stick(RECIPIENT, FUNDER, 1n, 'a4', { blockNumber: null }),
+      stick(RECIPIENT, FUNDER, 1n, 'a4', { blockNumber: null, timestamp: 95 }),
     ]
     const reads = readers({
       moves: [
@@ -643,8 +1001,9 @@ describe('terminalMoves', () => {
 
     const moves = await terminalMoves(events, { ...reads, signal })
 
+    // The read starts at the time of the oldest event, the one at 90, so it reads no older pay or cash out.
     expect(reads.indexedMoves).toHaveBeenCalledTimes(1)
-    expect(reads.indexedMoves).toHaveBeenCalledWith(CHAIN, [42n], signal)
+    expect(reads.indexedMoves).toHaveBeenCalledWith(CHAIN, [42n], signal, 90)
     expect(reads.scan).not.toHaveBeenCalled()
     expect(feedRows(events, moves, options).map(({ amount }) => amount)).toEqual([
       shares(1n),
@@ -654,7 +1013,25 @@ describe('terminalMoves', () => {
     ])
   })
 
-  it('asks Bendystraw about the events it indexed and the terminal, from its oldest block, about the rest', async () => {
+  it("starts Bendystraw's read at each chain's oldest indexed event, not at one a scan found", async () => {
+    const events = [
+      stick(HOLDER, HOLDER, 1n, 'a1', { chainId: 8453, blockNumber: null, timestamp: 500 }),
+      stick(HOLDER, HOLDER, 1n, 'a2', { chainId: 8453, blockNumber: null, timestamp: 700 }),
+      // Found by a scan, and older than both: the terminal is read for it, and it does not move the time back.
+      stick(HOLDER, HOLDER, 1n, 'a3', { chainId: 8453, blockNumber: 900n, timestamp: 100 }),
+      stick(HOLDER, HOLDER, 1n, 'a4', { chainId: 10, blockNumber: null, timestamp: 300 }),
+    ]
+    const reads = readers()
+
+    await terminalMoves(events, reads)
+
+    expect(reads.indexedMoves.mock.calls.map(([chainId, , , since]) => [chainId, since])).toEqual([
+      [8453, 500],
+      [10, 300],
+    ])
+  })
+
+  it('asks Bendystraw about the events it indexed and the terminal, from its oldest block, for the rest', async () => {
     const events = [
       // Bendystraw's rows carry no block number and a scan's do: the scan starts at the oldest of the scan's own.
       stick(HOLDER, HOLDER, 1n * E18, 'a1', { blockNumber: null }),
@@ -674,7 +1051,7 @@ describe('terminalMoves', () => {
 
     const moves = await terminalMoves(events, { ...reads, signal })
 
-    expect(reads.indexedMoves).toHaveBeenCalledWith(CHAIN, [42n], signal)
+    expect(reads.indexedMoves).toHaveBeenCalledWith(CHAIN, [42n], signal, 100)
     expect(reads.scan).toHaveBeenCalledTimes(1)
     expect(reads.scan).toHaveBeenCalledWith(
       CHAIN,

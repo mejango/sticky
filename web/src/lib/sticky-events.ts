@@ -211,7 +211,8 @@ export function decodeHookLog(log: Log, chainId: number): StickyEvent | null {
   }
 }
 
-function fromIndexedEvent(row: IndexedStickyEvent): StickyEvent {
+/** The hook event a row of Bendystraw's stickyEvents records. It has no block number: the table has no such column. */
+export function fromIndexedEvent(row: IndexedStickyEvent): StickyEvent {
   const at = {
     chainId: row.chainId,
     projectId: row.projectId,

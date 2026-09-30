@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ScannedLog } from '@/lib/hook-logs'
 import {
   decodeHookLog,
+  fromIndexedEvent,
   projectCreationBlock,
   stickyEvents,
   stickyHolderEvents,
@@ -732,6 +733,37 @@ describe('decodeHookLog', () => {
     expect(() => decodeHookLog(streakStarted(HOLDER, { ...at, time: null }), CHAIN)).toThrow(/time/)
     const pending = { ...entry, blockHash: null, blockNumber: null, logIndex: null, transactionHash: null, transactionIndex: null }
     expect(() => decodeHookLog(pending, CHAIN)).toThrow(/block/)
+  })
+})
+
+describe('fromIndexedEvent', () => {
+  const time = { txHash: `0x${'1'.repeat(64)}`, logIndex: 4, timestamp: 1_760_000_000 }
+  const place = {
+    chainId: CHAIN,
+    projectId: 23n,
+    txHash: time.txHash,
+    logIndex: 4,
+    blockNumber: null,
+    timestamp: 1_760_000_000,
+  }
+
+  it.each<[string, IndexedStickyEvent, Partial<StickyEvent>]>([
+    ['a stick', row.staked(HOLDER, OTHER, 7n, 12n, time), { kind: 'stick', holder: HOLDER, payer: OTHER, count: 7n, balance: 12n }],
+    ['an unstick', row.unstaked(HOLDER, 7n, 5n, time), { kind: 'unstick', holder: HOLDER, count: 7n, balance: 5n }],
+    ['a streak\'s start', row.streakStarted(HOLDER, time), { kind: 'streakStart', holder: HOLDER }],
+    ['a streak\'s end', row.streakEnded(HOLDER, 86_400, time), { kind: 'streakEnd', holder: HOLDER, length: 86_400n }],
+  ])('reads %s of Bendystraw\'s stickyEvents as the hook event, with no block number', (_name, indexedRow, fields) => {
+    expect(fromIndexedEvent(indexedRow)).toStrictEqual({ ...place, ...fields })
+  })
+
+  it('writes addresses and the hash in lowercase', () => {
+    const shouted = (value: string) => `0x${value.slice(2).toUpperCase()}`
+    const loud = row.staked(shouted(HOLDER) as Address, shouted(OTHER) as Address, 1n, 1n, {
+      ...time,
+      txHash: shouted(time.txHash),
+    })
+
+    expect(fromIndexedEvent(loud)).toMatchObject({ holder: HOLDER, payer: OTHER, txHash: time.txHash })
   })
 })
 

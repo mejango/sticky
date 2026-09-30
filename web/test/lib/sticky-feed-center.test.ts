@@ -162,7 +162,8 @@ describe('terminalMoves through Center', () => {
 
     const moves = await terminalMoves(events, { signal })
 
-    expect(bendystraw.moves).toHaveBeenCalledWith(CHAIN, [42n], signal)
+    // From the time of the oldest event, 100 in these tests, so no older pay or cash out is read.
+    expect(bendystraw.moves).toHaveBeenCalledWith(CHAIN, [42n], signal, 100)
     expect(center.client).not.toHaveBeenCalled()
     expect([...moves.values()]).toEqual([1010n * E6])
   })

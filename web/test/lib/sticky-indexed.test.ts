@@ -523,6 +523,98 @@ describe('sticks and unsticks', () => {
     expect((sent[0].variables.where as { projectId_in: number[] }).projectId_in).toEqual([37, 38])
   })
 
+  describe('since a time', () => {
+    const SINCE = 1_700_000_000
+
+    it('asks for the moves at or after it in the filter of both lists, and for no time otherwise', async () => {
+      const sent = indexer({
+        StickyPays: () => ({ data: { payEvents: page([]) } }),
+        StickyCashOuts: () => ({ data: { cashOutTokensEvents: page([]) } }),
+      })
+
+      await indexedStickyMoves(84532, [37n], undefined, SINCE)
+      await indexedStickyMoves(84532, [37n], undefined, 0)
+      await indexedStickyMoves(84532, [37n])
+
+      const where = (operation: string) =>
+        sent.filter(request => request.operation === operation).map(({ variables }) => variables.where)
+      const filter = { chainId: 84532, version: 6, projectId_in: [37] }
+      const asked = [{ ...filter, timestamp_gte: SINCE }, { ...filter, timestamp_gte: 0 }, filter]
+      expect(where('StickyPays')).toEqual(asked)
+      expect(where('StickyCashOuts')).toEqual(asked)
+    })
+
+    it('changes no document: each is still the text its ID is the SHA-256 of', async () => {
+      const sent = indexer({
+        StickyPays: () => ({ data: { payEvents: page([]) } }),
+        StickyCashOuts: () => ({ data: { cashOutTokensEvents: page([]) } }),
+      })
+
+      await indexedStickyMoves(84532, [37n], undefined, SINCE)
+
+      const idOf = (query: string) => createHash('sha256').update(query, 'utf8').digest('hex')
+      expect(sent.map(({ operation, query }) => [operation, idOf(query)]).sort()).toEqual([
+        ['StickyCashOuts', '80dd411715bb2f4eab91eb0549fc69c0aaf8e1252d7f251aed0d8ceecb0d233d'],
+        ['StickyPays', 'ee745e235eef8f9a5ef97616351badc4ac2f1cb3e4e596c3e158c1057e85c741'],
+      ])
+      expect(sent.every(({ query }) => !query.includes('timestamp_gte'))).toBe(true)
+    })
+
+    it('drops moves from before it, as an indexer that ignored the filter would send them, and keeps the one at it', async () => {
+      indexer({
+        StickyPays: () => ({
+          data: {
+            payEvents: page([
+              pay(37, { timestamp: SINCE - 1, txHash: tx(1) }),
+              pay(37, { timestamp: SINCE, txHash: tx(3) }),
+              pay(37, { timestamp: SINCE + 5, txHash: tx(4) }),
+            ]),
+          },
+        }),
+        StickyCashOuts: () => ({
+          data: {
+            cashOutTokensEvents: page([
+              cashOut(37, { timestamp: SINCE - 5 }),
+              cashOut(37, { timestamp: SINCE + 2, txHash: tx(5) }),
+            ]),
+          },
+        }),
+      })
+
+      const moves = await indexedStickyMoves(84532, [37n], undefined, SINCE)
+
+      expect(moves.map(({ kind, timestamp }) => [kind, timestamp])).toEqual([
+        ['stick', SINCE],
+        ['unstick', SINCE + 2],
+        ['stick', SINCE + 5],
+      ])
+    })
+
+    it('reads a time that is not a whole, non-negative number of seconds as a mistake, and asks nothing', async () => {
+      const sent = indexer({})
+
+      for (const since of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 60]) {
+        await expect(indexedStickyMoves(84532, [37n], undefined, since)).rejects.toThrow(RangeError)
+      }
+      expect(sent).toHaveLength(0)
+    })
+
+    it('reaches the indexer through the relay with the filter, which the operation contract accepts', async () => {
+      vi.stubGlobal('window', {})
+      const sent = indexer({
+        StickyPays: () => ({ data: { payEvents: page([pay(37, { timestamp: SINCE + 1 })]) } }),
+        StickyCashOuts: () => ({ data: { cashOutTokensEvents: page([]) } }),
+      })
+
+      const moves = await indexedStickyMoves(84532, [37n], undefined, SINCE)
+
+      expect(moves).toHaveLength(1)
+      expect(new Set(sent.map(({ url }) => url))).toEqual(new Set(['/api/bendystraw/testnet/query']))
+      const sentSince = sent.map(({ variables }) => (variables.where as { timestamp_gte: number }).timestamp_gte)
+      expect(sentSince).toEqual([SINCE, SINCE])
+    })
+  })
+
   it('follows the cursors of both lists', async () => {
     const sent = indexer({
       StickyPays: ({ after }) =>

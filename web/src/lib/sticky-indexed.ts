@@ -459,17 +459,31 @@ export async function indexedBlocks(network: BendystrawNetwork, signal?: AbortSi
   return (await readIndex(network, signal)).blocks
 }
 
-/** The sticks (pays) and unsticks (cash outs) of some of a chain's projects, oldest first. */
+/** A time in Unix seconds, as `timestamp_gte` takes it. */
+function unixTime(seconds: number): number {
+  if (!Number.isSafeInteger(seconds) || seconds < 0) throw new RangeError(`${seconds} is not a time in Unix seconds.`)
+  return seconds
+}
+
+/**
+ * The sticks (pays) and unsticks (cash outs) of some of a chain's projects, oldest first. `since`, in Unix seconds,
+ * asks only for those at or after it, so a feed that shows a project's newest events does not read every older one.
+ * It goes in the filter each document takes as a variable: the documents themselves do not change. A move from before
+ * it that an indexer sends anyway is dropped, like a row of another project.
+ */
 export async function indexedStickyMoves(
   chainId: number,
   projectIds: readonly bigint[],
   signal?: AbortSignal,
+  since?: number,
 ): Promise<IndexedMove[]> {
+  const from = since === undefined ? 0 : unixTime(since)
+  const time = since === undefined ? {} : { timestamp_gte: from }
   const ids = [...new Set(projectIds.map(projectNumber))]
   if (!ids.length) return []
   const scope = { chains: new Set([chainId]), projects: new Set(ids) }
   // One chain per filter: an independent projectId_in with chainId_in would match every chain's project of that ID.
-  const variables = { where: { chainId, version: VERSION, projectId_in: ids } }
+  const variables = { where: { chainId, version: VERSION, projectId_in: ids, ...time } }
   return read(signal, async within => {
     const [pays, cashOuts] = await Promise.all([
       allPages('payEvents', PAY_QUERY, variables, { chainId }, within),
@@ -478,7 +492,9 @@ export async function indexedStickyMoves(
     return [
       ...accept(pays.items, scope, payOf, 'Sticky event'),
       ...accept(cashOuts.items, scope, cashOutOf, 'Sticky event'),
-    ].sort(byTime)
+    ]
+      .filter(({ timestamp }) => timestamp >= from)
+      .sort(byTime)
   })
 }
 

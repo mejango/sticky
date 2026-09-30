@@ -195,3 +195,19 @@ Copied with JBM at `a3f7b74`. The JBM files below are unchanged between `68e1e88
 |---|---|---|---|
 | `test/healthz.test.ts` | The Task 0.5 brief's case; JBM `test/data/deployment-config.test.ts`, its `health endpoint` block | JBM a3f7b74 | The brief's `{ok, revision}` case, plus `Cache-Control: no-store` and `unknown` for an unset, an empty and a blank version. Node environment. |
 | `test/deployment-env.test.ts` | JBM `test/data/deployment-config.test.ts` (the complete build, the fixtures, the revision and the no-echo cases) | JBM a3f7b74 | Runs `check-deployment-env.mjs build` as a process, with exactly the given environment and a timeout, as the Dockerfile does, where JBM calls its functions. Each of the four required values missing; a non-HTTPS, a non-URL, a blank, a too-short and the placeholder value; the deterministic browser build and both fixture origins; the optional Signa, WalletConnect and JB Center values present, absent and empty (as an unset build argument leaves them); every problem reported at once without echoing a value. The Signa rules (ruling R37): 34 refused values, each naming its setting; no value repeated back, for any setting; accepted values, and Signa off with anything else set; and three grids of values on which the check's verdict must equal `centerWalletConfiguration`'s (issuer by audience; manifest id by revision by fee; the flag by settings that pass and settings that do not), so the two cannot drift. The start script, which stops on a fixture origin or on a Signa setting the app would leave out before it loads the app, takes the revision from Railway, and stops with neither; it runs with a timeout, so a `web/server.js` cannot block the run. And a check that the Dockerfile's `NEXT_PUBLIC_*` build arguments, in the builder and in the runner stage, are the variables the app reads (Next inlines them when it builds), with each one set from its argument; the deterministic-browser variables are the two it must not have. It stands in for a local image build (rulings R7 and R36); CI's `container-smoke` job builds the image. |
+
+## Task 1.5: same-transaction grouping
+
+Copied with JBM at `af4cf62`. `ActivityList.tsx` last changed in `c4ba01a` and the test file in `75844eb`, so the code below is the same at any JBM commit from those on.
+
+### Source files
+
+| File | Source | Source commit | Sticky edits |
+|---|---|---|---|
+| `src/lib/activity-groups.ts` | JBM `src/components/ActivityList.tsx`, `groupSameTxEvents` (line 303) | JBM af4cf62 | The key is the caller's. `groupSameTx(events, key)` is generic over `T` and calls `key(event)`, where JBM's is `<T extends BsActivityEvent>` and keys each event by its own `sameTxKey`, `${chainId}:${projectId}:${version}:${txHash}`. The body is JBM's: groups in the order their first event came, so a group sits where its first event sat, which in a newest-first list is where its newest member sat. `src/lib/sticky-feed.ts` keys by `${chainId}:${txHash}:${projectId}:${holder}`. |
+
+### Tests
+
+| File | Source | Source commit | Sticky edits |
+|---|---|---|---|
+| `test/lib/activity-groups.test.ts` | JBM `test/activity-same-tx-grouping.test.tsx`, the `groupSameTxEvents` block | JBM af4cf62 | The two cases ("folds events sharing one tx and keeps other txs separate", "keeps same-tx events apart across projects and chains") take a key function where JBM's take Bendystraw activity events. Added: a group sits where its first event sat, the list it is given is left as it was, and an empty list. |
