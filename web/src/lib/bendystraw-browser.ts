@@ -6,6 +6,7 @@ export async function requestPersistedBendystraw<T>(args: {
   contract: BendystrawOperationContract
   network: BendystrawNetwork
   query: string
+  signal?: AbortSignal
   variables: Record<string, unknown>
 }): Promise<T> {
   const operation = await bendystrawOperationId(args.query)
@@ -24,6 +25,7 @@ export async function requestPersistedBendystraw<T>(args: {
           cache: 'no-store',
         }),
       operationName: args.contract.operationName,
+      signal: args.signal,
       validateData: (value): value is T => args.contract.validateData(value),
       validateVariables: args.contract.validateVariables,
     },

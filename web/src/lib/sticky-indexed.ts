@@ -38,20 +38,24 @@ const CREATE_QUERY = `query StickyCreate($where: projectCreateEventFilter) {
   }`
 
 // The three tables below are the ones peripheralist/bendystraw#36 adds. An indexer without them answers
-// "Cannot query field", the reader rejects, and the caller scans the hook's logs instead.
+// "Cannot query field", the reader rejects, and the caller scans the hook's logs instead. Each document also
+// selects the indexing status, so its rows come with the block they are as of.
 const EVENTS_QUERY = `query StickyEvents($where: stickyEventFilter, $orderDirection: String, $limit: Int = 1000, $after: String) {
+  _meta { status }
   stickyEvents(where: $where, orderBy: "timestamp", orderDirection: $orderDirection, limit: $limit, after: $after) {
     items { chainId projectId version txHash logIndex timestamp holder type count stakedBalance payer duration }
     pageInfo { hasNextPage endCursor }
   }
 }`
 const POSITIONS_QUERY = `query StickyPositions($where: stickyPositionFilter, $after: String) {
+  _meta { status }
   stickyPositions(where: $where, orderBy: "createdAt", orderDirection: "asc", limit: 1000, after: $after) {
     items { chainId projectId version holder stakedBalance streakStartedAt longestCompletedStreak }
     pageInfo { hasNextPage endCursor }
   }
 }`
 const SETTINGS_QUERY = `query StickySettings($where: stickySettingEventFilter, $after: String) {
+  _meta { status }
   stickySettingEvents(where: $where, orderBy: "timestamp", orderDirection: "asc", limit: 1000, after: $after) {
     items { chainId projectId version txHash logIndex timestamp type account holder trusted amount caller }
     pageInfo { hasNextPage endCursor }
@@ -89,6 +93,11 @@ export type IndexedStickyEvent = Placed & { holder: Address } & (
     | { type: 'streakStarted' }
     | { type: 'streakEnded'; duration: number }
   )
+
+/** The rows of a list read, with the block each asked-about chain is indexed through, from the same answer as
+ * the rows: the first page's, which is the earliest any row is as of. A chain the index has no status for is
+ * absent from `blocks`, and its rows are left out with it, since nothing says what they are as of. */
+export type IndexedRows<T> = { rows: T[]; blocks: Map<number, bigint> }
 
 /** A holder's position in a project, as of Bendystraw's indexed block. */
 export type IndexedPosition = {
@@ -267,16 +276,23 @@ function accept<T>(items: unknown[], scope: Scope, parse: (row: Row) => T | null
 
 const byTime = (a: Placed, b: Placed) => a.timestamp - b.timestamp || a.logIndex - b.logIndex
 
-/** One read's clock. Its signal aborts with the transport's timeout error after READ_TIMEOUT_MS, with the
- * caller's reason when the caller's signal aborts, and when the read ends, so nothing the read started goes on
- * asking. */
+/** One read's clock. Its signal aborts with the caller's reason when the caller's signal aborts, when
+ * READ_TIMEOUT_MS have passed, and when the read ends, so nothing the read started goes on. The transport
+ * cancels the request under way when the signal aborts, and retries a BendystrawTimeoutError as a timeout of
+ * its own, so time running out aborts with a TimeoutError instead, and `read` turns that into the transport's
+ * error for its caller. */
 function clock(external: AbortSignal | undefined) {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(new BendystrawTimeoutError(READ_TIMEOUT_MS)), READ_TIMEOUT_MS)
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort(new DOMException(`Bendystraw did not answer within ${READ_TIMEOUT_MS} ms.`, 'TimeoutError'))
+  }, READ_TIMEOUT_MS)
   const relay = () => controller.abort(external?.reason)
   external?.addEventListener('abort', relay, { once: true })
   return {
     signal: controller.signal,
+    timedOut: () => timedOut,
     end() {
       clearTimeout(timer)
       external?.removeEventListener('abort', relay)
@@ -287,27 +303,21 @@ function clock(external: AbortSignal | undefined) {
 
 async function read<T>(external: AbortSignal | undefined, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
   if (external?.aborted) throw external.reason
-  const { signal, end } = clock(external)
+  const { signal, timedOut, end } = clock(external)
   try {
     return await work(signal)
+  } catch (error) {
+    throw timedOut() ? new BendystrawTimeoutError(READ_TIMEOUT_MS) : error
   } finally {
     end()
   }
 }
 
-/** What `work` gives, or the signal's reason the moment it aborts. Neither the transport nor the browser cancels
- * a request that is under way, so `work` is left to finish on its own, its answer or failure unheeded. */
-function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const abort = () => reject(signal.reason)
-    signal.addEventListener('abort', abort, { once: true })
-    work.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort))
-  })
-}
-
-function ask(query: string, variables: Row, options: Options, signal: AbortSignal): Promise<Row> {
-  if (signal.aborted) return Promise.reject(signal.reason)
-  return untilAborted(bendystraw<Row>(query, variables, { ...options, policy: 'live' }), signal)
+async function ask(query: string, variables: Row, options: Options, signal: AbortSignal): Promise<Row> {
+  const answer = await bendystraw<Row>(query, variables, { ...options, policy: 'live', signal })
+  // A transport that answers as it is cancelled must not hand back what the read has given up on.
+  if (signal.aborted) throw signal.reason
+  return answer
 }
 
 type Page = { items: unknown[]; hasNextPage: boolean; endCursor: unknown }
@@ -351,6 +361,46 @@ async function allPages(
   throw new Error(`Bendystraw has more ${field} than one page load reads.`)
 }
 
+/** The first page of a list field, with the whole answer. */
+async function firstPage(
+  field: string,
+  query: string,
+  variables: Row,
+  options: Options,
+  signal: AbortSignal,
+): Promise<{ items: unknown[]; first: Row }> {
+  const first = await ask(query, { ...variables, after: null }, options, signal)
+  return { items: pageOf(first, field).items, first }
+}
+
+/** The block each of `wanted` is indexed through, from an answer's `_meta { status }`. A chain the status does
+ * not list, or lists without a usable block, is left out. */
+function blocksOf(answer: Row, wanted: ReadonlySet<number>): Map<number, bigint> {
+  const status = isRow(answer._meta) ? answer._meta.status : undefined
+  if (!isRow(status)) throw new Error('Bendystraw returned no indexing status.')
+  const blocks = new Map<number, bigint>()
+  for (const entry of Object.values(status)) {
+    const chainId = isRow(entry) ? whole(entry.id) : null
+    const block = isRow(entry) && isRow(entry.block) ? whole(entry.block.number) : null
+    if (chainId !== null && block !== null && wanted.has(chainId)) blocks.set(chainId, BigInt(block))
+  }
+  return blocks
+}
+
+/** A list read's rows with the blocks of its answer. Rows of a chain without a block are left out. */
+function withBlocks<T>(
+  items: unknown[],
+  answer: Row,
+  scope: Scope,
+  parse: (row: Row) => T | null,
+  what: string,
+  order?: (a: T, b: T) => number,
+): IndexedRows<T> {
+  const blocks = blocksOf(answer, scope.chains)
+  const rows = accept(items, { ...scope, chains: new Set(blocks.keys()) }, parse, what)
+  return { rows: order ? rows.sort(order) : rows, blocks }
+}
+
 /** The chains of a network that Sticky is deployed on, with each one's deployer. */
 function deployersOn(network: BendystrawNetwork): Map<number, string> {
   const deployers = new Map<number, string>()
@@ -361,26 +411,20 @@ function deployersOn(network: BendystrawNetwork): Map<number, string> {
   return deployers
 }
 
-type Index = { blocks: Map<number, bigint>; projects: { chainId: number; projectId: bigint }[] }
+/** The Sticky projects of the chains an index covers, and the block each of those chains is indexed through. A
+ * chain absent from `blocks` is not covered, and lists no projects. */
+export type IndexedProjects = { blocks: Map<number, bigint>; projects: { chainId: number; projectId: bigint }[] }
 
-async function readIndex(network: BendystrawNetwork, external: AbortSignal | undefined): Promise<Index> {
+async function readIndex(network: BendystrawNetwork, external: AbortSignal | undefined): Promise<IndexedProjects> {
   const deployers = deployersOn(network)
   if (!deployers.size) return { blocks: new Map(), projects: [] }
   return read(external, async signal => {
     const owners = [...new Set(deployers.values())]
     const { items, first } = await allPages('projects', INDEX_QUERY, { owners }, { network }, signal)
 
-    // A chain the status does not list is left out, so a caller can tell it from a chain with no projects.
-    const blocks = new Map<number, bigint>()
-    const status = isRow(first._meta) ? first._meta.status : undefined
-    if (!isRow(status)) throw new Error('Bendystraw returned no indexing status.')
-    for (const entry of Object.values(status)) {
-      const chainId = isRow(entry) ? whole(entry.id) : null
-      const block = isRow(entry) && isRow(entry.block) ? whole(entry.block.number) : null
-      if (chainId !== null && block !== null && deployers.has(chainId)) blocks.set(chainId, BigInt(block))
-    }
-
-    const projects: Index['projects'] = []
+    // A chain the status does not list is left out of `blocks`, so a caller can tell it from a chain with no projects.
+    const blocks = blocksOf(first, new Set(deployers.keys()))
+    const projects: IndexedProjects['projects'] = []
     for (const row of items) {
       if (!isRow(row)) throw new Error('Bendystraw returned an incomplete Sticky project.')
       const chainId = Number(row.chainId)
@@ -399,22 +443,18 @@ async function readIndex(network: BendystrawNetwork, external: AbortSignal | und
 }
 
 /**
- * The Sticky projects of a network, and the lowest block among the chains the index covers. A chain's block
- * counts that chain's own blocks, so `block` bounds no single chain's tail scan: `indexedBlocks` has each
- * chain's own. A chain the index has no status for lists no projects here, and is missing from `indexedBlocks`.
- * With no covered chain at all this rejects, since an empty list would read as no projects.
+ * The Sticky projects of a network, with the block each covered chain is indexed through. A chain the index has
+ * no status for is absent from `blocks` and lists no projects here: the caller reads it from its deployment
+ * block. With no covered chain at all this rejects, since there is nothing indexed to list.
  */
-export async function indexedStickyProjects(
-  network: BendystrawNetwork,
-  signal?: AbortSignal,
-): Promise<{ block: bigint; projects: { chainId: number; projectId: bigint }[] }> {
-  const { blocks, projects } = await readIndex(network, signal)
-  if (!blocks.size) throw new Error("Bendystraw has no status for any of Sticky's chains.")
-  return { block: [...blocks.values()].reduce((low, block) => (block < low ? block : low)), projects }
+export async function indexedStickyProjects(network: BendystrawNetwork, signal?: AbortSignal): Promise<IndexedProjects> {
+  const index = await readIndex(network, signal)
+  if (!index.blocks.size) throw new Error("Bendystraw has no status for any of Sticky's chains.")
+  return index
 }
 
 /** The block each of Sticky's chains is indexed through. A chain the index has no usable status for is left
- * out. */
+ * out. It is a read of its own: a caller that also lists projects takes `blocks` from `indexedStickyProjects`. */
 export async function indexedBlocks(network: BendystrawNetwork, signal?: AbortSignal): Promise<Map<number, bigint>> {
   return (await readIndex(network, signal)).blocks
 }
@@ -489,50 +529,54 @@ function asking(q: Question) {
 }
 
 /**
- * The hook's events for a question, oldest first. `newest` asks for only that many of the newest, in one
- * request, for a feed. Rows carry no block number: the table has no such column.
+ * The hook's events for a question, oldest first, with the blocks of the chains asked about. `newest` asks for
+ * only that many of the newest, in one request, for a feed. Rows carry no block number of their own: the table
+ * has no such column.
  */
 export async function indexedStickyEvents(
   q: Question & { newest?: number },
   signal?: AbortSignal,
-): Promise<IndexedStickyEvent[]> {
+): Promise<IndexedRows<IndexedStickyEvent>> {
   const { newest } = q
   if (newest !== undefined && !(Number.isInteger(newest) && newest >= 1 && newest <= PAGE_SIZE)) {
     throw new RangeError(`Ask for between 1 and ${PAGE_SIZE} events, not ${newest}.`)
   }
   const { where, scope, options } = asking(q)
-  if (!scope.chains.size) return []
+  if (!scope.chains.size) return { rows: [], blocks: new Map() }
   return read(signal, async within => {
     const variables = { where, orderDirection: newest === undefined ? 'asc' : 'desc', limit: newest ?? PAGE_SIZE }
-    const items =
+    const { items, first } =
       newest === undefined
-        ? (await allPages('stickyEvents', EVENTS_QUERY, variables, options, within)).items
-        : pageOf(await ask(EVENTS_QUERY, { ...variables, after: null }, options, within), 'stickyEvents').items
-    return accept(items, scope, eventOf, 'Sticky event').sort(byTime)
+        ? await allPages('stickyEvents', EVENTS_QUERY, variables, options, within)
+        : await firstPage('stickyEvents', EVENTS_QUERY, variables, options, within)
+    return withBlocks(items, first, scope, eventOf, 'Sticky event', byTime)
   })
 }
 
-/** The positions a question names, in the order Bendystraw created them. */
-export async function indexedStickyPositions(q: Question, signal?: AbortSignal): Promise<IndexedPosition[]> {
+/** The positions a question names, in the order Bendystraw created them, with the blocks of the chains asked about. */
+export async function indexedStickyPositions(
+  q: Question,
+  signal?: AbortSignal,
+): Promise<IndexedRows<IndexedPosition>> {
   const { where, scope, options } = asking(q)
-  if (!scope.chains.size) return []
+  if (!scope.chains.size) return { rows: [], blocks: new Map() }
   return read(signal, async within => {
-    const { items } = await allPages('stickyPositions', POSITIONS_QUERY, { where }, options, within)
-    return accept(items, scope, positionOf, 'Sticky position')
+    const { items, first } = await allPages('stickyPositions', POSITIONS_QUERY, { where }, options, within)
+    return withBlocks(items, first, scope, positionOf, 'Sticky position')
   })
 }
 
-/** A project's granters, trusted senders and orphaned-balance exclusions, oldest first. */
+/** A project's granters, trusted senders and orphaned-balance exclusions, oldest first, with the block of its chain. */
 export async function indexedStickySettings(
   chainId: number,
   projectId: bigint,
   signal?: AbortSignal,
-): Promise<IndexedSetting[]> {
+): Promise<IndexedRows<IndexedSetting>> {
   const id = projectNumber(projectId)
   const scope = { chains: new Set([chainId]), projects: new Set([id]) }
   return read(signal, async within => {
     const where = { chainId, projectId: id, version: VERSION }
-    const { items } = await allPages('stickySettingEvents', SETTINGS_QUERY, { where }, { chainId }, within)
-    return accept(items, scope, settingOf, 'Sticky setting').sort(byTime)
+    const { items, first } = await allPages('stickySettingEvents', SETTINGS_QUERY, { where }, { chainId }, within)
+    return withBlocks(items, first, scope, settingOf, 'Sticky setting', byTime)
   })
 }

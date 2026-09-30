@@ -250,6 +250,82 @@ describe('the Bendystraw transport in the browser', () => {
   })
 })
 
+describe('the Bendystraw transport with a caller\'s signal', () => {
+  /** An indexer that never answers, and cancels a request whose signal aborts, as fetch does. */
+  function silentIndexer() {
+    const fetcher = vi.fn<typeof fetch>(
+      (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal
+          if (signal?.aborted) return reject(signal.reason)
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+        }),
+    )
+    vi.stubGlobal('fetch', fetcher)
+    return fetcher
+  }
+  const failure = (work: Promise<unknown>) => work.then(() => undefined, (error: unknown) => error)
+
+  it('cancels the request on the server with the caller\'s reason, and does not retry it', async () => {
+    vi.useFakeTimers()
+    const fetcher = silentIndexer()
+    const controller = new AbortController()
+    const reason = new Error('left the page')
+    const outcome = failure(
+      bendystraw(PROJECT, { chainId: 8453, projectId: 11 }, { signal: controller.signal }),
+    )
+    expect(fetcher).toHaveBeenCalledOnce()
+    expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(false)
+
+    controller.abort(reason)
+
+    expect(await outcome).toBe(reason)
+    expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(true)
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(fetcher).toHaveBeenCalledOnce()
+  })
+
+  it('cancels the request in the browser with the caller\'s reason, and does not retry it', async () => {
+    vi.stubGlobal('window', {})
+    const fetcher = silentIndexer()
+    const controller = new AbortController()
+    const reason = new Error('left the page')
+    const outcome = failure(
+      bendystraw(PROJECT, { chainId: 8453, projectId: 11 }, { signal: controller.signal }),
+    )
+    // The browser transport hashes the document before it asks, in real time.
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce())
+    expect(fetcher.mock.calls[0][0]).toBe('/api/bendystraw/mainnet/query')
+    expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(false)
+
+    controller.abort(reason)
+
+    expect(await outcome).toBe(reason)
+    expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(true)
+    await new Promise(resolve => setTimeout(resolve, 400))
+    expect(fetcher).toHaveBeenCalledOnce()
+  })
+
+  it('hands fetch a signal that has already aborted, so nothing goes out, in either transport', async () => {
+    const reason = new Error('left the page')
+    const controller = new AbortController()
+    controller.abort(reason)
+
+    const server = silentIndexer()
+    await expect(
+      bendystraw(PROJECT, { chainId: 8453, projectId: 11 }, { signal: controller.signal }),
+    ).rejects.toBe(reason)
+    expect(server.mock.calls.every(([, init]) => init?.signal?.aborted === true)).toBe(true)
+
+    vi.stubGlobal('window', {})
+    const browser = silentIndexer()
+    await expect(
+      bendystraw(PROJECT, { chainId: 8453, projectId: 11 }, { signal: controller.signal }),
+    ).rejects.toBe(reason)
+    expect(browser.mock.calls.every(([, init]) => init?.signal?.aborted === true)).toBe(true)
+  })
+})
+
 describe('the indexer origins', () => {
   it('come from the environment, one per network', async () => {
     vi.stubEnv('NEXT_PUBLIC_BENDYSTRAW_URL', 'https://index.example/base')

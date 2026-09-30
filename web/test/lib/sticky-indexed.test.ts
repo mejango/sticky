@@ -30,10 +30,26 @@ const tx = (n: number) => `0x${n.toString(16).padStart(64, '0')}`
 
 type Variables = Record<string, unknown>
 type Answer = { data: unknown } | { errors: { message: string }[] } | Response
-type Sent = { url: string; operation: string; query: string; variables: Variables }
+type Sent = {
+  url: string
+  operation: string
+  query: string
+  variables: Variables
+  signal: AbortSignal | null | undefined
+}
 
 const reply = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+
+/** How fetch treats a signal: a request whose signal has aborted, or aborts, rejects with the signal's reason. */
+function unlessAborted<T>(work: Promise<T>, signal: AbortSignal | null | undefined): Promise<T> {
+  if (!signal) return work
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason)
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+    work.then(resolve, reject)
+  })
+}
 
 /** Answers each document by name, as Bendystraw would, and lists what it was asked. A request for a document
  * the registry does not hold gets the relay's 400. */
@@ -41,23 +57,34 @@ function indexer(handlers: Record<string, (variables: Variables) => Answer | Pro
   const sent: Sent[] = []
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (url: string, init: RequestInit) => {
-      const body = JSON.parse(String(init.body)) as { query?: string; operation?: string; variables: Variables }
-      const query = body.query ?? (registry as Record<string, string>)[body.operation ?? '']
-      if (!query) return reply({ error: 'unknown or invalid operation' }, 400)
-      const operation = /query (\w+)/.exec(query)![1]
-      sent.push({ url, operation, query, variables: body.variables })
-      const handler = handlers[operation]
-      if (!handler) return reply({ errors: [{ message: `unexpected ${operation}` }] })
-      const answer = await handler(body.variables)
-      return answer instanceof Response ? answer : reply(answer)
-    }),
+    vi.fn((url: string, init: RequestInit) =>
+      unlessAborted(
+        (async () => {
+          const body = JSON.parse(String(init.body)) as { query?: string; operation?: string; variables: Variables }
+          const query = body.query ?? (registry as Record<string, string>)[body.operation ?? '']
+          if (!query) return reply({ error: 'unknown or invalid operation' }, 400)
+          const operation = /query (\w+)/.exec(query)![1]
+          sent.push({ url, operation, query, variables: body.variables, signal: init.signal })
+          const handler = handlers[operation]
+          if (!handler) return reply({ errors: [{ message: `unexpected ${operation}` }] })
+          const answer = await handler(body.variables)
+          return answer instanceof Response ? answer : reply(answer)
+        })(),
+        init.signal,
+      ),
+    ),
   )
   return sent
 }
 
-/** An indexer that never answers. */
-const hang = () => vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => {})))
+/** An indexer that never answers, and cancels a request whose signal aborts. */
+const hang = () => {
+  const fetcher = vi.fn((_url: string, init: RequestInit) =>
+    unlessAborted(new Promise<Response>(() => {}), init.signal),
+  )
+  vi.stubGlobal('fetch', fetcher)
+  return fetcher
+}
 
 /** How a read ended: the error it rejected with, or undefined when it resolved. */
 const failure = (work: Promise<unknown>) => work.then(() => undefined, (error: unknown) => error)
@@ -73,6 +100,14 @@ const indexOf = (
   projects: unknown[],
   next?: string,
 ) => ({ data: { _meta: { status: status(entries) }, projects: page(projects, next) } })
+
+/** The answer to a list document that also selects `_meta { status }`, with the status of `chains`. */
+const listed = (
+  field: string,
+  items: unknown[],
+  next?: string,
+  chains: [string, number, number][] = TESTNET_CHAINS,
+) => ({ data: { _meta: { status: status(chains) }, [field]: page(items, next) } })
 
 const project = (chainId: number, projectId: number, extra: Variables = {}) => ({
   chainId,
@@ -184,7 +219,7 @@ const newReaders: [string, string, string, () => Promise<unknown>][] = [
 ]
 
 describe('the network index: projects and indexed blocks', () => {
-  it('lists the Sticky projects of the chains it has a status for, and the lowest block those chains are indexed through', async () => {
+  it('lists the Sticky projects of the chains it has a status for, with the block each of those chains is indexed through', async () => {
     const sent = indexer({
       StickyIndex: () =>
         indexOf(
@@ -206,7 +241,11 @@ describe('the network index: projects and indexed blocks', () => {
     const index = await indexedStickyProjects('testnet')
 
     expect(index).toEqual({
-      block: 7n,
+      blocks: new Map([
+        [84532, 500n],
+        [11155420, 900n],
+        [11155111, 7n],
+      ]),
       projects: [
         { chainId: 84532, projectId: 37n },
         { chainId: 84532, projectId: 38n },
@@ -283,8 +322,28 @@ describe('the network index: projects and indexed blocks', () => {
       StickyIndex: () => indexOf([['ethereum', 1, 26_061_894], ['arbitrum', 42161, 509_092_274]], []),
     })
 
-    expect(await indexedStickyProjects('mainnet')).toEqual({ block: 26_061_894n, projects: [] })
+    expect(await indexedStickyProjects('mainnet')).toEqual({
+      blocks: new Map([
+        [1, 26_061_894n],
+        [42161, 509_092_274n],
+      ]),
+      projects: [],
+    })
     expect(sent.every(({ url }) => url === MAINNET)).toBe(true)
+  })
+
+  it('lists what a partly covered index has, with no block and no projects for the chain it does not cover', async () => {
+    // Ethereum is covered and Arbitrum is not, so a caller reads Arbitrum from its deployment block. A row of a
+    // chain without a status is not a Sticky project the index vouches for.
+    const sent = indexer({
+      StickyIndex: () => indexOf([['ethereum', 1, 26_061_894]], [project(1, 5), project(42161, 9)]),
+    })
+
+    const index = await indexedStickyProjects('mainnet')
+
+    expect(index).toEqual({ blocks: new Map([[1, 26_061_894n]]), projects: [{ chainId: 1, projectId: 5n }] })
+    expect(index.blocks.has(42161)).toBe(false)
+    expect(sent).toHaveLength(1)
   })
 
   it('rejects, rather than listing no projects, when the index has no status for any Sticky chain', async () => {
@@ -319,7 +378,7 @@ describe('the network index: projects and indexed blocks', () => {
     })
 
     expect(await indexedStickyProjects('testnet')).toEqual({
-      block: 500n,
+      blocks: new Map([[84532, 500n]]),
       projects: [
         { chainId: 84532, projectId: 37n },
         { chainId: 84532, projectId: 38n },
@@ -509,9 +568,9 @@ describe('sticks and unsticks', () => {
     await expect(indexedStickyMoves(84532, [37n])).rejects.toThrow('database is down')
   })
 
-  it('stops paging the other list once one fails', async () => {
+  it('stops paging the other list, and cancels its request, once one fails', async () => {
     let asked = 0
-    indexer({
+    const sent = indexer({
       StickyPays: () => ({ errors: [{ message: 'timeout' }] }),
       // Slower than the failure, so its first page arrives after the read has already been given up.
       StickyCashOuts: async () => {
@@ -525,6 +584,7 @@ describe('sticks and unsticks', () => {
     await new Promise(resolve => setTimeout(resolve, 40))
 
     expect(asked).toBe(1)
+    expect(sent.find(({ operation }) => operation === 'StickyCashOuts')?.signal?.aborted).toBe(true)
   })
 
   it.each([
@@ -591,19 +651,16 @@ describe('a project\'s creating transaction', () => {
 describe('Sticky events', () => {
   it('reads one project\'s events oldest first, of every kind, with addresses in lowercase', async () => {
     const sent = indexer({
-      StickyEvents: () => ({
-        data: {
-          stickyEvents: page([
-            streakEnded({ txHash: tx(4), logIndex: 3, timestamp: 300 }),
-            staked({ txHash: tx(1), logIndex: 5, timestamp: 100, payer: OTHER.toUpperCase().replace('0X', '0x') }),
-            unstaked({ txHash: tx(3), logIndex: 2, timestamp: 200 }),
-            streakStarted({ txHash: tx(1), logIndex: 4, timestamp: 100 }),
-          ]),
-        },
-      }),
+      StickyEvents: () =>
+        listed('stickyEvents', [
+          streakEnded({ txHash: tx(4), logIndex: 3, timestamp: 300 }),
+          staked({ txHash: tx(1), logIndex: 5, timestamp: 100, payer: OTHER.toUpperCase().replace('0X', '0x') }),
+          unstaked({ txHash: tx(3), logIndex: 2, timestamp: 200 }),
+          streakStarted({ txHash: tx(1), logIndex: 4, timestamp: 100 }),
+        ]),
     })
 
-    const events = await indexedStickyEvents({ chainId: 84532, projectId: 37n })
+    const { rows } = await indexedStickyEvents({ chainId: 84532, projectId: 37n })
 
     expect(sent[0].url).toBe(TESTNET)
     expect(sent[0].variables).toEqual({
@@ -613,7 +670,7 @@ describe('Sticky events', () => {
       after: null,
     })
     const place = { chainId: 84532, projectId: 37n, holder: HOLDER }
-    expect(events).toEqual([
+    expect(rows).toEqual([
       { ...place, type: 'streakStarted', txHash: tx(1), logIndex: 4, timestamp: 100 },
       { ...place, type: 'staked', txHash: tx(1), logIndex: 5, timestamp: 100, payer: OTHER, count: 10n, stakedBalance: 25n },
       { ...place, type: 'unstaked', txHash: tx(3), logIndex: 2, timestamp: 200, count: 4n, stakedBalance: 21n },
@@ -621,8 +678,41 @@ describe('Sticky events', () => {
     ])
   })
 
+  it('returns, with the events, the block the asked-about chains are indexed through, from the same answer', async () => {
+    const sent = indexer({ StickyEvents: () => listed('stickyEvents', [staked()]) })
+
+    const { rows, blocks } = await indexedStickyEvents({ chainId: 84532, projectId: 37n })
+
+    expect(sent).toHaveLength(1)
+    expect(rows).toHaveLength(1)
+    // Optimism Sepolia has a status too, but it was not asked about.
+    expect(blocks).toEqual(new Map([[84532, 500n]]))
+  })
+
+  it('takes a block only from a status entry that is a chain with a usable block', async () => {
+    indexer({
+      StickyEvents: () => ({
+        data: {
+          _meta: {
+            status: {
+              nothing: null,
+              text: 'up',
+              noBlock: { id: 84532 },
+              negative: { id: 84532, block: { number: -1, timestamp: 1 } },
+              textual: { id: 84532, block: { number: '500', timestamp: 1 } },
+              usable: { id: 84532, block: { number: 500, timestamp: 1 } },
+            },
+          },
+          stickyEvents: page([staked()]),
+        },
+      }),
+    })
+
+    expect((await indexedStickyEvents({ chainId: 84532, projectId: 37n })).blocks).toEqual(new Map([[84532, 500n]]))
+  })
+
   it('reads one holder\'s events on a chain', async () => {
-    const sent = indexer({ StickyEvents: () => ({ data: { stickyEvents: page([staked()]) } }) })
+    const sent = indexer({ StickyEvents: () => listed('stickyEvents', [staked()]) })
 
     await indexedStickyEvents({ chainId: 84532, holder: HOLDER.toUpperCase().replace('0X', '0x') as `0x${string}` })
 
@@ -632,20 +722,18 @@ describe('Sticky events', () => {
   it('reads the newest N events of several chains with one request, filtering on chainId_in only, and hands them over oldest first', async () => {
     const sent = indexer({
       // Newest first, as the request asked; more exist than were asked for.
-      StickyEvents: () => ({
-        data: {
-          stickyEvents: page(
-            [
-              staked({ chainId: 11155420, txHash: tx(3), timestamp: 300 }),
-              unstaked({ chainId: 84532, txHash: tx(2), timestamp: 200 }),
-            ],
-            'more',
-          ),
-        },
-      }),
+      StickyEvents: () =>
+        listed(
+          'stickyEvents',
+          [
+            staked({ chainId: 11155420, txHash: tx(3), timestamp: 300 }),
+            unstaked({ chainId: 84532, txHash: tx(2), timestamp: 200 }),
+          ],
+          'more',
+        ),
     })
 
-    const events = await indexedStickyEvents({ chainIds: [84532, 11155420], newest: 40 })
+    const { rows, blocks } = await indexedStickyEvents({ chainIds: [84532, 11155420], newest: 40 })
 
     expect(sent).toHaveLength(1)
     expect(sent[0].variables).toEqual({
@@ -657,7 +745,8 @@ describe('Sticky events', () => {
     const where = sent[0].variables.where as Variables
     expect(where).not.toHaveProperty('projectId')
     expect(where).not.toHaveProperty('projectId_in')
-    expect(events.map(({ txHash }) => txHash)).toEqual([tx(2), tx(3)])
+    expect(rows.map(({ txHash }) => txHash)).toEqual([tx(2), tx(3)])
+    expect(blocks).toEqual(new Map([[84532, 500n], [11155420, 900n]]))
   })
 
   it.each([0, -1, 1.5, 1001, Number.NaN])('refuses to ask for the newest %s events', async newest => {
@@ -667,27 +756,49 @@ describe('Sticky events', () => {
     expect(sent).toHaveLength(0)
   })
 
-  it('reads all of the events of several chains when it is not after the newest', async () => {
+  it('reads all of the events of several chains when it is not after the newest, and takes the blocks from the first page', async () => {
     const sent = indexer({
       StickyEvents: ({ after }) =>
         after === null
-          ? { data: { stickyEvents: page([staked({ timestamp: 100 })], 'e1') } }
-          : { data: { stickyEvents: page([unstaked({ timestamp: 200 })]) } },
+          ? listed('stickyEvents', [staked({ timestamp: 100 })], 'e1', [['baseSepolia', 84532, 500], ['optimismSepolia', 11155420, 900]])
+          : listed('stickyEvents', [unstaked({ timestamp: 200 })], undefined, [['baseSepolia', 84532, 640], ['optimismSepolia', 11155420, 990]]),
     })
 
-    const events = await indexedStickyEvents({ chainIds: [84532, 11155420] })
+    const { rows, blocks } = await indexedStickyEvents({ chainIds: [84532, 11155420] })
 
-    expect(events.map(({ type }) => type)).toEqual(['staked', 'unstaked'])
+    expect(rows.map(({ type }) => type)).toEqual(['staked', 'unstaked'])
     expect(sent.map(({ variables }) => [variables.limit, variables.after])).toEqual([
       [1000, null],
       [1000, 'e1'],
     ])
+    expect(blocks).toEqual(new Map([[84532, 500n], [11155420, 900n]]))
+  })
+
+  it('leaves out a chain the index has no status for, and its rows with it', async () => {
+    indexer({
+      StickyEvents: () =>
+        listed(
+          'stickyEvents',
+          [staked({ txHash: tx(1) }), staked({ chainId: 11155420, txHash: tx(2) })],
+          undefined,
+          [['baseSepolia', 84532, 500]],
+        ),
+    })
+
+    expect(await indexedStickyEvents({ chainIds: [84532, 11155420] })).toEqual({
+      rows: [expect.objectContaining({ chainId: 84532, txHash: tx(1) })],
+      blocks: new Map([[84532, 500n]]),
+    })
+
+    indexer({ StickyEvents: () => listed('stickyEvents', [staked()], undefined, [['elsewhere', 999, 1]]) })
+
+    expect(await indexedStickyEvents({ chainId: 84532, projectId: 37n })).toEqual({ rows: [], blocks: new Map() })
   })
 
   it('answers no events, and asks nothing, for no chains', async () => {
     const sent = indexer({})
 
-    expect(await indexedStickyEvents({ chainIds: [] })).toEqual([])
+    expect(await indexedStickyEvents({ chainIds: [] })).toEqual({ rows: [], blocks: new Map() })
     expect(sent).toHaveLength(0)
   })
 
@@ -713,22 +824,19 @@ describe('Sticky events', () => {
 
   it('drops rows outside the question, as an indexer that ignored the filter would send them', async () => {
     indexer({
-      StickyEvents: () => ({
-        data: {
-          stickyEvents: page([
-            staked({ txHash: tx(1) }),
-            staked({ txHash: tx(2), projectId: 99 }),
-            staked({ txHash: tx(3), chainId: 10 }),
-            staked({ txHash: tx(4), version: 5 }),
-            staked({ txHash: tx(5), holder: OTHER }),
-          ]),
-        },
-      }),
+      StickyEvents: () =>
+        listed('stickyEvents', [
+          staked({ txHash: tx(1) }),
+          staked({ txHash: tx(2), projectId: 99 }),
+          staked({ txHash: tx(3), chainId: 10 }),
+          staked({ txHash: tx(4), version: 5 }),
+          staked({ txHash: tx(5), holder: OTHER }),
+        ]),
     })
 
-    const events = await indexedStickyEvents({ chainId: 84532, projectId: 37n, holder: HOLDER as `0x${string}` })
+    const { rows } = await indexedStickyEvents({ chainId: 84532, projectId: 37n, holder: HOLDER as `0x${string}` })
 
-    expect(events.map(({ txHash }) => txHash)).toEqual([tx(1)])
+    expect(rows.map(({ txHash }) => txHash)).toEqual([tx(1)])
   })
 
   it.each([
@@ -743,14 +851,14 @@ describe('Sticky events', () => {
     ['an event with no log index', staked({ logIndex: null })],
     ['an item that is not a record', null],
   ])('rejects the whole read for %s', async (_name, row) => {
-    indexer({ StickyEvents: () => ({ data: { stickyEvents: page([staked(), row]) } }) })
+    indexer({ StickyEvents: () => listed('stickyEvents', [staked(), row]) })
 
     await expect(indexedStickyEvents({ chainId: 84532, projectId: 37n })).rejects.toThrow('incomplete Sticky event')
   })
 
   it('stops at 20 pages with an error', async () => {
     let next = 0
-    const sent = indexer({ StickyEvents: () => ({ data: { stickyEvents: page([staked()], `e${(next += 1)}`) } }) })
+    const sent = indexer({ StickyEvents: () => listed('stickyEvents', [staked()], `e${(next += 1)}`) })
 
     await expect(indexedStickyEvents({ chainId: 84532, projectId: 37n })).rejects.toThrow('more stickyEvents than one page load reads')
     expect(sent).toHaveLength(20)
@@ -758,69 +866,80 @@ describe('Sticky events', () => {
 })
 
 describe('Sticky positions', () => {
-  it('reads every position of a holder across a network\'s chains', async () => {
+  it('reads every position of a holder across a network\'s chains, with the blocks those chains are indexed through', async () => {
     const sent = indexer({
-      StickyPositions: () => ({
-        data: {
-          stickyPositions: page([
-            positionRow(),
-            positionRow({ chainId: 11155420, projectId: 5, stakedBalance: '0', streakStartedAt: null, longestCompletedStreak: 0 }),
-          ]),
-        },
-      }),
+      StickyPositions: () =>
+        listed('stickyPositions', [
+          positionRow(),
+          positionRow({ chainId: 11155420, projectId: 5, stakedBalance: '0', streakStartedAt: null, longestCompletedStreak: 0 }),
+        ]),
     })
 
-    const positions = await indexedStickyPositions({ chainIds: [84532, 11155420], holder: HOLDER as `0x${string}` })
+    const { rows, blocks } = await indexedStickyPositions({ chainIds: [84532, 11155420], holder: HOLDER as `0x${string}` })
 
     expect(sent[0].url).toBe(TESTNET)
     expect(sent[0].variables).toEqual({
       where: { version: 6, chainId_in: [84532, 11155420], holder: HOLDER },
       after: null,
     })
-    expect(positions).toEqual([
+    expect(rows).toEqual([
       { chainId: 84532, projectId: 37n, holder: HOLDER, stakedBalance: 25n, streakStartedAt: 1_700_000_000, longestCompletedStreak: 86_400 },
       { chainId: 11155420, projectId: 5n, holder: HOLDER, stakedBalance: 0n, streakStartedAt: null, longestCompletedStreak: 0 },
     ])
+    expect(blocks).toEqual(new Map([[84532, 500n], [11155420, 900n]]))
   })
 
-  it('reads every holder of one project', async () => {
+  it('reads every holder of one project, and takes the block from the first page', async () => {
     const sent = indexer({
       StickyPositions: ({ after }) =>
         after === null
-          ? { data: { stickyPositions: page([positionRow({ holder: CAROL })], 'h1') } }
-          : { data: { stickyPositions: page([positionRow()]) } },
+          ? listed('stickyPositions', [positionRow({ holder: CAROL })], 'h1', [['baseSepolia', 84532, 500]])
+          : listed('stickyPositions', [positionRow()], undefined, [['baseSepolia', 84532, 640]]),
     })
 
-    const positions = await indexedStickyPositions({ chainId: 84532, projectId: 37n })
+    const { rows, blocks } = await indexedStickyPositions({ chainId: 84532, projectId: 37n })
 
     expect(sent[0].variables.where).toEqual({ version: 6, chainId: 84532, projectId: 37 })
-    expect(positions.map(({ holder }) => holder)).toEqual([CAROL, HOLDER])
+    expect(rows.map(({ holder }) => holder)).toEqual([CAROL, HOLDER])
     expect(sent.map(({ variables }) => variables.after)).toEqual([null, 'h1'])
+    expect(blocks).toEqual(new Map([[84532, 500n]]))
+  })
+
+  it('leaves out a chain the index has no status for, and its positions with it', async () => {
+    indexer({
+      StickyPositions: () =>
+        listed('stickyPositions', [positionRow(), positionRow({ chainId: 11155420 })], undefined, [['baseSepolia', 84532, 500]]),
+    })
+
+    expect(await indexedStickyPositions({ chainIds: [84532, 11155420], holder: HOLDER as `0x${string}` })).toEqual({
+      rows: [expect.objectContaining({ chainId: 84532 })],
+      blocks: new Map([[84532, 500n]]),
+    })
   })
 
   it('refuses a question that names no chain, rather than answering for mainnet', async () => {
     const sent = indexer({})
 
     await expect(indexedStickyPositions({ holder: HOLDER as `0x${string}` })).rejects.toThrow(TypeError)
-    expect(await indexedStickyPositions({ chainIds: [], holder: HOLDER as `0x${string}` })).toEqual([])
+    expect(await indexedStickyPositions({ chainIds: [], holder: HOLDER as `0x${string}` })).toEqual({
+      rows: [],
+      blocks: new Map(),
+    })
     expect(sent).toHaveLength(0)
   })
 
   it('drops rows outside the question and rejects incomplete ones', async () => {
     indexer({
-      StickyPositions: () => ({
-        data: {
-          stickyPositions: page([
-            positionRow(),
-            positionRow({ projectId: 99 }),
-            positionRow({ holder: OTHER }),
-            positionRow({ version: 5 }),
-          ]),
-        },
-      }),
+      StickyPositions: () =>
+        listed('stickyPositions', [
+          positionRow(),
+          positionRow({ projectId: 99 }),
+          positionRow({ holder: OTHER }),
+          positionRow({ version: 5 }),
+        ]),
     })
     expect(
-      await indexedStickyPositions({ chainId: 84532, projectId: 37n, holder: HOLDER as `0x${string}` }),
+      (await indexedStickyPositions({ chainId: 84532, projectId: 37n, holder: HOLDER as `0x${string}` })).rows,
     ).toHaveLength(1)
 
     for (const extra of [
@@ -830,70 +949,81 @@ describe('Sticky positions', () => {
       { longestCompletedStreak: null },
       { holder: null },
     ]) {
-      indexer({ StickyPositions: () => ({ data: { stickyPositions: page([positionRow(extra)]) } }) })
+      indexer({ StickyPositions: () => listed('stickyPositions', [positionRow(extra)]) })
       await expect(indexedStickyPositions({ chainId: 84532, projectId: 37n })).rejects.toThrow('incomplete Sticky position')
     }
   })
 
   it('stops at 20 pages with an error', async () => {
     let next = 0
-    indexer({ StickyPositions: () => ({ data: { stickyPositions: page([positionRow()], `h${(next += 1)}`) } }) })
+    indexer({ StickyPositions: () => listed('stickyPositions', [positionRow()], `h${(next += 1)}`) })
 
     await expect(indexedStickyPositions({ chainId: 84532, projectId: 37n })).rejects.toThrow('more stickyPositions than one page load reads')
   })
 })
 
 describe('Sticky settings', () => {
-  it('reads a project\'s granters, trusted senders and orphaned-balance exclusions oldest first', async () => {
+  it('reads a project\'s granters, trusted senders and orphaned-balance exclusions oldest first, with the block of its chain', async () => {
     const sent = indexer({
-      StickySettings: () => ({
-        data: {
-          stickySettingEvents: page([
-            settingRow('orphanedBalanceExcluded', { txHash: tx(3), timestamp: 300, amount: '5000000000000000000', caller: CAROL }),
-            settingRow('trustedSenderSet', { txHash: tx(2), timestamp: 200, account: OTHER, holder: HOLDER, trusted: false }),
-            settingRow('granterSet', { txHash: tx(1), timestamp: 100, account: OTHER.toUpperCase().replace('0X', '0x'), caller: CAROL }),
-            settingRow('trustedSenderSet', { txHash: tx(2), logIndex: 0, timestamp: 200, account: OTHER, holder: HOLDER, trusted: true }),
-          ]),
-        },
-      }),
+      StickySettings: () =>
+        listed('stickySettingEvents', [
+          settingRow('orphanedBalanceExcluded', { txHash: tx(3), timestamp: 300, amount: '5000000000000000000', caller: CAROL }),
+          settingRow('trustedSenderSet', { txHash: tx(2), timestamp: 200, account: OTHER, holder: HOLDER, trusted: false }),
+          settingRow('granterSet', { txHash: tx(1), timestamp: 100, account: OTHER.toUpperCase().replace('0X', '0x'), caller: CAROL }),
+          settingRow('trustedSenderSet', { txHash: tx(2), logIndex: 0, timestamp: 200, account: OTHER, holder: HOLDER, trusted: true }),
+        ]),
     })
 
-    const settings = await indexedStickySettings(84532, 37n)
+    const { rows, blocks } = await indexedStickySettings(84532, 37n)
 
     expect(sent[0].url).toBe(TESTNET)
     expect(sent[0].variables).toEqual({ where: { chainId: 84532, projectId: 37, version: 6 }, after: null })
     const place = { chainId: 84532, projectId: 37n }
-    expect(settings).toEqual([
+    expect(rows).toEqual([
       { ...place, type: 'granterSet', txHash: tx(1), logIndex: 1, timestamp: 100, granter: OTHER, caller: CAROL },
       { ...place, type: 'trustedSenderSet', txHash: tx(2), logIndex: 0, timestamp: 200, holder: HOLDER, sender: OTHER, trusted: true },
       { ...place, type: 'trustedSenderSet', txHash: tx(2), logIndex: 1, timestamp: 200, holder: HOLDER, sender: OTHER, trusted: false },
       { ...place, type: 'orphanedBalanceExcluded', txHash: tx(3), logIndex: 1, timestamp: 300, amount: 5_000_000_000_000_000_000n, caller: CAROL },
     ])
+    expect(blocks).toEqual(new Map([[84532, 500n]]))
   })
 
-  it('drops rows for other projects, chains and versions, and follows the cursor', async () => {
+  it('drops rows for other projects, chains and versions, follows the cursor, and takes the block from the first page', async () => {
     const sent = indexer({
       StickySettings: ({ after }) =>
         after === null
-          ? {
-              data: {
-                stickySettingEvents: page(
-                  [
-                    settingRow('granterSet', { account: OTHER, caller: CAROL, txHash: tx(1) }),
-                    settingRow('granterSet', { account: OTHER, caller: CAROL, projectId: 99 }),
-                    settingRow('granterSet', { account: OTHER, caller: CAROL, chainId: 10 }),
-                  ],
-                  's1',
-                ),
-              },
-            }
-          : { data: { stickySettingEvents: page([settingRow('granterSet', { account: HOLDER, caller: CAROL, txHash: tx(2), version: 5 })]) } },
+          ? listed(
+              'stickySettingEvents',
+              [
+                settingRow('granterSet', { account: OTHER, caller: CAROL, txHash: tx(1) }),
+                settingRow('granterSet', { account: OTHER, caller: CAROL, projectId: 99 }),
+                settingRow('granterSet', { account: OTHER, caller: CAROL, chainId: 10 }),
+              ],
+              's1',
+              [['baseSepolia', 84532, 500]],
+            )
+          : listed(
+              'stickySettingEvents',
+              [settingRow('granterSet', { account: HOLDER, caller: CAROL, txHash: tx(2), version: 5 })],
+              undefined,
+              [['baseSepolia', 84532, 640]],
+            ),
     })
 
-    const settings = await indexedStickySettings(84532, 37n)
+    const { rows, blocks } = await indexedStickySettings(84532, 37n)
 
-    expect(settings.map(({ txHash }) => txHash)).toEqual([tx(1)])
+    expect(rows.map(({ txHash }) => txHash)).toEqual([tx(1)])
     expect(sent.map(({ variables }) => variables.after)).toEqual([null, 's1'])
+    expect(blocks).toEqual(new Map([[84532, 500n]]))
+  })
+
+  it('has no block, and no rows, for a chain the index has no status for', async () => {
+    indexer({
+      StickySettings: () =>
+        listed('stickySettingEvents', [settingRow('granterSet', { account: OTHER, caller: CAROL })], undefined, [['elsewhere', 999, 1]]),
+    })
+
+    expect(await indexedStickySettings(84532, 37n)).toEqual({ rows: [], blocks: new Map() })
   })
 
   it.each([
@@ -907,7 +1037,7 @@ describe('Sticky settings', () => {
     ['an exclusion with no caller', settingRow('orphanedBalanceExcluded', { amount: '5' })],
     ['a setting with a malformed hash', settingRow('granterSet', { account: OTHER, caller: CAROL, txHash: '0xabc' })],
   ])('rejects the whole read for %s', async (_name, row) => {
-    indexer({ StickySettings: () => ({ data: { stickySettingEvents: page([row]) } }) })
+    indexer({ StickySettings: () => listed('stickySettingEvents', [row]) })
 
     await expect(indexedStickySettings(84532, 37n)).rejects.toThrow('incomplete Sticky setting')
   })
@@ -915,12 +1045,21 @@ describe('Sticky settings', () => {
   it('stops at 20 pages with an error', async () => {
     let next = 0
     indexer({
-      StickySettings: () => ({
-        data: { stickySettingEvents: page([settingRow('granterSet', { account: OTHER, caller: CAROL })], `s${(next += 1)}`) },
-      }),
+      StickySettings: () =>
+        listed('stickySettingEvents', [settingRow('granterSet', { account: OTHER, caller: CAROL })], `s${(next += 1)}`),
     })
 
     await expect(indexedStickySettings(84532, 37n)).rejects.toThrow('more stickySettingEvents than one page load reads')
+  })
+})
+
+describe('the indexing status of the new documents', () => {
+  it.each(newReaders)('%s rejects an answer with no usable indexing status, never answering with rows and no block', async (_name, operation, field, read) => {
+    for (const meta of [null, { status: null }, { status: 'up' }, { status: [] }]) {
+      indexer({ [operation]: () => ({ data: { _meta: meta, [field]: page([]) } }) })
+
+      await expect(read()).rejects.toThrow('no indexing status')
+    }
   })
 })
 
@@ -982,12 +1121,34 @@ describe('the read deadline', () => {
     expect(error).toMatchObject({ timeoutMs: 8_000 })
   })
 
+  it.each(readers)('%s cancels its request when the deadline passes, and the transport does not retry it', async (_name, read) => {
+    vi.useFakeTimers()
+    const fetcher = hang()
+    const outcome = failure(read())
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(fetcher.mock.calls.length).toBeGreaterThan(0)
+    expect(fetcher.mock.calls.every(([, init]) => init.signal?.aborted === false)).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(7_000)
+
+    expect(await outcome).toBeInstanceOf(BendystrawTimeoutError)
+    expect(fetcher.mock.calls.every(([, init]) => init.signal?.aborted === true)).toBe(true)
+    // The transport retries a timeout of its own after 250 ms; a read that gave up is not one.
+    const asked = fetcher.mock.calls.length
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(fetcher).toHaveBeenCalledTimes(asked)
+  })
+
   it('counts the 8 s across all of a read\'s pages, and asks for no more once it has passed', async () => {
     vi.useFakeTimers()
-    const fetcher = vi.fn(async () => {
-      await new Promise(resolve => setTimeout(resolve, 5_000))
-      return reply({ data: { _meta: { status: status(TESTNET_CHAINS) }, projects: page([project(84532, 1)], 'more') } })
-    })
+    const fetcher = vi.fn((_url: string, init: RequestInit) =>
+      unlessAborted(
+        new Promise<Response>(resolve =>
+          setTimeout(() => resolve(reply(indexOf(TESTNET_CHAINS, [project(84532, 1)], 'more'))), 5_000),
+        ),
+        init.signal,
+      ),
+    )
     vi.stubGlobal('fetch', fetcher)
     const outcome = failure(indexedStickyProjects('testnet'))
 
@@ -1056,17 +1217,52 @@ describe('a caller\'s AbortSignal', () => {
     expect(fetcher).not.toHaveBeenCalled()
   })
 
-  it.each(readers)('%s rejects at once with the reason when the signal aborts while the indexer is silent', async (_name, read) => {
+  it.each(readers)('%s rejects at once with the reason when the signal aborts while the indexer is silent, and cancels its request', async (_name, read) => {
     vi.useFakeTimers()
-    hang()
+    const fetcher = hang()
     const controller = new AbortController()
     const outcome = failure(read(controller.signal))
     await vi.advanceTimersByTimeAsync(1_000)
+    expect(fetcher.mock.calls.length).toBeGreaterThan(0)
+    expect(fetcher.mock.calls.every(([, init]) => init.signal?.aborted === false)).toBe(true)
     const reason = new Error('left the page')
 
     controller.abort(reason)
 
     expect(await outcome).toBe(reason)
+    expect(fetcher.mock.calls.every(([, init]) => init.signal?.aborted === true)).toBe(true)
+  })
+
+  it('cancels a request from the browser transport too', async () => {
+    vi.stubGlobal('window', {})
+    const fetcher = hang()
+    const controller = new AbortController()
+    const reason = new Error('left the page')
+    const outcome = failure(indexedStickyCreateTx(84532, 37n, controller.signal))
+    // The browser transport hashes the document before it asks, in real time.
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce())
+    expect(fetcher.mock.calls[0][0]).toBe('/api/bendystraw/testnet/query')
+    expect(fetcher.mock.calls[0][1].signal?.aborted).toBe(false)
+
+    controller.abort(reason)
+
+    expect(await outcome).toBe(reason)
+    expect(fetcher.mock.calls[0][1].signal?.aborted).toBe(true)
+  })
+
+  it('does not return an answer that arrives after the signal aborted, whatever the transport did with the signal', async () => {
+    const controller = new AbortController()
+    const reason = new Error('left the page')
+    // A fetch that ignores its signal, and answers anyway.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        controller.abort(reason)
+        return reply({ data: { projectCreateEvents: { items: [{ txHash: tx(7), timestamp: 1 }] } } })
+      }),
+    )
+
+    await expect(indexedStickyCreateTx(84532, 37n, controller.signal)).rejects.toBe(reason)
   })
 
   it('rejects with the signal\'s own AbortError when it aborts with no reason', async () => {
@@ -1143,9 +1339,9 @@ describe('the documents', () => {
       StickyPays: () => ({ data: { payEvents: page([]) } }),
       StickyCashOuts: () => ({ data: { cashOutTokensEvents: page([]) } }),
       StickyCreate: () => ({ data: { projectCreateEvents: { items: [] } } }),
-      StickyEvents: () => ({ data: { stickyEvents: page([]) } }),
-      StickyPositions: () => ({ data: { stickyPositions: page([]) } }),
-      StickySettings: () => ({ data: { stickySettingEvents: page([]) } }),
+      StickyEvents: () => listed('stickyEvents', []),
+      StickyPositions: () => listed('stickyPositions', []),
+      StickySettings: () => listed('stickySettingEvents', []),
     })
     for (const [, read] of readers) await read()
     return sent
@@ -1180,6 +1376,13 @@ describe('the documents', () => {
     expect(idOf('StickyCreate')).toBe('991f63433092a9e84526f9d09ad62bcbfe172488b6872089aaacdc7c2cdae6fc')
   })
 
+  it('select the indexing status in the index and in the three new documents, and in no other', async () => {
+    const sent = await readEverything()
+
+    const withStatus = sent.filter(({ query }) => query.includes('_meta { status }')).map(({ operation }) => operation)
+    expect([...new Set(withStatus)].sort()).toEqual(['StickyEvents', 'StickyIndex', 'StickyPositions', 'StickySettings'])
+  })
+
   it('are read with the live cache policy', async () => {
     await readEverything()
 
@@ -1195,9 +1398,9 @@ describe('the documents', () => {
       StickyPays: () => ({ data: { payEvents: page([pay(37)]) } }),
       StickyCashOuts: () => ({ data: { cashOutTokensEvents: page([]) } }),
       StickyCreate: () => ({ data: { projectCreateEvents: { items: [{ txHash: tx(7), timestamp: 1 }] } } }),
-      StickyEvents: () => ({ data: { stickyEvents: page([staked()]) } }),
-      StickyPositions: () => ({ data: { stickyPositions: page([positionRow()]) } }),
-      StickySettings: () => ({ data: { stickySettingEvents: page([settingRow('granterSet', { account: OTHER, caller: CAROL })]) } }),
+      StickyEvents: () => listed('stickyEvents', [staked()]),
+      StickyPositions: () => listed('stickyPositions', [positionRow()]),
+      StickySettings: () => listed('stickySettingEvents', [settingRow('granterSet', { account: OTHER, caller: CAROL })]),
     })
 
     await indexedStickyProjects('testnet')
