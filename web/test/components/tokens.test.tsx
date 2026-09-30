@@ -60,7 +60,13 @@ vi.mock('next/link', () => ({
 vi.mock('@/hooks/useProjectMetadata', () => ({
   useProjectMetadata: () => ({ data: undefined, isPending: false, isError: false, error: null }),
 }))
-vi.mock('@/hooks/useWallet', () => ({ useWallet: () => ({ address: mocks.address }) }))
+vi.mock('@/hooks/useWallet', () => ({
+  useWallet: () => ({ address: mocks.address, isConnected: mocks.address !== undefined, isCenterWallet: false, openSignIn: vi.fn() }),
+}))
+// The Stick card's transaction engine, idle: sending has tests of its own (stick-flow.test.tsx).
+vi.mock('@/hooks/useSafeTx', () => ({
+  useSafeTx: () => ({ phase: 'idle', busy: false, error: null, hash: null, receipt: null, send: vi.fn(), reset: vi.fn() }),
+}))
 vi.mock('@/lib/ens', () => ({ ensAvailable: () => false, lookupEnsName: async () => null }))
 
 import ProjectPage from '@/app/[urn]/page'

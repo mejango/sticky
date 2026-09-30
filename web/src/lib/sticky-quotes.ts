@@ -34,7 +34,7 @@ const word = (data: Hex, index: number) => BigInt(`0x${data.slice(2 + index * 64
 
 /** What `work` gives, or an error that names `what` and keeps the cause. A signal that has aborted stops it before it
  * starts, and its reason, like any it aborts with, is the caller's own and goes through as it is. */
-async function asked<T>(what: string, work: () => Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+export async function asked<T>(what: string, work: () => Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   try {
     if (signal?.aborted) throw signal.reason
     return await untilAborted(work(), signal)

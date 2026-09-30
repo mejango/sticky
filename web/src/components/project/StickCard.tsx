@@ -1,25 +1,16 @@
 'use client'
 
-import { useState } from 'react'
-import { formatUnits } from 'viem'
+import { StickFlow } from '@/components/project/flows/StickFlow'
 import { Skeleton } from '@/components/ui/Skeleton'
-import { useStickyPosition, useStickyProject } from '@/hooks/useStickyProject'
-import { useWallet } from '@/hooks/useWallet'
-import { formatAmount } from '@/lib/sticky-format'
-import { useViewAs } from '@/lib/viewAs'
+import { useStickyProject } from '@/hooks/useStickyProject'
 
 /**
  * The Stick card: an amount of the staked token to stick and, for the viewed or connected account, what it holds of
- * that token in its wallet, a link that fills in all of it. The page only reads, so the button is closed; it reads
- * "Checking…" until this visit has read the project, since nothing is stuck on the word of a copy the browser kept.
+ * that token in its wallet, a link that fills in all of it. The button reads "Checking…" until this visit has read the
+ * project, since nothing is stuck on the word of a copy the browser kept.
  */
 export function StickCard({ chainId, projectId }: { chainId: number; projectId: number }) {
-  const { info, verified, failed } = useStickyProject(chainId, projectId)
-  const { viewAs } = useViewAs()
-  const { address } = useWallet()
-  const position = useStickyPosition(chainId, projectId, viewAs ?? address ?? null, info)
-  const [amount, setAmount] = useState('')
-  const wallet = position.data?.wallet
+  const { info } = useStickyProject(chainId, projectId)
 
   return (
     <section
@@ -29,33 +20,7 @@ export function StickCard({ chainId, projectId }: { chainId: number; projectId: 
       <h2 id="stick-title" className="mb-3.5 font-agrandir-wide text-base leading-tight">
         {info ? `Stick ${info.symbol}` : <Skeleton as="span" className="block h-5 w-[120px] rounded" />}
       </h2>
-      <div className="relative">
-        <input
-          aria-label="Amount of underlying tokens to stick"
-          inputMode="decimal"
-          placeholder="10"
-          value={amount}
-          onChange={event => setAmount(event.target.value)}
-          className="w-full rounded-[4px] border border-line bg-[#fdffff] py-1.5 pl-2 pr-16 text-ink focus:border-amber focus:outline-none"
-        />
-        <span className="absolute right-2.5 top-1/2 max-w-[60%] -translate-y-1/2 truncate text-muted">{info?.symbol}</span>
-      </div>
-      {info && wallet !== undefined ? (
-        <p className="mt-[3px] truncate text-xs text-muted">
-          <button
-            type="button"
-            title="Use full wallet balance"
-            onClick={() => setAmount(formatUnits(wallet, info.decimals))}
-            className="btn-link min-h-0 text-xs"
-          >
-            {formatAmount(wallet, info.decimals)}
-          </button>{' '}
-          {info.symbol} in wallet
-        </p>
-      ) : null}
-      <button type="button" disabled className="btn-primary mt-3 w-full px-4 py-[9px]">
-        {verified || failed ? 'Stick' : 'Checking…'}
-      </button>
+      <StickFlow chainId={chainId} projectId={projectId} />
     </section>
   )
 }

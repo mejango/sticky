@@ -47,6 +47,12 @@ vi.mock('@/lib/sticky-autostick', async importOriginal => ({
   trustedSenders: mocks.trusted,
 }))
 vi.mock('@/hooks/useWallet', () => ({ useWallet: () => ({ address: mocks.address }) }))
+// The form for sticking for someone else has a test of its own (test/components/stick-flow.test.tsx); here it is marked.
+vi.mock('@/components/project/flows/StickFlow', () => ({
+  StickFlow: (props: { chainId: number; projectId: number; forSomeoneElse?: boolean }) => (
+    <div data-stick-flow={JSON.stringify(props)} />
+  ),
+}))
 
 import { AirdropsTab } from '@/components/project/AirdropsTab'
 import { AS_STATUS, type AutoStickState } from '@/lib/sticky-autostick'
@@ -168,6 +174,23 @@ const linesOf = (pot: HTMLElement) =>
   Object.fromEntries([...pot.querySelectorAll('dt')].map(term => [term.textContent, term.nextElementSibling?.textContent]))
 const buttonsOf = (within: Element) => [...within.querySelectorAll('button')].map(button => button.textContent)
 const buttonNamed = (within: Element, label: string) => [...within.querySelectorAll('button')].find(button => button.textContent === label)!
+
+describe('sticking for someone else', () => {
+  it('is the first card of the tab, with the form that sticks for someone else', async () => {
+    await renderTab()
+
+    const card = section('stick-for-title')!
+    expect(card.querySelector('h2')?.textContent).toBe('Stick for someone else')
+    expect(card.textContent).toContain('They must trust your wallet, unless you are a trusted sender.')
+    expect(JSON.parse(card.querySelector<HTMLElement>('[data-stick-flow]')!.dataset.stickFlow!)).toEqual({
+      chainId: CHAIN,
+      projectId: 23,
+      forSomeoneElse: true,
+    })
+    expect(host.querySelector('section')).toBe(card)
+    expect(host.querySelectorAll('[data-stick-flow]')).toHaveLength(1)
+  })
+})
 
 describe('the rewards', () => {
   it('shows the round, and a card for each pot with its group, its token and its lines', async () => {

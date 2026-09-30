@@ -1,6 +1,21 @@
 {
   "version": 1,
-  "useSafeTx": {},
+  "useSafeTx": {
+    "src/components/project/flows/StickFlow.tsx": {
+      "hooks": 1,
+      "sends": 1,
+      "sendSites": [
+        {
+          "id": "stick-step",
+          "actions": [
+            "Approve the staked token for a stick",
+            "Stick",
+            "Stick for someone else"
+          ]
+        }
+      ]
+    }
+  },
   "authorityCalls": {},
   "reviewedDirectWrites": {
     "src/hooks/useSafeTx.ts": {
