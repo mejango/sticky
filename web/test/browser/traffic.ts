@@ -49,6 +49,7 @@ export async function blockExternalTraffic(context: BrowserContext) {
 
 /** How long a page must go without a request in flight to count as done reading. */
 const QUIET_MS = 750
+const SETTLE_MS = 45_000
 
 /**
  * Watches the page's requests from here on, and returns a check that waits until every read it started has
@@ -73,7 +74,9 @@ export function settling(page: Page) {
   page.on('requestfailed', finished)
   return async () => {
     try {
-      await expect.poll(() => inFlight === 0 && Date.now() - changed >= QUIET_MS).toBe(true)
+      // Until Bendystraw indexes Sticky, an account's page scans its hook history on each chain, which a slow CI
+      // runner can take well past the default 15 s to replay.
+      await expect.poll(() => inFlight === 0 && Date.now() - changed >= QUIET_MS, { timeout: SETTLE_MS }).toBe(true)
     } catch (error) {
       const busiest = [...asked].sort((a, b) => b[1] - a[1]).slice(0, 5)
       throw new Error(`The page never stopped reading. Most asked: ${JSON.stringify(busiest)}`, { cause: error })

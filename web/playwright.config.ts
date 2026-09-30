@@ -23,7 +23,7 @@ export default defineConfig({
   failOnFlakyTests: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   workers: recording ? 1 : process.env.CI ? 2 : undefined,
-  timeout: recording ? 600_000 : 60_000,
+  timeout: recording ? 600_000 : 90_000,
   expect: { timeout: recording ? 240_000 : 15_000 },
   reporter: [
     ['list'],
