@@ -1,4 +1,6 @@
 import {
+  ContractFunctionExecutionError,
+  ContractFunctionRevertedError,
   decodeFunctionData,
   encodeErrorResult,
   encodeFunctionResult,
@@ -17,6 +19,7 @@ import {
   ensTextResolverAbi,
   jbProjectHandlesAbi,
 } from '@/lib/project-handles'
+import { projectsAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import { resolveProjectHandle, type HandleReads } from '@/lib/sticky-handles'
 
@@ -179,6 +182,8 @@ describe('ENS names', () => {
 })
 
 describe('resolveProjectHandle', () => {
+  const UNREADABLE = 'A project handle could not be read; its page offers to try again.'
+
   beforeEach(() => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
   })
@@ -187,7 +192,7 @@ describe('resolveProjectHandle', () => {
   function stocked(overrides: Partial<HandleReads> = {}) {
     const reads = {
       record: vi.fn(async (_ensName: string) => '8453:42' as string | null),
-      ownerOf: vi.fn(async (_chainId: number, _projectId: number) => OWNER),
+      ownerOf: vi.fn(async (_chainId: number, _projectId: number) => OWNER as Address | null),
       claim: vi.fn(async (_chainId: number, _projectId: number, _setter: Address) => 'banny' as string | null),
       ...overrides,
     }
@@ -253,7 +258,7 @@ describe('resolveProjectHandle', () => {
   )
 
   it('names nothing for a project that does not exist, and asks for no claim', async () => {
-    const reads = stocked({ ownerOf: vi.fn().mockRejectedValue(new Error('ERC721NonexistentToken')) })
+    const reads = stocked({ ownerOf: vi.fn(async () => null) })
     expect(await resolveProjectHandle('@banny', reads)).toBeNull()
     expect(reads.claim).not.toHaveBeenCalled()
   })
@@ -270,29 +275,31 @@ describe('resolveProjectHandle', () => {
     expect(await resolveProjectHandle('@banny', reads)).toBeNull()
   })
 
-  it('names nothing when a read fails, whichever it is', async () => {
+  it('rejects when a read fails, whichever it is: a lookup that is down is no answer, and never a 404', async () => {
     const failure = new Error('429')
-    expect(await resolveProjectHandle('@banny', stocked({ record: vi.fn().mockRejectedValue(failure) }))).toBeNull()
-    expect(await resolveProjectHandle('@banny', stocked({ ownerOf: vi.fn().mockRejectedValue(failure) }))).toBeNull()
-    expect(await resolveProjectHandle('@banny', stocked({ claim: vi.fn().mockRejectedValue(failure) }))).toBeNull()
+    await expect(resolveProjectHandle('@banny', stocked({ record: vi.fn().mockRejectedValue(failure) }))).rejects.toBe(failure)
+    await expect(resolveProjectHandle('@banny', stocked({ ownerOf: vi.fn().mockRejectedValue(failure) }))).rejects.toBe(failure)
+    await expect(resolveProjectHandle('@banny', stocked({ claim: vi.fn().mockRejectedValue(failure) }))).rejects.toBe(failure)
   })
 
-  it('tells the console when a read fails, under one label with the handle, so that a failure is not a 404 nobody sees', async () => {
+  it('tells the console when a read fails, under one label with the handle', async () => {
     const failure = new Error('429')
-    await resolveProjectHandle('@Banny.eth', stocked({ record: vi.fn().mockRejectedValue(failure) }))
-    await resolveProjectHandle('@banny', stocked({ ownerOf: vi.fn().mockRejectedValue(failure) }))
-    await resolveProjectHandle('@banny', stocked({ claim: vi.fn().mockRejectedValue(failure) }))
+    const failed = (reads: HandleReads, handle = '@banny') => resolveProjectHandle(handle, reads).catch(() => 'failed')
+    expect(await failed(stocked({ record: vi.fn().mockRejectedValue(failure) }), '@Banny.eth')).toBe('failed')
+    expect(await failed(stocked({ ownerOf: vi.fn().mockRejectedValue(failure) }))).toBe('failed')
+    expect(await failed(stocked({ claim: vi.fn().mockRejectedValue(failure) }))).toBe('failed')
 
     expect(vi.mocked(console.warn).mock.calls).toEqual([
-      ['A project handle could not be read; it names no project.', { handle: 'banny' }, failure],
-      ['A project handle could not be read; it names no project.', { handle: 'banny' }, failure],
-      ['A project handle could not be read; it names no project.', { handle: 'banny' }, failure],
+      [UNREADABLE, { handle: 'banny' }, failure],
+      [UNREADABLE, { handle: 'banny' }, failure],
+      [UNREADABLE, { handle: 'banny' }, failure],
     ])
   })
 
   it('says nothing to the console for a handle that simply names nothing', async () => {
     expect(await resolveProjectHandle('', stocked())).toBeNull()
     expect(await resolveProjectHandle('@banny', stocked({ record: vi.fn(async () => null) }))).toBeNull()
+    expect(await resolveProjectHandle('@banny', stocked({ ownerOf: vi.fn(async () => null) }))).toBeNull()
     expect(await resolveProjectHandle('@banny', stocked({ record: vi.fn(async () => '84532:7') }))).toBeNull()
     expect(await resolveProjectHandle('@banny', stocked({ claim: vi.fn(async () => null) }))).toBeNull()
     expect(await resolveProjectHandle('@banny', stocked({ claim: vi.fn(async () => 'another') }))).toBeNull()
@@ -375,20 +382,22 @@ describe('resolveProjectHandle', () => {
       expect(new Set(center.client.mock.calls.map(([chainId]) => chainId))).toEqual(new Set([1, 8453]))
     })
 
-    it('names nothing, and says nothing, when Ethereum cannot be asked for the name: that leg reads a failed lookup as no record', async () => {
+    it('rejects, and tells the console, when Ethereum cannot be asked for the name: a record it could not read is no answer', async () => {
       const down = new Error('429')
       const { ethereum, projectChain } = fakeChains()
       ethereum.getBlockNumber.mockRejectedValue(down)
       ethereum.readContract.mockRejectedValue(down)
       ethereum.request.mockRejectedValue(down)
 
-      expect(await resolveProjectHandle('@banny')).toBeNull()
+      await expect(resolveProjectHandle('@banny')).rejects.toBe(down)
 
-      expect(console.warn).not.toHaveBeenCalled()
+      // The record's reader takes a failed lookup for no record, so Ethereum is asked afresh whether it answers.
+      expect(ethereum.getBlockNumber).toHaveBeenLastCalledWith({ cacheTime: 0 })
+      expect(vi.mocked(console.warn).mock.calls).toEqual([[UNREADABLE, { handle: 'banny' }, down]])
       expect(projectChain.readContract).not.toHaveBeenCalled()
     })
 
-    it('tells the console when the claim cannot be read, as it does for the owner', async () => {
+    it('rejects, and tells the console, when the claim cannot be read', async () => {
       const down = new Error('429')
       const { ethereum } = fakeChains()
       const answers = ethereum.request.getMockImplementation()!
@@ -397,17 +406,17 @@ describe('resolveProjectHandle', () => {
         return answers(raw)
       })
 
-      expect(await resolveProjectHandle('@banny')).toBeNull()
+      await expect(resolveProjectHandle('@banny')).rejects.toBe(down)
 
-      expect(vi.mocked(console.warn).mock.calls).toEqual([
-        ['A project handle could not be read; it names no project.', { handle: 'banny' }, down],
-      ])
+      expect(vi.mocked(console.warn).mock.calls).toEqual([[UNREADABLE, { handle: 'banny' }, down]])
     })
 
-    it('names nothing when the name has no record, and never reads the project', async () => {
-      const { projectChain } = fakeChains({ record: null })
+    it('names nothing when the name has no record while Ethereum answers, and never reads the project', async () => {
+      const { ethereum, projectChain } = fakeChains({ record: null })
       expect(await resolveProjectHandle('@banny')).toBeNull()
+      expect(ethereum.getBlockNumber).toHaveBeenLastCalledWith({ cacheTime: 0 })
       expect(projectChain.readContract).not.toHaveBeenCalled()
+      expect(console.warn).not.toHaveBeenCalled()
     })
 
     it('names nothing when the owner never claimed the handle', async () => {
@@ -415,13 +424,23 @@ describe('resolveProjectHandle', () => {
       expect(await resolveProjectHandle('@banny')).toBeNull()
     })
 
-    it('names nothing when the project does not exist, and tells the console why', async () => {
-      const revert = new Error('ERC721NonexistentToken')
-      fakeChains({ owner: revert })
+    it('names nothing, and says nothing, when JBProjects reverts: the project does not exist', async () => {
+      const revert = new ContractFunctionExecutionError(
+        new ContractFunctionRevertedError({ abi: projectsAbi, functionName: 'ownerOf', message: 'execution reverted' }),
+        { abi: projectsAbi, functionName: 'ownerOf', args: [PROJECT], contractAddress: PROJECTS },
+      )
+      const { ethereum } = fakeChains({ owner: revert })
       expect(await resolveProjectHandle('@banny')).toBeNull()
-      expect(vi.mocked(console.warn).mock.calls).toEqual([
-        ['A project handle could not be read; it names no project.', { handle: 'banny' }, revert],
-      ])
+      expect(console.warn).not.toHaveBeenCalled()
+      // No claim is asked for a project that does not exist.
+      expect(ethereum.request.mock.calls.map(([raw]) => raw.params[0].to)).not.toContain(PROJECT_HANDLES_ADDRESS)
+    })
+
+    it('rejects, and tells the console, when the project\'s owner cannot be read', async () => {
+      const down = new Error('429')
+      fakeChains({ owner: down })
+      await expect(resolveProjectHandle('@banny')).rejects.toBe(down)
+      expect(vi.mocked(console.warn).mock.calls).toEqual([[UNREADABLE, { handle: 'banny' }, down]])
     })
 
     it('asks no chain for a record that points at a testnet', async () => {

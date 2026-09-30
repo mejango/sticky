@@ -249,3 +249,23 @@ Copied with JBM at `9cb6089` (ruling R69). The files last changed in JBM at the 
 | `src/components/ui/AddressLabel.tsx` | JBM `src/components/ui/AddressLabel.tsx` | JBM 9cb6089 (last changed fddbca8) | `AddressLabel` and `AddressText` take `chainId`, the chain the address acts on, for `useEnsName`. JBM's `truncateAddress` (`src/lib/format.ts:93`, the first 6 and last 4 characters) is defined in the file: Sticky has no `format.ts`. |
 | `src/hooks/useEnsName.ts` | JBM `src/hooks/useEnsName.ts` | JBM 9cb6089 (last changed fddbca8) | Takes `chainId` and reads a name only when `ensAvailable(chainId)`, through Sticky's `lookupEnsName(address, chainId)` (Task 1.7): a testnet account gets no mainnet name, as in the old client's `hydrateEns`. The key is `['ensName', address, ensAvailable(chainId)]`, where JBM's has the address alone: a disabled query still shows what its key has cached, so a name read for a production chain's row would otherwise show on a testnet's. |
 
+
+## Task 2.2: project route, header and tabs
+
+Copied with JBM at `9af68f9` (`origin/main`, fetched 2026-09-30). The files last changed in JBM at the commits named in each row, all before `9af68f9`.
+
+`src/app/[urn]/page.tsx`, `src/app/[urn]/loading.tsx`, `src/components/project/{ProjectHeader,StickCard,ProjectLatest}.tsx` and `src/hooks/useStickyProject.ts` are written for Sticky and copy no code. The page resolves its segment as JBM's `resolveProjectRouteCached` does (decode once, `parseUrn`, else a `@` handle) and mounts `ProjectRouteSync` and `ProjectTabs` as JBM's page does; the header and the Stick card port the old client's markup (`index.html:882-906`) and `renderProject` (`app.js:2370-2478`).
+
+### Source files
+
+| File | Source | Source commit | Sticky edits |
+|---|---|---|---|
+| `src/components/project/Tabs.tsx` | JBM `src/components/project/Tabs.tsx` | JBM 9af68f9 (last changed e87466d) | `ProjectTabs` takes `activityLabel`, default `'Activity'`: the single-column tab's label, whose slug is its hash, so Sticky's reads "Latest" at `#latest`. This one prop is the diff of the jbm PR that keeps the two files alike (filed separately, ruling R9); the edits below are Sticky's own. The single column runs to 820 px, the old client's phone layout, where JBM's runs to 800 px (`max-width: 820px` and `min-[821px]`). `reloadMutableProjectAlias` reads the route with `projectRouteSegmentFromPathname` of `src/lib/project-route.ts` and takes a segment that starts with `@` for a handle, where JBM asks `projectHandleFromRoute`, for the reason under `ProjectRouteContext.tsx`: that call loads ENSIP-15 `normalize` into the browser (`test/client-imports.test.ts`). Sticky's tokens: `font-agrandir-wide`, `text-muted` and `border-line` (JBM: `font-agrandir`, `text-smoke-500`, `border-smoke-200`). |
+| `src/components/project/ProjectTabIcon.tsx` | JBM `src/components/project/ProjectTabIcon.tsx` | JBM 9af68f9 (last changed 461c1ba) | `ICONS.airdrops = ICONS.funds`: the old client's Airdrops tab drew JBM's banknotes. Its Latest, Overview and Tokens tabs drew JBM's Activity, Overview and Tokens artwork, which the copy already has. |
+| `src/app/globals.css` `.scrollbar-none` | JBM `src/app/globals.css`, the `.scrollbar-none` rules of its utilities layer | JBM 9af68f9 (last changed 1f2ab45) | None. `Tabs.tsx` uses the class. The same task adds `.meta-row`, `.meta-line` and `.meta-pair`, the old client's pipe-separated header row (`index.html:138-141`). |
+
+### Tests
+
+| File | Source | Source commit | Sticky edits |
+|---|---|---|---|
+| `test/components/project-tabs.test.tsx` | JBM `test/components/project-tabs.test.ts` (the alias cases) and `test/project-tab-icon.test.tsx` | JBM 9af68f9 (last changed 3e75083 and 461c1ba) | Runs on jsdom's window with `location` stubbed and `react-dom`, where JBM's replaces the whole window and uses `react-test-renderer` (ruling R30). The alias cases use Sticky's tabs (`#tokens`, `#airdrops`); the two history-restore cases are `test/providers/project-route-context.test.tsx`'s already. Added: the phone tab's label and hash with and without `activityLabel`, the 820 px column, and the Airdrops and Tokens icons. |
