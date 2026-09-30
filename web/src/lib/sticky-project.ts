@@ -108,7 +108,7 @@ function answered<T extends readonly Answer<unknown>[]>(answers: T): T {
 }
 
 /** The launch id in a Sticky project's uri, which a launch stores as a data URI. Anything else has none. */
-function launchIdIn(uri: string): string | null {
+export function launchIdIn(uri: string): string | null {
   if (!uri.startsWith('data:application/json')) return null
   const comma = uri.indexOf(',')
   if (comma < 0) return null
@@ -124,12 +124,18 @@ function launchIdIn(uri: string): string | null {
   }
 }
 
+/** How a read takes an unowned balance the hook recorded above what the terminal holds, which consistent
+ * accounting never shows. `'strict'` fails the read: quotes and minimums rest on a project's backing.
+ * `'clamp'` reads it as all of the terminal's balance, so that nothing is claimable. */
+export type OrphanedPolicy = 'strict' | 'clamp'
+
 /** One Sticky project: its tokens, its terminal balance and its supply, all read at one block. The
  * deployment's own contracts are asked first, and they name the two tokens and the store; those are
  * asked second. Each round is one Multicall3 request, and both ask the same block. */
 export async function readStickyProject(
   chainId: number,
   projectId: bigint,
+  { orphans = 'strict' }: { orphans?: OrphanedPolicy } = {},
 ): Promise<StickyProjectInfo> {
   const deployment = deploymentOn(chainId)
   const client = jbCenterPublicClient(chainId)
@@ -215,9 +221,12 @@ export async function readStickyProject(
   const totalSupply = need(totalSupplyOf, 'the Sticky supply')
   const held = need(balanceOf, 'the terminal balance')
 
-  if (savedOrphaned > held) throw new Error('The Sticky pool returned inconsistent backing accounting.')
+  if (savedOrphaned > held && orphans === 'strict') {
+    throw new Error('The Sticky pool returned inconsistent backing accounting.')
+  }
   // With no shares left, whatever the terminal still holds belongs to nobody.
-  const orphaned = totalSupply === 0n ? held : savedOrphaned
+  const unowned = totalSupply === 0n ? held : savedOrphaned
+  const orphaned = unowned > held ? held : unowned
 
   return {
     chainId,

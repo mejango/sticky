@@ -979,6 +979,25 @@ describe('moveKey', () => {
 })
 
 describe('terminalMoves', () => {
+  it("reads no amount from the terminal's fees or additions to a balance", async () => {
+    // ProcessFee(projectId, token, amount indexed; wasHeld, beneficiary, caller) and AddToBalance(projectId indexed;
+    // amount, returnedFees, memo, metadata, caller), in the unstick's own transaction.
+    const fee = raw(
+      ['0xb514e730b3f8ad3aa94b6857bcc5ff4a46954bdcf8c4b0346705b1d0ac7a4325', topic(42n), topic(HOLDER), topic(E6)],
+      words(false, HOLDER, HOLDER),
+      { address: TERMINAL, txHash: tx('g1') },
+    )
+    const added = raw(
+      ['0x9ecaf7fc3dfffd6867c175d6e684b1f1e3aef019398ba8db2c1ffab4a09db253', topic(42n)],
+      words(E6, 0n, 160n, 192n, HOLDER, 0n, 0n),
+      { address: TERMINAL, txHash: tx('g1') },
+    )
+
+    const moves = await terminalMoves([unstick(HOLDER, 5n * E18, 0n, 'g1')], readers({ terminal: [fee, added] }))
+
+    expect(moves.size).toBe(0)
+  })
+
   it("reads Bendystraw's pays and cash outs for the events Bendystraw indexed, and scans nothing", async () => {
     const events = [
       stick(HOLDER, HOLDER, 1000n * E18, 'a1', { blockNumber: null, timestamp: 100 }),

@@ -204,9 +204,13 @@ function movedBy(chainId: number, log: ScannedLog): [key: string, amount: bigint
   try {
     const { eventName, args } = decodeEventLog({ abi: terminalEventsAbi, topics: log.topics, data: log.data })
     const at = { chainId, txHash: log.transactionHash, projectId: args.projectId }
-    return eventName === 'Pay'
-      ? [moveKey({ ...at, kind: 'stick', holder: args.beneficiary, count: args.newlyIssuedTokenCount }), args.amount]
-      : [moveKey({ ...at, kind: 'unstick', holder: args.holder, count: args.cashOutCount }), args.reclaimAmount]
+    if (eventName === 'Pay') {
+      return [moveKey({ ...at, kind: 'stick', holder: args.beneficiary, count: args.newlyIssuedTokenCount }), args.amount]
+    }
+    if (eventName === 'CashOutTokens') {
+      return [moveKey({ ...at, kind: 'unstick', holder: args.holder, count: args.cashOutCount }), args.reclaimAmount]
+    }
+    return null
   } catch {
     return null
   }

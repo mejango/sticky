@@ -184,6 +184,29 @@ describe('readStickyProject', () => {
 
     chain[at(deployment.hook, 'orphanedBalanceOf')] = 11n
     await expect(readStickyProject(CHAIN, 12n)).rejects.toThrow(/inconsistent backing/)
+    await expect(readStickyProject(CHAIN, 12n, { orphans: 'strict' })).rejects.toThrow(/inconsistent backing/)
+  })
+
+  it.each([10n ** 18n, 0n])(
+    'clamped, reads a recorded orphaned balance above what the terminal holds as no backing (supply %s)',
+    async totalSupply => {
+      fakeCenter(
+        world({
+          [at(STORE, 'balanceOf')]: 10n,
+          [at(deployment.hook, 'orphanedBalanceOf')]: 11n,
+          [at(STICKY, 'totalSupply')]: totalSupply,
+        }),
+      )
+      const info = await readStickyProject(CHAIN, 12n, { orphans: 'clamp' })
+      expect(info).toMatchObject({ backing: 0n, orphaned: 10n, rawBacking: 10n, savedOrphaned: 11n, totalSupply })
+    },
+  )
+
+  it('clamped, reads consistent accounting as a strict read does', async () => {
+    fakeCenter(world({ [at(STORE, 'balanceOf')]: 10n, [at(deployment.hook, 'orphanedBalanceOf')]: 4n }))
+    const strict = await readStickyProject(CHAIN, 12n)
+    expect(await readStickyProject(CHAIN, 12n, { orphans: 'clamp' })).toEqual(strict)
+    expect(strict).toMatchObject({ backing: 6n, orphaned: 4n })
   })
 
   it.each([0n, 3n])(

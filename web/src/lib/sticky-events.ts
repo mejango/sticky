@@ -116,8 +116,10 @@ export type StickyReadDeps = {
 export type StickyReadOptions = Cancel & Partial<StickyReadDeps>
 
 const selector = (abi: Abi, name: string) => toEventSelector(getAbiItem({ abi, name }) as AbiEvent)
-// In the old client's order (webclient/app.js:1079 and 1112).
-const POSITION_TOPICS = ['Staked', 'Unstaked', 'StreakStarted', 'StreakEnded'].map(name => selector(stickyHookAbi, name))
+/** The hook's events that change a position, in the old client's order (webclient/app.js:1079 and 1112). */
+export const POSITION_TOPICS = ['Staked', 'Unstaked', 'StreakStarted', 'StreakEnded'].map(name =>
+  selector(stickyHookAbi, name),
+)
 const PROJECT_TOPICS = [
   ...POSITION_TOPICS,
   ...['SetGranter', 'SetTrustedSender', 'ExcludeOrphanedBalance'].map(name => selector(stickyHookAbi, name)),
@@ -258,7 +260,7 @@ const byTime = (a: StickyEvent, b: StickyEvent) => a.timestamp - b.timestamp || 
 
 /** Where a scan past a block Bendystraw is indexed through starts: `OVERLAP` blocks below the block after it, and
  * never before the deployer's block (webclient/app.js:616). */
-function scanFrom(asOf: bigint, { fromBlock }: StickyDeployment): bigint {
+export function scanFrom(asOf: bigint, { fromBlock }: StickyDeployment): bigint {
   const start = asOf + 1n - OVERLAP
   return start > fromBlock ? start : fromBlock
 }
@@ -522,15 +524,19 @@ async function projectsContract(chainId: number, signal: AbortSignal | undefined
   return projects
 }
 
+/** A contract's logs that match `filter` through Center, from its block through the head, each with its block's
+ * time: the `scan` every read of this module makes, and the one others make of the hook or the terminal. */
+export async function scanToHead(chainId: number, filter: LogFilter, { signal }: Cancel): Promise<ScannedLog[]> {
+  const client = jbCenterPublicClient(chainId)
+  const toBlock = await untilAborted(client.getBlockNumber(), signal)
+  return timed(chainId, await scanLogs(client, { ...filter, toBlock }, { signal }), signal)
+}
+
 const live: StickyReadDeps = {
   indexedEvents: indexedStickyEvents,
   indexedSettings: indexedStickySettings,
   indexedCreateTx: indexedStickyCreateTx,
-  async scan(chainId, filter, { signal }) {
-    const client = jbCenterPublicClient(chainId)
-    const toBlock = await untilAborted(client.getBlockNumber(), signal)
-    return timed(chainId, await scanLogs(client, { ...filter, toBlock }, { signal }), signal)
-  },
+  scan: scanToHead,
   async projectLogs(chainId, projectId, fromBlock, { signal }) {
     return timed(chainId, await projectHookLogs(chainId, projectId, fromBlock, { signal }), signal)
   },
