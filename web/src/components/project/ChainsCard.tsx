@@ -23,7 +23,13 @@ function Chain({ row }: { row: SiblingRow }) {
     )
   }
   return (
-    <Link href={projectPath(row.chainId, row.projectId)} className="text-accent underline decoration-amber">
+    <Link
+      href={projectPath(row.chainId, row.projectId)}
+      // Not prefetched in view: once more than four links to different project pages are in view, Next 16.3's
+      // prefetch scheduler cancels and resends their prefetches without end.
+      prefetch={false}
+      className="text-accent underline decoration-amber"
+    >
       {chainName(row.chainId)} #{row.projectId.toString()}
     </Link>
   )

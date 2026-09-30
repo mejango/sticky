@@ -11,13 +11,16 @@
     "ts:check": "next typegen && tsc --noEmit",
     "test": "vitest run",
     "test:ci": "vitest run --coverage",
-    "test:browser": "playwright test",
+    "build:browser": "node scripts/build-browser.mjs",
+    "test:browser": "npm run build:browser && playwright test",
+    "test:browser:record": "npm run build:browser && STICKY_RECORD=1 playwright test",
+    "test:browser:report": "playwright show-report",
     "bendystraw:registry": "node scripts/check-bendystraw-schema.mjs 7 --write-registry",
     "schema:check:offline": "node scripts/check-bendystraw-schema.mjs 7 --offline",
     "transaction:check": "node scripts/check-transaction-inventory.mjs",
     "deployments:sync": "node scripts/sync-deployments.mjs",
     "deployments:check": "node scripts/sync-deployments.mjs --check",
-    "check": "npm run lint && npm run ts:check && npm run deployments:check && npm run schema:check:offline && npm run transaction:check && npm run test:ci && npm run build"
+    "check": "npm run lint && npm run ts:check && npm run deployments:check && npm run schema:check:offline && npm run transaction:check && npm run test:ci && npm run build && npm run test:browser"
   },
   "dependencies": {
     "@bananapus/nana-sdk-connect": "^0.5.6",

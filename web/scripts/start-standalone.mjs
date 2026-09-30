@@ -1,5 +1,5 @@
 import { cpSync, existsSync, mkdirSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const dist = resolve(process.env.NEXT_DIST_DIR || '.next')
@@ -13,8 +13,11 @@ if (!existsSync(server)) {
 // Next's local standalone tree omits static/public assets because production
 // images copy them beside server.js as separate layers. Recreate that exact
 // runtime layout for local and Playwright runs without `next start` semantics.
-mkdirSync(join(standalone, '.next'), { recursive: true })
-cpSync(join(dist, 'static'), join(standalone, '.next', 'static'), {
+// The server reads its build from its own copy of the dist directory, at the
+// same path inside the tree.
+const served = join(standalone, relative(process.cwd(), dist))
+mkdirSync(served, { recursive: true })
+cpSync(join(dist, 'static'), join(served, 'static'), {
   recursive: true,
   force: true,
 })

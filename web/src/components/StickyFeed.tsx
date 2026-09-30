@@ -135,7 +135,13 @@ function FeedItem({ row, label, you }: { row: FeedRow; label: string | undefined
       </div>
       {label ? (
         <div className="mt-1 truncate text-sm font-medium">
-          <Link href={projectPath(row.chainId, row.projectId)} className="text-accent no-underline hover:underline">
+          <Link
+            href={projectPath(row.chainId, row.projectId)}
+            // Not prefetched in view: once more than four links to different project pages are in view, Next 16.3's
+            // prefetch scheduler cancels and resends their prefetches without end.
+            prefetch={false}
+            className="text-accent no-underline hover:underline"
+          >
             {label}
           </Link>
         </div>

@@ -25,6 +25,9 @@ function PositionCard({ position: { info, staked, start, longest } }: { position
       <Link
         data-position
         href={projectPath(info.chainId, info.projectId)}
+        // Not prefetched in view: once more than four links to different project pages are in view, Next 16.3's
+        // prefetch scheduler cancels and resends their prefetches without end.
+        prefetch={false}
         className="block px-3.5 py-3 text-ink no-underline hover:bg-[#e6f0f3]"
       >
         <div className="flex items-start gap-2.5">

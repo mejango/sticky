@@ -9,6 +9,10 @@
 @layer base {
   body {
     @apply bg-bg font-sans text-[15px] leading-normal text-ink;
+    /* A page rests 50 px down, past its top fold, where the browser's scroll
+       anchoring would hold an element in view while a new page's content fills
+       in above it, carrying the page down from its fold. */
+    overflow-anchor: none;
   }
 
   :focus-visible {

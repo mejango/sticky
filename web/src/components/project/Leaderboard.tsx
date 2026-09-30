@@ -242,7 +242,7 @@ export function Leaderboard({
               </button>
             ))}
           </div>
-          <div className="w-full overflow-x-auto overscroll-x-contain">
+          <div role="region" aria-label="Holders" tabIndex={0} className="w-full overflow-x-auto overscroll-x-contain">
             <table aria-label="Holders" className="w-max min-w-[400px] border-collapse">
               <thead>
                 <tr>
@@ -260,10 +260,11 @@ export function Leaderboard({
                     <tr
                       key={row.holder}
                       data-active={pieHolder === row.holder}
-                      className="group data-[active=true]:bg-[#e6f3f6] data-[active=true]:text-accent"
+                      // Accent text is under 4.5:1 on the highlight, so the highlighted row's text is ink.
+                      className="group data-[active=true]:bg-[#e6f3f6]"
                     >
                       <td className={CELL}>{page * PAGE_SIZE + at + 1}</td>
-                      <td className={`${CELL} text-muted group-data-[active=true]:text-accent`}>
+                      <td className={`${CELL} text-muted group-data-[active=true]:text-ink`}>
                         <AddressLabel address={row.holder} chainId={chainId} />
                         {sameAccount(row.holder, you) ? ' (you)' : ''}
                       </td>

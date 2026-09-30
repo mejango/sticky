@@ -28,6 +28,9 @@ export function StickiestCard({ group, rank }: { group: HomeCardGroup; rank: num
     <Link
       data-card
       href={projectPath(info.chainId, info.projectId)}
+      // Not prefetched in view: once more than four links to different project pages are in view, Next 16.3's
+      // prefetch scheduler cancels and resends their prefetches without end.
+      prefetch={false}
       className="block border-b border-line px-3.5 py-3 text-ink no-underline last:border-b-0 hover:bg-[#e6f0f3]"
     >
       <div className="flex items-start gap-2.5">
