@@ -3,6 +3,7 @@ import { act, type AnchorHTMLAttributes, type ReactElement, type ReactNode } fro
 import { createRoot, type Root } from 'react-dom/client'
 import type { Address, Hex } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { inTurn } from '@/lib/in-turn'
 import { installQueryPersistence } from '@/lib/query-persist'
 import type { Flow } from '@/lib/sticky-backing'
 import { stickyDeployment } from '@/lib/sticky-addresses'
@@ -118,6 +119,11 @@ let host: HTMLDivElement
 let root: Root
 let client: QueryClient
 const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } })
+/** A client with Providers' defaults: fresh for 30 seconds, one more try after a failure, no refetch on focus. */
+const siteClient = () =>
+  new QueryClient({
+    defaultOptions: { queries: { staleTime: 30_000, gcTime: 10 * 60_000, retry: 1, refetchOnWindowFocus: false } },
+  })
 
 beforeEach(() => {
   notifyManager.setScheduler(callback => queueMicrotask(callback))
@@ -674,9 +680,12 @@ describe('the chart', () => {
     const note = [...host.querySelectorAll('[role="alert"]')].find(alert => alert.textContent?.includes('chart'))!
     expect(note.textContent).toContain('Could not read the chart.')
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('history'), { chainId: 8453, projectId: 23 }, expect.any(Error))
+    // The balance history of a project whose history cannot be read is not scanned.
+    expect(mocks.flows).not.toHaveBeenCalled()
     await act(async () => [...note.querySelectorAll('button')].find(button => button.textContent === 'Try again')!.click())
     await settle()
     expect(peaks()).toEqual(['Peak: 1 active stick', 'Peak: 1,010 SLOPSHOP stuck'])
+    expect(mocks.flows).toHaveBeenCalledTimes(1)
   })
 
   describe('pointing at it', () => {
@@ -757,6 +766,34 @@ describe('leaving the page', () => {
     expect(mocks.siblings).not.toHaveBeenCalled()
   })
 
+  it('cancels the holders and Latest reads it started, and the ones that wait behind them, and tells the console of no failure', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const started: AbortSignal[] = []
+    // A scan that answers only when it is cancelled. Its options come last: the holders' third, Latest's second.
+    const hangs = (...args: unknown[]) =>
+      new Promise<never>((_resolve, reject) => {
+        const { signal } = args.at(-1) as { signal: AbortSignal }
+        started.push(signal)
+        signal.addEventListener('abort', () => reject(signal.reason))
+      })
+    mocks.holders.mockImplementation(hangs)
+    mocks.moves.mockImplementation(hangs)
+    await renderTab()
+    // One scan at a time: the other is in line behind it.
+    expect(started).toHaveLength(1)
+    expect(started[0].aborted).toBe(false)
+
+    await act(async () => root.unmount())
+    root = createRoot(host)
+    await settle()
+    expect(started[0].aborted).toBe(true)
+    // The scan in line never starts, and neither do the balance flows and the chains, which wait for both.
+    expect(started).toHaveLength(1)
+    expect(mocks.flows).not.toHaveBeenCalled()
+    expect(mocks.siblings).not.toHaveBeenCalled()
+    expect(warn).not.toHaveBeenCalled()
+  })
+
   it('cancels a search for the chains under way, and tells the console of no failure', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     mocks.siblings.mockImplementation(
@@ -829,6 +866,11 @@ describe('the reads behind the tab', () => {
     mocks.moves.mockImplementation(slow('moves', new Map()))
     mocks.flows.mockImplementation(slow('flows', paid))
     mocks.siblings.mockImplementation(slow('chains', [HERE, THERE]))
+    // The holders are in line only once the pinned block is read, which takes longer than Latest's scan.
+    mocks.pinned.mockImplementation(async () => {
+      await new Promise(resolve => setTimeout(resolve, 300))
+      return { number: 100n, timestamp: NOW }
+    })
     await renderTab()
     await settle(2_000)
     // The chart's balance flows are the longest read, and the header's holders and Latest are not held up by them.
@@ -857,6 +899,109 @@ describe('the reads behind the tab', () => {
     await settle()
     expect(mocks.flows).toHaveBeenCalledTimes(2)
     for (const read of [mocks.events, mocks.holders, mocks.moves]) expect(read).toHaveBeenCalledTimes(1)
+  })
+
+  it('read nothing of the project\'s history when the project cannot be read, and read it once it can', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mocks.project.mockRejectedValue(new Error('Project 23 is not a Sticky token of this deployer.'))
+    await renderTab()
+    await settle(60_000)
+    // One read of the project, never a scan: not the history, the holders, Latest, the balance flows or the chains.
+    expect(mocks.project).toHaveBeenCalledTimes(1)
+    for (const read of [mocks.events, mocks.holders, mocks.pinned, mocks.moves, mocks.creation, mocks.flows, mocks.siblings]) {
+      expect(read).not.toHaveBeenCalled()
+    }
+    expect(chart()).toBeNull()
+    expect(chainsCard()).toBeNull()
+
+    mocks.project.mockImplementation(async (chainId: number) => (chainId === 10 ? optimism() : slopshop()))
+    const retry = [...detailsCard().querySelectorAll('button')].find(button => button.textContent === 'Try again')!
+    await act(async () => retry.click())
+    await settle()
+    for (const read of [mocks.events, mocks.holders, mocks.moves, mocks.creation, mocks.flows, mocks.siblings]) {
+      expect(read).toHaveBeenCalledTimes(1)
+    }
+    expect(peaks()).toEqual(['Peak: 1 active stick', 'Peak: 1,010 SLOPSHOP stuck'])
+    expect(chainRows()).toHaveLength(3)
+  })
+
+  it('read the history of a project that an earlier visit read, before this visit\'s read of it answers', async () => {
+    const storage = memoryStorage()
+    const earlier = newClient()
+    const stop = installQueryPersistence(earlier, storage)
+    await renderTab(earlier)
+    await settle(1_000)
+    stop()
+    await act(async () => root.unmount())
+    root = createRoot(host)
+    // A minute later, what was kept of the chains is no longer fresh.
+    await settle(60_000)
+    for (const read of [mocks.events, mocks.holders, mocks.flows, mocks.siblings]) read.mockClear()
+
+    // The copy the browser kept names a Sticky project, which is all the history and the holders wait for. Latest, which
+    // the balance flows and the chains wait behind, waits for this visit's read.
+    const read = Promise.withResolvers<StickyProjectInfo>()
+    mocks.project.mockReset().mockReturnValue(read.promise)
+    const now = newClient()
+    installQueryPersistence(now, storage)
+    await renderTab(now)
+    for (const each of [mocks.events, mocks.holders]) expect(each).toHaveBeenCalledTimes(1)
+    for (const each of [mocks.flows, mocks.siblings]) expect(each).not.toHaveBeenCalled()
+
+    await act(async () => read.resolve(slopshop()))
+    await settle()
+    for (const each of [mocks.flows, mocks.siblings]) expect(each).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['balance history', () => mocks.flows.mockRejectedValue(new Error('429')), () => mocks.flows],
+    ['search for the chains', () => mocks.siblings.mockRejectedValue(new Error('429')), () => mocks.siblings],
+  ])('read a failing %s once, with the site\'s own query defaults', async (_what, fail, read) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    fail()
+    const site = siteClient()
+    await renderTab(site)
+    await settle(120_000)
+    expect(read()).toHaveBeenCalledTimes(1)
+    site.clear()
+  })
+
+  it('take their turn with every other scan of the page: the flows and the chains wait for one under way', async () => {
+    await renderTab()
+    // A scan of another tab is under way, and holds the turn.
+    const done = Promise.withResolvers<void>()
+    void inTurn(client, new AbortController().signal, () => done.promise)
+    // The reads are invalidated, and are under way but not started: what an invalidation waits for is not over.
+    await act(async () => {
+      void client.invalidateQueries({ queryKey: ['sticky-project', 8453, 23, 'flows'] })
+      void client.invalidateQueries({ queryKey: ['sticky-project', 8453, 23, 'siblings'] })
+    })
+    await settle()
+    expect([mocks.creation, mocks.flows, mocks.siblings].map(read => read.mock.calls.length)).toEqual([1, 1, 1])
+
+    // They are read, one after the other, when it ends.
+    await act(async () => done.resolve())
+    await settle()
+    expect([mocks.creation, mocks.flows, mocks.siblings].map(read => read.mock.calls.length)).toEqual([2, 2, 2])
+  })
+
+  it('wait for a retry of the header\'s Latest, and read the flows and the chains again only once they have gone stale', async () => {
+    await renderTab()
+    const latest = ['sticky-project', 8453, 23, 'latest']
+    // A retry of Latest while what was read is fresh: only Latest is read again.
+    await act(async () => void (await client.invalidateQueries({ queryKey: latest })))
+    await settle()
+    expect(mocks.moves).toHaveBeenCalledTimes(2)
+    expect([mocks.flows, mocks.siblings].map(read => read.mock.calls.length)).toEqual([1, 1])
+
+    // A minute on, the flows and the chains are stale, and are read again once Latest is.
+    await settle(60_000)
+    await act(async () => void (await client.invalidateQueries({ queryKey: latest })))
+    await settle()
+    expect(mocks.moves).toHaveBeenCalledTimes(3)
+    expect([mocks.flows, mocks.siblings].map(read => read.mock.calls.length)).toEqual([2, 2])
+    // The holders, which nothing invalidated, were read once.
+    expect(mocks.holders).toHaveBeenCalledTimes(1)
   })
 
   it('show the details at once, before the history and the chains are read', async () => {

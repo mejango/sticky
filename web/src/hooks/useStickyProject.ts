@@ -29,9 +29,6 @@ import { readStickyProject, type StickyProjectInfo } from '@/lib/sticky-project'
  * observes them, so a page that closes cancels their scans, and the scans take their turn with every other page's
  * (`inTurn`): Center has one rate limit. A read that scans is not tried again on its own, since a scan is dozens of
  * requests; the page offers a retry.
- *
- * The options of the reads that others build on are exported, so a read of another tab can wait for one
- * (`useStickyOverview`).
  */
 
 /** The version of what the browser keeps of a project's page, in each kept key. Change it whenever
@@ -72,7 +69,7 @@ async function warned<T>(label: string, about: object, signal: AbortSignal, read
 /** The projects a read of this visit gave. A copy the browser kept from an earlier visit is never among them. */
 const readThisVisit = new WeakSet<StickyProjectInfo>()
 
-export const infoOptions = (chainId: number, projectId: number) =>
+const infoOptions = (chainId: number, projectId: number) =>
   queryOptions({
     queryKey: ['sticky-project', chainId, projectId, 'info', PROJECT_VERSION],
     queryFn: ({ signal }) =>
@@ -89,7 +86,7 @@ export const infoOptions = (chainId: number, projectId: number) =>
     meta: PERSIST,
   })
 
-export const eventsOptions = (client: QueryClient, chainId: number, projectId: number) =>
+const eventsOptions = (client: QueryClient, chainId: number, projectId: number) =>
   queryOptions<StickyEventsResult>({
     queryKey: ['sticky-project', chainId, projectId, 'events'],
     queryFn: ({ signal }) =>
@@ -100,7 +97,7 @@ export const eventsOptions = (client: QueryClient, chainId: number, projectId: n
     retry: false,
   })
 
-export const holdersOptions = (client: QueryClient, chainId: number, projectId: number) =>
+const holdersOptions = (client: QueryClient, chainId: number, projectId: number) =>
   queryOptions<ProjectHolders>({
     queryKey: ['sticky-project', chainId, projectId, 'holders'],
     queryFn: ({ signal }) =>
@@ -131,7 +128,7 @@ const sticksOptions = (client: QueryClient, chainId: number, projectId: number) 
     meta: PERSIST,
   })
 
-export const latestOptions = (client: QueryClient, chainId: number, projectId: number) =>
+const latestOptions = (client: QueryClient, chainId: number, projectId: number) =>
   queryOptions<FeedRow[]>({
     queryKey: ['sticky-project', chainId, projectId, 'latest', PROJECT_VERSION],
     queryFn: ({ signal }) =>

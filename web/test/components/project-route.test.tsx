@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   creation: vi.fn(),
   flows: vi.fn(),
   siblings: vi.fn(),
+  rows: vi.fn(),
   handle: vi.fn(),
   notFound: vi.fn(),
   address: undefined as string | undefined,
@@ -58,6 +59,7 @@ vi.mock('@/lib/sticky-backing', async importOriginal => ({
 vi.mock('@/lib/sticky-siblings', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-siblings')>()),
   launchSiblings: mocks.siblings,
+  siblingRows: mocks.rows,
 }))
 vi.mock('@/lib/sticky-handles', () => ({ resolveProjectHandle: mocks.handle }))
 vi.mock('next/navigation', () => ({ notFound: mocks.notFound }))
@@ -160,6 +162,12 @@ beforeEach(() => {
   mocks.siblings.mockReset().mockImplementation(async (info: StickyProjectInfo) => [
     { chainId: info.chainId, projectId: info.projectId, self: true },
   ])
+  // The Overview's chains are read through `readStickyProject`, whose calls these tests count.
+  mocks.rows
+    .mockReset()
+    .mockImplementation(async (siblings: { chainId: number; projectId: bigint; self: boolean }[]) =>
+      siblings.map(sibling => ({ ...sibling, info: slopshop(sibling.projectId) })),
+    )
   mocks.handle.mockReset().mockResolvedValue(null)
   mocks.notFound.mockReset().mockImplementation(() => {
     throw new Error(NOT_FOUND)
@@ -470,6 +478,10 @@ describe('the reads behind the page', () => {
     expect(mocks.holders).not.toHaveBeenCalled()
     expect(mocks.pinned).not.toHaveBeenCalled()
     expect(mocks.moves).not.toHaveBeenCalled()
+    // Nor does the Overview tab: not the balance flows, and not the search for the launch's chains.
+    expect(mocks.creation).not.toHaveBeenCalled()
+    expect(mocks.flows).not.toHaveBeenCalled()
+    expect(mocks.siblings).not.toHaveBeenCalled()
     for (const label of ['Stuck', 'Sticks', 'Average active stick', 'Longest active stick']) expect(value(label)).toBe('–')
     const note = [...host.querySelectorAll('[role="alert"]')].find(alert => alert.textContent?.includes('Latest'))!
     expect(note.textContent).toContain('Could not read Latest.')
@@ -479,6 +491,8 @@ describe('the reads behind the page', () => {
     await settle()
     expect(mocks.project).toHaveBeenCalledTimes(2)
     expect(mocks.events).toHaveBeenCalledTimes(1)
+    expect(mocks.flows).toHaveBeenCalledTimes(1)
+    expect(mocks.siblings).toHaveBeenCalledTimes(1)
     expect(value('Sticks')).toBe('2')
     expect(amounts()).toEqual(['1,010 SLOPSHOP'])
   })

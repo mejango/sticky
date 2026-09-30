@@ -2,15 +2,7 @@
 
 import { queryOptions, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useMemo } from 'react'
-import {
-  eventsOptions,
-  holdersOptions,
-  infoOptions,
-  latestOptions,
-  useStickyEvents,
-  useStickyProject,
-} from '@/hooks/useStickyProject'
-import { untilAborted } from '@/lib/hook-logs'
+import { useProjectLatest, useStickyEvents, useStickyHolders, useStickyProject } from '@/hooks/useStickyProject'
 import { inTurn } from '@/lib/in-turn'
 import { PERSIST } from '@/lib/query-persist'
 import {
@@ -22,6 +14,7 @@ import {
   type Flow,
 } from '@/lib/sticky-backing'
 import { projectCreationBlock } from '@/lib/sticky-events'
+import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { launchSiblings, missingChains, siblingRows, type SiblingRow } from '@/lib/sticky-siblings'
 
 /**
@@ -30,10 +23,12 @@ import { launchSiblings, missingChains, siblingRows, type SiblingRow } from '@/l
  * are public and small, and the browser keeps them. What the chart is drawn from grows with the project's history, so
  * it stays in memory, as the history does (`useStickyProject`).
  *
- * The page runs its scans one after another (`inTurn`), first come first served, and a project's balance history
- * can take many requests to read. So the reads here wait their turn behind what the rest of the page shows first: the
- * history, then the header's holders and Latest, then the balance flows, then the search for the copies on the other
- * chains.
+ * These reads keep the page's rules (`useStickyProject`): none of a project's history is read before the project has
+ * been, a read that scans is not tried again on its own (the page offers a retry), and the scans take their turn
+ * (`inTurn`). Turns are first come first served, and a project's balance history can take many requests, so each read
+ * here waits until what the rest of the page shows first is through, whether it succeeded or failed: the history, then
+ * the header's holders and Latest, then the balance flows, then the search for the copies on the other chains. All of
+ * them are observed here, so a page that closes cancels them.
  */
 
 /** How long a read stays fresh: the reads that others build on are shared for this long. */
@@ -48,9 +43,6 @@ const CHART_UNDRAWABLE = "Could not draw a Sticky project's chart from its histo
 const SIBLINGS_UNREADABLE = "Could not read a Sticky project's chains; its Chains card offers to try again."
 const CHAIN_UNREADABLE = "Could not read one of a Sticky launch's chains; its Chains card says so."
 
-/** `options` with data that is good however old it is: a read that a later one only needs to have happened. */
-const whenever = <T extends object>(options: T) => ({ ...options, staleTime: Infinity })
-
 /** Why a chain could not be read, as the text the browser keeps: the card only says that it could not, and an error
  * is not kept as it stands, for it may be too large or not serialize at all. */
 const reasonOf = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0, 200)
@@ -59,19 +51,8 @@ const reasonOf = (error: unknown) => (error instanceof Error ? error.message : S
 const flowsOptions = (client: QueryClient, chainId: number, projectId: number) =>
   queryOptions<Flow[] | null>({
     queryKey: ['sticky-project', chainId, projectId, 'flows'],
-    queryFn: async ({ signal }) => {
-      // The history is read first: its scan is the page's first, and it finds the project's creation block. Then the
-      // header's holders and Latest, which have failures of their own to report: this scan can be long, and they are
-      // not to wait for it. None of them is read again for this one.
-      await untilAborted(client.fetchQuery(whenever(eventsOptions(client, chainId, projectId))), signal)
-      await untilAborted(
-        Promise.allSettled([
-          client.fetchQuery(whenever(holdersOptions(client, chainId, projectId))),
-          client.fetchQuery(whenever(latestOptions(client, chainId, projectId))),
-        ]),
-        signal,
-      )
-      return inTurn(client, signal, async () => {
+    queryFn: ({ signal }) =>
+      inTurn(client, signal, async () => {
         try {
           const fromBlock = await projectCreationBlock(chainId, BigInt(projectId), { signal })
           return await backingFlows(chainId, BigInt(projectId), fromBlock, { signal })
@@ -80,26 +61,25 @@ const flowsOptions = (client: QueryClient, chainId: number, projectId: number) =
           console.warn(FLOWS_UNREADABLE, { chainId, projectId }, error)
           return null
         }
-      })
-    },
+      }),
     staleTime: FRESH_MS,
+    retry: false,
   })
 
-/** The launch's project on each chain, the page's own first, each with its figures, or why it has none. */
-const siblingsOptions = (client: QueryClient, chainId: number, projectId: number) =>
+/** The launch's project on each chain, the page's own first, each with its figures, or why it has none. `info` is the
+ * page's project, which the read is enabled for. */
+const siblingsOptions = (
+  client: QueryClient,
+  chainId: number,
+  projectId: number,
+  info: StickyProjectInfo | undefined,
+) =>
   queryOptions<SiblingRow[]>({
     queryKey: ['sticky-project', chainId, projectId, 'siblings', SIBLINGS_VERSION],
     queryFn: async ({ signal }) => {
       try {
-        // The chart's reads come first. A failure of theirs is theirs to report, and the chart says it, so it does not
-        // stop this one. The launch's facts are the same however old the project's read is.
-        await untilAborted(
-          client.fetchQuery(whenever(flowsOptions(client, chainId, projectId))).catch(() => undefined),
-          signal,
-        )
-        const info = await untilAborted(client.fetchQuery(whenever(infoOptions(chainId, projectId))), signal)
         const rows = await inTurn(client, signal, async () =>
-          siblingRows(await launchSiblings(info, { signal }), { signal }),
+          siblingRows(await launchSiblings(info!, { signal }), { signal }),
         )
         return rows.map(row => {
           if (!('error' in row)) return row
@@ -112,8 +92,33 @@ const siblingsOptions = (client: QueryClient, chainId: number, projectId: number
       }
     },
     staleTime: FRESH_MS,
+    retry: false,
     meta: PERSIST,
   })
+
+/** Whether a read has come to an answer or a failure, and is not under way. */
+const settled = (read: { isPending: boolean; isFetching: boolean }) => !read.isPending && !read.isFetching
+
+/**
+ * The reads the Overview's cards share: the project, its history, the header's holders and Latest, and the balance
+ * flows. The flows are enabled once the project is known, its history is read, and the header's holders and Latest are
+ * through (`turn`); the search for the chains, once the header's are. The flows are observed first, so they are in line
+ * before the chains' read is. When the header's reads start again (a retry of Latest), the later ones wait for them
+ * again, and are read again if they have gone stale.
+ */
+function useOverviewReads(chainId: number, projectId: number) {
+  const client = useQueryClient()
+  const project = useStickyProject(chainId, projectId)
+  const events = useStickyEvents(chainId, projectId)
+  const holders = useStickyHolders(chainId, projectId)
+  const latest = useProjectLatest(chainId, projectId)
+  const turn = settled(holders) && settled(latest)
+  const flows = useQuery({
+    ...flowsOptions(client, chainId, projectId),
+    enabled: project.info !== undefined && events.isSuccess && turn,
+  })
+  return { project, events, flows, turn }
+}
 
 /**
  * The chart's series: Total stuck in the staked token, or when the terminal's history cannot be read the Sticky
@@ -123,10 +128,7 @@ const siblingsOptions = (client: QueryClient, chainId: number, projectId: number
  * be read, so there is nothing to wait for. `retry` reads them again.
  */
 export function useBackingSeries(chainId: number, projectId: number) {
-  const client = useQueryClient()
-  const events = useStickyEvents(chainId, projectId)
-  const project = useStickyProject(chainId, projectId)
-  const flows = useQuery(flowsOptions(client, chainId, projectId))
+  const { project, events, flows } = useOverviewReads(chainId, projectId)
   const { info } = project
   const history = events.data?.events
 
@@ -152,22 +154,23 @@ export function useBackingSeries(chainId: number, projectId: number) {
     unconfirmed: info !== undefined && !project.verified,
     retry: () => {
       void events.refetch()
-      void flows.refetch()
+      if (flows.isError) void flows.refetch()
     },
   }
 }
 
 /**
- * The launch's copies on the other chains and the page's own project, one row each, once this visit has read the
- * project and its history: read after the chart's, for the page's scans run one after another. `wanted` is whether
- * the project has anything to show here: a launch, or a chain its uri planned besides its own. The browser keeps what
- * it read, and an earlier visit's shows until this one's arrives.
+ * The launch's copies on the other chains and the page's own project, one row each. The search waits until the project
+ * is known and the header's holders and Latest are through, and takes its place in line after the balance flows.
+ * `wanted` is whether the project has anything to show here: a launch, or a chain its uri planned besides its own.
+ * `waiting` says the search has not had its turn, so what the browser kept of an earlier visit is not yet confirmed.
  */
 export function useProjectSiblings(chainId: number, projectId: number) {
   const client = useQueryClient()
-  const { info, failed } = useStickyProject(chainId, projectId)
+  const { project, turn } = useOverviewReads(chainId, projectId)
+  const { info, failed } = project
   const wanted =
     info !== undefined && (info.launchId !== null || missingChains(info, [{ chainId: info.chainId }]).length > 0)
-  const siblings = useQuery({ ...siblingsOptions(client, chainId, projectId), enabled: wanted })
-  return { info, failed, wanted, siblings }
+  const siblings = useQuery({ ...siblingsOptions(client, chainId, projectId, info), enabled: wanted && turn })
+  return { info, failed, wanted, waiting: !turn, siblings }
 }

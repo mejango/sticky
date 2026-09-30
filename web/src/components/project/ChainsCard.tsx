@@ -70,7 +70,7 @@ function Card({ children }: { children: ReactNode }) {
  * kept from an earlier visit shows at once, and reads as unconfirmed until this visit reads the chains again.
  */
 export function ChainsCard({ chainId, projectId }: { chainId: number; projectId: number }) {
-  const { info, failed, wanted, siblings } = useProjectSiblings(chainId, projectId)
+  const { info, failed, wanted, waiting, siblings } = useProjectSiblings(chainId, projectId)
   if (info === undefined) {
     return failed ? null : (
       <Card>
@@ -106,7 +106,11 @@ export function ChainsCard({ chainId, projectId }: { chainId: number; projectId:
 
   return (
     <Card>
-      <Revalidating as="div" pending={siblings.isFetching} className="w-full overflow-x-auto overscroll-x-contain">
+      <Revalidating
+        as="div"
+        pending={siblings.isFetching || waiting}
+        className="w-full overflow-x-auto overscroll-x-contain"
+      >
         <table className="w-max min-w-full border-collapse">
           <thead>
             <tr className="text-left text-[13px] font-semibold tracking-[1px] text-muted">
