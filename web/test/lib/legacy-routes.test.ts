@@ -133,3 +133,16 @@ describe('the address an old link is sent to', () => {
     expect(url.searchParams.has('chain')).toBe(false)
   })
 })
+
+describe('hostile old links', () => {
+  it.each([
+    ['', '#//evil.com', null],
+    ['', '#/project/1/../../x', null],
+    ['', '#/@//evil.com', null],
+    ['', '#/project/9007199254740993', null],
+    ['', '#/project/9007199254740991', '/eth:9007199254740991'],
+    ['', '#/@\uD800', null],
+  ])('%s%s → %s', (search, hash, expected) => {
+    expect(legacyRoute(search, hash)).toBe(expected)
+  })
+})

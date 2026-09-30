@@ -28,6 +28,19 @@ async function policiesFor(path: string) {
 }
 
 describe('next config', () => {
+  it('asks search engines not to list a build for another origin, and says nothing on sticky.center', async () => {
+    const noindex = { source: '/:path*', headers: [{ key: 'X-Robots-Tag', value: 'noindex' }] }
+    expect(await headerRoutes()).not.toContainEqual(noindex)
+    const previous = process.env.NEXT_PUBLIC_SITE_URL
+    process.env.NEXT_PUBLIC_SITE_URL = 'https://sticky-dev.up.railway.app'
+    try {
+      expect((await createConfig(PHASE_PRODUCTION_BUILD).headers?.()) ?? []).toContainEqual(noindex)
+    } finally {
+      if (previous === undefined) delete process.env.NEXT_PUBLIC_SITE_URL
+      else process.env.NEXT_PUBLIC_SITE_URL = previous
+    }
+  })
+
   it('builds a standalone server and sends the callback page its own headers', async () => {
     expect(nextConfig.output).toBe('standalone')
     const callback = (await headerRoutes()).find(entry => entry.source === '/center/callback')

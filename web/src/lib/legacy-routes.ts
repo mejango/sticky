@@ -39,11 +39,21 @@ export function legacyRoute(search: string, hash: string): string | null {
   if (project) {
     // A chain we do not route has no slug to name it by.
     if (displayChainSlug(chainId) === null) return null
-    return `${projectPath(chainId, BigInt(project[1]))}${tabHash(project[2])}`
+    const id = BigInt(project[1])
+    // An id a URN cannot say exactly names no project.
+    if (id > BigInt(Number.MAX_SAFE_INTEGER)) return null
+    return `${projectPath(chainId, id)}${tabHash(project[2])}`
   }
 
   const handle = HANDLE.exec(hash)
-  if (handle) return `/@${encodeURIComponent(decodeProjectRouteSegment(handle[1]) ?? handle[1])}${tabHash(handle[2])}`
+  if (handle) {
+    try {
+      return `/@${encodeURIComponent(decodeProjectRouteSegment(handle[1]) ?? handle[1])}${tabHash(handle[2])}`
+    } catch {
+      // A lone surrogate cannot be encoded, and no handle has one.
+      return null
+    }
+  }
 
   const account = ACCOUNT.exec(hash)
   if (account) return `/account/${account[1]}${network}`

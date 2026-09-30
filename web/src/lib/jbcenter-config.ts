@@ -24,3 +24,8 @@ export function jbCenterAppOrigin(
 ): string {
   return new URL(siteUrl || (process.env.NODE_ENV === 'development' ? LOCAL_SITE_URL : PRODUCTION_SITE_URL)).origin
 }
+
+/** Whether this deployment is sticky.center itself, not staging or a local build. */
+export function isProductionSite(siteUrl = process.env.NEXT_PUBLIC_SITE_URL): boolean {
+  return jbCenterAppOrigin(siteUrl) === PRODUCTION_SITE_URL
+}
