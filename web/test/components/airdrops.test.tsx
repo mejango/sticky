@@ -53,8 +53,18 @@ vi.mock('@/components/project/flows/StickFlow', () => ({
     <div data-stick-flow={JSON.stringify(props)} />
   ),
 }))
+vi.mock('@/components/project/flows/TrustFlow', () => ({
+  TrustFlow: ({ chainId, projectId, sender, onClose }: { chainId: number; projectId: number; sender: Address | null; onClose: () => void }) => (
+    <div data-flow="trust" data-chain={chainId} data-project={projectId} data-sender={sender ?? ''}>
+      <button type="button" onClick={onClose}>
+        Close trust
+      </button>
+    </div>
+  ),
+}))
 
 import { AirdropsTab } from '@/components/project/AirdropsTab'
+import { refreshAfterTrust } from '@/components/project/flows/refresh-after-send'
 import { AS_STATUS, type AutoStickState } from '@/lib/sticky-autostick'
 import { type FundedPot, type RewardCard, type RewardPot } from '@/lib/sticky-rewards'
 
@@ -875,7 +885,7 @@ describe('auto-stick', () => {
 describe('who can stick for the viewer', () => {
   const rows = () => [...trusted().querySelectorAll('li')]
 
-  it('lists the senders the hook says they trust, each with an Untrust button that waits for the transaction engine', async () => {
+  it('lists the senders the hook says they trust, each with an Untrust button, and a Trust button', async () => {
     const events = [trust(SENDER), trust(OTHER)]
     mocks.events.mockResolvedValue({ events, source: 'indexed', degraded: null })
     mocks.trusted.mockResolvedValue([SENDER, OTHER])
@@ -885,9 +895,53 @@ describe('who can stick for the viewer', () => {
     expect(trusted().textContent).toContain('Addresses you trust can stick tokens for you.')
     expect(rows().map(row => row.querySelector('span')?.textContent)).toEqual([SENDER, OTHER])
     expect(rows().map(row => buttonsOf(row))).toEqual([['Untrust'], ['Untrust']])
-    expect([...trusted().querySelectorAll('button')].every(button => button.disabled)).toBe(true)
+    expect([...trusted().querySelectorAll('button')].every(button => !button.disabled)).toBe(true)
     expect(buttonsOf(trusted()).at(-1)).toBe('Trust')
     expect(mocks.trusted).toHaveBeenCalledWith(events, { chainId: CHAIN, projectId: 23n, holder: VIEWER, signal: expect.any(AbortSignal) })
+    expect(trusted().querySelector('[data-flow="trust"]')).toBeNull()
+  })
+
+  it('opens the trust flow for a new sender from Trust, and shows the list again when it closes', async () => {
+    await renderTab()
+    await act(async () => buttonNamed(trusted(), 'Trust').click())
+    const flow = trusted().querySelector('[data-flow="trust"]')!
+    expect(flow.getAttribute('data-chain')).toBe(String(CHAIN))
+    expect(flow.getAttribute('data-project')).toBe('23')
+    expect(flow.getAttribute('data-sender')).toBe('')
+
+    await act(async () => buttonNamed(flow as HTMLElement, 'Close trust').click())
+    expect(trusted().querySelector('[data-flow="trust"]')).toBeNull()
+  })
+
+  it('opens the trust flow for that sender from a row\'s Untrust', async () => {
+    mocks.events.mockResolvedValue({ events: [trust(SENDER), trust(OTHER)], source: 'indexed', degraded: null })
+    mocks.trusted.mockResolvedValue([SENDER, OTHER])
+    await renderTab()
+    await act(async () => buttonNamed(rows()[1], 'Untrust').click())
+    const flow = trusted().querySelector('[data-flow="trust"]')!
+    expect(flow.getAttribute('data-sender')).toBe(OTHER)
+    expect(trusted().querySelectorAll('[data-flow="trust"]')).toHaveLength(1)
+  })
+
+  it('reads again, after a change of trust, who is trusted and the auto-stick, and not the rewards or the airdrops scan', async () => {
+    mocks.events.mockResolvedValue({ events: [trust(SENDER)], source: 'indexed', degraded: null })
+    mocks.trusted.mockResolvedValue([SENDER])
+    await renderTab()
+    const reads = [mocks.events, mocks.trusted, mocks.autoStick]
+    const before = reads.map(read => read.mock.calls.length)
+    const untouched = [mocks.rewards, mocks.funding, mocks.project].map(read => read.mock.calls.length)
+
+    await act(async () => refreshAfterTrust(client, CHAIN, 23))
+    await settled()
+    reads.forEach((read, at) => expect(read.mock.calls.length).toBeGreaterThan(before[at]))
+    expect([mocks.rewards, mocks.funding, mocks.project].map(read => read.mock.calls.length)).toEqual(untouched)
+  })
+
+  it('opens the trust flow with no account too: the flow asks them to sign in', async () => {
+    mocks.address = undefined
+    await renderTab()
+    await act(async () => buttonNamed(trusted(), 'Trust').click())
+    expect(trusted().querySelector('[data-flow="trust"]')).not.toBeNull()
   })
 
   it('says none yet when nobody is trusted', async () => {

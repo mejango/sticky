@@ -78,9 +78,19 @@ vi.mock('@/hooks/useSafeTx', () => ({
   useSafeTx: () => ({ phase: 'idle', busy: false, error: null, hash: null, receipt: null, send: vi.fn(), reset: vi.fn() }),
 }))
 vi.mock('@/lib/ens', () => ({ ensAvailable: () => false, lookupEnsName: async () => null }))
+vi.mock('@/components/project/flows/TransferFlow', () => ({
+  TransferFlow: ({ info, onClose }: { info: StickyProjectInfo; onClose: () => void }) => (
+    <div data-flow="transfer" data-token={info.stToken} data-project={String(info.projectId)}>
+      <button type="button" onClick={onClose}>
+        Close transfer
+      </button>
+    </div>
+  ),
+}))
 
 import ProjectPage from '@/app/[urn]/page'
 import { BonusSplit } from '@/components/project/BonusSplit'
+import { refreshAfterTransfer } from '@/components/project/flows/refresh-after-send'
 import { TokensTab } from '@/components/project/TokensTab'
 import { useHolderTranches } from '@/hooks/useStickyTokens'
 import { ProjectRouteProvider } from '@/providers/ProjectRouteContext'
@@ -360,17 +370,53 @@ describe('You', () => {
     expect(kept.toLowerCase()).not.toContain(VIEWER.toLowerCase())
   })
 
-  it('opens the unstick flow for the project once this visit has read it, and closes it again, while Transfer stays closed', async () => {
+  it('opens the unstick flow for the project once this visit has read it, and closes it again', async () => {
     await renderTab()
     const unstick = button(you(), 'Unstick SLOPSHOP')!
     expect(unstick.disabled).toBe(false)
-    expect(button(you(), 'Transfer')!.disabled).toBe(true)
     expect(host.querySelector('[data-unstick-flow]')).toBeNull()
 
     await click(unstick)
     expect(host.querySelector('[data-unstick-flow]')!.getAttribute('data-unstick-flow')).toBe('8453:23:SLOPSHOP')
     await click(button(host, 'Close flow'))
     expect(host.querySelector('[data-unstick-flow]')).toBeNull()
+  })
+
+  it('opens the transfer flow for the project\'s Sticky token, and shows the tab again when it closes', async () => {
+    await renderTab()
+    const transfer = button(you(), 'Transfer')!
+    expect(transfer.disabled).toBe(false)
+    expect(host.querySelector('[data-flow="transfer"]')).toBeNull()
+
+    await click(transfer)
+    const flow = host.querySelector('[data-flow="transfer"]')!
+    expect(flow.getAttribute('data-token')).toBe(`0x${'5'.repeat(40)}`)
+    expect(flow.getAttribute('data-project')).toBe('23')
+    expect(stat('Stuck')).not.toBeNull()
+
+    await click(button(flow, 'Close transfer'))
+    expect(host.querySelector('[data-flow="transfer"]')).toBeNull()
+    expect(button(you(), 'Transfer')).toBeDefined()
+  })
+
+  it('reads again, after a transfer, what it changed: the stick, the tranches, the holders and their history, and not the project', async () => {
+    mocks.address = VIEWER
+    await renderTab()
+    const reads = [mocks.position, mocks.tranches, mocks.holders, mocks.verify, mocks.events]
+    const before = reads.map(read => read.mock.calls.length)
+    const project = mocks.project.mock.calls.length
+
+    await act(async () => refreshAfterTransfer(client, 8453, 23))
+    await settle()
+    reads.forEach((read, at) => expect(read.mock.calls.length, String(read.getMockName())).toBeGreaterThan(before[at]))
+    expect(mocks.project.mock.calls.length).toBe(project)
+  })
+
+  it('opens the transfer flow for a signed-out visitor too: the flow asks them to sign in', async () => {
+    mocks.address = undefined
+    await renderTab()
+    await click(button(you(), 'Transfer'))
+    expect(host.querySelector('[data-flow="transfer"]')).not.toBeNull()
   })
 
   it.each([
@@ -1076,14 +1122,16 @@ describe('the stickiness bonus', () => {
     await renderTab(now)
     expect(bonus()?.querySelector('.revalidating')).not.toBeNull()
     expect(stat('Stuck')?.querySelector('.revalidating')).not.toBeNull()
-    // Nothing is unstuck on the word of a copy the browser kept.
+    // Nothing is sent on the word of a copy the browser kept: no unstick, and no transfer of the Sticky token it names.
     expect(button(you(), 'Unstick SLOPSHOP')!.disabled).toBe(true)
+    expect(button(you(), 'Transfer')!.disabled).toBe(true)
 
     await act(async () => read.resolve(slopshop({ cashOutTaxRate: 1_000n })))
     await settle()
     expect(bonus()?.querySelector('.revalidating')).toBeNull()
     expect(stat('Stuck')?.querySelector('.revalidating')).toBeNull()
     expect(button(you(), 'Unstick SLOPSHOP')!.disabled).toBe(false)
+    expect(button(you(), 'Transfer')!.disabled).toBe(false)
   })
 })
 

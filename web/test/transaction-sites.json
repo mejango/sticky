@@ -15,6 +15,30 @@
         }
       ]
     },
+    "src/components/project/flows/TransferFlow.tsx": {
+      "hooks": 1,
+      "sends": 1,
+      "sendSites": [
+        {
+          "id": "transfer-sticky-tokens",
+          "actions": [
+            "Transfer Sticky tokens"
+          ]
+        }
+      ]
+    },
+    "src/components/project/flows/TrustFlow.tsx": {
+      "hooks": 1,
+      "sends": 1,
+      "sendSites": [
+        {
+          "id": "set-trusted-sender",
+          "actions": [
+            "Trust or untrust a sender"
+          ]
+        }
+      ]
+    },
     "src/components/project/flows/UnstickFlow.tsx": {
       "hooks": 1,
       "sends": 1,
