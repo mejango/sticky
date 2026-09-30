@@ -142,9 +142,9 @@ function isNamed(name: ts.PropertyName, text: string): boolean {
   return (ts.isIdentifier(name) || ts.isStringLiteral(name)) && name.text === text
 }
 
-/** A `persist` property that turns persistence on. The persister writes any query whose `meta.persist` is truthy, so
- * only false, null, undefined and '' (in any quotes, or as an empty template literal) leave a query off the disk, and
- * anything else is a tag, a tier that is not a literal among it: what cannot be read fails. */
+/** A `persist` property that turns persistence on. The persister writes any query whose `meta.persist` is truthy.
+ * The scan passes only the falsy literals false, null, undefined and '' (in any quotes, or as an empty template
+ * literal); anything else is a tag, including falsy values it does not evaluate, such as 0 or `void 0`. */
 function isPersistProperty(node: ts.Node): boolean {
   if (ts.isShorthandPropertyAssignment(node)) return node.name.text === 'persist'
   if (!ts.isPropertyAssignment(node) || !isNamed(node.name, 'persist')) return false

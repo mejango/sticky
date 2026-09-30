@@ -69,7 +69,7 @@ describe('assetUrl', () => {
     expect(assetUrl(`${euros(908)}a`)).toBeNull()
     expect(assetUrl(euros(909))).toBeNull()
     expect(assetUrl(euros(8_000))).toBeNull()
-    // The same for the other ways a character grows: a space, a quote, a non-ASCII host, a query.
+    // The same for the other ways a character grows: a quote in the path, a space in the query, é in the fragment.
     expect(assetUrl(`https://example.com/${'"'.repeat(2_800)}`)).toBeNull()
     expect(assetUrl(`https://example.com/?q=${' '.repeat(2_800)}x`)).toBeNull()
     expect(assetUrl(`https://example.com/#${'é'.repeat(2_800)}`)).toBeNull()
