@@ -27,8 +27,7 @@ const launchUri = (extra: Record<string, unknown> = {}) =>
 afterEach(() => vi.useRealTimers())
 
 describe('assetUrl', () => {
-  // The old client's runtime.test.cjs, "metadata image URLs cannot inject markup or execute scripts", less
-  // the local file names its demo mode allowed.
+  // Metadata image URLs cannot inject markup or execute scripts.
   it.each([
     ['javascript:alert(1)', null],
     ['data:image/svg+xml,<svg onload="alert(1)">', null],
@@ -57,6 +56,32 @@ describe('assetUrl', () => {
     expect(assetUrl({ href: 'https://example.com/a.png' } as never)).toBeNull()
     expect(assetUrl(`https://example.com/${'a'.repeat(8_172)}`)).not.toBeNull()
     expect(assetUrl(`https://example.com/${'a'.repeat(8_173)}`)).toBeNull()
+    // The length that counts first is what is written, though the parser would drop the white space around it.
+    expect(assetUrl(`https://example.com/a${' '.repeat(9_000)}`)).toBeNull()
+  })
+
+  it('keeps a URL only while it is at most 8,192 characters after the URL parser has percent-encoded it', () => {
+    // A € is three bytes: one character in, nine out. So a URL of a thousand characters can come out at nine thousand,
+    // and what is kept in the browser is what comes out.
+    const euros = (count: number) => `https://example.com/${'€'.repeat(count)}`
+    expect(euros(908)).toHaveLength(928)
+    expect(assetUrl(euros(908))).toHaveLength(8_192)
+    expect(assetUrl(`${euros(908)}a`)).toBeNull()
+    expect(assetUrl(euros(909))).toBeNull()
+    expect(assetUrl(euros(8_000))).toBeNull()
+    // The same for the other ways a character grows: a space, a quote, a non-ASCII host, a query.
+    expect(assetUrl(`https://example.com/${'"'.repeat(2_800)}`)).toBeNull()
+    expect(assetUrl(`https://example.com/?q=${' '.repeat(2_800)}x`)).toBeNull()
+    expect(assetUrl(`https://example.com/#${'é'.repeat(2_800)}`)).toBeNull()
+  })
+
+  it('never keeps more than 8,192 characters, however the input is written', () => {
+    for (const filler of ['a', '€', '"', ' ', '%', '\u{1F600}', '<', '{']) {
+      for (const count of [1, 100, 900, 2_000, 4_000, 8_000]) {
+        const kept = assetUrl(`https://example.com/${filler.repeat(count)}`)
+        expect(kept === null || kept.length <= 8_192, `${filler} x ${count}`).toBe(true)
+      }
+    }
   })
 })
 
@@ -215,6 +240,8 @@ describe('metadataOfUri', () => {
     ['a data logo', 'data:image/svg+xml,<svg onload="alert(1)">', undefined],
     ['an http logo', 'http://example.com/logo.png', undefined],
     ['a logo that is not a string', 42, undefined],
+    ['a logo that percent-encoding makes longer than 8,192 characters', `https://example.com/${'€'.repeat(2_000)}`, undefined],
+    ['a logo that percent-encoding leaves at 8,192 characters', `https://example.com/${'€'.repeat(908)}`, `https://example.com/${'%E2%82%AC'.repeat(908)}`],
   ])('reads %s', async (_what, logoUri, expected) => {
     const { fetcher } = gateway(json({ name: 'X', logoUri }))
     const metadata = await metadataOfUri(CID, { fetch: fetcher })

@@ -22,8 +22,8 @@ import { withTimeout } from '@/lib/with-timeout'
  * Juicebox Center's IPFS gateway, the one the other Juicebox sites use. ipfs.io and dweb.link are sunset.
  *
  * A fetched document is kept in the browser as `reduced` shapes it, with its logo at this gateway. Changing the
- * gateway, or what `reduced` keeps, means bumping METADATA_VERSION, or every browser goes on reading the document as
- * the old code kept it.
+ * gateway, or what `reduced` keeps, means bumping METADATA_VERSION, or a browser goes on reading a document as an
+ * earlier version kept it.
  */
 export const IPFS_GATEWAY = 'https://juicebox.center/ipfs/'
 
@@ -49,9 +49,8 @@ const SEGMENT = /^[A-Za-z\d._~-]{1,128}$/
 export type StickyUri = { protocol: 'Sticky'; launchId: string | null; chains: number[] | null }
 
 /** All that is kept of a project's uri. `logoUri` is an https URL, the gateway's for an ipfs one. Render it with
- * `next/image` unoptimized, as juicebox-money's ProjectLogo does: the image optimizer is set up for Center's gateway
- * only, and a logo can be on any https host. `sticky` is there only when the uri is a data uri that is a Sticky
- * launch's. */
+ * `next/image` unoptimized: the image optimizer is set up for Center's gateway only, and a logo can be on any https
+ * host. `sticky` is there only when the uri is a data uri that is a Sticky launch's. */
 export type ProjectMetadata = { name?: string; logoUri?: string; sticky?: StickyUri }
 
 type Cancel = { signal?: AbortSignal }
@@ -77,13 +76,16 @@ export function ipfsGatewayUrl(uri: string): string | null {
 }
 
 /** The URL an image or link from a project's metadata may be loaded from, or null. Only https, and never with a
- * user or password in it; an `ipfs://` one is the gateway's. */
+ * user or password in it; an `ipfs://` one is the gateway's. It is at most MAX_URL_LENGTH characters as written and as
+ * it is kept: the URL parser percent-encodes, so a URL that is short enough to read can come out nine times as long,
+ * and what is kept in the browser is what comes out. */
 export function assetUrl(value: string | null | undefined): string | null {
   if (typeof value !== 'string' || value.length > MAX_URL_LENGTH) return null
   if (/^ipfs:\/\//i.test(value)) return ipfsGatewayUrl(value)
   try {
     const url = new URL(value)
-    return url.protocol === 'https:' && !url.username && !url.password ? url.href : null
+    const acceptable = url.protocol === 'https:' && !url.username && !url.password
+    return acceptable && url.href.length <= MAX_URL_LENGTH ? url.href : null
   } catch {
     return null
   }

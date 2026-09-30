@@ -1,8 +1,8 @@
 /**
- * How a client reads a project route from the address bar. These two functions are juicebox-money's, from
- * `project-handles.ts`. They live here so that the header and the route provider, which every page loads, can read a
- * route without loading the ENSIP-15 name normalization that the rest of `project-handles.ts` brings (about 26 KB
- * gzipped). Handles are resolved on the server; see `sticky-handles.ts`.
+ * How a client reads a project route from the address bar. These two functions live apart from `project-handles.ts`
+ * so that the header and the route provider, which every page loads, can read a route without loading the ENSIP-15
+ * name normalization that the rest of that file brings (about 26 KB gzipped). Handles are resolved on the server; see
+ * `sticky-handles.ts`.
  */
 
 /** Next may expose a dynamic path segment in either encoded or decoded form. */

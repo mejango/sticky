@@ -74,16 +74,14 @@ describe('project route segments', () => {
     expect(projectRouteSegmentFromPathname('/%E0%A4%A')).toBeNull()
   })
 
-  it('is the same pair of functions project-handles.ts exports, as juicebox-money\'s file does', () => {
+  it('is the same pair of functions project-handles.ts exports', () => {
     expect(handles.decodeProjectRouteSegment).toBe(decodeProjectRouteSegment)
     expect(handles.projectRouteSegmentFromPathname).toBe(projectRouteSegmentFromPathname)
   })
 })
 
-// The rest is juicebox-money's test/contracts/project-handles.test.ts, from its "project handle normalization and
-// routing" and "project handle transaction payloads" blocks and the three `readDirectEnsProjectRecord` cases of its
-// "live handle authorities" block. The other cases of that block are for project-fallback.ts, which Sticky does not
-// have: a Sticky project is not a revnet, and its owner is the only setter there is.
+// Normalization, the ENS record, the claim and the payloads of the handle functions. A claim is read for one setter,
+// and a Sticky project has only its owner: it is not a revnet, so there is no operator to find.
 describe('project handle normalization and routing', () => {
   it('accepts an arbitrary project-controlled .eth name', () => {
     expect(normalizeProjectHandle('banny.eth')).toEqual({

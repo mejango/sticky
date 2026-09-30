@@ -1,7 +1,9 @@
+import { QueryClient } from '@tanstack/react-query'
 import { readdirSync, readFileSync } from 'node:fs'
 import { extname, join } from 'node:path'
 import ts from 'typescript'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { installQueryPersistence } from '@/lib/query-persist'
 
 /**
  * Persisted queries outlive the session in localStorage. Anything keyed to a wallet must never go there: a later
@@ -11,14 +13,13 @@ import { describe, expect, it } from 'vitest'
  * This reads the source rather than the runtime because the risk is a future edit tagging the wrong query, and that
  * should fail in CI, not in a browser.
  *
- * It began as juicebox-money's test/persist-scope.test.ts, which matches lines: it takes the first `queryKey: [` within
- * six lines of a tag, and passes quietly when it finds none. A long queryFn, a query next door, a key that a function
- * builds or a variable holds, a spelling it does not know: each gets past it. This parses each file instead. From every
- * tag (`meta: PERSIST`, `persist: 'immutable'`, `immutableQuery(...)`, `cachedQuery(...)`, in any quotes, spread or
- * import alias) it walks out to the object literal that has a `queryKey`, and reads that key. What it cannot read fails:
- * a key that is not an array literal, or has a spread in it, or a tag with no key to be found. ALLOWED excuses one key
- * in one file, with the reason it is safe, and does the same for a key with an account word in it that is about
- * something public.
+ * It parses each file with the TypeScript compiler API. From every tag it walks out to the object literal that has a
+ * `queryKey`, however far apart the two are, and reads that key. A tag is `meta: PERSIST`, `immutableQuery(...)` and
+ * `cachedQuery(...)` (spread, called through an import alias or a namespace), and any `persist` property. The persister
+ * writes every query whose `meta.persist` is truthy, whatever the type says of it, so a `persist` that is anything but
+ * false, null, undefined or '' is a tag. What the scan cannot read fails: a key that is not an array literal, one with a
+ * spread in it, or a tag with no key to be found. ALLOWED excuses one key in one file, with the reason it is safe, and
+ * does the same for a key with an account word in it that is about something public.
  */
 
 /** Words that say a key is about an account, matched anywhere in the key's text and in any letter case, so
@@ -43,9 +44,8 @@ const ACCOUNT_HINTS = [
   'signer',
 ]
 
-/** What tags a query for the persister: the helpers of query-persist.ts, and the `persist` tier in a query's `meta`. */
+/** The helpers of query-persist.ts that tag a query for the persister. The other tag is a `persist` property. */
 const TAG_NAMES = ['PERSIST', 'immutableQuery', 'cachedQuery']
-const PERSIST_TIERS = ['immutable', 'revalidate']
 
 /** The source of query-persist.ts writes the tags themselves; it tags no query. */
 const TAG_DEFINITIONS = join('src', 'lib', 'query-persist.ts')
@@ -64,11 +64,22 @@ type Persisted = {
   hint: string | null
 }
 
+/** Files that the build reads as code: tsconfig's allowJs has `.js` and `.jsx` in it beside TypeScript. */
+const isSource = (name: string) => /\.[cm]?[jt]sx?$/.test(name)
+
+const SCRIPT_KINDS: Record<string, ts.ScriptKind> = {
+  '.tsx': ts.ScriptKind.TSX,
+  '.jsx': ts.ScriptKind.JSX,
+  '.js': ts.ScriptKind.JS,
+  '.mjs': ts.ScriptKind.JS,
+  '.cjs': ts.ScriptKind.JS,
+}
+
 function sourceFiles(dir = 'src'): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
     const full = join(dir, entry.name)
     if (entry.isDirectory()) return sourceFiles(full)
-    return /\.tsx?$/.test(entry.name) ? [full] : []
+    return isSource(entry.name) ? [full] : []
   })
 }
 
@@ -123,14 +134,22 @@ function isReference(node: ts.Identifier): boolean {
   return true
 }
 
-/** A `persist: 'immutable'` or `persist: 'revalidate'` in any quotes, or a `persist` whose tier is not a literal
- * (which is read as a tag: what cannot be read fails). `persist: false` and another word are not tags. */
+/** Whether a property is called `text`: `text`, `'text'` or `['text']`. */
+function isNamed(name: ts.PropertyName, text: string): boolean {
+  if (ts.isComputedPropertyName(name)) {
+    return (ts.isStringLiteral(name.expression) || ts.isNoSubstitutionTemplateLiteral(name.expression)) && name.expression.text === text
+  }
+  return (ts.isIdentifier(name) || ts.isStringLiteral(name)) && name.text === text
+}
+
+/** A `persist` property that turns persistence on. The persister writes any query whose `meta.persist` is truthy, so
+ * only false, null, undefined and '' (in any quotes, or as an empty template literal) leave a query off the disk, and
+ * anything else is a tag, a tier that is not a literal among it: what cannot be read fails. */
 function isPersistProperty(node: ts.Node): boolean {
   if (ts.isShorthandPropertyAssignment(node)) return node.name.text === 'persist'
-  if (!ts.isPropertyAssignment(node)) return false
-  if (!(ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)) || node.name.text !== 'persist') return false
+  if (!ts.isPropertyAssignment(node) || !isNamed(node.name, 'persist')) return false
   const tier = unwrap(node.initializer)
-  if (ts.isStringLiteral(tier) || ts.isNoSubstitutionTemplateLiteral(tier)) return PERSIST_TIERS.includes(tier.text)
+  if (ts.isStringLiteral(tier) || ts.isNoSubstitutionTemplateLiteral(tier)) return tier.text !== ''
   return !(
     tier.kind === ts.SyntaxKind.NullKeyword ||
     tier.kind === ts.SyntaxKind.FalseKeyword ||
@@ -148,9 +167,8 @@ function calleeOf(tag: ts.Node): ts.CallExpression | null {
 function keyProperty(object: ts.ObjectLiteralExpression): ts.ObjectLiteralElementLike | undefined {
   return object.properties.find(
     property =>
-      (ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)) &&
-      (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) &&
-      property.name.text === 'queryKey',
+      (ts.isPropertyAssignment(property) && isNamed(property.name, 'queryKey')) ||
+      (ts.isShorthandPropertyAssignment(property) && property.name.text === 'queryKey'),
   )
 }
 
@@ -190,7 +208,7 @@ function persistedQueries(file: string, text: string): Persisted[] {
     text,
     ts.ScriptTarget.Latest,
     true,
-    extname(file) === '.tsx' ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+    SCRIPT_KINDS[extname(file)] ?? ts.ScriptKind.TS,
   )
   const names = tagNames(source)
   const found: Persisted[] = []
@@ -240,7 +258,7 @@ describe('persisted query scope', () => {
   it('finds the tagged queries at all, so the scan cannot silently pass', () => {
     const tagged = files.filter(file => persistedQueries(file, readFileSync(file, 'utf8')).length > 0)
     // The project metadata query is the first. Raise this floor as a task adds a persisted query, to about a quarter
-    // of the files that have one, as juicebox-money's does.
+    // of the files that have one.
     expect(tagged).toContain(join('src', 'hooks', 'useProjectMetadata.ts'))
     expect(tagged.length).toBeGreaterThanOrEqual(1)
   })
@@ -256,7 +274,8 @@ const IMPORTS = [
 const hook = (body: string) => `${IMPORTS}\n\nexport function useThing() {\n${body}\n}\n`
 
 describe('the scan itself', () => {
-  // Queries that put an account's data on disk, in the shapes that juicebox-money's line scan misses.
+  // Persisted queries that name an account, or whose key cannot be read, in the shapes they take. Each must fail, for
+  // the reason it is given.
   const MISSED: [string, string, 'names' | 'cannot be read'][] = [
     [
       'a long queryFn between the key and the tag (the shape of the metadata hook)',
@@ -341,8 +360,48 @@ describe('the scan itself', () => {
       'names',
     ],
     [
+      'a tier that names none of the two the type lists',
+      hook("  return useQuery({ queryKey: ['balance', address], queryFn, meta: { persist: 'none' } })"),
+      'names',
+    ],
+    [
+      'a tier in a template literal that names none of them',
+      hook("  return useQuery({ queryKey: ['balance', address], queryFn, meta: { persist: `none` } })"),
+      'names',
+    ],
+    [
+      'a tier of session',
+      hook("  return useQuery({ queryKey: ['balance', address], queryFn, meta: { persist: 'session' } })"),
+      'names',
+    ],
+    [
+      'a tier in another letter case',
+      hook("  return useQuery({ queryKey: ['balance', address], queryFn, meta: { persist: 'Immutable' } })"),
+      'names',
+    ],
+    [
+      'a tier of true',
+      hook("  return useQuery({ queryKey: ['balance', address], queryFn, meta: { persist: true } })"),
+      'names',
+    ],
+    [
+      'a tier under a computed name',
+      hook("  return useQuery({ queryKey: ['balance', address], queryFn, meta: { ['persist']: true } })"),
+      'names',
+    ],
+    [
       'PERSIST spread into meta',
       hook("  return useQuery({ queryKey: ['balance', address], queryFn, meta: { ...PERSIST } })"),
+      'names',
+    ],
+    [
+      'a key under a quoted name',
+      hook("  return useQuery({ 'queryKey': ['balance', address], queryFn, meta: PERSIST })"),
+      'names',
+    ],
+    [
+      'a key under a computed name',
+      hook("  return useQuery({ ['queryKey']: ['balance', address], queryFn, meta: PERSIST })"),
       'names',
     ],
     [
@@ -444,6 +503,40 @@ export const useThing = () => useQuery({ queryKey: ['x', address], queryFn, meta
     expect(check('x.ts', elsewhere).offenders).toEqual(['x.ts:5: immutableQuery(options) cannot be read'])
   })
 
+  it.each(['a.ts', 'a.tsx', 'a.js', 'a.jsx', 'a.mjs', 'a.cjs', 'a.mts', 'a.cts'])('reads %s as source', name => {
+    expect(isSource(name)).toBe(true)
+  })
+
+  it.each(['a.md', 'a.json', 'a.css', 'a.ts.map', 'ts', 'a.d'])('does not read %s', name => {
+    expect(isSource(name)).toBe(false)
+  })
+
+  it.each(['x.js', 'x.mjs', 'x.cjs'])('finds a tag in %s, which has no types', file => {
+    const source = `import { useQuery } from '@tanstack/react-query'
+import { PERSIST } from '@/lib/query-persist'
+
+export const useThing = () => useQuery({ queryKey: ['balance', address], queryFn, meta: PERSIST })
+`
+    expect(check(file, source).offenders).toHaveLength(1)
+  })
+
+  it('finds a tag in a jsx file, and in a js file that has jsx in it', () => {
+    // The backtick in the text of the first element opens a template literal if the file is read as TypeScript, and
+    // that swallows the query after it. Read as jsx, it is text.
+    const source = `import { useQuery } from '@tanstack/react-query'
+import { PERSIST } from '@/lib/query-persist'
+
+export function Balance() {
+  const note = <p>use \` to quote</p>
+  const { data } = useQuery({ queryKey: ['balance', address], queryFn, meta: PERSIST })
+  return <span>{String(data)}{note}</span>
+}
+`
+    expect(check('x.jsx', source).offenders).toHaveLength(1)
+    expect(check('x.js', source).offenders).toHaveLength(1)
+    expect(check('x.tsx', source).offenders).toHaveLength(1)
+  })
+
   it('reads a tag in a component file', () => {
     const source = `import { useQuery } from '@tanstack/react-query'
 import { PERSIST } from '@/lib/query-persist'
@@ -488,9 +581,12 @@ export function Balance() {
   const balance = useQuery({ queryKey: ['balance', walletAddress], queryFn })
   return [project, balance]`),
     ],
-    ['a tier that is not one', hook("  return useQuery({ queryKey: ['balance', address], queryFn, meta: { persist: 'none' } })")],
-    ['a tier that is off', hook("  return useQuery({ queryKey: ['balance', address], queryFn, meta: { persist: false } })")],
-    ['a tier in a template literal that is not one', hook("  return useQuery({ queryKey: ['balance', address], queryFn, meta: { persist: `none` } })")],
+    ['a tier that is false, on a wallet key', hook("  return useQuery({ queryKey: ['balance', address], queryFn, meta: { persist: false } })")],
+    ['a tier that is empty, on a wallet key', hook("  return useQuery({ queryKey: ['balance', address], queryFn, meta: { persist: '' } })")],
+    ['a tier that is an empty template literal, on a wallet key', hook("  return useQuery({ queryKey: ['balance', address], queryFn, meta: { persist: `` } })")],
+    ['a tier that is null, on a wallet key', hook("  return useQuery({ queryKey: ['balance', address], queryFn, meta: { persist: null } })")],
+    ['a tier that is undefined, on a wallet key', hook("  return useQuery({ queryKey: ['balance', address], queryFn, meta: { persist: undefined } })")],
+    ['a tier that is false and cast, on a wallet key', hook("  return useQuery({ queryKey: ['balance', address], queryFn, meta: { persist: false as boolean } })")],
     [
       'a tag in a comment and in a string',
       hook(`  // meta: PERSIST would put this on disk, and this key names a wallet: ['balance', address]
@@ -553,5 +649,68 @@ export function Balance() {
   })`)
       expect(check('x.ts', laidOut, [entry]).offenders).toEqual([])
     })
+  })
+})
+
+function memoryStorage(): Storage {
+  const map = new Map<string, string>()
+  return {
+    get length() {
+      return map.size
+    },
+    clear: () => map.clear(),
+    getItem: key => map.get(key) ?? null,
+    key: index => [...map.keys()][index] ?? null,
+    removeItem: key => void map.delete(key),
+    setItem: (key, value) => void map.set(key, value),
+  } as Storage
+}
+
+/** Whether the real persister writes a wallet-keyed query with `meta: { persist: value }` to the browser's storage. */
+async function persisterWrites(value: unknown): Promise<boolean> {
+  vi.useFakeTimers()
+  try {
+    const storage = memoryStorage()
+    const client = new QueryClient()
+    const stop = installQueryPersistence(client, storage)
+    await client.fetchQuery({ queryKey: ['balance', '0x1111111111111111111111111111111111111111'], queryFn: async () => 1, meta: { persist: value } })
+    await vi.advanceTimersByTimeAsync(1_500)
+    stop()
+    return storage.getItem('sticky:query-cache:v1') !== null
+  } finally {
+    vi.useRealTimers()
+  }
+}
+
+describe('a persist tier', () => {
+  // The persister writes any query whose `meta.persist` is truthy, whatever the type says of it, so the scan tags
+  // every `persist` that is not false, null, undefined or ''. Each row is the tier as it is written, and its value.
+  const TIERS: [string, unknown][] = [
+    ["'immutable'", 'immutable'],
+    ["'revalidate'", 'revalidate'],
+    ["'none'", 'none'],
+    ["'session'", 'session'],
+    ["'Immutable'", 'Immutable'],
+    ["'false'", 'false'],
+    ['true', true],
+    ['1', 1],
+    ['{}', {}],
+    ['false', false],
+    ["''", ''],
+    ['null', null],
+    ['undefined', undefined],
+    ['0', 0],
+  ]
+  const OFF = ["false", "''", 'null', 'undefined']
+
+  it.each(TIERS)('%s: the scan tags every one that the persister writes, and none of the four that leave a query off', async (literal, value) => {
+    const written = await persisterWrites(value)
+    const { offenders } = check('x.ts', hook(`  return useQuery({ queryKey: ['balance', address], queryFn, meta: { persist: ${literal} } })`))
+    // The persister's rule: a truthy tier is written.
+    expect(written).toBe(Boolean(value))
+    // Nothing it writes gets past the scan. (0 is not written and is tagged all the same: a tier that is not a
+    // literal false, null, undefined or '' is read as on.)
+    expect(offenders.length > 0 || !written).toBe(true)
+    if (OFF.includes(literal)) expect(offenders).toEqual([])
   })
 })

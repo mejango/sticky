@@ -2,9 +2,7 @@ import { parseUnits } from 'viem'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ago, formatAmount, formatDuration } from '@/lib/sticky-format'
 
-// The old client's format.test.cjs, which pulled formatUnits, formatAmount, formatDuration and ago out of
-// app.js with vm. `units` is what that file's helper of the same name built: whole and fractional digits
-// scaled by the token's decimals.
+// `units` is an amount in a token's smallest units: its whole and fractional digits scaled by the token's decimals.
 const units = (amount: string, decimals = 18) => parseUnits(amount, decimals)
 
 describe('formatAmount', () => {

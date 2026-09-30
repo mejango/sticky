@@ -11,9 +11,11 @@
  * project is owned by the StickyDeployer that launched it and can never be transferred, and the deployer has no
  * function that makes a claim, so today no Sticky project has a handle.)
  *
- * Names and handles are read only on production chains: a mainnet name does not describe a testnet project. Every
- * read that fails, or answers with something that does not read, is a handle that names nothing, and a read that
- * fails is told to the console, so that a lookup that is down is not a 404 that nobody sees.
+ * Names and handles are read only on production chains: a mainnet name does not describe a testnet project. A read
+ * that answers with something that does not read names nothing, and so does a read that fails. A failed read of the
+ * project's owner or of the claim is told to the console, so that a lookup that is down is not a 404 that nobody
+ * sees. The name's record is read by `readDirectEnsProjectRecord`, which reads a failed lookup as no record, so when
+ * Ethereum cannot be asked for the record the handle names nothing without a word.
  */
 
 import type { JBChainId } from '@bananapus/nana-sdk-core'
@@ -37,7 +39,7 @@ export type ResolvedProjectHandle = { chainId: JBChainId; projectId: number; han
 
 /** The three reads a handle takes, so that a test can stand in for Ethereum and the project's chain. */
 export type HandleReads = {
-  /** The `juicebox` text record of an ENS name, or null when it has no resolver or record. */
+  /** The `juicebox` text record of an ENS name, or null when it has no resolver or record, or the lookup fails. */
   record: (ensName: string) => Promise<string | null>
   /** The owner of a project's NFT, which rejects when the project does not exist. */
   ownerOf: (chainId: number, projectId: number) => Promise<Address>

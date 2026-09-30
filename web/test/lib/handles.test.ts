@@ -20,9 +20,8 @@ import {
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import { resolveProjectHandle, type HandleReads } from '@/lib/sticky-handles'
 
-// The old client's ens.test.cjs: "ENS names and project handles are read only on production chains". There the
-// page's chain decided it; here it is the chain of the accounts a name is asked for, and the chain a handle's
-// record points at.
+// Names and handles are read only on production chains: the chain of the accounts a name is asked for, and the chain
+// a handle's record points at.
 
 const center = vi.hoisted(() => ({ client: vi.fn() }))
 vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: center.client }))
@@ -374,6 +373,35 @@ describe('resolveProjectHandle', () => {
         expect.objectContaining({ address: PROJECTS, functionName: 'ownerOf', args: [PROJECT] }),
       )
       expect(new Set(center.client.mock.calls.map(([chainId]) => chainId))).toEqual(new Set([1, 8453]))
+    })
+
+    it('names nothing, and says nothing, when Ethereum cannot be asked for the name: that leg reads a failed lookup as no record', async () => {
+      const down = new Error('429')
+      const { ethereum, projectChain } = fakeChains()
+      ethereum.getBlockNumber.mockRejectedValue(down)
+      ethereum.readContract.mockRejectedValue(down)
+      ethereum.request.mockRejectedValue(down)
+
+      expect(await resolveProjectHandle('@banny')).toBeNull()
+
+      expect(console.warn).not.toHaveBeenCalled()
+      expect(projectChain.readContract).not.toHaveBeenCalled()
+    })
+
+    it('tells the console when the claim cannot be read, as it does for the owner', async () => {
+      const down = new Error('429')
+      const { ethereum } = fakeChains()
+      const answers = ethereum.request.getMockImplementation()!
+      ethereum.request.mockImplementation(async raw => {
+        if (raw.params[0].to === PROJECT_HANDLES_ADDRESS) throw down
+        return answers(raw)
+      })
+
+      expect(await resolveProjectHandle('@banny')).toBeNull()
+
+      expect(vi.mocked(console.warn).mock.calls).toEqual([
+        ['A project handle could not be read; it names no project.', { handle: 'banny' }, down],
+      ])
     })
 
     it('names nothing when the name has no record, and never reads the project', async () => {
