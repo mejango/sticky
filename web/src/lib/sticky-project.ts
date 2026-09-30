@@ -52,6 +52,15 @@ export type StickyProjectInfo = {
   blockNumber: bigint
 }
 
+/** What `shares` Sticky shares can claim of a project's backing, in the staked token's units and rounded down.
+ * With no shares in circulation there is nothing to claim it with. */
+export function backingOfShares(
+  shares: bigint,
+  { totalSupply, backing }: Pick<StickyProjectInfo, 'totalSupply' | 'backing'>,
+): bigint {
+  return totalSupply > 0n ? (shares * backing) / totalSupply : 0n
+}
+
 type Difference = {
   name: 'HOOK' | 'TERMINAL' | 'CONTROLLER'
   expected: Address

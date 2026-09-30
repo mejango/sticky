@@ -8,8 +8,8 @@ export {
   stickyRewardReceiverFactoryAbi,
 } from '@bananapus/nana-sdk-core'
 
-// The lists below hold the functions Sticky calls and no more. The SDK's jb*Abi exports carry each
-// whole contract, and a test holds every list here to them.
+// The lists below hold the functions Sticky calls and the events it reads, and no more. The SDK's jb*Abi
+// exports carry each whole contract, and a test holds every list here to them.
 
 /** A Sticky token, the ERC-20 a stick mints, with 18 decimals. `SOULBOUND` says whether it can be
  * transferred, and `getPastVotes` reads a holder's delegated voting power at a past timepoint. */
@@ -31,6 +31,14 @@ export const terminalAbi = parseAbi([
   'function feeFreeSurplusOf(uint256 projectId, address token) view returns (uint256)',
   'function previewPayFor(uint256 projectId, address token, uint256 amount, address beneficiary, bytes metadata) view returns (JBRuleset ruleset, uint256 beneficiaryTokenCount, uint256 reservedTokenCount, JBPayHookSpecification[] hookSpecifications)',
   'function previewCashOutFrom(address holder, uint256 projectId, uint256 cashOutCount, address tokenToReclaim, address beneficiary, bytes metadata) view returns (JBRuleset ruleset, uint256 reclaimAmount, uint256 cashOutTaxRate, JBCashOutHookSpecification[] hookSpecifications)',
+])
+
+/** The terminal's records of a stick and an unstick: what a pay took in and what a cash out paid out, in the
+ * staked token's units, beside the Sticky shares that were issued (`newlyIssuedTokenCount`) or cashed out
+ * (`cashOutCount`). Both index the project third. */
+export const terminalEventsAbi = parseAbi([
+  'event Pay(uint256 indexed rulesetId, uint256 indexed rulesetCycleNumber, uint256 indexed projectId, address payer, address beneficiary, uint256 amount, uint256 newlyIssuedTokenCount, string memo, bytes metadata, address caller)',
+  'event CashOutTokens(uint256 indexed rulesetId, uint256 indexed rulesetCycleNumber, uint256 indexed projectId, address holder, address beneficiary, uint256 cashOutCount, uint256 cashOutTaxRate, uint256 reclaimAmount, bytes metadata, address caller)',
 ])
 
 /** The registry the terminal's `FEELESS_ADDRESSES()` names. */

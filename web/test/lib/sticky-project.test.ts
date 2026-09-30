@@ -16,6 +16,7 @@ import { stickyTokenAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import {
   StickyDeploymentMismatch,
+  backingOfShares,
   readStickyProject,
   verifyStickyDeployment,
 } from '@/lib/sticky-project'
@@ -407,5 +408,23 @@ describe('verifyStickyDeployment', () => {
   it('refuses a chain Sticky is not deployed on, without opening a reader', async () => {
     await expect(verifyStickyDeployment(137)).rejects.toThrow('Sticky is not deployed on chain 137.')
     expect(center.client).not.toHaveBeenCalled()
+  })
+})
+
+// From the old client's test/feed-amounts.test.cjs: the pool it named `{ supply, sigma }` is a project's
+// `totalSupply` and `backing`.
+describe('backingOfShares', () => {
+  it('is the share of the backing that the shares are of the supply, rounded down', () => {
+    expect(backingOfShares(10n, { totalSupply: 100n, backing: 101n })).toBe(10n)
+    expect(backingOfShares(50n, { totalSupply: 100n, backing: 202n })).toBe(101n)
+  })
+
+  it('is zero while no shares exist, whatever the terminal holds', () => {
+    expect(backingOfShares(50n, { totalSupply: 0n, backing: 0n })).toBe(0n)
+    expect(backingOfShares(50n, { totalSupply: 0n, backing: 7n })).toBe(0n)
+  })
+
+  it('is the whole backing for the whole supply', () => {
+    expect(backingOfShares(3n * 10n ** 18n, { totalSupply: 3n * 10n ** 18n, backing: 12_345n })).toBe(12_345n)
   })
 })

@@ -149,24 +149,30 @@ describe('the functions the old client calls', () => {
 })
 
 // Selectors say nothing about what a call returns, so each list this app writes is held to the
-// SDK's ABI for the functions it names. The SDK's JSON carries two things an encoder and decoder
-// never read: each parameter's Solidity `internalType`, and an empty name on an unnamed output.
+// SDK's ABI for the functions and events it names. The SDK's JSON carries things an encoder and decoder
+// never read: each parameter's Solidity `internalType`, an empty name on an unnamed output, and on an
+// event `anonymous: false` and `indexed: false`, which are what an ABI that leaves them out means.
 const canonical = (item: unknown) =>
   JSON.parse(
     JSON.stringify(item, (key, value) =>
-      key === 'internalType' || (key === 'name' && value === '') ? undefined : value,
+      key === 'internalType' ||
+      (key === 'name' && value === '') ||
+      ((key === 'anonymous' || key === 'indexed') && value === false)
+        ? undefined
+        : value,
     ),
   )
 
 describe('the lists this app writes', () => {
   it.each([
     ['terminalAbi', sticky.terminalAbi, sdk.jbMultiTerminalAbi],
+    ['terminalEventsAbi', sticky.terminalEventsAbi, sdk.jbMultiTerminalAbi],
     ['terminalStoreAbi', sticky.terminalStoreAbi, sdk.jbTerminalStoreAbi],
     ['projectsAbi', sticky.projectsAbi, sdk.jbProjectsAbi],
     ['tokensAbi', sticky.tokensAbi, sdk.jbTokensAbi],
     ['controllerAbi', sticky.controllerAbi, sdk.jbControllerAbi],
   ] as [string, Abi, Abi][])(
-    '%s describes each function it lists exactly as the SDK does',
+    '%s describes each function or event it lists exactly as the SDK does',
     (_name, list, full) => {
       expect(list.length).toBeGreaterThan(0)
       for (const item of list) {

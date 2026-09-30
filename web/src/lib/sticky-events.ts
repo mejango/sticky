@@ -285,7 +285,7 @@ function merged(indexed: StickyEvent[], scanned: StickyEvent[], asOf: bigint): S
 /** What `read` gives, or null when it fails, which the console hears about under `label`. When the caller has
  * cancelled it rejects with the caller's reason instead: a read the caller gave up on is no reason to read
  * something else. */
-async function orNull<T>(
+export async function orNull<T>(
   read: () => Promise<T>,
   signal: AbortSignal | undefined,
   label: string,
