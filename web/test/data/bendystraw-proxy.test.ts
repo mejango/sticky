@@ -115,6 +115,8 @@ describe('persisted Bendystraw operations', () => {
     const source = await vi.importActual<{ default: Record<string, string> }>(
       '@/lib/bendystraw-operation-registry.json',
     )
+    // The loop passes on an empty registry, so the count is pinned: the seven documents of sticky-indexed.ts.
+    expect(Object.keys(source.default)).toHaveLength(7)
     for (const [id, query] of Object.entries(source.default)) {
       expect(await bendystrawOperationId(query)).toBe(id)
       expect(() => compileBendystrawOperation(query)).not.toThrow()
