@@ -4,8 +4,10 @@ import {
   decodeFunctionData,
   encodeFunctionResult,
   erc20Abi,
+  erc20Abi_bytes32,
   getAddress,
   multicall3Abi,
+  stringToHex,
   toFunctionSelector,
   type Abi,
   type AbiFunction,
@@ -106,7 +108,10 @@ function center() {
   }
 }
 
-function stockProject(chain: ReturnType<typeof center>, { soulbound }: { soulbound: boolean | 'reverts' }) {
+function stockProject(
+  chain: ReturnType<typeof center>,
+  { soulbound, text = 'string' }: { soulbound: boolean | 'reverts'; text?: 'string' | 'bytes32' | 'reverts' },
+) {
   const { stock } = chain
   stock(deployment.deployer, stickyDeployerAbi, 'stakedTokenOf', STAKED)
   stock(deployment.deployer, stickyDeployerAbi, 'cashOutTaxRateOf', 1000n)
@@ -114,9 +119,15 @@ function stockProject(chain: ReturnType<typeof center>, { soulbound }: { soulbou
   stock(deployment.hook, stickyHookAbi, 'orphanedBalanceOf', 4n)
   stock(deployment.terminal, terminalAbi, 'STORE', STORE)
   stock(deployment.controller, controllerAbi, 'uriOf', URI)
-  stock(STAKED, erc20Abi, 'symbol', 'ART')
+  // The staked token's symbol and name: a string, a bytes32 as MKR returns, or nothing at all.
+  if (text === 'bytes32') {
+    stock(STAKED, erc20Abi_bytes32, 'symbol', stringToHex('MKR', { size: 32 }))
+    stock(STAKED, erc20Abi_bytes32, 'name', stringToHex('Maker', { size: 32 }))
+  } else {
+    stock(STAKED, erc20Abi, 'symbol', 'ART', text === 'string')
+    stock(STAKED, erc20Abi, 'name', 'Art', text === 'string')
+  }
   stock(STAKED, erc20Abi, 'decimals', 6)
-  stock(STAKED, erc20Abi, 'name', 'Art')
   stock(STICKY, stickyTokenAbi, 'symbol', 'STICKYART')
   stock(STICKY, stickyTokenAbi, 'name', 'Streaking ART')
   stock(STICKY, stickyTokenAbi, 'SOULBOUND', soulbound === 'reverts' ? false : soulbound, soulbound !== 'reverts')
@@ -154,14 +165,31 @@ describe('readStickyProject through the Center reader', () => {
       totalSupply: 10n ** 18n,
       backing: 6n,
       orphaned: 4n,
+      rawBacking: 10n,
+      savedOrphaned: 4n,
       launchId: LAUNCH,
       blockNumber: HEAD,
     })
     expect(chain.requests.map(({ method, block, calls }) => [method, block, calls?.length])).toEqual([
       ['eth_blockNumber', undefined, undefined],
       ['eth_call', `0x${HEAD.toString(16)}`, 6],
-      ['eth_call', `0x${HEAD.toString(16)}`, 8],
+      // The staked token's symbol and name are asked as a string and as a bytes32: two calls more.
+      ['eth_call', `0x${HEAD.toString(16)}`, 10],
     ])
+  })
+
+  it('reads a bytes32 symbol and name, as MKR returns, once real viem has failed to decode them as strings', async () => {
+    const chain = center()
+    stockProject(chain, { soulbound: false, text: 'bytes32' })
+    const { readStickyProject } = await load()
+    expect(await readStickyProject(CHAIN, 12n)).toMatchObject({ symbol: 'MKR', name: 'Maker' })
+  })
+
+  it('fails when the staked token answers neither as a string nor as a bytes32', async () => {
+    const chain = center()
+    stockProject(chain, { soulbound: false, text: 'reverts' })
+    const { readStickyProject } = await load()
+    await expect(readStickyProject(CHAIN, 12n)).rejects.toThrow(/could not be read/)
   })
 
   it('reads a SOULBOUND() that reverts inside Multicall3 as locked', async () => {

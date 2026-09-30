@@ -1,9 +1,12 @@
 import {
   ContractFunctionExecutionError,
   erc20Abi,
+  erc20Abi_bytes32,
+  hexToString,
   isAddressEqual,
   zeroAddress,
   type Address,
+  type Hex,
 } from 'viem'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import {
@@ -35,10 +38,15 @@ export type StickyProjectInfo = {
   soulbound: boolean
   /** Sticky shares in circulation. */
   totalSupply: bigint
-  /** What holders can claim, in the staked token's units: the terminal's balance less `orphaned`. */
+  /** What holders can claim, in the staked token's units: `rawBacking` less `orphaned`. */
   backing: bigint
   /** Backing nobody can claim, left when everyone unstuck. While no shares exist it is all of it. */
   orphaned: bigint
+  /** What the terminal holds of the staked token for this project, before the unowned part comes out. */
+  rawBacking: bigint
+  /** The unowned backing the hook has recorded. It is `orphaned` except while no shares exist, when
+   * `orphaned` is all of `rawBacking` and this stays what was recorded. The backing chart needs it. */
+  savedOrphaned: bigint
   /** Shared by every chain's copy of one launch, so it groups them. Null when the uri names none. */
   launchId: string | null
   blockNumber: bigint
@@ -118,9 +126,18 @@ export async function readStickyProject(
   const client = jbCenterPublicClient(chainId)
   const blockNumber = await client.getBlockNumber()
   const where = `Sticky project ${projectId} on chain ${chainId}`
-  const need = <T>(answer: Answer<T>, read: string): T => {
-    if (answer.status === 'success') return answer.result
-    throw new Error(`${where}: ${read} could not be read.`, { cause: answer.error })
+  const unreadable = (read: string, cause: Error): never => {
+    throw new Error(`${where}: ${read} could not be read.`, { cause })
+  }
+  const need = <T>(answer: Answer<T>, read: string): T =>
+    answer.status === 'success' ? answer.result : unreadable(read, answer.error)
+  // A token's symbol or name is the string most tokens return, or the NUL-padded bytes32 some return
+  // (MKR). Reading a string's return as a bytes32 gives its offset word rather than an error, so the
+  // string reading comes first and the bytes32 one only when it fails.
+  const text = (asString: Answer<string>, asBytes32: Answer<Hex>, read: string): string => {
+    if (asString.status === 'success') return asString.result
+    if (asBytes32.status === 'success') return hexToString(asBytes32.result, { size: 32 }).replace(/\0+$/, '')
+    return unreadable(read, asString.error)
   }
 
   const [stakedTokenOf, taxRateOf, tokenOf, orphanedOf, storeOf, uriOf] = answered(
@@ -147,12 +164,25 @@ export async function readStickyProject(
   const savedOrphaned = need(orphanedOf, 'the unowned backing')
   const store = need(storeOf, 'the store')
 
-  const [symbolOf, decimalsOf, nameOf, stSymbolOf, stNameOf, soulboundOf, totalSupplyOf, balanceOf] = answered(
+  const [
+    symbolOf,
+    decimalsOf,
+    nameOf,
+    symbolBytes32Of,
+    nameBytes32Of,
+    stSymbolOf,
+    stNameOf,
+    soulboundOf,
+    totalSupplyOf,
+    balanceOf,
+  ] = answered(
     await client.multicall({
       contracts: [
         { address: stakedToken, abi: erc20Abi, functionName: 'symbol' },
         { address: stakedToken, abi: erc20Abi, functionName: 'decimals' },
         { address: stakedToken, abi: erc20Abi, functionName: 'name' },
+        { address: stakedToken, abi: erc20Abi_bytes32, functionName: 'symbol' },
+        { address: stakedToken, abi: erc20Abi_bytes32, functionName: 'name' },
         { address: stToken, abi: stickyTokenAbi, functionName: 'symbol' },
         { address: stToken, abi: stickyTokenAbi, functionName: 'name' },
         { address: stToken, abi: stickyTokenAbi, functionName: 'SOULBOUND' },
@@ -168,9 +198,9 @@ export async function readStickyProject(
       blockNumber,
     }),
   )
-  const symbol = need(symbolOf, 'the underlying symbol')
+  const symbol = text(symbolOf, symbolBytes32Of, 'the underlying symbol')
   const decimals = need(decimalsOf, 'the underlying decimals')
-  const name = need(nameOf, 'the underlying name')
+  const name = text(nameOf, nameBytes32Of, 'the underlying name')
   const stSymbol = need(stSymbolOf, 'the Sticky symbol')
   const stName = need(stNameOf, 'the Sticky name')
   const totalSupply = need(totalSupplyOf, 'the Sticky supply')
@@ -196,6 +226,8 @@ export async function readStickyProject(
     totalSupply,
     backing: held - orphaned,
     orphaned,
+    rawBacking: held,
+    savedOrphaned,
     // The launch id only groups sibling chains, so a uri that will not read means no siblings.
     launchId: uriOf.status === 'success' ? launchIdIn(uriOf.result) : null,
     blockNumber,
