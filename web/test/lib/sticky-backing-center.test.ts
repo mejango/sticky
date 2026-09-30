@@ -1,4 +1,4 @@
-import { toHex, type Address, type Hex, type PublicClient } from 'viem'
+import { encodeAbiParameters, parseAbiParameters, toHex, type Address, type Hex, type PublicClient } from 'viem'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ScannedLog } from '@/lib/hook-logs'
 import { backingFlows } from '@/lib/sticky-backing'
@@ -207,5 +207,34 @@ describe("backingFlows, reading Bendystraw's pays and cash outs", () => {
     const center = node(AS_OF + 10n, [untimed])
     expect(await backingFlows(CHAIN, 42n, START)).toEqual([{ timestamp: 9_000 + Number(START + 7n), delta: -4n }])
     expect(center.getBlock).toHaveBeenCalledWith({ blockNumber: START + 7n })
+  })
+
+  it('keeps an addition with a memo far past the size cap, as its amounts, and resumes to the same flows', async () => {
+    bendystraw.moves.mockResolvedValue({ rows: [], blocks: new Map([[CHAIN, AS_OF]]) })
+    // A 200,000-character memo: 400,000 hex characters of data, over the 400,000-character cap on its own.
+    const huge = encodeAbiParameters(parseAbiParameters('uint256, uint256, string, bytes, address'), [
+      5n,
+      2n,
+      'x'.repeat(200_000),
+      '0x',
+      HOLDER,
+    ])
+    const addition = raw([ADD_TO_BALANCE, topic(42n)], huge, on(START + 20n))
+    const first = START + 400n
+    const logs = [addition, fee(1n, START + 30n)]
+    node(first, logs)
+    const flows = await backingFlows(CHAIN, 42n, START)
+    expect(flows.map(flow => flow.delta)).toEqual([7n, -1n])
+
+    const stored = localStorage.getItem(FEES)
+    expect(stored).not.toBeNull()
+    expect(stored!.length).toBeLessThan(5_000)
+    expect(JSON.parse(stored!)).toMatchObject({ through: String(first - 64n) })
+
+    const second = first + 100n
+    const center = node(second, logs)
+    expect(await backingFlows(CHAIN, 42n, START)).toEqual(flows)
+    const asked = center.requests.filter(request => request.topics[0]?.includes(PROCESS_FEE))
+    expect(asked.map(request => request.fromBlock)).toEqual([toHex(first - 64n + 1n)])
   })
 })

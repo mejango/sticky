@@ -533,15 +533,15 @@ export async function scanToHead(chainId: number, filter: LogFilter, { signal }:
 }
 
 /** Like `scanToHead`, with the part of the history a reorg can no longer replace kept in this browser under `key`, so
- * the next read scans only the blocks after it (`keptLogs`). A null `fromBlock` is a start that could not be found: a
- * kept history is used whatever block it began at. */
+ * the next read scans only the blocks after it (`keptLogs`, which `keep` tells what to keep of a log). A null
+ * `fromBlock` is a start that could not be found: a kept history is used whatever block it began at. */
 export async function keptScanToHead(
   chainId: number,
   key: string,
   filter: Omit<LogFilter, 'fromBlock'> & { fromBlock: bigint | null },
-  { signal }: Cancel,
+  { signal, keep }: Cancel & { keep?: (log: ScannedLog) => ScannedLog },
 ): Promise<ScannedLog[]> {
-  return timed(chainId, await keptLogs(chainId, key, filter, { signal }), signal)
+  return timed(chainId, await keptLogs(chainId, key, filter, { signal, keep }), signal)
 }
 
 const live: StickyReadDeps = {

@@ -12,7 +12,16 @@
  * a return visit scans only the blocks since. When Bendystraw cannot answer, the pays and cash outs are scanned too.
  */
 
-import { decodeEventLog, getAbiItem, pad, toEventSelector, toHex, type AbiEvent, type Hex } from 'viem'
+import {
+  decodeEventLog,
+  encodeAbiParameters,
+  getAbiItem,
+  pad,
+  toEventSelector,
+  toHex,
+  type AbiEvent,
+  type Hex,
+} from 'viem'
 import type { ScannedLog } from '@/lib/hook-logs'
 import { terminalEventsAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
@@ -75,8 +84,9 @@ export type FlowReadOptions = { signal?: AbortSignal } & Partial<FlowReadDeps>
 /** Sticky shares always have 18 decimals. */
 const SHARE_DECIMALS = 18
 
-const selector = (name: 'Pay' | 'CashOutTokens' | 'ProcessFee' | 'AddToBalance') =>
-  toEventSelector(getAbiItem({ abi: terminalEventsAbi, name }) as AbiEvent)
+const eventNamed = (name: 'Pay' | 'CashOutTokens' | 'ProcessFee' | 'AddToBalance') =>
+  getAbiItem({ abi: terminalEventsAbi, name }) as AbiEvent
+const selector = (name: Parameters<typeof eventNamed>[0]) => toEventSelector(eventNamed(name))
 const PAY = selector('Pay')
 const CASH_OUT = selector('CashOutTokens')
 const PROCESS_FEE = selector('ProcessFee')
@@ -172,6 +182,19 @@ export function backingSeries(
   return { points, unit: { decimals: info.decimals, symbol: info.symbol }, supplyFallback: false }
 }
 
+/** AddToBalance's fields that are not topics: amount, returnedFees, memo, metadata, caller. */
+const ADDITION_DATA = eventNamed('AddToBalance').inputs.filter(input => !input.indexed)
+
+/** What the fee history keeps of a log: all of it, except an addition's memo and metadata. Anyone may add to a
+ * project's balance with a memo as long as they like, and a history longer than its size cap is not kept at all, so
+ * the kept log carries the addition's amounts with an empty memo and metadata: the flow it gives is the same. */
+function withoutMemo(log: ScannedLog): ScannedLog {
+  if (log.topics[0]?.toLowerCase() !== ADD_TO_BALANCE) return log
+  const { topics, data } = log
+  const { args } = decodeEventLog({ abi: terminalEventsAbi, eventName: 'AddToBalance', topics, data })
+  return { ...log, data: encodeAbiParameters(ADDITION_DATA, [args.amount, args.returnedFees, '', '0x', args.caller]) }
+}
+
 /** A flow with where it happened, so flows in one block keep the chain's order. */
 type Placed = Flow & { logIndex: number }
 
@@ -233,10 +256,11 @@ const MOVES_UNAVAILABLE = 'Bendystraw could not list the pays and cash outs; sca
  * Every change to a project's balance on its terminal since `fromBlock` (its creation block), in the staked token's
  * units, in the order of their time.
  * - The pays and cash outs are Bendystraw's, with a scan of the terminal's from just below the block it is indexed
- *   through to the head. When Bendystraw cannot answer, or has no status for the chain, the terminal's are scanned from
- *   `fromBlock` instead.
+ *   through, or from `fromBlock` when that is later, to the head. When Bendystraw cannot answer, or has no status for
+ *   the chain, the terminal's are scanned from `fromBlock` instead.
  * - The fees and additions to the balance come from one scan of the terminal from `fromBlock`, which index the project
- *   first, kept in this browser like a project's hook history: a return visit scans only the blocks since.
+ *   first, kept in this browser like a project's hook history, without the additions' memos: a return visit scans
+ *   only the blocks since.
  * Scans run one after the other. A null `fromBlock` is a creation block that could not be found: the kept history is
  * used whatever block it began at, and otherwise the scans start at the deployer's block. A scan that fails, or a
  * history longer than a scan may read, rejects, and the page charts the share supply instead.
@@ -260,7 +284,10 @@ export async function backingFlows(
   const asOf = indexed?.blocks.get(chainId)
   let moves: Placed[]
   if (indexed && asOf !== undefined) {
-    const filter = { address, topics: moveTopics, fromBlock: scanFrom(asOf, deployment) }
+    // No move is older than the project, so the tail starts at its creation when Bendystraw is indexed only through
+    // an earlier block: an indexer that stalled before the launch costs no scan of the stall.
+    const past = scanFrom(asOf, deployment)
+    const filter = { address, topics: moveTopics, fromBlock: fromBlock !== null && fromBlock > past ? fromBlock : past }
     moves = mergedMoves(chainId, projectId, indexed.rows, await deps.scan(chainId, filter, { signal }))
   } else {
     const filter = { address, topics: moveTopics, fromBlock: fromBlock ?? deployment.fromBlock }
@@ -271,7 +298,7 @@ export async function backingFlows(
 
   const key = `${chainId}:${address.toLowerCase()}:${projectId}:fees`
   const filter = { address, topics: [[PROCESS_FEE, ADD_TO_BALANCE], project], fromBlock }
-  const others = (await deps.keptScan(chainId, key, filter, { signal })).flatMap(
+  const others = (await deps.keptScan(chainId, key, filter, { signal, keep: withoutMemo })).flatMap(
     log => flowOf(chainId, projectId, log) ?? [],
   )
   // In the order of their time, and in one block in the order of their logs.

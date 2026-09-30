@@ -1,4 +1,13 @@
-import { getAbiItem, toEventSelector, zeroAddress, type AbiEvent, type Address, type Hex } from 'viem'
+import {
+  encodeAbiParameters,
+  getAbiItem,
+  parseAbiParameters,
+  toEventSelector,
+  zeroAddress,
+  type AbiEvent,
+  type Address,
+  type Hex,
+} from 'viem'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ScannedLog } from '@/lib/hook-logs'
 import { terminalEventsAbi } from '@/lib/sticky-abis'
@@ -436,6 +445,44 @@ describe('backingFlows', () => {
     ])
   })
 
+  it('starts the tail at the project\'s creation when Bendystraw is indexed only through an earlier block', async () => {
+    // An indexer stalled since before the launch: no pay or cash out of the project is older than its creation.
+    const past = AS_OF + 1n - 64n
+    for (const [created, from] of [
+      [AS_OF + 5_000n, AS_OF + 5_000n],
+      [past + 1n, past + 1n],
+      [past, past],
+      [past - 1n, past],
+    ]) {
+      const deps = fakeDeps({ indexed: { rows: [], block: AS_OF } })
+      await backingFlows(CHAIN, 42n, created, deps)
+      expect(deps.scans.map(filter => filter.fromBlock)).toEqual([from])
+      expect(deps.kept.map(({ filter }) => filter.fromBlock)).toEqual([created])
+    }
+  })
+
+  it('keeps an addition\'s amounts in the fee history, and not its memo or metadata', async () => {
+    const deps = fakeDeps({ indexed: { rows: [], block: AS_OF } })
+    await backingFlows(CHAIN, 42n, 9n, deps)
+    const [[, , , { keep }]] = deps.keptScan.mock.calls
+    const memo = 'x'.repeat(10_000)
+    const data = encodeAbiParameters(parseAbiParameters('uint256, uint256, string, bytes, address'), [
+      5n,
+      2n,
+      memo,
+      '0xabcdef',
+      HOLDER,
+    ])
+    const addition = raw([ADD_TO_BALANCE, id()], data, on({ block: 2n }))
+    const kept = keep!(addition)
+    expect({ ...kept, data: addition.data }).toEqual(addition)
+    expect(kept.data).toBe(
+      encodeAbiParameters(parseAbiParameters('uint256, uint256, string, bytes, address'), [5n, 2n, '', '0x', HOLDER]),
+    )
+    const fee = feeLog(1n, false, { block: 3n })
+    expect(keep!(fee)).toBe(fee)
+  })
+
   it('scans the terminal for the pays and cash outs of a chain Bendystraw has no status for, as when it fails', async () => {
     const deps = fakeDeps({
       indexed: { rows: [indexedPay(999n, 999n, { txHash: hash(9), logIndex: 0, timestamp: 1 })] },
@@ -572,7 +619,7 @@ describe('backingFlows', () => {
     await backingFlows(CHAIN, 42n, 9n, { ...deps, signal })
     expect(deps.indexedMoves).toHaveBeenCalledWith(CHAIN, [42n], signal)
     expect(deps.scan.mock.calls.map(([, , opts]) => opts)).toEqual([{ signal }])
-    expect(deps.keptScan.mock.calls.map(([, , , opts]) => opts)).toEqual([{ signal }])
+    expect(deps.keptScan.mock.calls.map(([, , , opts]) => opts)).toEqual([{ signal, keep: expect.any(Function) }])
 
     deps.scan.mockImplementationOnce(async () => {
       controller.abort(new Error('left the page'))

@@ -859,6 +859,18 @@ describe('projectHookLogs', () => {
       expect(firstAsked(node)).toBe(0x1000n - 64n + 1n)
     })
 
+    it('keeps what `keep` makes of each log, and returns the logs as it read them', async () => {
+      const long: Hex = `0x${'ab'.repeat(1_000)}`
+      events = [hookLog(0x20n), hookLog(0x30n)].map(entry => ({ ...entry, data: long }))
+      serve()
+      const filter = { address: deployment.hook, topics: [PROJECT_TOPICS, word(7n)], fromBlock: 0x10n }
+      const keep = (entry: ScannedLog): ScannedLog => ({ ...entry, data: '0x' })
+      const read = await keptLogs(CHAIN, 'kept of 7', filter, { keep })
+      expect(read.map(entry => entry.data)).toEqual([long, long])
+      const kept = JSON.parse(localStorage.getItem('sticky.history.v1:kept of 7') ?? 'null') as { all: { data: string }[] }
+      expect(kept.all.map(entry => entry.data)).toEqual(['0x', '0x'])
+    })
+
     it('keeps what a reorg cannot replace, 64 blocks below the head, and only that', async () => {
       events = [hookLog(0x20n), hookLog(0xff0n)]
       serve()

@@ -360,14 +360,15 @@ function writeHistory(key: string, from: bigint, through: bigint, logs: ScannedL
  * A null `fromBlock` is a project whose start could not be found: a kept history is used whatever block
  * it began at, and without one the scan starts at the deployer's block, before which no project exists.
  * When `signal` aborts the call rejects with its reason and writes nothing. `key` names one filter's history: a read
- * of another filter must use another key. */
+ * of another filter must use another key. `keep` is what the history keeps of each log, the whole log unless it says
+ * otherwise; a history longer than its size cap is not kept at all. */
 export async function keptLogs(
   chainId: number,
   key: string,
   { address, topics, fromBlock }: { address: Address; topics: (Hex | Hex[] | null)[]; fromBlock: bigint | null },
-  opts: { signal?: AbortSignal } = {},
+  opts: { signal?: AbortSignal; keep?: (log: ScannedLog) => ScannedLog } = {},
 ): Promise<ScannedLog[]> {
-  const { signal } = opts
+  const { signal, keep = (log: ScannedLog) => log } = opts
   const deployment = stickyDeployment(chainId)
   if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
   throwIfAborted(signal)
@@ -387,7 +388,7 @@ export async function keptLogs(
     const buried = head - REORG_DEPTH
     // A kept history never moves backwards, and keeps nothing a reorg could still replace.
     if (!kept || buried > kept.through) {
-      writeHistory(key, kept?.from ?? start, buried, all.filter(log => log.blockNumber <= buried))
+      writeHistory(key, kept?.from ?? start, buried, all.filter(log => log.blockNumber <= buried).map(keep))
     }
   }
   return all
