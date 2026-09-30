@@ -279,7 +279,7 @@ function once(events: StickyEvent[]): StickyEvent[] {
 /** Bendystraw's events and a scan's, each once, keeping Bendystraw's copy of what both have. Everything through
  * `asOf`, the block Bendystraw is indexed through, is in order of time and log index, so what the scan found that
  * Bendystraw's rows had not reached is in its place. What came after goes last, as the scan found it. */
-function merged(indexed: StickyEvent[], scanned: StickyEvent[], asOf: bigint): StickyEvent[] {
+export function merged(indexed: StickyEvent[], scanned: StickyEvent[], asOf: bigint): StickyEvent[] {
   const all = once([...indexed, ...scanned])
   const later = (event: StickyEvent) => event.blockNumber !== null && event.blockNumber > asOf
   return [...all.filter(event => !later(event)).sort(byTime), ...all.filter(later)]

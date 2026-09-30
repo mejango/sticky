@@ -268,9 +268,10 @@ describe('persisted query scope', () => {
 
   it('finds the tagged queries at all, so the scan cannot silently pass', () => {
     const tagged = files.filter(file => persistedQueries(file, readFileSync(file, 'utf8')).length > 0)
-    // The project metadata query is the first. Raise this floor as a task adds a persisted query, to about a quarter
-    // of the files that have one.
+    // The project metadata query and the home's chains. Raise this floor as a task adds a persisted query, to about a
+    // quarter of the files that have one.
     expect(tagged).toContain(join('src', 'hooks', 'useProjectMetadata.ts'))
+    expect(tagged).toContain(join('src', 'hooks', 'useStickyHome.ts'))
     expect(tagged.length).toBeGreaterThanOrEqual(1)
   })
 

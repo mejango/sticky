@@ -1,6 +1,7 @@
 /**
- * How Sticky shows an amount and a span of time. Amounts follow juicebox.money's `formatTokenAmount`, so a figure
- * reads the same on both sites; a duration names its two largest units and an age its largest.
+ * How Sticky shows an amount, a span of time and a Sticky token's name. Amounts follow juicebox.money's
+ * `formatTokenAmount`, so a figure reads the same on both sites; a duration names its two largest units and an age
+ * its largest.
  */
 
 import { formatUnits } from 'viem'
@@ -46,4 +47,9 @@ export function ago(timestamp: number): string {
   if (seconds < 3_600) return `${Math.floor(seconds / 60)}m ago`
   if (seconds < 86_400) return `${Math.floor(seconds / 3_600)}h ago`
   return `${Math.floor(seconds / 86_400)}d ago`
+}
+
+/** A Sticky token by its own onchain symbol, which a launch may customize, or else by the token it sticks. */
+export function stickyLabel({ stSymbol, symbol }: { stSymbol: string; symbol: string }): string {
+  return stSymbol || `Sticky ${symbol}`
 }
