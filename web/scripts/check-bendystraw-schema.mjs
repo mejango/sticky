@@ -206,13 +206,29 @@ const ENDPOINTS = [
   'https://testnet.bendystraw.xyz/graphql',
 ]
 
+// The Sticky tables of peripheralist/bendystraw#36, which StickyEvents, StickyPositions and StickySettings query.
+const STICKY_TABLES = [
+  'stickyEvents',
+  'stickyEventFilter',
+  'stickyPositions',
+  'stickyPositionFilter',
+  'stickySettingEvents',
+  'stickySettingEventFilter',
+]
+
 // Documents that query fields an unmerged indexer PR adds. They run behind a
 // fallback — a schema error degrades to the on-chain read — so shipping them
 // ahead of the indexer is safe, but they cannot be validated until it deploys.
 // Each entry names the PR that removes it and the ONE endpoint still missing the
 // field, and the check FAILS once that endpoint serves it, so the list cannot
 // quietly rot after the feature lands.
-const PENDING_SCHEMA_FIELDS = []
+const PENDING_SCHEMA_FIELDS = ENDPOINTS.flatMap(endpoint =>
+  STICKY_TABLES.map(field => ({
+    endpoint,
+    field,
+    reason: 'peripheralist/bendystraw#36, Sticky events, positions and settings',
+  })),
+)
 
 if (offline) {
   console.log(`Registry is current for ${documents.size} Bendystraw documents (schema validation skipped).`)

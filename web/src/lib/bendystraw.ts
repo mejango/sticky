@@ -3,6 +3,8 @@
  * site's own relay as its registered operation ID and variables; on the server
  * it goes to the indexer of its network. Documents are static strings built
  * from module constants, and `npm run bendystraw:registry` registers them.
+ * A caller's `signal` cancels the request under way, and the transport does
+ * not retry a request that was cancelled.
  */
 
 import {
@@ -43,6 +45,7 @@ export async function bendystraw<T>(
     network?: BendystrawNetwork
     /** `'no-store'` bypasses Next's fetch cache, which keeps a disk file for every distinct request. */
     policy?: BendystrawCachePolicy | 'no-store'
+    signal?: AbortSignal
   } = {},
 ): Promise<T> {
   const contract = compileBendystrawOperation(query)
@@ -60,6 +63,7 @@ export async function bendystraw<T>(
       contract,
       network,
       query,
+      signal: opts.signal,
       variables,
     })
   }
@@ -87,6 +91,7 @@ export async function bendystraw<T>(
     {
       fetch: (input, init) => fetch(input, { ...init, ...cacheOptions }),
       operationName: contract.operationName,
+      signal: opts.signal,
       validateData: (value): value is T => contract.validateData(value),
       validateVariables: contract.validateVariables,
     },

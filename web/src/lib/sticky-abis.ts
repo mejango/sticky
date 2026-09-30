@@ -1,0 +1,76 @@
+import { erc20Abi, parseAbi } from 'viem'
+
+export {
+  stickyAutoStickAbi,
+  stickyDeployerAbi,
+  stickyDistributorAbi,
+  stickyHookAbi,
+  stickyRewardReceiverFactoryAbi,
+} from '@bananapus/nana-sdk-core'
+
+// The lists below hold the functions Sticky calls and the events it reads, and no more. The SDK's jb*Abi
+// exports carry each whole contract, and a test holds every list here to them.
+
+/** A Sticky token, the ERC-20 a stick mints, with 18 decimals. `SOULBOUND` says whether it can be
+ * transferred, and `getPastVotes` reads a holder's delegated voting power at a past timepoint. */
+export const stickyTokenAbi = [
+  ...erc20Abi,
+  ...parseAbi([
+    'function SOULBOUND() view returns (bool)',
+    'function getPastVotes(address account, uint256 timepoint) view returns (uint256)',
+  ]),
+] as const
+
+/** JBMultiTerminal's previews and fee reads, plus the store it books balances in. */
+export const terminalAbi = parseAbi([
+  'struct JBRuleset { uint48 cycleNumber; uint48 id; uint48 basedOnId; uint48 start; uint32 duration; uint112 weight; uint32 weightCutPercent; address approvalHook; uint256 metadata; }',
+  'struct JBPayHookSpecification { address hook; bool noop; uint256 amount; bytes metadata; }',
+  'struct JBCashOutHookSpecification { address hook; bool noop; uint256 amount; bytes metadata; }',
+  'function STORE() view returns (address)',
+  'function FEELESS_ADDRESSES() view returns (address)',
+  'function feeFreeSurplusOf(uint256 projectId, address token) view returns (uint256)',
+  'function previewPayFor(uint256 projectId, address token, uint256 amount, address beneficiary, bytes metadata) view returns (JBRuleset ruleset, uint256 beneficiaryTokenCount, uint256 reservedTokenCount, JBPayHookSpecification[] hookSpecifications)',
+  'function previewCashOutFrom(address holder, uint256 projectId, uint256 cashOutCount, address tokenToReclaim, address beneficiary, bytes metadata) view returns (JBRuleset ruleset, uint256 reclaimAmount, uint256 cashOutTaxRate, JBCashOutHookSpecification[] hookSpecifications)',
+])
+
+/** The terminal's records of what moves a project's balance. A stick and an unstick: what a pay took in and what a
+ * cash out paid out, in the staked token's units, beside the Sticky shares that were issued (`newlyIssuedTokenCount`)
+ * or cashed out (`cashOutCount`); both index the project third. A fee that left with a cash out (`ProcessFee`, whose
+ * `wasHeld` is false) and funds added to the balance with any held fees they returned (`AddToBalance`); both index
+ * the project first. */
+export const terminalEventsAbi = parseAbi([
+  'event Pay(uint256 indexed rulesetId, uint256 indexed rulesetCycleNumber, uint256 indexed projectId, address payer, address beneficiary, uint256 amount, uint256 newlyIssuedTokenCount, string memo, bytes metadata, address caller)',
+  'event CashOutTokens(uint256 indexed rulesetId, uint256 indexed rulesetCycleNumber, uint256 indexed projectId, address holder, address beneficiary, uint256 cashOutCount, uint256 cashOutTaxRate, uint256 reclaimAmount, bytes metadata, address caller)',
+  'event ProcessFee(uint256 indexed projectId, address indexed token, uint256 indexed amount, bool wasHeld, address beneficiary, address caller)',
+  'event AddToBalance(uint256 indexed projectId, uint256 amount, uint256 returnedFees, string memo, bytes metadata, address caller)',
+])
+
+/** The registry the terminal's `FEELESS_ADDRESSES()` names. */
+export const feelessAddressesAbi = parseAbi([
+  'function isFeelessFor(address addr, uint256 projectId, address caller) view returns (bool)',
+])
+
+/** JBTerminalStore, where the terminal's balance for a project and token lives. */
+export const terminalStoreAbi = parseAbi([
+  'function balanceOf(address terminal, uint256 projectId, address token) view returns (uint256)',
+])
+
+/** JBProjects, the project NFTs. */
+export const projectsAbi = parseAbi([
+  'function count() view returns (uint256)',
+  'function ownerOf(uint256 tokenId) view returns (address)',
+  'function creationFee() view returns (uint256)',
+])
+
+/** JBTokens, which maps a project to its ERC-20 and back. */
+export const tokensAbi = parseAbi([
+  'function tokenOf(uint256 projectId) view returns (address)',
+  'function projectIdOf(address token) view returns (uint256)',
+])
+
+/** JBController's project uri, where a Sticky launch stores its launch id, and the JBProjects it counts
+ * projects with. */
+export const controllerAbi = parseAbi([
+  'function uriOf(uint256 projectId) view returns (string)',
+  'function PROJECTS() view returns (address)',
+])

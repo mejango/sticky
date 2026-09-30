@@ -3,14 +3,15 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
-import { formatUnits, type Address } from 'viem'
+import type { Address } from 'viem'
 import { useBalance } from 'wagmi'
 import { ViewAsForm } from '@/components/ViewAsForm'
 import { useAccountIdentity } from '@/hooks/useAccountIdentity'
 import { useOutsideClose } from '@/hooks/useOutsideClose'
 import { useWallet } from '@/hooks/useWallet'
 import { displayChainName } from '@/lib/chainDisplay'
-import { projectRouteSegmentFromPathname } from '@/lib/project-handles'
+import { projectRouteSegmentFromPathname } from '@/lib/project-route'
+import { formatAmount } from '@/lib/sticky-format'
 import { parseUrn } from '@/lib/urn'
 import { useViewAs } from '@/lib/viewAs'
 import { preloadCenterWallet } from '@/providers/preload-center'
@@ -19,26 +20,13 @@ import { useResolvedProjectRoute } from '@/providers/ProjectRouteContext'
 const CONNECT_BUTTON =
   'max-w-full whitespace-nowrap rounded-sm border px-3 py-[5px] font-bold tracking-[1px] text-ink max-[520px]:px-2.5 max-[520px]:text-[13px] max-[520px]:tracking-[.5px]'
 
-function formatTokenAmount(wei: bigint, decimals = 18, maxDigits = 4) {
-  return formatAmount(Number(formatUnits(wei, decimals)), maxDigits)
-}
-
-/** A token amount already in whole-token units. */
-function formatAmount(value: number, maxDigits = 4) {
-  if (value === 0) return '0'
-  // A real amount never reads as nothing: below the digit budget, show its first significant figure.
-  if (value > 0 && value < 0.0001)
-    return value.toFixed(Math.ceil(-Math.log10(value))).replace(/0+$/, '')
-  return value.toLocaleString('en-US', { maximumFractionDigits: maxDigits })
-}
-
 function formatWalletBalance(
   value: bigint | undefined,
   decimals: number,
   symbol: string,
 ) {
   if (value === undefined) return 'Loading…'
-  return `${formatTokenAmount(value, decimals)} ${symbol}`
+  return `${formatAmount(value, decimals)} ${symbol}`
 }
 
 function BalanceRow({ label, value }: { label: string; value: string }) {
