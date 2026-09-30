@@ -56,5 +56,9 @@ export const tokensAbi = parseAbi([
   'function projectIdOf(address token) view returns (uint256)',
 ])
 
-/** JBController's project uri. A Sticky launch stores its launch id there. */
-export const controllerAbi = parseAbi(['function uriOf(uint256 projectId) view returns (string)'])
+/** JBController's project uri, where a Sticky launch stores its launch id, and the JBProjects it counts
+ * projects with. */
+export const controllerAbi = parseAbi([
+  'function uriOf(uint256 projectId) view returns (string)',
+  'function PROJECTS() view returns (address)',
+])

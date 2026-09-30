@@ -105,7 +105,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 /** What `work` gives, or the signal's reason the moment it aborts. Neither viem nor the SDK cancels a request
  * that is under way, so `work` is left to finish on its own, its answer or failure unheeded. */
-function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+export function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (!signal) return work
   return new Promise<T>((resolve, reject) => {
     const abort = () => reject(signal.reason)

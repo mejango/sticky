@@ -5,8 +5,8 @@ import { describe, expect, it } from 'vitest'
 import * as sticky from '@/lib/sticky-abis'
 
 // Where each function the old client calls lives now. The five Sticky ABIs come from the SDK, the
-// lists below them are this app's own, and the last two are the SDK's full ABIs for calls the old
-// client makes that Sticky's lists do not carry.
+// lists below them are this app's own, and the last is the SDK's full ABI for calls the old client
+// makes that Sticky's lists do not carry.
 const SOURCES: Record<string, Abi> = {
   stickyDeployerAbi: sticky.stickyDeployerAbi,
   stickyHookAbi: sticky.stickyHookAbi,
@@ -20,7 +20,6 @@ const SOURCES: Record<string, Abi> = {
   projectsAbi: sticky.projectsAbi,
   tokensAbi: sticky.tokensAbi,
   controllerAbi: sticky.controllerAbi,
-  'jbControllerAbi (SDK)': sdk.jbControllerAbi,
   'jbMultiTerminalAbi (SDK)': sdk.jbMultiTerminalAbi,
 }
 
@@ -33,7 +32,7 @@ const SEL: [string, string, string, Hex][] = [
   ['CONTROLLER', 'stickyDeployerAbi', 'CONTROLLER()', '0xee0fc121'],
   ['TOKENS', 'stickyDeployerAbi', 'TOKENS()', '0x1d831d5c'],
   ['TERMINAL', 'stickyDeployerAbi', 'TERMINAL()', '0x160668af'],
-  ['PROJECTS', 'jbControllerAbi (SDK)', 'PROJECTS()', '0x293c4999'],
+  ['PROJECTS', 'controllerAbi', 'PROJECTS()', '0x293c4999'],
   ['count', 'projectsAbi', 'count()', '0x06661abd'],
   ['creationFee', 'projectsAbi', 'creationFee()', '0xdce0b4e4'],
   ['stakedTokenOf', 'stickyDeployerAbi', 'stakedTokenOf(uint256)', '0xdbced5db'],
