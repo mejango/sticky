@@ -76,12 +76,12 @@ export function refreshAfterAutoStickOff(client: QueryClient, chainId: number, p
 }
 
 /** A transfer: who holds what and the history that says so, the sender's and the recipient's stick, tranches and
- * rewards, and the account pages. */
+ * rewards, and the account pages, but not each chain's list of every Sticky project, which no transfer changes. */
 export function refreshAfterTransfer(client: QueryClient, chainId: number, projectId: number): void {
   refreshOnSchedule(client, [
     ...ofPage(chainId, projectId, HOLDINGS),
     ...ofEveryone(chainId, projectId, STAKE),
-    { queryKey: ACCOUNT_PAGES },
+    { queryKey: ACCOUNT_PAGES, predicate: query => accountOfKey(query.queryKey) !== 'deployed' },
   ])
 }
 

@@ -275,7 +275,7 @@ describe("the refreshes against the hooks' own queries", () => {
     [
       'a transfer',
       client => refreshAfterTransfer(client, CHAIN, PROJECT),
-      [...PAGE.filter(read => read !== 'info'), 'position', 'tranches', 'rewards', ...ACCOUNT, "a chain's projects"],
+      [...PAGE.filter(read => read !== 'info'), 'position', 'tranches', 'rewards', ...ACCOUNT],
     ],
     ['a change of trust', client => refreshAfterTrust(client, CHAIN, PROJECT), ['events', 'auto-stick', 'trusted']],
   ])('reads again after %s what it changed, and nothing else', async (_send, refresh, expected) => {

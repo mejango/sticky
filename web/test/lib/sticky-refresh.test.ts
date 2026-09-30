@@ -95,7 +95,6 @@ const SCOPES: [string, (client: QueryClient) => void, string[]][] = [
       "another's rewards",
       ...ACCOUNT,
       "another's account",
-      "a chain's projects",
     ],
   ],
   [
