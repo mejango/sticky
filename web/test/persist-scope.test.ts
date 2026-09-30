@@ -700,10 +700,19 @@ async function persistedKeys(queries: { queryKey: unknown[]; meta?: Record<strin
 
 const PROBE = ['balance', '0x1111111111111111111111111111111111111111']
 
+/** A query tagged with the real PERSIST. It settles beside the probe, so the persister always has a write to make. */
+const COMPANION = ['companion']
+
 /** Whether the real persister writes a wallet-keyed query with `meta: { persist: value }`: whether the query itself is
- * in what it stores. */
+ * in what it stores. The companion is always written, so the write happens whatever the tier is, and the tier alone
+ * decides whether the probe is in it. */
 async function persisterWrites(value: unknown): Promise<boolean> {
-  return (await persistedKeys([{ queryKey: PROBE, meta: { persist: value } }])).includes(JSON.stringify(PROBE))
+  const written = await persistedKeys([
+    { queryKey: PROBE, meta: { persist: value } },
+    { queryKey: COMPANION, meta: queryPersist.PERSIST },
+  ])
+  expect(written, 'the companion is written').toContain(JSON.stringify(COMPANION))
+  return written.includes(JSON.stringify(PROBE))
 }
 
 describe('a persist tier', () => {
