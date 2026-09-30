@@ -77,10 +77,12 @@ export async function POST(
   }
 
   try {
+    // Uncached: Next's fetch cache would keep a disk file for every distinct
+    // client query.
     const data = await bendystraw(
       persisted.query,
       persisted.variables,
-      { network: net, policy: 'live' },
+      { network: net, policy: 'no-store' },
     )
     return Response.json(
       { data },

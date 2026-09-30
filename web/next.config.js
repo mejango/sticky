@@ -48,12 +48,6 @@ module.exports = phase => ({
     // Preserve the SDK's ergonomic barrels while compiling client routes from
     // the narrow v6 modules they actually use.
     optimizePackageImports: ['@bananapus/nana-sdk-core'],
-    // Keep Next's caches in memory. Its fetch cache writes one file per entry
-    // to .next/cache/fetch-cache and never removes one, so a client that varies
-    // the variables of a Bendystraw relay request would fill the disk, while
-    // memory is bounded by cacheMaxMemorySize. With this the server writes no
-    // cache to disk, and the production image needs no writable .next/cache.
-    isrFlushToDisk: false,
   },
   // `page.browsertest.tsx` files are routes ONLY in the deterministic browser
   // build the Playwright suite compiles. They never reach a production image:
@@ -63,12 +57,15 @@ module.exports = phase => ({
     process.env.NEXT_PUBLIC_DETERMINISTIC_BROWSER === 'true'
       ? ['tsx', 'ts', 'jsx', 'js', 'browsertest.tsx']
       : ['tsx', 'ts', 'jsx', 'js'],
-  // Images are served as they are, and /_next/image answers 404. Its optimizer
-  // caches one file per image and width with no bound, and with the disk cache
-  // off above it would resize an image again on every request. A project's logo
-  // loads straight from JB Center's IPFS gateway and the header art is static,
-  // so nothing needs resizing.
-  images: { unoptimized: true },
+  images: {
+    // Project media is content-addressed (IPFS), so optimized variants can be
+    // cached aggressively. Bundled artwork uses hashed static imports and is
+    // served immutable independently of this TTL.
+    minimumCacheTTL: 60 * 60 * 24 * 365,
+    remotePatterns: [
+      { protocol: 'https', hostname: 'juicebox.center', pathname: '/ipfs/**' },
+    ],
+  },
   async headers() {
     return [
       { source: '/((?!center/callback/?$).*)', headers: securityHeaders },

@@ -86,12 +86,13 @@ jobs:
             --build-arg NEXT_PUBLIC_CENTER_WALLET_MAXIMUM_NETWORK_FEE_WEI=1 \
             --build-arg NEXT_PUBLIC_VERSION=$GITHUB_SHA \
             web
-      # The server writes no cache to disk, so the root filesystem stays read-only
-      # with nothing mounted at /app/.next/cache.
+      # The root filesystem is read-only. The image optimizer writes its cache
+      # under /app/.next/cache, so a tmpfs owned by the node user is mounted there.
       - name: Run the image as non-root and check readiness
         run: |
           docker run --detach --name sticky-ci \
             --read-only \
+            --tmpfs /app/.next/cache:uid=1000,gid=1000 \
             --cap-drop ALL \
             --security-opt no-new-privileges \
             --publish 127.0.0.1:3000:3000 \

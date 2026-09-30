@@ -74,19 +74,26 @@ describe('next config', () => {
     expect(bare.status).toBe(200)
   })
 
-  it('keeps the cache of the Bendystraw relay in memory, where a client that varies its requests cannot fill the disk', () => {
-    const { configSchema } = require('next/dist/server/config-schema') as typeof import('next/dist/server/config-schema')
+  it('leaves isrFlushToDisk at Next’s default', () => {
     for (const phase of [PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD, PHASE_PRODUCTION_SERVER]) {
-      const config = createConfig(phase)
-      expect(config.experimental?.isrFlushToDisk).toBe(false)
-      // A key that Next's schema does not know does nothing, so this catches a typo, or a Next that renames the option.
-      expect(configSchema.safeParse(config).success).toBe(true)
+      expect(createConfig(phase).experimental).not.toHaveProperty('isrFlushToDisk')
     }
-    expect(configSchema.safeParse({ experimental: { isrFlushToDisc: false } }).success).toBe(false)
   })
 
-  it('serves images as they are, so the server resizes none and keeps no image cache', () => {
-    expect(nextConfig.images).toEqual({ unoptimized: true })
+  it('optimizes images from Juicebox Center IPFS only, and caches them for a year', () => {
+    expect(nextConfig.images).toEqual({
+      minimumCacheTTL: 60 * 60 * 24 * 365,
+      remotePatterns: [{ protocol: 'https', hostname: 'juicebox.center', pathname: '/ipfs/**' }],
+    })
+    expect(nextConfig.images).not.toHaveProperty('unoptimized')
+  })
+
+  it('is accepted by Next’s own config schema, so a misspelled key fails here instead of being ignored', () => {
+    const { configSchema } = require('next/dist/server/config-schema') as typeof import('next/dist/server/config-schema')
+    for (const phase of [PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD, PHASE_PRODUCTION_SERVER]) {
+      expect(configSchema.safeParse(createConfig(phase)).success).toBe(true)
+    }
+    expect(configSchema.safeParse({ images: { minimumCacheTtl: 1 } }).success).toBe(false)
   })
 
   it('keeps dev and production builds apart', () => {

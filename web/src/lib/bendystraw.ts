@@ -41,7 +41,8 @@ export async function bendystraw<T>(
   opts: {
     chainId?: number
     network?: BendystrawNetwork
-    policy?: BendystrawCachePolicy
+    /** `'no-store'` bypasses Next's fetch cache, which keeps a disk file for every distinct request. */
+    policy?: BendystrawCachePolicy | 'no-store'
   } = {},
 ): Promise<T> {
   const contract = compileBendystrawOperation(query)
@@ -62,13 +63,16 @@ export async function bendystraw<T>(
       variables,
     })
   }
-  const cacheOptions = IS_DETERMINISTIC_BROWSER
-    ? { next: { revalidate: 1 } }
-    : {
-        next: {
-          revalidate: bendystrawCacheTtl(opts.policy ?? 'stable') / 1_000,
-        },
-      }
+  const cacheOptions =
+    opts.policy === 'no-store'
+      ? { cache: 'no-store' as const }
+      : IS_DETERMINISTIC_BROWSER
+        ? { next: { revalidate: 1 } }
+        : {
+            next: {
+              revalidate: bendystrawCacheTtl(opts.policy ?? 'stable') / 1_000,
+            },
+          }
   return requestBendystraw<T, Record<string, unknown>>(
     selectBendystrawEndpoint(
       { mainnet: MAINNET_URL, testnet: TESTNET_URL },
