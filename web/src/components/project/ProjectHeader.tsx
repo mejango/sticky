@@ -53,10 +53,11 @@ export function ProjectHeader({ chainId, projectId }: { chainId: number; project
   const sticks = useProjectSticks(chainId, projectId)
   const unconfirmed = info !== undefined && !verified
   const recounting = sticks.data !== undefined && sticks.isFetching
-  // A figure is a placeholder (null) while it is read, and – when its read failed.
+  // A figure is a placeholder (null) while it is read, and – when its read failed. The holders are counted only for a
+  // project that could be read.
   const stuck = info ? `${formatAmount(info.backing, info.decimals)} ${info.symbol}` : failed ? '–' : null
   const counted = (read: (data: ProjectSticks) => string) =>
-    sticks.data ? read(sticks.data) : sticks.isError ? '–' : null
+    sticks.data ? read(sticks.data) : sticks.isError || failed ? '–' : null
   const chains = info ? chainsOf(info) : []
 
   return (

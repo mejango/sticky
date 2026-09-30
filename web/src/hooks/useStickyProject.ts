@@ -3,6 +3,7 @@
 import { queryOptions, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import type { Address } from 'viem'
 import { untilAborted } from '@/lib/hook-logs'
+import { inTurn } from '@/lib/in-turn'
 import { PERSIST } from '@/lib/query-persist'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import { stickyEvents, type StickyEventKind, type StickyEventsResult } from '@/lib/sticky-events'
@@ -22,6 +23,12 @@ import { readStickyProject, type StickyProjectInfo } from '@/lib/sticky-project'
  * start with the chain and project, so a page for another project never shows this one's answers. What the browser
  * keeps is public: the figures, the header's holder figures and Latest. The history and the holders can grow without
  * bound and stay in memory, and the viewer's stick is an account's and is never kept.
+ *
+ * Nothing of a project's history is read before the project itself has been, in this visit or an earlier one: a URN or
+ * a handle that names no Sticky project costs one read, never a scan. A hook that reads the history or the holders also
+ * observes them, so a page that closes cancels their scans, and the scans take their turn with every other page's
+ * (`inTurn`): Center has one rate limit. A read that scans is not tried again on its own, since a scan is dozens of
+ * requests; the page offers a retry.
  */
 
 /** The version of what the browser keeps of a project's page, in each kept key. Change it whenever
@@ -59,22 +66,6 @@ async function warned<T>(label: string, about: object, signal: AbortSignal, read
   }
 }
 
-/** The project page's scans under way with each query client. */
-const scanning = new WeakMap<QueryClient, Promise<unknown>>()
-
-/** `scan`, once the page's earlier scans with this client have ended, however they ended: a page runs its scans one
- * after another. A scan cancelled while it waits does not start. A scan never waits on another query, or it could wait
- * on itself. */
-export function scanInTurn<T>(client: QueryClient, signal: AbortSignal, scan: () => Promise<T>): Promise<T> {
-  const turn = (scanning.get(client) ?? Promise.resolve()).then(() => {
-    if (signal.aborted) throw signal.reason
-    return scan()
-  })
-  // The next scan waits for this one to settle. This one's failure goes to its own caller, through `turn`.
-  scanning.set(client, turn.catch(() => undefined))
-  return turn
-}
-
 /** The projects a read of this visit gave. A copy the browser kept from an earlier visit is never among them. */
 const readThisVisit = new WeakSet<StickyProjectInfo>()
 
@@ -100,9 +91,10 @@ const eventsOptions = (client: QueryClient, chainId: number, projectId: number) 
     queryKey: ['sticky-project', chainId, projectId, 'events'],
     queryFn: ({ signal }) =>
       warned(HISTORY_UNREADABLE, { chainId, projectId }, signal, () =>
-        scanInTurn(client, signal, () => stickyEvents(chainId, BigInt(projectId), { signal })),
+        inTurn(client, signal, () => stickyEvents(chainId, BigInt(projectId), { signal })),
       ),
     staleTime: FRESH_MS,
+    retry: false,
   })
 
 const holdersOptions = (client: QueryClient, chainId: number, projectId: number) =>
@@ -114,12 +106,13 @@ const holdersOptions = (client: QueryClient, chainId: number, projectId: number)
         // scan comes before theirs.
         const history = await untilAborted(client.fetchQuery(eventsOptions(client, chainId, projectId)), signal)
         const pin = await pinnedBlock(chainId, { signal })
-        const found = await scanInTurn(client, signal, () =>
+        const found = await inTurn(client, signal, () =>
           stickyHolders(chainId, BigInt(projectId), { signal, now: pin.timestamp, events: async () => history }),
         )
         return { ...found, now: pin.timestamp }
       }),
     staleTime: FRESH_MS,
+    retry: false,
   })
 
 const sticksOptions = (client: QueryClient, chainId: number, projectId: number) =>
@@ -131,6 +124,7 @@ const sticksOptions = (client: QueryClient, chainId: number, projectId: number) 
         return { sticks: rows.length, ...stickAges(rows, now) }
       }),
     staleTime: FRESH_MS,
+    retry: false,
     meta: PERSIST,
   })
 
@@ -139,23 +133,20 @@ const latestOptions = (client: QueryClient, chainId: number, projectId: number) 
     queryKey: ['sticky-project', chainId, projectId, 'latest', PROJECT_VERSION],
     queryFn: ({ signal }) =>
       warned(LATEST_UNREADABLE, { chainId, projectId }, signal, async () => {
-        const [{ events }, info] = await untilAborted(
-          Promise.all([
-            client.fetchQuery(eventsOptions(client, chainId, projectId)),
-            client.fetchQuery(infoOptions(chainId, projectId)),
-          ]),
-          signal,
-        )
+        // The project first: its history is read only for a project that is one.
+        const info = await untilAborted(client.fetchQuery(infoOptions(chainId, projectId)), signal)
+        const { events } = await untilAborted(client.fetchQuery(eventsOptions(client, chainId, projectId)), signal)
         // The newest FEED_WINDOW sticks, unsticks and streaks, and what the terminal took in or paid out for them.
-        const window = events.filter(event => FEED_KINDS.has(event.kind)).slice(-FEED_WINDOW)
-        const moves = await scanInTurn(client, signal, () => terminalMoves(window, { signal }))
-        return feedRows(window, moves, {
+        const shown = events.filter(event => FEED_KINDS.has(event.kind)).slice(-FEED_WINDOW)
+        const moves = await inTurn(client, signal, () => terminalMoves(shown, { signal }))
+        return feedRows(shown, moves, {
           adapter: stickyDeployment(chainId)?.autoStick ?? null,
           tokens: (eventChainId, eventProjectId) =>
             eventChainId === chainId && eventProjectId === info.projectId ? info : undefined,
         })
       }),
     staleTime: FRESH_MS,
+    retry: false,
     meta: PERSIST,
   })
 
@@ -175,29 +166,41 @@ export function useStickyProject(chainId: number, projectId: number) {
   }
 }
 
+/** Whether the project has been read, in this visit or an earlier one: its history waits for that. */
+const useKnown = (chainId: number, projectId: number) => useQuery(infoOptions(chainId, projectId)).data !== undefined
+
 /** Every event of a project's hook history, through the head (`stickyEvents`), read once for the whole page. */
 export function useStickyEvents(chainId: number, projectId: number) {
-  return useQuery(eventsOptions(useQueryClient(), chainId, projectId))
+  const known = useKnown(chainId, projectId)
+  return useQuery({ ...eventsOptions(useQueryClient(), chainId, projectId), enabled: known })
 }
 
-/** The holders of a project with shares staked, most shares first, and the block time their streaks are measured at. */
+/** The holders of a project with shares staked, most shares first, and the block time their streaks are measured at.
+ * Their read waits on the history's, which is observed here too, so that a page that closes cancels both. */
 export function useStickyHolders(chainId: number, projectId: number) {
-  return useQuery(holdersOptions(useQueryClient(), chainId, projectId))
+  const known = useKnown(chainId, projectId)
+  useStickyEvents(chainId, projectId)
+  return useQuery({ ...holdersOptions(useQueryClient(), chainId, projectId), enabled: known })
 }
 
 /** The header's holder figures, which the browser keeps. */
 export function useProjectSticks(chainId: number, projectId: number) {
-  return useQuery(sticksOptions(useQueryClient(), chainId, projectId))
+  const known = useKnown(chainId, projectId)
+  useStickyHolders(chainId, projectId)
+  return useQuery({ ...sticksOptions(useQueryClient(), chainId, projectId), enabled: known })
 }
 
 /** A project's Latest list, newest first, which the browser keeps. */
 export function useProjectLatest(chainId: number, projectId: number) {
-  return useQuery(latestOptions(useQueryClient(), chainId, projectId))
+  const known = useKnown(chainId, projectId)
+  useStickyEvents(chainId, projectId)
+  return useQuery({ ...latestOptions(useQueryClient(), chainId, projectId), enabled: known })
 }
 
 /**
  * The stick of `holder` (the viewed account, or the connected one) in a project, once the project is known. It is read
- * again every 15 seconds while the tab is in view, and the browser never keeps it: it is an account's.
+ * again every 15 seconds while the tab is in view and as soon as the tab is shown again, and the browser never keeps
+ * it: it is an account's.
  */
 export function useStickyPosition(
   chainId: number,
@@ -214,5 +217,6 @@ export function useStickyPosition(
     enabled: holder !== null && info !== undefined,
     refetchInterval: POSITION_REFRESH_MS,
     refetchIntervalInBackground: false,
+    refetchOnWindowFocus: 'always',
   })
 }

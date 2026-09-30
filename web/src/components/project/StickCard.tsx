@@ -6,14 +6,12 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { useStickyPosition, useStickyProject } from '@/hooks/useStickyProject'
 import { useWallet } from '@/hooks/useWallet'
 import { formatAmount } from '@/lib/sticky-format'
-import { backingOfShares } from '@/lib/sticky-project'
 import { useViewAs } from '@/lib/viewAs'
 
 /**
- * The Stick card: an amount of the staked token to stick and, for the viewed or connected account, what it holds in
- * its wallet (a link that fills in all of it) and its own stick, the backing its shares claim. The page only reads, so
- * the button is closed; it reads "Checking…" until this visit has read the project, since nothing is stuck on the word
- * of a copy the browser kept.
+ * The Stick card: an amount of the staked token to stick and, for the viewed or connected account, what it holds of
+ * that token in its wallet, a link that fills in all of it. The page only reads, so the button is closed; it reads
+ * "Checking…" until this visit has read the project, since nothing is stuck on the word of a copy the browser kept.
  */
 export function StickCard({ chainId, projectId }: { chainId: number; projectId: number }) {
   const { info, verified, failed } = useStickyProject(chainId, projectId)
@@ -21,7 +19,7 @@ export function StickCard({ chainId, projectId }: { chainId: number; projectId: 
   const { address } = useWallet()
   const position = useStickyPosition(chainId, projectId, viewAs ?? address ?? null, info)
   const [amount, setAmount] = useState('')
-  const stick = position.data
+  const wallet = position.data?.wallet
 
   return (
     <section
@@ -42,24 +40,18 @@ export function StickCard({ chainId, projectId }: { chainId: number; projectId: 
         />
         <span className="absolute right-2.5 top-1/2 max-w-[60%] -translate-y-1/2 truncate text-muted">{info?.symbol}</span>
       </div>
-      {info && stick ? (
-        <>
-          <p className="mt-[3px] truncate text-xs text-muted">
-            <button
-              type="button"
-              title="Use full wallet balance"
-              onClick={() => setAmount(formatUnits(stick.wallet, info.decimals))}
-              className="btn-link min-h-0 text-xs"
-            >
-              {formatAmount(stick.wallet, info.decimals)}
-            </button>{' '}
-            {info.symbol} in wallet
-          </p>
-          {/* The stick is the backing its shares claim, in the staked token; the Sticky shares are in the title. */}
-          <p className="truncate text-xs text-muted" title={`${formatAmount(stick.staked, 18)} ${info.stSymbol}`}>
-            {formatAmount(backingOfShares(stick.staked, info), info.decimals)} {info.symbol} stuck
-          </p>
-        </>
+      {info && wallet !== undefined ? (
+        <p className="mt-[3px] truncate text-xs text-muted">
+          <button
+            type="button"
+            title="Use full wallet balance"
+            onClick={() => setAmount(formatUnits(wallet, info.decimals))}
+            className="btn-link min-h-0 text-xs"
+          >
+            {formatAmount(wallet, info.decimals)}
+          </button>{' '}
+          {info.symbol} in wallet
+        </p>
       ) : null}
       <button type="button" disabled className="btn-primary mt-3 w-full px-4 py-[9px]">
         {verified || failed ? 'Stick' : 'Checking…'}

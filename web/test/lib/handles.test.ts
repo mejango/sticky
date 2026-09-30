@@ -1,6 +1,6 @@
 import {
-  ContractFunctionExecutionError,
-  ContractFunctionRevertedError,
+  createPublicClient,
+  custom,
   decodeFunctionData,
   encodeErrorResult,
   encodeFunctionResult,
@@ -19,7 +19,7 @@ import {
   ensTextResolverAbi,
   jbProjectHandlesAbi,
 } from '@/lib/project-handles'
-import { projectsAbi } from '@/lib/sticky-abis'
+import { controllerAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import { resolveProjectHandle, type HandleReads } from '@/lib/sticky-handles'
 
@@ -424,16 +424,60 @@ describe('resolveProjectHandle', () => {
       expect(await resolveProjectHandle('@banny')).toBeNull()
     })
 
-    it('names nothing, and says nothing, when JBProjects reverts: the project does not exist', async () => {
-      const revert = new ContractFunctionExecutionError(
-        new ContractFunctionRevertedError({ abi: projectsAbi, functionName: 'ownerOf', message: 'execution reverted' }),
-        { abi: projectsAbi, functionName: 'ownerOf', args: [PROJECT], contractAddress: PROJECTS },
-      )
-      const { ethereum } = fakeChains({ owner: revert })
-      expect(await resolveProjectHandle('@banny')).toBeNull()
-      expect(console.warn).not.toHaveBeenCalled()
-      // No claim is asked for a project that does not exist.
-      expect(ethereum.request.mock.calls.map(([raw]) => raw.params[0].to)).not.toContain(PROJECT_HANDLES_ADDRESS)
+    describe('when the project\'s chain is a real client, and its node answers ownerOf with an error', () => {
+      /** The project's chain as viem reads it: its node names JBProjects for the controller's PROJECTS(), and answers
+       * ownerOf with `failure`, a JSON-RPC error. */
+      function projectChainFailing(failure: { code: number; message: string; data?: Hex }) {
+        const asked: Address[] = []
+        const client = createPublicClient({
+          transport: custom(
+            {
+              async request({ method, params }) {
+                if (method !== 'eth_call') throw new Error(`Unexpected ${method}`)
+                const [{ to }] = params as [{ to: Address }]
+                asked.push(getAddress(to))
+                if (getAddress(to) === getAddress(deployment.controller)) {
+                  return encodeFunctionResult({ abi: controllerAbi, functionName: 'PROJECTS', result: PROJECTS })
+                }
+                throw Object.assign(new Error(failure.message), failure)
+              },
+            },
+            { retryCount: 0 },
+          ),
+        })
+        const { ethereum } = fakeChains()
+        center.client.mockImplementation((chainId: number) => {
+          if (chainId === 1) return ethereum as unknown as PublicClient
+          if (chainId === 8453) return client
+          throw new Error(`Unexpected read of chain ${chainId}`)
+        })
+        return { ethereum, asked }
+      }
+      const revertWith = (data: Hex) => ({ code: 3, message: 'execution reverted', data })
+      const nonexistent = encodeErrorResult({
+        abi: parseAbi(['error ERC721NonexistentToken(uint256 tokenId)']),
+        errorName: 'ERC721NonexistentToken',
+        args: [PROJECT],
+      })
+      const another = encodeErrorResult({ abi: parseAbi(['error Error(string message)']), errorName: 'Error', args: ['boom'] })
+
+      it('names nothing, and says nothing, when JBProjects reverts with ERC721NonexistentToken', async () => {
+        const { ethereum, asked } = projectChainFailing(revertWith(nonexistent))
+        expect(await resolveProjectHandle('@banny')).toBeNull()
+        expect(asked).toContain(PROJECTS)
+        expect(console.warn).not.toHaveBeenCalled()
+        // No claim is asked for a project that does not exist.
+        expect(ethereum.request.mock.calls.map(([raw]) => raw.params[0].to)).not.toContain(PROJECT_HANDLES_ADDRESS)
+      })
+
+      it.each([
+        ['an internal error (-32603), which viem reads as a revert with no error in it', { code: -32603, message: 'Internal error' }],
+        ['a revert with another error', revertWith(another)],
+      ])('rejects, and tells the console, for %s: no answer that the project does not exist', async (_what, failure) => {
+        projectChainFailing(failure)
+        await expect(resolveProjectHandle('@banny')).rejects.toThrow()
+        expect(vi.mocked(console.warn).mock.calls).toEqual([[UNREADABLE, { handle: 'banny' }, expect.any(Error)]])
+      })
     })
 
     it('rejects, and tells the console, when the project\'s owner cannot be read', async () => {

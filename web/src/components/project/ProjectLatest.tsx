@@ -3,7 +3,7 @@
 import { ProjectTabIcon } from '@/components/project/ProjectTabIcon'
 import { StickyFeed } from '@/components/StickyFeed'
 import { Revalidating } from '@/components/ui/Revalidating'
-import { useProjectLatest } from '@/hooks/useStickyProject'
+import { useProjectLatest, useStickyProject } from '@/hooks/useStickyProject'
 import { useWallet } from '@/hooks/useWallet'
 import { useViewAs } from '@/lib/viewAs'
 
@@ -14,9 +14,12 @@ import { useViewAs } from '@/lib/viewAs'
  */
 export function ProjectLatest({ chainId, projectId }: { chainId: number; projectId: number }) {
   const latest = useProjectLatest(chainId, projectId)
+  const project = useStickyProject(chainId, projectId)
   const { viewAs } = useViewAs()
   const { address } = useWallet()
-  const failed = latest.isError && latest.data === undefined
+  // Latest is read only for a project that could be read; when it could not, trying again reads the project.
+  const failed = (latest.isError || project.failed) && latest.data === undefined
+  const retry = () => (project.failed ? project.retry() : void latest.refetch())
 
   return (
     <section className="min-[821px]:mt-5">
@@ -27,7 +30,7 @@ export function ProjectLatest({ chainId, projectId }: { chainId: number; project
       {failed ? (
         <p role="alert" className="py-3.5 text-sm text-err">
           Could not read Latest.{' '}
-          <button type="button" className="btn-link font-semibold" onClick={() => void latest.refetch()}>
+          <button type="button" className="btn-link font-semibold" onClick={retry}>
             Try again
           </button>
         </p>

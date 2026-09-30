@@ -125,6 +125,11 @@ let host: HTMLDivElement
 let root: Root
 let client: QueryClient
 const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } })
+/** A client with Providers' defaults: fresh for 30 seconds, one more try after a failure, no refetch on focus. */
+const siteClient = () =>
+  new QueryClient({
+    defaultOptions: { queries: { staleTime: 30_000, gcTime: 10 * 60_000, retry: 1, refetchOnWindowFocus: false } },
+  })
 
 beforeEach(() => {
   notifyManager.setScheduler(callback => queueMicrotask(callback))
@@ -185,6 +190,8 @@ const value = (label: string) => pair(label)?.querySelector('b')?.textContent ??
 const stickCard = () => host.querySelector<HTMLElement>('section[aria-labelledby="stick-title"]')!
 const stickButton = () => [...stickCard().querySelectorAll('button')].at(-1)!
 const amountInput = () => stickCard().querySelector<HTMLInputElement>('input')!
+const walletLine = () =>
+  [...stickCard().querySelectorAll('p')].find(line => line.textContent?.endsWith(' in wallet'))?.textContent ?? null
 const tabs = () => [...host.querySelectorAll<HTMLButtonElement>('[role="tablist"][aria-label="Project sections"] [role="tab"]')]
 const selected = () => tabs().filter(tab => tab.getAttribute('aria-selected') === 'true').map(tab => tab.textContent)
 const amounts = () => [...host.querySelectorAll('[data-amount]')].map(amount => amount.textContent)
@@ -436,6 +443,58 @@ describe('the reads behind the page', () => {
     expect(amounts()).toEqual(['1,010 SLOPSHOP'])
   })
 
+  it('read nothing of a project\'s history when the project cannot be read, and read it once it can', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mocks.project.mockRejectedValueOnce(new Error('Project 23 is not a Sticky token of this deployer.'))
+    await renderPage('base:23')
+    await settle(60_000)
+    expect(mocks.events).not.toHaveBeenCalled()
+    expect(mocks.holders).not.toHaveBeenCalled()
+    expect(mocks.pinned).not.toHaveBeenCalled()
+    expect(mocks.moves).not.toHaveBeenCalled()
+    for (const label of ['Stuck', 'Sticks', 'Average active stick', 'Longest active stick']) expect(value(label)).toBe('–')
+    const note = [...host.querySelectorAll('[role="alert"]')].find(alert => alert.textContent?.includes('Latest'))!
+    expect(note.textContent).toContain('Could not read Latest.')
+
+    // Trying Latest again reads the project, and then its history.
+    await act(async () => [...note.querySelectorAll('button')].find(button => button.textContent === 'Try again')!.click())
+    await settle()
+    expect(mocks.project).toHaveBeenCalledTimes(2)
+    expect(mocks.events).toHaveBeenCalledTimes(1)
+    expect(value('Sticks')).toBe('2')
+    expect(amounts()).toEqual(['1,010 SLOPSHOP'])
+  })
+
+  it.each([
+    ['history', () => mocks.events.mockRejectedValue(new Error('429')), () => mocks.events],
+    ['holders', () => mocks.holders.mockRejectedValue(new Error('429')), () => mocks.holders],
+  ])('read a failing %s once, with the site\'s own query defaults', async (_what, fail, read) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    fail()
+    const site = siteClient()
+    await renderPage('base:23', site)
+    await settle(120_000)
+    expect(read()).toHaveBeenCalledTimes(1)
+    site.clear()
+  })
+
+  it('cancel a project\'s scans when its page closes, so the next project\'s scans start', async () => {
+    const signals = new Map<bigint, AbortSignal>()
+    // A scan that answers only when it is cancelled, as the history's scan rejects with the caller's reason.
+    mocks.events.mockImplementation((_chainId: number, projectId: bigint, { signal }: { signal: AbortSignal }) => {
+      signals.set(projectId, signal)
+      if (projectId === 24n) return Promise.resolve(history)
+      return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))
+    })
+    await renderPage('base:23')
+    expect(signals.get(23n)?.aborted).toBe(false)
+
+    await renderPage('base:24')
+    expect(signals.get(23n)?.aborted).toBe(true)
+    expect(mocks.events).toHaveBeenCalledWith(8453, 24n, expect.anything())
+    expect(mocks.holders).toHaveBeenCalledWith(8453, 24n, expect.anything())
+  })
+
   it('drop the project they showed when the route names another, even when its read lands late', async () => {
     const first = Promise.withResolvers<StickyProjectInfo>()
     mocks.project.mockImplementation(async (_chainId: number, projectId: bigint) =>
@@ -518,21 +577,18 @@ describe('the Stick card', () => {
     expect(stickButton().disabled).toBe(true)
   })
 
-  it('shows no stick, and reads none, without an account', async () => {
+  it('shows no wallet, and reads no stick, without an account', async () => {
     await renderPage('base:23')
     expect(mocks.position).not.toHaveBeenCalled()
     expect(stickCard().textContent).not.toContain('in wallet')
-    expect(stickCard().textContent).not.toContain(' stuck')
   })
 
-  it('shows the viewer\'s stick as its share of the backing, in the underlying token, with the Sticky shares in its title', async () => {
+  it('shows what the viewer holds of the staked token, as the old card did, and not their stick, which the Tokens tab shows', async () => {
     mocks.address = VIEWER
     await renderPage('base:23')
     expect(mocks.position).toHaveBeenCalledWith(8453, expect.objectContaining({ projectId: 23n }), VIEWER, expect.anything())
-    const line = [...stickCard().querySelectorAll('p')].find(each => each.textContent?.endsWith(' stuck'))!
-    expect(line.textContent).toBe('505 SLOPSHOP stuck')
-    expect(line.getAttribute('title')).toBe('500 STICKYSLOPSHOP')
-    expect(stickCard().textContent).toContain('25 SLOPSHOP in wallet')
+    expect(walletLine()).toBe('25 SLOPSHOP in wallet')
+    expect(stickCard().textContent).not.toMatch(/stuck/i)
   })
 
   it('fills the amount with the whole wallet balance from its max link', async () => {
@@ -557,8 +613,10 @@ describe('the Stick card', () => {
     await renderPage('base:23')
     expect(mocks.position).toHaveBeenCalledTimes(1)
 
+    mocks.position.mockResolvedValue({ ...position, wallet: 30n * E6 })
     await settle(15_000)
     expect(mocks.position).toHaveBeenCalledTimes(2)
+    expect(walletLine()).toBe('30 SLOPSHOP in wallet')
 
     const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
     const state = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
@@ -571,14 +629,33 @@ describe('the Stick card', () => {
     expect(mocks.position).toHaveBeenCalledTimes(3)
   })
 
-  it('keeps the stick it showed, and tells the console, when a refresh fails', async () => {
+  it('reads the viewer\'s stick again as soon as the tab is shown again, as the old page did', async () => {
+    mocks.address = VIEWER
+    // Providers' defaults refetch nothing on focus; the stick is read again anyway.
+    const site = siteClient()
+    await renderPage('base:23', site)
+    expect(mocks.position).toHaveBeenCalledTimes(1)
+
+    const state = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    await act(async () => document.dispatchEvent(new Event('visibilitychange', { bubbles: true })))
+    await settle()
+    expect(mocks.position).toHaveBeenCalledTimes(1)
+
+    state.mockReturnValue('visible')
+    await act(async () => document.dispatchEvent(new Event('visibilitychange', { bubbles: true })))
+    await settle()
+    expect(mocks.position).toHaveBeenCalledTimes(2)
+    site.clear()
+  })
+
+  it('keeps the wallet it showed, and tells the console, when a refresh fails', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     mocks.address = VIEWER
     await renderPage('base:23')
     const failure = new Error('429')
     mocks.position.mockRejectedValue(failure)
     await settle(15_000)
-    expect(stickCard().textContent).toContain('505 SLOPSHOP stuck')
+    expect(walletLine()).toBe('25 SLOPSHOP in wallet')
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('stick'), { chainId: 8453, projectId: 23 }, failure)
   })
 })

@@ -13,14 +13,14 @@
  *
  * Names and handles are read only on production chains: a mainnet name does not describe a testnet project. A read
  * that answers with something that does not read names nothing, and so does a project that does not exist (JBProjects
- * reverts). A read that fails is no answer: it is told to the console and rejects, so that the page can say the lookup
- * failed and offer to try again, where a handle that names nothing is a 404. The name's record is read by
- * `readDirectEnsProjectRecord`, which takes a failed lookup for no record, so no record counts as an answer only once
- * Ethereum has answered a fresh request.
+ * reverts with `ERC721NonexistentToken`). A read that fails is no answer: it is told to the console and rejects, so
+ * that the page can say the lookup failed and offer to try again, where a handle that names nothing is a 404. The
+ * name's record is read by `readDirectEnsProjectRecord`, which takes a failed lookup for no record, so no record counts
+ * as an answer only once Ethereum has answered a fresh request.
  */
 
 import type { JBChainId } from '@bananapus/nana-sdk-core'
-import { BaseError, ContractFunctionRevertedError, type Address } from 'viem'
+import { BaseError, ContractFunctionRevertedError, toFunctionSelector, type Address } from 'viem'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import {
   PROJECT_HANDLES_CHAIN_ID,
@@ -53,8 +53,16 @@ export type HandleReads = {
 
 const HANDLE_UNREADABLE = 'A project handle could not be read; its page offers to try again.'
 
-const reverted = (error: unknown) =>
-  error instanceof BaseError && error.walk(cause => cause instanceof ContractFunctionRevertedError) !== null
+/** What JBProjects, an OpenZeppelin ERC-721, reverts with for a project that does not exist. */
+const NONEXISTENT_TOKEN = toFunctionSelector('ERC721NonexistentToken(uint256)')
+
+/** Whether `error` is JBProjects saying the project does not exist, which is an answer. viem also reads a node's
+ * -32603 as a revert, one with no error in it: that, like every other failure, is a read that failed. */
+function nonexistent(error: unknown): boolean {
+  const revert = error instanceof BaseError ? error.walk(cause => cause instanceof ContractFunctionRevertedError) : null
+  if (!(revert instanceof ContractFunctionRevertedError)) return false
+  return revert.signature === NONEXISTENT_TOKEN || revert.data?.errorName === 'ERC721NonexistentToken'
+}
 
 /** Ethereum, through Center like every other chain: a public RPC that answers a browser can refuse a server. */
 const ethereum = () => jbCenterPublicClient(PROJECT_HANDLES_CHAIN_ID)
@@ -77,7 +85,7 @@ const live: HandleReads = {
         args: [BigInt(projectId)],
       })
     } catch (error) {
-      if (reverted(error)) return null
+      if (nonexistent(error)) return null
       throw error
     }
   },
