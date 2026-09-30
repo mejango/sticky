@@ -8,7 +8,7 @@ const config = {
         line: '#d8e7eb',
         ink: '#1c2d33',
         muted: '#57727c',
-        accent: '#0e7c91',
+        accent: '#0e7b90',
         amber: '#2fb3c7',
         teal: '#7fd4e0',
         err: '#b34a35',

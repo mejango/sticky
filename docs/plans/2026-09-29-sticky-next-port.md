@@ -496,7 +496,7 @@ const DEV_ORIGINS = new Set(['http://127.0.0.1:8788', 'https://dev.sticky.center
   The menu items are exactly "Account", "Copy address", "Disconnect" and "View as" (or "Exit View as" while viewing). These strings come from `OLD/app.js:5777-5809`.
 - [ ] **Step 2: Run it.** Expected: FAIL (no component).
 - [ ] **Step 3: Implement.**
-  - **Theme:** `tailwind.config.mjs` defines colors `bg #f0f7f9`, `card #f8fcfd`, `line #d8e7eb`, `ink #1c2d33`, `muted #57727c`, `accent #0e7c91`, `amber #2fb3c7`, `teal #7fd4e0`, `err #b34a35`. These come from `OLD/index.html:34-38`.
+  - **Theme:** `tailwind.config.mjs` defines colors `bg #f0f7f9`, `card #f8fcfd`, `line #d8e7eb`, `ink #1c2d33`, `muted #57727c`, `accent #0e7b90`, `amber #2fb3c7`, `teal #7fd4e0`, `err #b34a35`. These come from `OLD/index.html:34-38`, except `accent`, which ruling R74 darkens from OLD's `#0e7c91` for WCAG AA contrast.
   - **Fonts:** `beatrice` and `agrandir-wide` families, loaded with `next/font/local` in `layout.tsx` (weights 400/500 and 700).
   - **`globals.css`:** `@import "tailwindcss"` plus `@config`, and jbm's component classes (`.card`, `.btn-primary`, `.btn-secondary`, `.btn-link`, `.modal-dialog`, `dialog[data-covered]`, `.skeleton-shimmer`, `.revalidating`) restyled with Sticky's tokens, taking values from `OLD/index.html:21-751`.
   - **`SiteHeader`:** the `drip-corner` logo linking to `/`, plus `WalletButton`. Keep the 50 px top fold and the drip overscroll art from `OLD/app.js:204-224`.

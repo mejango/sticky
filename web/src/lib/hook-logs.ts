@@ -196,6 +196,16 @@ function tidy(found: ScannedLog[]): ScannedLog[] {
     .sort((a, b) => (a.blockNumber === b.blockNumber ? a.logIndex - b.logIndex : a.blockNumber < b.blockNumber ? -1 : 1))
 }
 
+/** A history that takes more requests than a scan may send even when none of them fails: trying again cannot help,
+ * only a history that starts later. A scan that runs out of requests in the middle, by splitting and retrying, is an
+ * ordinary error: it may not the next time. */
+export class HistoryTooLongError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'HistoryTooLongError'
+  }
+}
+
 /** Every log of an address and topic filter from `fromBlock` to `toBlock`, in order, or an error: never a
  * part of them. Ranges are read 500 blocks at a time with at most `maxInFlight` requests at once. A
  * refused range is split, a 429 waits as long as Center asks and retries, and no more than `maxRequests`
@@ -215,9 +225,10 @@ export async function scanLogs(
   if (fromBlock > toBlock) return []
 
   const blocks = toBlock - fromBlock + 1n
-  const overBudget = () => new Error(`This history spans ${blocks} blocks, more than this RPC can scan in ${maxRequests} requests.`)
+  const tooLong = `This history spans ${blocks} blocks, more than this RPC can scan in ${maxRequests} requests.`
+  const overBudget = () => new Error(tooLong)
   // The fewest requests the history can take. Splitting and retrying only add to it.
-  if (Number((blocks + WINDOW - 1n) / WINDOW) > maxRequests) throw overBudget()
+  if (Number((blocks + WINDOW - 1n) / WINDOW) > maxRequests) throw new HistoryTooLongError(tooLong)
 
   let sent = 0
   let failed: { error: unknown } | null = null

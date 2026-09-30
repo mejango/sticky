@@ -6,6 +6,7 @@ import {
   holderRows,
   pinnedBlock,
   positionRows,
+  readStickyPosition,
   stickAges,
   stickyHolders,
   verifyHolderPage,
@@ -22,6 +23,7 @@ import {
   OTHER,
   POSITION_TOPICS,
   SENDER,
+  STAKED_TOKEN,
   deployment,
   staked,
   streakEnded,
@@ -216,11 +218,88 @@ describe('pinned block ages', () => {
   })
 })
 
+// ---------------------------------------------------------------- one holder's stick
+
+describe('readStickyPosition', () => {
+  const ST_TOKEN = `0x${'5'.repeat(40)}` as Address
+  const project = { projectId: 7n, stToken: ST_TOKEN, stakedToken: STAKED_TOKEN }
+  type Read = { address: Address; functionName: string; args: readonly unknown[] }
+  type Batch = { contracts: readonly Read[]; allowFailure?: boolean; blockNumber?: bigint }
+
+  function chainWith(answers: readonly bigint[], time = 10_000n) {
+    const getBlock = vi.fn(async (_args?: unknown) => ({ number: 0x99n, timestamp: time }))
+    const multicall = vi.fn(async (_batch: Batch) => answers)
+    center.client.mockReturnValue({ getBlock, multicall } as unknown as PublicClient)
+    return { getBlock, multicall }
+  }
+
+  it('reads a holder\'s shares, wallet and streaks at one pinned block, measuring the streak at that block\'s time', async () => {
+    const { getBlock, multicall } = chainWith([500n, 9_000n, 5_000n, 25n])
+
+    expect(await readStickyPosition(CHAIN, project, HOLDER_A)).toEqual({
+      staked: 500n,
+      wallet: 25n,
+      start: 9_000,
+      current: 1_000,
+      longest: 5_000,
+      blockNumber: 0x99n,
+      timestamp: 10_000,
+    })
+
+    // The latest block once, then one request at that block: the Sticky token's balance, the hook's streak start and
+    // record, and the staked token's balance.
+    expect(getBlock).toHaveBeenCalledTimes(1)
+    expect(multicall).toHaveBeenCalledTimes(1)
+    const [{ contracts, blockNumber, allowFailure }] = multicall.mock.calls[0]
+    expect(blockNumber).toBe(0x99n)
+    expect(allowFailure).toBe(false)
+    expect(contracts.map(read => [read.address, read.functionName, read.args])).toEqual([
+      [ST_TOKEN, 'balanceOf', [HOLDER_A]],
+      [HOOK, 'streakStartOf', [7n, HOLDER_A]],
+      [HOOK, 'longestStreakOf', [7n, HOLDER_A]],
+      [STAKED_TOKEN, 'balanceOf', [HOLDER_A]],
+    ])
+  })
+
+  it('counts the active streak toward the record, and has none without a streak start', async () => {
+    chainWith([500n, 9_000n, 400n, 25n])
+    expect(await readStickyPosition(CHAIN, project, HOLDER_A)).toMatchObject({ current: 1_000, longest: 1_000 })
+
+    chainWith([0n, 0n, 400n, 25n])
+    expect(await readStickyPosition(CHAIN, project, HOLDER_A)).toMatchObject({ start: 0, current: 0, longest: 400 })
+
+    // A start ahead of the block's time is no streak yet.
+    chainWith([500n, 12_000n, 0n, 25n])
+    expect(await readStickyPosition(CHAIN, project, HOLDER_A)).toMatchObject({ current: 0, longest: 0 })
+  })
+
+  it('rejects when the chain cannot be read', async () => {
+    const { multicall } = chainWith([])
+    multicall.mockRejectedValue(new Error('429'))
+    await expect(readStickyPosition(CHAIN, project, HOLDER_A)).rejects.toThrow('429')
+  })
+
+  it('rejects with the caller\'s reason when it cancels', async () => {
+    const { multicall } = chainWith([])
+    multicall.mockReturnValue(new Promise(() => {}))
+    const controller = new AbortController()
+    const read = readStickyPosition(CHAIN, project, HOLDER_A, { signal: controller.signal })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    controller.abort(new Error('left the page'))
+    await expect(read).rejects.toThrow('left the page')
+  })
+
+  it('refuses a chain Sticky is not deployed on', async () => {
+    await expect(readStickyPosition(999, project, HOLDER_A)).rejects.toThrow('Sticky is not deployed on chain 999.')
+  })
+})
+
 // ---------------------------------------------------------------- the visible page, read again
 
 type Round = {
   contracts: readonly { address: Address; functionName: string; args: readonly [bigint, Address] }[]
   allowFailure?: boolean
+  batchSize?: number
   blockNumber?: bigint
 }
 
@@ -235,9 +314,11 @@ describe('verifyHolderPage', () => {
     expect(checked.map(entry => entry.staked)).toEqual([6n, 3n])
     // One request, at the block given, of the hook's stakedBalanceOf for each holder shown.
     expect(multicall).toHaveBeenCalledTimes(1)
-    const [{ contracts, blockNumber, allowFailure }] = multicall.mock.calls[0]
+    const [{ contracts, blockNumber, allowFailure, batchSize }] = multicall.mock.calls[0]
     expect(blockNumber).toBe(0x77n)
     expect(allowFailure).toBe(false)
+    // A page is one request: viem splits a batch above 1 KB of calldata unless told not to.
+    expect(batchSize).toBe(0)
     expect(contracts.map(call => [call.address, call.functionName, call.args])).toEqual([
       [HOOK, 'stakedBalanceOf', [7n, HOLDER_A]],
       [HOOK, 'stakedBalanceOf', [7n, HOLDER_B]],

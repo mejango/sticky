@@ -18,6 +18,7 @@ import {
   StickyDeploymentMismatch,
   backingOfShares,
   readStickyProject,
+  readStickyProjects,
   verifyStickyDeployment,
 } from '@/lib/sticky-project'
 
@@ -43,9 +44,12 @@ const uriFor = (launchId: unknown, protocol = 'Sticky') =>
 // A fake chain, keyed by "<contract>.<function>". A value is what that call returns, an Error is
 // how it fails, and a call nobody stocked is a bug in the read, so it throws. The staked token's
 // symbol and name are asked twice, as the string most tokens return and as the bytes32 some return
-// (MKR), and the fake keeps the two readings apart by the type the asked function returns.
+// (MKR), and the fake keeps the two readings apart by the type the asked function returns. A key
+// with one of the call's arguments after it, "<contract>.<function>@<argument>", stocks one project's
+// answer apart from the others'.
 type World = Record<string, unknown>
 const at = (contract: Address, functionName: string) => `${contract.toLowerCase()}.${functionName}`
+const forProject = (key: string, projectId: bigint) => `${key}@${projectId}`
 const asBytes32 = (key: string) => `${key}:bytes32`
 // What decoding a string's return as a bytes32 yields: the string's offset word.
 const OFFSET_WORD: Hex = `0x${'0'.repeat(62)}20`
@@ -81,19 +85,25 @@ type Round = {
 const returnsBytes32 = ({ abi, functionName }: Round['contracts'][number]) =>
   abi.some(item => item.type === 'function' && item.name === functionName && item.outputs[0]?.type === 'bytes32')
 
-function fakeCenter(chain: World) {
+/** `lost` names a contract whose calls lose the whole request that carries them, as a token can by answering with more
+ * than Center carries or by running Multicall3 out of gas. */
+function fakeCenter(chain: World, { lost }: { lost?: Address } = {}) {
   const getBlockNumber = vi.fn(async () => HEAD)
-  const multicall = vi.fn(async ({ contracts }: Round) =>
-    contracts.map(call => {
+  const multicall = vi.fn(async ({ contracts }: Round) => {
+    if (contracts.some(call => call.address === lost)) {
+      return contracts.map(() => ({ status: 'failure' as const, error: unanswered() }))
+    }
+    return contracts.map(call => {
       const { address: contract, functionName } = call
       const key = at(contract, functionName)
-      const reply = chain[returnsBytes32(call) ? asBytes32(key) : key]
+      const own = call.args?.map(arg => chain[`${key}@${String(arg)}`]).find(reply => reply !== undefined)
+      const reply = own ?? chain[returnsBytes32(call) ? asBytes32(key) : key]
       if (reply === undefined) throw new Error(`the fake chain has no ${functionName} on ${contract}`)
       return reply instanceof Error
         ? { status: 'failure' as const, error: reply }
         : { status: 'success' as const, result: reply }
-    }),
-  )
+    })
+  })
   // Only these two reads exist: any other way of reaching the chain is a TypeError.
   center.client.mockReturnValue({ getBlockNumber, multicall } as unknown as PublicClient)
   return { getBlockNumber, multicall }
@@ -397,6 +407,204 @@ describe('readStickyProject', () => {
   it('refuses a chain Sticky is not deployed on, without opening a reader', async () => {
     await expect(readStickyProject(137, 1n)).rejects.toThrow('Sticky is not deployed on chain 137.')
     expect(center.client).not.toHaveBeenCalled()
+  })
+})
+
+describe('the length of a token\'s symbol and name', () => {
+  it('cuts the staked token\'s and the Sticky token\'s at 256 characters', async () => {
+    fakeCenter(
+      world({
+        [at(STAKED, 'symbol')]: 'S'.repeat(300),
+        [at(STAKED, 'name')]: 'N'.repeat(100_000),
+        [at(STICKY, 'symbol')]: 'T'.repeat(257),
+        [at(STICKY, 'name')]: 'M'.repeat(256),
+      }),
+    )
+    expect(await readStickyProject(CHAIN, 12n)).toMatchObject({
+      symbol: 'S'.repeat(256),
+      name: 'N'.repeat(256),
+      stSymbol: 'T'.repeat(256),
+      stName: 'M'.repeat(256),
+    })
+  })
+
+  it('counts characters, not UTF-16 units, so a cut never splits one', async () => {
+    fakeCenter(world({ [at(STAKED, 'symbol')]: '🍩'.repeat(300) }))
+    expect((await readStickyProject(CHAIN, 12n)).symbol).toBe('🍩'.repeat(256))
+  })
+})
+
+describe('readStickyProjects', () => {
+  const ids = (count: number, from = 1n) => Array.from({ length: count }, (_, at) => from + BigInt(at))
+
+  it('reads a chain\'s projects in the same two Multicall3 rounds, at one block', async () => {
+    const { getBlockNumber, multicall } = fakeCenter(world())
+    const infos = await readStickyProjects(CHAIN, ids(3, 12n))
+
+    expect(infos.map(info => info.projectId)).toEqual([12n, 13n, 14n])
+    expect(infos[1]).toEqual({ ...(await readStickyProject(CHAIN, 12n)), projectId: 13n })
+    expect(getBlockNumber).toHaveBeenCalledTimes(2)
+    // Three projects: five calls each and the store once, then ten calls each.
+    const [first, second] = multicall.mock.calls.slice(0, 2).map(([round]) => round)
+    expect([first.contracts.length, second.contracts.length]).toEqual([16, 30])
+    expect([first.blockNumber, second.blockNumber]).toEqual([HEAD, HEAD])
+  })
+
+  it('carries at most 25 projects in a request', async () => {
+    const { multicall } = fakeCenter(world())
+    const infos = await readStickyProjects(CHAIN, ids(30))
+    expect(infos).toHaveLength(30)
+    expect(multicall.mock.calls.map(([round]) => round.contracts.length)).toEqual([126, 250, 26, 50])
+  })
+
+  it('leaves out a project that cannot be read, tells the console which, and reads the rest', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const failure = reverted('tokenOf')
+    fakeCenter(
+      world({
+        [forProject(at(deployment.deployer, 'stakedTokenOf'), 13n)]: zeroAddress,
+        [forProject(at(deployment.hook, 'tokenOf'), 14n)]: failure,
+      }),
+    )
+    const infos = await readStickyProjects(CHAIN, ids(4, 12n))
+
+    expect(infos.map(info => info.projectId)).toEqual([12n, 15n])
+    expect(warn.mock.calls.map(([label, about, error]) => [label, about, (error as Error).message])).toEqual([
+      [expect.stringMatching(/project/), { chainId: CHAIN, projectId: 13n }, 'Project 13 is not a Sticky token of this deployer.'],
+      [expect.stringMatching(/project/), { chainId: CHAIN, projectId: 14n }, 'Sticky project 14 on chain 84532: the Sticky token could not be read.'],
+    ])
+    warn.mockRestore()
+  })
+
+  it('reads no further than the first round for projects none of which it can read', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { multicall } = fakeCenter(world({ [at(deployment.deployer, 'stakedTokenOf')]: zeroAddress }))
+    expect(await readStickyProjects(CHAIN, ids(2))).toEqual([])
+    expect(multicall).toHaveBeenCalledOnce()
+    expect(warn).toHaveBeenCalledTimes(2)
+    warn.mockRestore()
+  })
+
+  it('gives each project its own figures', async () => {
+    const [staked, sticky] = [address('5'), address('6')]
+    fakeCenter(
+      world({
+        [forProject(at(deployment.deployer, 'stakedTokenOf'), 13n)]: staked,
+        [forProject(at(deployment.deployer, 'cashOutTaxRateOf'), 13n)]: 2500n,
+        [forProject(at(deployment.hook, 'tokenOf'), 13n)]: sticky,
+        [forProject(at(deployment.hook, 'orphanedBalanceOf'), 13n)]: 7n,
+        [at(staked, 'symbol')]: 'MKR',
+        [asBytes32(at(staked, 'symbol'))]: OFFSET_WORD,
+        [at(staked, 'decimals')]: 18,
+        [at(staked, 'name')]: 'Maker',
+        [asBytes32(at(staked, 'name'))]: OFFSET_WORD,
+        [at(sticky, 'symbol')]: 'STICKYMKR',
+        [at(sticky, 'name')]: 'Streaking MKR',
+        [at(sticky, 'SOULBOUND')]: true,
+        [at(sticky, 'totalSupply')]: 5n * 10n ** 18n,
+        [forProject(at(STORE, 'balanceOf'), 13n)]: 70n,
+      }),
+    )
+
+    const infos = await readStickyProjects(CHAIN, [12n, 13n])
+
+    expect(infos).toEqual([
+      expect.objectContaining({
+        projectId: 12n,
+        stakedToken: STAKED,
+        symbol: 'ART',
+        name: 'Art',
+        decimals: 6,
+        stToken: STICKY,
+        stSymbol: 'STICKYART',
+        stName: 'Streaking ART',
+        soulbound: false,
+        totalSupply: 10n ** 18n,
+        backing: 6n,
+        orphaned: 4n,
+        cashOutTaxRate: 1000n,
+      }),
+      expect.objectContaining({
+        projectId: 13n,
+        stakedToken: staked,
+        symbol: 'MKR',
+        name: 'Maker',
+        decimals: 18,
+        stToken: sticky,
+        stSymbol: 'STICKYMKR',
+        stName: 'Streaking MKR',
+        soulbound: true,
+        totalSupply: 5n * 10n ** 18n,
+        backing: 63n,
+        orphaned: 7n,
+        cashOutTaxRate: 2500n,
+      }),
+    ])
+  })
+
+  describe('a request one project loses for the rest', () => {
+    // Its staked token answers with more than Center carries, or runs Multicall3 out of gas, so the round that asks it
+    // gets no answer for any project in that request.
+    const HOSTILE = address('7')
+    const hostile = (projectId: bigint) =>
+      world({ [forProject(at(deployment.deployer, 'stakedTokenOf'), projectId)]: HOSTILE })
+    // A project read on its own: its first round, then its second.
+    const alone = (count: number) => Array.from({ length: count }, () => [6, 10]).flat()
+
+    it.each([
+      { request: 'the first', lost: 3n, requests: [126, 250, ...alone(25), 26, 50] },
+      { request: 'a later', lost: 28n, requests: [126, 250, 26, 50, ...alone(5)] },
+    ])(
+      'in $request request, reads the rest of that request one project at a time and leaves that one out',
+      async ({ lost, requests }) => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+        const { getBlockNumber, multicall } = fakeCenter(hostile(lost), { lost: HOSTILE })
+
+        const infos = await readStickyProjects(CHAIN, ids(30))
+
+        expect(infos.map(info => info.projectId)).toEqual(ids(30).filter(id => id !== lost))
+        expect(warn.mock.calls.map(([label, about]) => [label, about])).toEqual([
+          [expect.stringMatching(/project/), { chainId: CHAIN, projectId: lost }],
+        ])
+        // Center is asked afresh whether it still answers, and every read stays at the block the first asked for.
+        expect(getBlockNumber.mock.calls).toEqual([[], [{ cacheTime: 0 }]])
+        expect(multicall.mock.calls.map(([round]) => round.contracts.length)).toEqual(requests)
+        expect(multicall.mock.calls.every(([round]) => round.blockNumber === HEAD)).toBe(true)
+        warn.mockRestore()
+      },
+    )
+
+    it('rejects with why the request was lost when Center does not answer either', async () => {
+      const { getBlockNumber, multicall } = fakeCenter(hostile(3n), { lost: HOSTILE })
+      getBlockNumber.mockResolvedValueOnce(HEAD).mockRejectedValueOnce(new Error('Center is busy.'))
+      await expect(readStickyProjects(CHAIN, ids(30))).rejects.toThrow('Request exceeds defined limit.')
+      expect(multicall).toHaveBeenCalledTimes(2)
+    })
+
+    it('rejects when the one project read loses its request, without asking Center again', async () => {
+      const { getBlockNumber } = fakeCenter(hostile(3n), { lost: HOSTILE })
+      await expect(readStickyProjects(CHAIN, [3n])).rejects.toThrow('Request exceeds defined limit.')
+      await expect(readStickyProject(CHAIN, 3n)).rejects.toThrow('Request exceeds defined limit.')
+      expect(getBlockNumber).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('reads nothing for no projects', async () => {
+    const { getBlockNumber, multicall } = fakeCenter(world())
+    expect(await readStickyProjects(CHAIN, [])).toEqual([])
+    expect(getBlockNumber).not.toHaveBeenCalled()
+    expect(multicall).not.toHaveBeenCalled()
+  })
+
+  it('rejects with the caller\'s reason once cancelled, without waiting for the request under way', async () => {
+    const controller = new AbortController()
+    const reason = new Error('left the page')
+    const { multicall } = fakeCenter(world())
+    multicall.mockReturnValue(new Promise(() => {}))
+    const reading = readStickyProjects(CHAIN, ids(2), { signal: controller.signal })
+    await vi.waitFor(() => expect(multicall).toHaveBeenCalled())
+    controller.abort(reason)
+    await expect(reading).rejects.toBe(reason)
   })
 })
 

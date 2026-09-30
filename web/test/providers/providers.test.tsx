@@ -146,8 +146,9 @@ describe('Providers', () => {
       window.localStorage.setItem('sticky:query-cache:v1', serializeState(dehydrate(seed)))
     }
 
-    it('restores last session’s reads, from Sticky’s own cache key', async () => {
+    it('restores last session’s reads from Sticky’s own cache key at once, before the page has loaded', async () => {
       await seedCache()
+      vi.spyOn(document, 'readyState', 'get').mockReturnValue('interactive')
       const { Providers } = await load()
       let client!: QueryClient
       function Probe() {
@@ -157,24 +158,6 @@ describe('Providers', () => {
 
       await mount(<Providers><Probe /></Providers>)
 
-      expect(client.getQueryData(['ruleset', 1])).toEqual({ weight: 5n })
-    })
-
-    it('waits for the page to finish loading, so streamed content hydrates first', async () => {
-      await seedCache()
-      const readyState = vi.spyOn(document, 'readyState', 'get').mockReturnValue('interactive')
-      const { Providers } = await load()
-      let client!: QueryClient
-      function Probe() {
-        client = useQueryClient()
-        return null
-      }
-
-      await mount(<Providers><Probe /></Providers>)
-      expect(client.getQueryData(['ruleset', 1])).toBeUndefined()
-
-      readyState.mockReturnValue('complete')
-      await act(async () => { window.dispatchEvent(new Event('load')) })
       expect(client.getQueryData(['ruleset', 1])).toEqual({ weight: 5n })
     })
   })

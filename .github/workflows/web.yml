@@ -63,6 +63,49 @@ jobs:
       - name: Build production application
         run: npm run build
 
+  browser:
+    name: Browser smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: web
+    env:
+      CI: true
+      NEXT_TELEMETRY_DISABLED: 1
+      NODE_OPTIONS: --no-experimental-webstorage
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Use pinned Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Use pinned npm
+        run: npm install --global npm@12.0.1 --no-audit --no-fund
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      # Builds the deterministic and the Signa variants, then runs the pages
+      # against the recorded fixture with every other request refused.
+      - name: Run production browser invariants
+        run: npm run test:browser
+      - name: Upload browser diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-diagnostics
+          path: |
+            web/playwright-report/
+            web/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
   container-smoke:
     name: Standalone OCI smoke
     runs-on: ubuntu-24.04

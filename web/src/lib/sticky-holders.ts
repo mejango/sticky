@@ -1,9 +1,10 @@
 /**
  * A project's holders: what each has staked and how long they have stayed, for the Tokens tab's leaderboard and pie
- * and the header's Sticks, Average active stick and Longest active stick. Bendystraw's positions answer first, as of
- * the block it is indexed through, and a scan of the hook's position events from just below that block brings them to
- * the head. When Bendystraw cannot answer, the rows are rebuilt from the project's events. Either way the rows are for
- * finding holders and ordering them: the balances a page shows are read again from the hook (`verifyHolderPage`).
+ * and the header's Sticks, Average active stick and Longest active stick; and one holder's own stick. Bendystraw's
+ * positions answer first, as of the block it is indexed through, and a scan of the hook's position events from just
+ * below that block brings them to the head. When Bendystraw cannot answer, the rows are rebuilt from the project's
+ * events. Either way the rows are for finding holders and ordering them: the balances a page shows are read again from
+ * the hook (`verifyHolderPage`).
  *
  * Every Staked and Unstaked carries the holder's balance after it, StreakStarted marks when a streak began and
  * StreakEnded how long it lasted. So events are applied, never added up: an event applied again changes nothing, and a
@@ -12,7 +13,7 @@
  * Addresses are lowercase.
  */
 
-import { pad, toHex, type Address } from 'viem'
+import { erc20Abi, pad, toHex, type Address } from 'viem'
 import { untilAborted } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { stickyHookAbi } from '@/lib/sticky-abis'
@@ -30,6 +31,7 @@ import {
   type StickyReadDeps,
 } from '@/lib/sticky-events'
 import { indexedStickyPositions, type IndexedPosition } from '@/lib/sticky-indexed'
+import type { StickyProjectInfo } from '@/lib/sticky-project'
 
 /** One holder of a project, at `now`. The streaks follow StickyHook's `currentStreakOf` and `longestStreakOf`. */
 export type HolderRow = {
@@ -209,8 +211,8 @@ export async function stickyHolders(
 }
 
 /**
- * The page of holders a page shows, with each balance read again from the hook at `block` through Multicall3: a
- * balance an index or a scan got wrong is not what the page shows. A row whose balance holds is the same row.
+ * The page of holders a page shows, with each balance read again from the hook at `block` through Multicall3, in one
+ * request: a balance an index or a scan got wrong is not what the page shows. A row whose balance holds is the same row.
  */
 export async function verifyHolderPage(
   chainId: number,
@@ -228,6 +230,7 @@ export async function verifyHolderPage(
           ({ address: hook, abi: stickyHookAbi, functionName: 'stakedBalanceOf', args: [projectId, holder] }) as const,
       ),
       allowFailure: false,
+      batchSize: 0,
       blockNumber: block,
     }),
     signal,
@@ -251,4 +254,58 @@ export function stickAges(rows: readonly HolderRow[], now: number): { average: n
   const ages = rows.filter(row => row.staked > 0n).map(row => (row.start ? Math.max(0, now - row.start) : 0))
   const total = ages.reduce((sum, age) => sum + age, 0)
   return { average: ages.length ? Math.floor(total / ages.length) : 0, longest: Math.max(0, ...ages) }
+}
+
+/** One holder's stick in a project, read at one block. */
+export type StickyPosition = {
+  /** Their Sticky shares, with 18 decimals. */
+  staked: bigint
+  /** What they hold of the staked token: what they could stick. */
+  wallet: bigint
+  /** When their active streak started, in Unix seconds, or 0 when they have none, as `streakStartOf` says. */
+  start: number
+  /** Their active streak at `timestamp`, and their longest with it, in seconds. */
+  current: number
+  longest: number
+  blockNumber: bigint
+  timestamp: number
+}
+
+/**
+ * A holder's stick, read at one pinned block in one request: their Sticky shares, what they hold of the staked token,
+ * and StickyHook's `streakStartOf` and `longestStreakOf`, with the active streak measured at that block's time. The
+ * page's stick card and the holder's own figures read it; its tranches are read at the same block.
+ */
+export async function readStickyPosition(
+  chainId: number,
+  { projectId, stToken, stakedToken }: Pick<StickyProjectInfo, 'projectId' | 'stToken' | 'stakedToken'>,
+  holder: Address,
+  { signal }: Cancel = {},
+): Promise<StickyPosition> {
+  const { hook } = deploymentOn(chainId)
+  const pin = await pinnedBlock(chainId, { signal })
+  const [staked, start, longest, wallet] = await untilAborted(
+    jbCenterPublicClient(chainId).multicall({
+      contracts: [
+        { address: stToken, abi: erc20Abi, functionName: 'balanceOf', args: [holder] },
+        { address: hook, abi: stickyHookAbi, functionName: 'streakStartOf', args: [projectId, holder] },
+        { address: hook, abi: stickyHookAbi, functionName: 'longestStreakOf', args: [projectId, holder] },
+        { address: stakedToken, abi: erc20Abi, functionName: 'balanceOf', args: [holder] },
+      ],
+      allowFailure: false,
+      blockNumber: pin.number,
+    }),
+    signal,
+  )
+  const since = Number(start)
+  const current = since ? Math.max(0, pin.timestamp - since) : 0
+  return {
+    staked,
+    wallet,
+    start: since,
+    current,
+    longest: Math.max(Number(longest), current),
+    blockNumber: pin.number,
+    timestamp: pin.timestamp,
+  }
 }

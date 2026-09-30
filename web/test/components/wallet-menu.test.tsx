@@ -9,13 +9,17 @@ const mocks = vi.hoisted(() => ({
   wallet: { address: undefined as string | undefined, isConnected: false, isCenterWallet: false },
   writeText: vi.fn(),
   pathname: '/',
+  search: '',
   balance: undefined as { value: bigint; symbol: string } | undefined,
 }))
 
 vi.mock('@/hooks/useWallet', () => ({
   useWallet: () => ({ ...mocks.wallet, disconnect: vi.fn(), openSignIn: vi.fn() }),
 }))
-vi.mock('next/navigation', () => ({ usePathname: () => mocks.pathname }))
+vi.mock('next/navigation', () => ({
+  usePathname: () => mocks.pathname,
+  useSearchParams: () => new URLSearchParams(mocks.search),
+}))
 vi.mock('next/link', () => ({
   default: (props: AnchorHTMLAttributes<HTMLAnchorElement>) => <a {...props} />,
 }))
@@ -34,6 +38,7 @@ let root: Root
 beforeEach(() => {
   mocks.wallet = { address: ALICE, isConnected: true, isCenterWallet: false }
   mocks.pathname = '/'
+  mocks.search = ''
   mocks.balance = undefined
   mocks.writeText.mockResolvedValue(undefined)
   vi.stubGlobal('navigator', Object.assign(Object.create(navigator), { clipboard: { writeText: mocks.writeText } }))

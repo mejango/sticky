@@ -39,7 +39,8 @@ const facts = (
   launchId: string | null,
   cashOutTaxRate: bigint,
   soulbound: boolean,
-): LaunchFacts => ({ chainId, projectId, launchId, cashOutTaxRate, soulbound })
+  plannedChains: number[] | null = null,
+): LaunchFacts => ({ chainId, projectId, launchId, cashOutTaxRate, soulbound, plannedChains })
 
 /** The page's project: launch LAUNCH on Base Sepolia, a 5% bonus, transferable. */
 const HERE = facts(BASE_SEPOLIA, 12n, LAUNCH, 500n, false)
@@ -77,6 +78,28 @@ describe('siblingProjects', () => {
     expect(siblingProjects(HERE, [real, copy])[1]).toEqual({ chainId: OP_SEPOLIA, projectId: 5n, self: false })
   })
 
+  it('takes no copy on a chain the page\'s uri did not plan, even one that copies its uri', () => {
+    const planned = { ...HERE, plannedChains: [BASE_SEPOLIA, OP_SEPOLIA] }
+    const candidates = [
+      facts(ARB_SEPOLIA, 3n, LAUNCH, 500n, false, [BASE_SEPOLIA, OP_SEPOLIA, ARB_SEPOLIA]),
+      facts(SEPOLIA, 2n, LAUNCH, 500n, false, [BASE_SEPOLIA, OP_SEPOLIA]),
+      facts(OP_SEPOLIA, 5n, LAUNCH, 500n, false, [BASE_SEPOLIA, OP_SEPOLIA]),
+    ]
+    expect(siblingProjects(planned, candidates).map(row => row.chainId)).toEqual([BASE_SEPOLIA, OP_SEPOLIA])
+    // A page whose uri lists no chains has no plan to hold a copy to: a copy is held only to its own uri, which the
+    // copy on Sepolia (a plan without Sepolia in it) fails, and the one on Arbitrum Sepolia (its own plan names it) does not.
+    expect(siblingProjects(HERE, candidates).map(row => row.chainId)).toEqual([BASE_SEPOLIA, ARB_SEPOLIA, OP_SEPOLIA])
+  })
+
+  it('takes no copy whose own uri does not plan its own chain, and the next copy that does is the sibling', () => {
+    const copy = facts(OP_SEPOLIA, 4n, LAUNCH, 500n, false, [BASE_SEPOLIA])
+    const real = facts(OP_SEPOLIA, 5n, LAUNCH, 500n, false, [BASE_SEPOLIA, OP_SEPOLIA])
+    expect(siblingProjects(HERE, [copy])).toEqual([{ chainId: BASE_SEPOLIA, projectId: 12n, self: true }])
+    expect(siblingProjects(HERE, [copy, real])[1]).toEqual({ chainId: OP_SEPOLIA, projectId: 5n, self: false })
+    // A uri that lists no chains has none to leave its own out of.
+    expect(siblingProjects(HERE, [facts(OP_SEPOLIA, 6n, LAUNCH, 500n, false, null)])[1]?.projectId).toBe(6n)
+  })
+
   it('has only the page\'s project when its uri carries no launch id', () => {
     const lone = { ...HERE, launchId: null }
     expect(siblingProjects(lone, [facts(OP_SEPOLIA, 5n, null, 500n, false)])).toEqual([
@@ -87,7 +110,14 @@ describe('siblingProjects', () => {
 
 // ---------------------------------------------------------------- finding them
 
-type Launch = { id: number; tax: bigint; soulbound: boolean; launchId: string | null }
+type Launch = {
+  id: number
+  tax: bigint
+  soulbound: boolean
+  launchId: string | null
+  /** The chains its uri plans. A launch writes Base Sepolia and Optimism Sepolia unless a test says otherwise. */
+  plan?: number[] | null
+}
 
 /** The Sticky projects each chain has, in the order they launched. */
 type World = Partial<Record<number, Launch[]>>
@@ -111,7 +141,7 @@ function infoOf(chainId: number, project: Launch, figures: Partial<StickyProject
     rawBacking: 10n,
     savedOrphaned: 0n,
     launchId: project.launchId,
-    plannedChains: project.launchId === null ? null : [BASE_SEPOLIA, OP_SEPOLIA],
+    plannedChains: project.plan !== undefined ? project.plan : project.launchId === null ? null : [BASE_SEPOLIA, OP_SEPOLIA],
     blockNumber: 1n,
     ...figures,
   }
@@ -213,6 +243,66 @@ describe('launchSiblings', () => {
     const asked = deps.calls.filter(call => call.read === 'launchIds' && call.chainId === OP_SEPOLIA)
     expect(asked.map(call => call.detail)).toEqual([[3n, 4n, 5n]])
     expect(deps.calls.filter(call => call.read === 'read').map(call => call.detail)).toEqual([4n, 5n])
+  })
+
+  it('searches only the chains the page\'s uri planned, and takes a copy on none of the others', async () => {
+    const planned = { ...HERE, plannedChains: [BASE_SEPOLIA, OP_SEPOLIA] }
+    const deps = fakeDeps({
+      world: {
+        [OP_SEPOLIA]: opSepoliaLaunches,
+        // A copy of the launch's uri on a chain it did not plan: it names Arbitrum Sepolia in its own plan.
+        [ARB_SEPOLIA]: [{ id: 2, tax: 500n, soulbound: false, launchId: LAUNCH, plan: [BASE_SEPOLIA, OP_SEPOLIA, ARB_SEPOLIA] }],
+      },
+    })
+    expect(found(await launchSiblings(planned, deps))).toEqual([
+      [BASE_SEPOLIA, 12n, true],
+      [OP_SEPOLIA, 5n, false],
+    ])
+    expect(new Set(deps.calls.map(call => call.chainId))).toEqual(new Set([OP_SEPOLIA]))
+    expect(deps.indexedProjects).toHaveBeenCalledTimes(1)
+    // With no plan to go by, every chain of the environment is searched, and the copy is taken.
+    const open = fakeDeps({ world: { [ARB_SEPOLIA]: [{ id: 2, tax: 500n, soulbound: false, launchId: LAUNCH, plan: null }] } })
+    expect(found(await launchSiblings(HERE, open))).toEqual([
+      [BASE_SEPOLIA, 12n, true],
+      [ARB_SEPOLIA, 2n, false],
+    ])
+  })
+
+  it('passes over a copy whose own uri does not plan its own chain, for the next one that shares the launch', async () => {
+    const deps = fakeDeps({
+      world: {
+        [OP_SEPOLIA]: [
+          { id: 3, tax: 500n, soulbound: false, launchId: LAUNCH, plan: [BASE_SEPOLIA] }, // not on its own plan
+          { id: 5, tax: 500n, soulbound: false, launchId: LAUNCH },
+        ],
+      },
+    })
+    expect(found(await launchSiblings(HERE, deps))).toEqual([
+      [BASE_SEPOLIA, 12n, true],
+      [OP_SEPOLIA, 5n, false],
+    ])
+    // Both are read in full: the first shares the launch key but cannot end the search.
+    expect(deps.calls.filter(call => call.read === 'read').map(call => call.detail)).toEqual([3n, 5n])
+    const alone = fakeDeps({ world: { [OP_SEPOLIA]: [{ id: 3, tax: 500n, soulbound: false, launchId: LAUNCH, plan: [BASE_SEPOLIA] }] } })
+    expect(found(await launchSiblings(HERE, alone))).toEqual([[BASE_SEPOLIA, 12n, true]])
+  })
+
+  it('a project whose uri plans chains that leave out its own has no siblings, and reads nothing', async () => {
+    const off = { ...HERE, plannedChains: [OP_SEPOLIA, ARB_SEPOLIA] }
+    const deps = fakeDeps({
+      world: { [OP_SEPOLIA]: opSepoliaLaunches, [ARB_SEPOLIA]: [{ id: 2, tax: 500n, soulbound: false, launchId: LAUNCH, plan: null }] },
+    })
+    expect(await launchSiblings(off, deps)).toEqual([{ chainId: BASE_SEPOLIA, projectId: 12n, self: true }])
+    expect(deps.calls).toEqual([])
+    expect(deps.indexedProjects).not.toHaveBeenCalled()
+    // A plan with its own chain among the others is searched as before, and an empty plan leaves every chain out.
+    expect(found(await launchSiblings({ ...HERE, plannedChains: [BASE_SEPOLIA, OP_SEPOLIA] }, deps))).toEqual([
+      [BASE_SEPOLIA, 12n, true],
+      [OP_SEPOLIA, 5n, false],
+    ])
+    const empty = fakeDeps({ world: { [OP_SEPOLIA]: opSepoliaLaunches } })
+    expect(await launchSiblings({ ...HERE, plannedChains: [] }, empty)).toEqual([{ chainId: BASE_SEPOLIA, projectId: 12n, self: true }])
+    expect(empty.calls).toEqual([])
   })
 
   it('a single-chain project, or one whose uri carries no launch id, has no siblings to scan', async () => {

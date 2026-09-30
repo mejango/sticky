@@ -12,11 +12,13 @@ export {
 // exports carry each whole contract, and a test holds every list here to them.
 
 /** A Sticky token, the ERC-20 a stick mints, with 18 decimals. `SOULBOUND` says whether it can be
- * transferred, and `getPastVotes` reads a holder's delegated voting power at a past timepoint. */
+ * transferred, `PROJECT_ID` which project's hook keeps its holders' tranches, and `getPastVotes` reads a holder's
+ * delegated voting power at a past timepoint. */
 export const stickyTokenAbi = [
   ...erc20Abi,
   ...parseAbi([
     'function SOULBOUND() view returns (bool)',
+    'function PROJECT_ID() view returns (uint256)',
     'function getPastVotes(address account, uint256 timepoint) view returns (uint256)',
   ]),
 ] as const

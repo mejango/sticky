@@ -1,11 +1,11 @@
 'use client'
 
 import Image from 'next/image'
-import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import dripCorner from '../../public/assets/drip-corner.png'
 import dripRound from '../../public/assets/drip-round.png'
+import { HomeLink } from '@/components/HomeLink'
 import { WalletButton } from '@/components/WalletButton'
 
 /** Pixels of blank page above the header. Equals `--top-fold-height` in globals.css. */
@@ -58,13 +58,13 @@ export function SiteHeader() {
     <>
       {/* The reflected half of the drip, in the fold. Pointer only: the logo
           below is the link for everyone else. */}
-      <Link href="/" className="overscroll-slime" aria-hidden="true" tabIndex={-1}>
+      <HomeLink className="overscroll-slime" aria-hidden="true" tabIndex={-1}>
         <Image src={dripRound} alt="" width={54} height={52} />
-      </Link>
+      </HomeLink>
       <header className="site-header">
-        <Link href="/" className="brand-slime" aria-label="Go to homepage">
+        <HomeLink className="brand-slime" aria-label="Go to homepage">
           <Image src={dripCorner} alt="" width={54} height={69} preload />
-        </Link>
+        </HomeLink>
         <div
           className={
             foldInView

@@ -248,6 +248,77 @@ function check(file: string, text: string, allowed: Allowed[] = ALLOWED) {
   return { offenders, used }
 }
 
+/** The TanStack hooks that read a query straight into a render. A module that tags a query reads through
+ * useKeptQuery and useKeptQueries instead, which render what the server rendered until the component has hydrated. */
+const BARE_READS = new Set([
+  'useQuery',
+  'useQueries',
+  'useSuspenseQuery',
+  'useSuspenseQueries',
+  'useInfiniteQuery',
+  'useSuspenseInfiniteQuery',
+])
+
+/** What could read a file's tagged queries around the kept hooks: a bare TanStack read the file imports, or a value
+ * it exports with a tag in it, which another module could read bare. An exported hook is the file's own read, and
+ * the imports rule covers it. A file with no tag passes. */
+function bareReads(file: string, text: string): string[] {
+  const source = ts.createSourceFile(
+    file,
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    SCRIPT_KINDS[extname(file)] ?? ts.ScriptKind.TS,
+  )
+  const names = tagNames(source)
+  const holdsTag = (node: ts.Node): boolean =>
+    (ts.isIdentifier(node) && names.has(node.text) && isReference(node)) ||
+    isPersistProperty(node) ||
+    (ts.forEachChild(node, holdsTag) ?? false)
+  if (!holdsTag(source)) return []
+
+  const found: string[] = []
+  const declared = new Map<string, ts.Node>()
+  for (const statement of source.statements) {
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) declared.set(declaration.name.getText(source), declaration)
+    } else if ((ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) && statement.name) {
+      declared.set(statement.name.text, statement)
+    }
+  }
+  const exportsTag = (name: string, node: ts.Node | undefined) => {
+    if (node && !/^use[A-Z]/.test(name) && holdsTag(node)) found.push(`${file}: exports ${name}, which holds a tag`)
+  }
+  for (const statement of source.statements) {
+    if (ts.isImportDeclaration(statement)) {
+      if (!ts.isStringLiteral(statement.moduleSpecifier) || statement.moduleSpecifier.text !== '@tanstack/react-query') continue
+      const bindings = statement.importClause?.namedBindings
+      if (bindings && ts.isNamespaceImport(bindings)) found.push(`${file}: imports all of @tanstack/react-query`)
+      if (bindings && ts.isNamedImports(bindings)) {
+        for (const element of bindings.elements) {
+          const name = (element.propertyName ?? element.name).text
+          if (BARE_READS.has(name)) found.push(`${file}: imports ${name}`)
+        }
+      }
+    } else if (ts.isExportDeclaration(statement) && !statement.moduleSpecifier && statement.exportClause) {
+      if (ts.isNamedExports(statement.exportClause)) {
+        for (const element of statement.exportClause.elements) {
+          exportsTag(element.name.text, declared.get((element.propertyName ?? element.name).text))
+        }
+      }
+    } else if (ts.isExportAssignment(statement)) {
+      exportsTag('default', statement.expression)
+    } else if (ts.getModifiers(statement as ts.HasModifiers)?.some(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword)) {
+      if (ts.isVariableStatement(statement)) {
+        for (const declaration of statement.declarationList.declarations) exportsTag(declaration.name.getText(source), declaration)
+      } else if ((ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) && statement.name) {
+        exportsTag(statement.name.text, statement)
+      }
+    }
+  }
+  return found
+}
+
 describe('persisted query scope', () => {
   const files = sourceFiles().filter(file => file !== TAG_DEFINITIONS)
   const results = files.map(file => check(file, readFileSync(file, 'utf8')))
@@ -266,11 +337,18 @@ describe('persisted query scope', () => {
     expect(Object.keys(queryPersist).sort()).toEqual([...TAG_NAMES, ...NOT_TAGS].sort())
   })
 
+  it('reads each tagged query through useKeptQuery or useKeptQueries', () => {
+    expect(files.flatMap(file => bareReads(file, readFileSync(file, 'utf8')))).toEqual([])
+  })
+
   it('finds the tagged queries at all, so the scan cannot silently pass', () => {
     const tagged = files.filter(file => persistedQueries(file, readFileSync(file, 'utf8')).length > 0)
-    // The project metadata query is the first. Raise this floor as a task adds a persisted query, to about a quarter
-    // of the files that have one.
+    // The project metadata query, the home's chains, the project page's public facts and the Overview's chains. Raise
+    // this floor as a task adds a persisted query, to about a quarter of the files that have one.
     expect(tagged).toContain(join('src', 'hooks', 'useProjectMetadata.ts'))
+    expect(tagged).toContain(join('src', 'hooks', 'useStickyHome.ts'))
+    expect(tagged).toContain(join('src', 'hooks', 'useStickyProject.ts'))
+    expect(tagged).toContain(join('src', 'hooks', 'useStickyOverview.ts'))
     expect(tagged.length).toBeGreaterThanOrEqual(1)
   })
 
@@ -714,6 +792,39 @@ async function persisterWrites(value: unknown): Promise<boolean> {
   expect(written, 'the companion is written').toContain(JSON.stringify(COMPANION))
   return written.includes(JSON.stringify(PROBE))
 }
+
+describe('the kept-read rule itself', () => {
+  const TAGGED = "import { PERSIST } from '@/lib/query-persist'\nconst projectOptions = { queryKey: ['project'], meta: PERSIST }"
+
+  it.each([
+    ['a bare useQuery', `import { useQuery } from '@tanstack/react-query'\n${TAGGED}`, 'imports useQuery'],
+    ['a renamed useQueries', `import { useQueries as read } from '@tanstack/react-query'\n${TAGGED}`, 'imports useQueries'],
+    ['all of TanStack', `import * as query from '@tanstack/react-query'\n${TAGGED}`, 'imports all of @tanstack/react-query'],
+    [
+      'exported tagged options',
+      `${TAGGED}\nexport const holderOptions = () => ({ queryKey: ['holders'], meta: PERSIST })`,
+      'exports holderOptions, which holds a tag',
+    ],
+    [
+      'tagged options exported by name',
+      `${TAGGED}\nexport { projectOptions as options }`,
+      'exports options, which holds a tag',
+    ],
+  ])('fails a tagged module with %s', (_, text, reason) => {
+    expect(bareReads('src/hooks/useThing.ts', text)).toEqual([`src/hooks/useThing.ts: ${reason}`])
+  })
+
+  it('passes a tagged module that reads through the kept hooks, and an untagged one that reads bare', () => {
+    const kept = `import { queryOptions } from '@tanstack/react-query'
+import { useKeptQuery } from '@/hooks/useKeptQuery'
+${TAGGED}
+export function useProject() {
+  return useKeptQuery(queryOptions({ ...projectOptions, queryFn }))
+}`
+    expect(bareReads('src/hooks/useProject.ts', kept)).toEqual([])
+    expect(bareReads('src/hooks/usePosition.ts', "import { useQuery } from '@tanstack/react-query'")).toEqual([])
+  })
+})
 
 describe('a persist tier', () => {
   // The persister writes any query whose `meta.persist` is truthy, whatever the type says of it, so the scan tags

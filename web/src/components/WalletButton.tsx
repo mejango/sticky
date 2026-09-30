@@ -1,21 +1,18 @@
 'use client'
 
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import type { Address } from 'viem'
 import { useBalance } from 'wagmi'
 import { ViewAsForm } from '@/components/ViewAsForm'
 import { useAccountIdentity } from '@/hooks/useAccountIdentity'
 import { useOutsideClose } from '@/hooks/useOutsideClose'
+import { useProjectInView, useTestnetInView } from '@/hooks/useProjectInView'
 import { useWallet } from '@/hooks/useWallet'
 import { displayChainName } from '@/lib/chainDisplay'
-import { projectRouteSegmentFromPathname } from '@/lib/project-route'
 import { formatAmount } from '@/lib/sticky-format'
-import { parseUrn } from '@/lib/urn'
 import { useViewAs } from '@/lib/viewAs'
 import { preloadCenterWallet } from '@/providers/preload-center'
-import { useResolvedProjectRoute } from '@/providers/ProjectRouteContext'
 
 const CONNECT_BUTTON =
   'max-w-full whitespace-nowrap rounded-sm border px-3 py-[5px] font-bold tracking-[1px] text-ink max-[520px]:px-2.5 max-[520px]:text-[13px] max-[520px]:tracking-[.5px]'
@@ -65,6 +62,23 @@ function WalletBalances({
   )
 }
 
+/**
+ * The link to an account's page, on the network of the page in view. Only the open menu renders it, and only the
+ * client opens the menu, so reading the search parameters here needs no Suspense boundary above the header.
+ */
+function AccountLink({ account, onClick }: { account: Address; onClick: () => void }) {
+  const testnet = useTestnetInView()
+  return (
+    <Link
+      href={`/account/${account}${testnet ? '?network=testnet' : ''}`}
+      onClick={onClick}
+      className="menu-item"
+    >
+      Account
+    </Link>
+  )
+}
+
 function MenuButton({
   children,
   danger,
@@ -98,18 +112,7 @@ export function WalletButton() {
   const triggerRef = useRef<HTMLButtonElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const panelId = useId()
-  const pathname = usePathname()
-  const routeSegment = projectRouteSegmentFromPathname(pathname) ?? ''
-  // The handle a `/@handle` route names, spelled the way the server resolved it.
-  const routeHandle = routeSegment.startsWith('@')
-    ? routeSegment.slice(1).replace(/\.eth$/i, '').toLowerCase()
-    : null
-  const resolvedRouteProject = useResolvedProjectRoute()
-  const routeProject =
-    parseUrn(routeSegment) ??
-    (routeHandle && resolvedRouteProject?.handle === routeHandle
-      ? resolvedRouteProject
-      : null)
+  const routeProject = useProjectInView()
 
   // Wallet state only exists client-side; render the signed-out shell on the
   // server so hydration always matches.
@@ -209,13 +212,7 @@ export function WalletButton() {
           {routeProject ? (
             <WalletBalances address={account} chainId={routeProject.chainId} />
           ) : null}
-          <Link
-            href={`/account/${account}`}
-            onClick={closeMenu}
-            className="menu-item"
-          >
-            Account
-          </Link>
+          <AccountLink account={account} onClick={closeMenu} />
           {activeViewAs ? (
             <MenuButton
               onClick={() => {

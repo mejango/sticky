@@ -212,6 +212,40 @@ describe('readStickyProject through the Center reader', () => {
   })
 })
 
+describe('readStickyProjects through the Center reader', () => {
+  it('reads a chain\'s projects with the block and two Multicall3 requests, however many there are', async () => {
+    const chain = center()
+    stockProject(chain, { soulbound: false })
+    const { readStickyProjects } = await load()
+
+    const infos = await readStickyProjects(CHAIN, Array.from({ length: 20 }, (_, at) => BigInt(at + 1)))
+
+    expect(infos).toHaveLength(20)
+    expect(chain.requests.map(({ method, block, calls }) => [method, block, calls?.length])).toEqual([
+      ['eth_blockNumber', undefined, undefined],
+      // Five calls a project and the store once, then ten calls a project: viem is not left to split them.
+      ['eth_call', `0x${HEAD.toString(16)}`, 101],
+      ['eth_call', `0x${HEAD.toString(16)}`, 200],
+    ])
+  })
+
+  it('asks for at most 25 projects in a request, every request at the same block', async () => {
+    const chain = center()
+    stockProject(chain, { soulbound: false })
+    const { readStickyProjects } = await load()
+
+    await readStickyProjects(CHAIN, Array.from({ length: 30 }, (_, at) => BigInt(at + 1)))
+
+    expect(chain.requests.map(({ block, calls }) => [block, calls?.length])).toEqual([
+      [undefined, undefined],
+      [`0x${HEAD.toString(16)}`, 126],
+      [`0x${HEAD.toString(16)}`, 250],
+      [`0x${HEAD.toString(16)}`, 26],
+      [`0x${HEAD.toString(16)}`, 50],
+    ])
+  })
+})
+
 describe('verifyStickyDeployment through the Center reader', () => {
   const stockDeployer = (chain: ReturnType<typeof center>, hook: Address) => {
     chain.stock(deployment.deployer, stickyDeployerAbi, 'HOOK', hook)

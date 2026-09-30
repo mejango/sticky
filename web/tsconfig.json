@@ -33,10 +33,15 @@
     "next-env.d.ts",
     "src/**/*",
     "test/**/*",
+    "playwright.config.ts",
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts",
     ".next-dev/types/**/*.ts",
-    ".next-dev/dev/types/**/*.ts"
+    ".next-dev/dev/types/**/*.ts",
+    ".next-browser/types/**/*.ts",
+    ".next-browser/dev/types/**/*.ts",
+    ".next-signa/types/**/*.ts",
+    ".next-signa/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"

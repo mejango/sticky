@@ -9,6 +9,10 @@
 @layer base {
   body {
     @apply bg-bg font-sans text-[15px] leading-normal text-ink;
+    /* A page rests 50 px down, past its top fold, where the browser's scroll
+       anchoring would hold an element in view while a new page's content fills
+       in above it, carrying the page down from its fold. */
+    overflow-anchor: none;
   }
 
   :focus-visible {
@@ -120,6 +124,30 @@
     @apply cursor-not-allowed opacity-45;
   }
 
+  /* A row of label and value pairs, like the project header's. Each pair stays
+     on one line, and the pipe that would start a wrapped line is clipped off
+     the left edge, so no line starts with a separator. */
+  .meta-row {
+    overflow: hidden;
+  }
+
+  .meta-line {
+    @apply -ml-[21px] flex flex-wrap items-baseline;
+  }
+
+  .meta-pair {
+    white-space: nowrap;
+  }
+
+  .meta-pair::before {
+    content: '|';
+    content: '|' / '';
+    display: inline-block;
+    width: 21px;
+    color: #cfe2e7;
+    text-align: center;
+  }
+
   /* A row in a menu; put `text-err` on it for a dangerous one. */
   .menu-item {
     @apply block w-full rounded-sm px-2.5 py-1.5 text-left font-normal tracking-[.5px] text-ink hover:bg-card focus-visible:outline-offset-[-2px];
@@ -184,6 +212,18 @@
     z-index: 20;
     top: 20px;
     right: max(16px, calc((100vw - 1800px) / 2 + 16px));
+  }
+}
+
+@layer utilities {
+  /* Hide the scrollbar on horizontal strips (still scrollable by wheel/touch). */
+  .scrollbar-none {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
   }
 }
 

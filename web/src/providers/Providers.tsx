@@ -35,14 +35,9 @@ export function Providers({ children }: PropsWithChildren) {
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: {
     staleTime: 30_000, gcTime: 10 * 60_000, retry: 1, refetchOnWindowFocus: false,
   } } }))
-  // Restore cached client data only after streamed server content has hydrated.
-  useEffect(() => {
-    let teardown: (() => void) | undefined
-    const restore = () => { teardown = installQueryPersistence(queryClient) }
-    if (document.readyState === 'complete') restore()
-    else window.addEventListener('load', restore, { once: true })
-    return () => { window.removeEventListener('load', restore); teardown?.() }
-  }, [queryClient])
+  // What the browser kept of earlier visits is restored at once. Its reads go through useKeptQuery, which renders what
+  // the server rendered until the component has hydrated, whatever the cache holds, and the kept copy right after.
+  useEffect(() => installQueryPersistence(queryClient), [queryClient])
   const [walletOpen, setWalletOpen] = useState(false)
   const waiting = useRef<(() => void)[]>([])
   const requestSignIn = useCallback(() => {
