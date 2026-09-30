@@ -7,7 +7,8 @@
  *
  * What is untrusted here is kept to a small, checked shape (`ProjectMetadata`), because it is rendered and kept in
  * the browser's storage: a logo is an https URL without credentials, a name is text, and the rest of a document is
- * left where it was.
+ * left where it was. A launch is read from a data uri only, never from a fetched document: a launch writes its own
+ * uri inline, and a document is free text from its owner, whose launch fields would be kept in the browser too.
  */
 
 import type { Address } from 'viem'
@@ -17,14 +18,25 @@ import { controllerAbi, stickyDeployerAbi, tokensAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import { withTimeout } from '@/lib/with-timeout'
 
-/** Juicebox Center's IPFS gateway, the one the other Juicebox sites use. ipfs.io and dweb.link are sunset. */
+/**
+ * Juicebox Center's IPFS gateway, the one the other Juicebox sites use. ipfs.io and dweb.link are sunset.
+ *
+ * A fetched document is kept in the browser as `reduced` shapes it, with its logo at this gateway. Changing the
+ * gateway, or what `reduced` keeps, means bumping METADATA_VERSION, or every browser goes on reading the document as
+ * the old code kept it.
+ */
 export const IPFS_GATEWAY = 'https://juicebox.center/ipfs/'
+
+/** The version of what is kept of a fetched document. `useProjectMetadata` puts it in the document's query key. */
+export const METADATA_VERSION = 'v1'
 
 const MAX_URL_LENGTH = 8_192
 /** A name any longer is not a project's name, and would be kept in the browser as it stands. */
 const MAX_NAME_LENGTH = 256
 const MAX_CHAINS = 32
-/** How long the gateway has to answer, as the old client allowed. */
+/** A launch id is a UUID; one longer is not a launch's, and is not kept. */
+const MAX_LAUNCH_ID_LENGTH = 128
+/** How long the gateway has to answer: a project shows without its logo, so a slow gateway should not hold a page. */
 const DOCUMENT_TIMEOUT_MS = 10_000
 /** How much of a document is read. A project's metadata is a few kilobytes; the owner can point its uri at any file. */
 const MAX_DOCUMENT_BYTES = 1_000_000
@@ -32,13 +44,14 @@ const MAX_DOCUMENT_BYTES = 1_000_000
 const SEGMENT = /^[A-Za-z\d._~-]{1,128}$/
 
 /** What a Sticky launch writes in its project's uri, a data URI of `{protocol: 'Sticky', version, launchId,
- * environment, chains}` (webclient/app.js:5020-5026): the launch id its copies share, and the chains it was planned
- * on. Each is null when the uri has none that reads. */
+ * environment, chains}`: the launch id its copies share, and the chains it was planned on. Each is null when the uri
+ * has none that reads. */
 export type StickyUri = { protocol: 'Sticky'; launchId: string | null; chains: number[] | null }
 
-/** All that is kept of a project's document. `logoUri` is an https URL, the gateway's for an ipfs one. Render it
- * with `next/image` unoptimized, as juicebox-money's ProjectLogo does: the image optimizer is set up for Center's
- * gateway only, and a logo can be on any https host. */
+/** All that is kept of a project's uri. `logoUri` is an https URL, the gateway's for an ipfs one. Render it with
+ * `next/image` unoptimized, as juicebox-money's ProjectLogo does: the image optimizer is set up for Center's gateway
+ * only, and a logo can be on any https host. `sticky` is there only when the uri is a data uri that is a Sticky
+ * launch's. */
 export type ProjectMetadata = { name?: string; logoUri?: string; sticky?: StickyUri }
 
 type Cancel = { signal?: AbortSignal }
@@ -100,7 +113,7 @@ function stickyIn(document: unknown): StickyUri | null {
     : []
   return {
     protocol: 'Sticky',
-    launchId: typeof launchId === 'string' && launchId !== '' ? launchId : null,
+    launchId: typeof launchId === 'string' && launchId !== '' && launchId.length <= MAX_LAUNCH_ID_LENGTH ? launchId : null,
     chains: planned.length ? planned : null,
   }
 }
@@ -110,16 +123,14 @@ export function parseStickyUri(uri: string): StickyUri | null {
   return stickyIn(inlineJson(uri))
 }
 
-/** What is kept of a project's document, which is whatever its owner wrote. */
-function reduced(document: unknown): ProjectMetadata {
+/** What is kept of a project's document, which is whatever its owner wrote: a name and a logo. */
+function reduced(document: unknown): Omit<ProjectMetadata, 'sticky'> {
   if (typeof document !== 'object' || document === null) return {}
   const { name, logoUri } = document as Record<string, unknown>
   const logo = typeof logoUri === 'string' ? assetUrl(logoUri) : null
-  const sticky = stickyIn(document)
   return {
     ...(typeof name === 'string' && name.trim() !== '' && name.length <= MAX_NAME_LENGTH ? { name } : {}),
     ...(logo ? { logoUri: logo } : {}),
-    ...(sticky ? { sticky } : {}),
   }
 }
 
@@ -148,13 +159,17 @@ async function boundedText(response: Response): Promise<string | null> {
 }
 
 /**
- * What the project uri `uri` says. A data uri is read in place. An `ipfs://` uri is fetched through the gateway,
- * with no credentials and no referrer, and rejects when the gateway does not answer with a document, so that a
- * failure is not remembered as a project with nothing to show. Any other uri has nothing, and asks nothing, and
- * neither does a document of more than a megabyte.
+ * What the project uri `uri` says. A data uri is read in place, and is the only one whose launch is read. An
+ * `ipfs://` uri is fetched through the gateway, with no credentials and no referrer, and rejects when the gateway
+ * does not answer with a document, so that a failure is not remembered as a project with nothing to show. Any other
+ * uri has nothing, and asks nothing, and neither does a document of more than a megabyte.
  */
 export async function metadataOfUri(uri: string, { signal, fetch: fetcher = fetch }: MetadataOptions = {}): Promise<ProjectMetadata> {
-  if (uri.startsWith('data:')) return reduced(inlineJson(uri))
+  if (uri.startsWith('data:')) {
+    const document = inlineJson(uri)
+    const sticky = stickyIn(document)
+    return { ...reduced(document), ...(sticky ? { sticky } : {}) }
+  }
   const url = ipfsGatewayUrl(uri)
   if (url === null) return {}
   const document = await withTimeout(DOCUMENT_TIMEOUT_MS, signal, async timed => {

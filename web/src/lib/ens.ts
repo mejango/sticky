@@ -13,7 +13,7 @@ const ensClient = createPublicClient({
   // CORS-friendly public RPC (several big providers block browser origins).
   transport: http('https://ethereum-rpc.publicnode.com'),
   // No CCIP-Read. The resolver of a name is the account's own choice, and an off-chain lookup would send this
-  // browser to a URL that account picked. The old client read names with a plain eth_call, which never followed one.
+  // browser to a URL that account picked.
   ccipRead: false,
 })
 const IS_DETERMINISTIC_BROWSER =

@@ -12,7 +12,8 @@
  * function that makes a claim, so today no Sticky project has a handle.)
  *
  * Names and handles are read only on production chains: a mainnet name does not describe a testnet project. Every
- * read that fails, or answers with something that does not read, is a handle that names nothing.
+ * read that fails, or answers with something that does not read, is a handle that names nothing, and a read that
+ * fails is told to the console, so that a lookup that is down is not a 404 that nobody sees.
  */
 
 import type { JBChainId } from '@bananapus/nana-sdk-core'
@@ -44,6 +45,8 @@ export type HandleReads = {
    * null when there is none. */
   claim: (chainId: number, projectId: number, setter: Address) => Promise<string | null>
 }
+
+const HANDLE_UNREADABLE = 'A project handle could not be read; it names no project.'
 
 /** Ethereum, through Center like every other chain: a public RPC that answers a browser can refuse a server. */
 const ethereum = () => jbCenterPublicClient(PROJECT_HANDLES_CHAIN_ID)
@@ -84,7 +87,8 @@ export async function resolveProjectHandle(
     const claimed = await reads.claim(target.chainId, target.projectId, owner)
     if (!projectHandleMatches(requested.handle, claimed)) return null
     return { chainId: target.chainId as JBChainId, projectId: target.projectId, handle: requested.handle }
-  } catch {
+  } catch (error) {
+    console.warn(HANDLE_UNREADABLE, { handle: requested.handle }, error)
     return null
   }
 }

@@ -23,6 +23,20 @@ describe('formatAmount', () => {
     expect(formatAmount(units('0.0001'), 18)).toBe('0.0001')
   })
 
+  it('does not throw for an amount too small for toFixed, which takes at most 100 digits: it names its first figure with an exponent', () => {
+    // A token names its own decimals, up to 255, so this is an amount a page must be able to show.
+    expect(formatAmount(1n, 100)).toBe(`0.${'0'.repeat(99)}1`)
+    expect(formatAmount(1n, 101)).toBe('1e-101')
+    expect(formatAmount(46n, 106)).toBe('5e-105')
+    expect(formatAmount(1n, 255)).toBe('1e-255')
+    expect(formatAmount(999n, 255)).toBe('1e-252')
+    expect(() => formatAmount(1n, 255)).not.toThrow()
+  })
+
+  it('reads an amount that is more than a double can hold below zero as zero, and does not throw', () => {
+    expect(formatAmount(1n, 400)).toBe('0')
+  })
+
   it('shows zero as a plain zero, whatever the decimals', () => {
     expect(formatAmount(0n, 18)).toBe('0')
     expect(formatAmount(0n, 6)).toBe('0')

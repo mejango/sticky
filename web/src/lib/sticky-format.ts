@@ -1,19 +1,28 @@
 /**
  * How Sticky shows an amount and a span of time. Amounts follow juicebox.money's `formatTokenAmount`, so a figure
- * reads the same on both sites; durations and ages are the old client's.
+ * reads the same on both sites; a duration names its two largest units and an age its largest.
  */
 
 import { formatUnits } from 'viem'
+
+/** The most digits `toFixed` writes. */
+const MAX_FIXED_DIGITS = 100
 
 /**
  * A token amount in its smallest units, as the reader sees it: grouped in `en-US` whatever the browser's locale, at
  * most `maxDigits` decimals, and an amount too small for them shown to its first significant figure, so a real
  * amount never reads as nothing. Inputs and exact review rows are not for this: they keep every digit.
+ *
+ * A token names its own decimals, up to 255, so an amount can be smaller than `toFixed` can write, which is 1e-100.
+ * Its first figure is then written with an exponent, `1e-101`, where `toFixed` would throw.
  */
 export function formatAmount(value: bigint, decimals: number, maxDigits = 4): string {
   const amount = Number(formatUnits(value, decimals))
   if (amount === 0) return '0'
-  if (amount > 0 && amount < 0.0001) return amount.toFixed(Math.ceil(-Math.log10(amount))).replace(/0+$/, '')
+  if (amount > 0 && amount < 0.0001) {
+    const digits = Math.ceil(-Math.log10(amount))
+    return digits > MAX_FIXED_DIGITS ? amount.toExponential(0) : amount.toFixed(digits).replace(/0+$/, '')
+  }
   return amount.toLocaleString('en-US', { maximumFractionDigits: maxDigits })
 }
 

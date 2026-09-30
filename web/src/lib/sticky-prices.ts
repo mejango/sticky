@@ -20,7 +20,7 @@ const ENDPOINT = 'https://api.dexscreener.com/tokens/v1'
 /** How many addresses one DexScreener request may name. */
 const ADDRESSES_PER_REQUEST = 30
 
-/** How long DexScreener has to answer one request, as the old client allowed. */
+/** How long DexScreener has to answer one request: a price is an extra, so a slow one should not hold a page. */
 const TIMEOUT_MS = 5_000
 
 export type PriceOptions = {

@@ -135,6 +135,20 @@ describe('parseStickyUri', () => {
     expect(parseStickyUri(launchUri({ chains: 'all' }))).toMatchObject({ chains: null })
   })
 
+  it('keeps a launch id of 128 characters and leaves out one of 129, with the chains it comes with', () => {
+    expect(parseStickyUri(launchUri({ launchId: 'a'.repeat(128) }))).toEqual({
+      protocol: 'Sticky',
+      launchId: 'a'.repeat(128),
+      chains: [84532, 11155420],
+    })
+    expect(parseStickyUri(launchUri({ launchId: 'a'.repeat(129) }))).toEqual({
+      protocol: 'Sticky',
+      launchId: null,
+      chains: [84532, 11155420],
+    })
+    expect(parseStickyUri(launchUri({ launchId: 'a'.repeat(999_000) }))?.launchId).toBeNull()
+  })
+
   it('lists at most 32 chains', () => {
     const many = Array.from({ length: 100 }, (_, index) => index + 1)
     expect(parseStickyUri(launchUri({ chains: many }))?.chains).toEqual(many.slice(0, 32))
@@ -181,12 +195,16 @@ describe('metadataOfUri', () => {
     })
   })
 
-  it('keeps the launch a document carries as a Sticky project\'s', async () => {
-    const { fetcher } = gateway(json({ protocol: 'Sticky', launchId: LAUNCH, chains: [8453], name: 'Sticky' }))
+  it('reads no launch from a fetched document, whatever it says: only a data uri is a launch\'s', async () => {
+    const { fetcher } = gateway(
+      json({ protocol: 'Sticky', launchId: LAUNCH, chains: [8453], name: 'Sticky', logoUri: 'ipfs://bafylogo' }),
+    )
     expect(await metadataOfUri(CID, { fetch: fetcher })).toEqual({
       name: 'Sticky',
-      sticky: { protocol: 'Sticky', launchId: LAUNCH, chains: [8453] },
+      logoUri: 'https://juicebox.center/ipfs/bafylogo',
     })
+    const { fetcher: large } = gateway(json({ protocol: 'Sticky', launchId: 'x'.repeat(500_000), chains: [8453] }))
+    expect(await metadataOfUri(CID, { fetch: large })).toEqual({})
   })
 
   it.each([
@@ -305,6 +323,16 @@ describe('metadataOfUri', () => {
       sticky: { protocol: 'Sticky', launchId: LAUNCH, chains: [84532, 11155420] },
     })
     expect(calls).toHaveLength(0)
+  })
+
+  it('reads an inline launch, and drops a launch id of more than 128 characters from it', async () => {
+    const { fetcher } = gateway(json({}))
+    expect(await metadataOfUri(launchUri({ launchId: 'a'.repeat(128) }), { fetch: fetcher })).toEqual({
+      sticky: { protocol: 'Sticky', launchId: 'a'.repeat(128), chains: [84532, 11155420] },
+    })
+    expect(await metadataOfUri(launchUri({ launchId: 'a'.repeat(129) }), { fetch: fetcher })).toEqual({
+      sticky: { protocol: 'Sticky', launchId: null, chains: [84532, 11155420] },
+    })
   })
 
   it.each([

@@ -180,6 +180,10 @@ describe('ENS names', () => {
 })
 
 describe('resolveProjectHandle', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+  })
+
   /** The three reads, stocked with a handle `banny.eth` that points at project 42 on Base, whose owner claimed it. */
   function stocked(overrides: Partial<HandleReads> = {}) {
     const reads = {
@@ -274,6 +278,29 @@ describe('resolveProjectHandle', () => {
     expect(await resolveProjectHandle('@banny', stocked({ claim: vi.fn().mockRejectedValue(failure) }))).toBeNull()
   })
 
+  it('tells the console when a read fails, under one label with the handle, so that a failure is not a 404 nobody sees', async () => {
+    const failure = new Error('429')
+    await resolveProjectHandle('@Banny.eth', stocked({ record: vi.fn().mockRejectedValue(failure) }))
+    await resolveProjectHandle('@banny', stocked({ ownerOf: vi.fn().mockRejectedValue(failure) }))
+    await resolveProjectHandle('@banny', stocked({ claim: vi.fn().mockRejectedValue(failure) }))
+
+    expect(vi.mocked(console.warn).mock.calls).toEqual([
+      ['A project handle could not be read; it names no project.', { handle: 'banny' }, failure],
+      ['A project handle could not be read; it names no project.', { handle: 'banny' }, failure],
+      ['A project handle could not be read; it names no project.', { handle: 'banny' }, failure],
+    ])
+  })
+
+  it('says nothing to the console for a handle that simply names nothing', async () => {
+    expect(await resolveProjectHandle('', stocked())).toBeNull()
+    expect(await resolveProjectHandle('@banny', stocked({ record: vi.fn(async () => null) }))).toBeNull()
+    expect(await resolveProjectHandle('@banny', stocked({ record: vi.fn(async () => '84532:7') }))).toBeNull()
+    expect(await resolveProjectHandle('@banny', stocked({ claim: vi.fn(async () => null) }))).toBeNull()
+    expect(await resolveProjectHandle('@banny', stocked({ claim: vi.fn(async () => 'another') }))).toBeNull()
+    expect(await resolveProjectHandle('@banny', stocked())).not.toBeNull()
+    expect(console.warn).not.toHaveBeenCalled()
+  })
+
   describe('through Center', () => {
     const deployment = stickyDeployment(8453)!
     const PROJECT = 42n
@@ -360,9 +387,13 @@ describe('resolveProjectHandle', () => {
       expect(await resolveProjectHandle('@banny')).toBeNull()
     })
 
-    it('names nothing when the project does not exist', async () => {
-      fakeChains({ owner: new Error('ERC721NonexistentToken') })
+    it('names nothing when the project does not exist, and tells the console why', async () => {
+      const revert = new Error('ERC721NonexistentToken')
+      fakeChains({ owner: revert })
       expect(await resolveProjectHandle('@banny')).toBeNull()
+      expect(vi.mocked(console.warn).mock.calls).toEqual([
+        ['A project handle could not be read; it names no project.', { handle: 'banny' }, revert],
+      ])
     })
 
     it('asks no chain for a record that points at a testnet', async () => {
