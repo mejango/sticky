@@ -1,4 +1,5 @@
 import { notFound } from 'next/navigation'
+import { OverviewTab } from '@/components/project/OverviewTab'
 import { ProjectHeader } from '@/components/project/ProjectHeader'
 import { ProjectLatest } from '@/components/project/ProjectLatest'
 import { StickCard } from '@/components/project/StickCard'
@@ -55,7 +56,7 @@ export default async function ProjectPage({ params }: PageProps<'/[urn]'>) {
         tabs={[
           {
             label: 'Overview',
-            content: null,
+            content: <OverviewTab chainId={chainId} projectId={projectId} />,
           },
           {
             label: 'Tokens',

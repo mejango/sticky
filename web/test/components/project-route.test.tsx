@@ -23,6 +23,9 @@ const mocks = vi.hoisted(() => ({
   pinned: vi.fn(),
   position: vi.fn(),
   moves: vi.fn(),
+  creation: vi.fn(),
+  flows: vi.fn(),
+  siblings: vi.fn(),
   handle: vi.fn(),
   notFound: vi.fn(),
   address: undefined as string | undefined,
@@ -35,6 +38,7 @@ vi.mock('@/lib/sticky-project', async importOriginal => ({
 vi.mock('@/lib/sticky-events', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-events')>()),
   stickyEvents: mocks.events,
+  projectCreationBlock: mocks.creation,
 }))
 vi.mock('@/lib/sticky-holders', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-holders')>()),
@@ -45,6 +49,15 @@ vi.mock('@/lib/sticky-holders', async importOriginal => ({
 vi.mock('@/lib/sticky-feed', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-feed')>()),
   terminalMoves: mocks.moves,
+}))
+// The Overview tab's reads, which have tests of their own (overview.test.tsx).
+vi.mock('@/lib/sticky-backing', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/lib/sticky-backing')>()),
+  backingFlows: mocks.flows,
+}))
+vi.mock('@/lib/sticky-siblings', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/lib/sticky-siblings')>()),
+  launchSiblings: mocks.siblings,
 }))
 vi.mock('@/lib/sticky-handles', () => ({ resolveProjectHandle: mocks.handle }))
 vi.mock('next/navigation', () => ({ notFound: mocks.notFound }))
@@ -142,6 +155,11 @@ beforeEach(() => {
   mocks.pinned.mockReset().mockResolvedValue({ number: 100n, timestamp: NOW })
   mocks.position.mockReset().mockResolvedValue(position)
   mocks.moves.mockReset().mockResolvedValue(paid)
+  mocks.creation.mockReset().mockResolvedValue(1n)
+  mocks.flows.mockReset().mockResolvedValue([])
+  mocks.siblings.mockReset().mockImplementation(async (info: StickyProjectInfo) => [
+    { chainId: info.chainId, projectId: info.projectId, self: true },
+  ])
   mocks.handle.mockReset().mockResolvedValue(null)
   mocks.notFound.mockReset().mockImplementation(() => {
     throw new Error(NOT_FOUND)

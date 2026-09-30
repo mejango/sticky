@@ -68,7 +68,7 @@ describe('sticky-siblings, reading for itself', () => {
     const scan = vi.fn<SiblingReadDeps['scan']>(async chainId =>
       chainId === OP_SEPOLIA ? [3n, 5n, 7n].map((id, i) => deploySticky(id, { blockNumber: fromBlock + BigInt(i) })) : [],
     )
-    const here = { chainId: BASE_SEPOLIA, projectId: 12n, launchId: LAUNCH, cashOutTaxRate: 500n, soulbound: false }
+    const here = { chainId: BASE_SEPOLIA, projectId: 12n, launchId: LAUNCH, cashOutTaxRate: 500n, soulbound: false, plannedChains: null }
 
     const siblings = await launchSiblings(here, { scan, indexedProjects: async () => Promise.reject(new Error('down')) })
     expect(siblings).toEqual([

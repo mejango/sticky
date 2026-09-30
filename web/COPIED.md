@@ -269,3 +269,13 @@ Copied with JBM at `9af68f9` (`origin/main`, fetched 2026-09-30). The files last
 | File | Source | Source commit | Sticky edits |
 |---|---|---|---|
 | `test/components/project-tabs.test.tsx` | JBM `test/components/project-tabs.test.ts` (the alias cases) and `test/project-tab-icon.test.tsx` | JBM 9af68f9 (last changed 3e75083 and 461c1ba) | Runs on jsdom's window with `location` stubbed and `react-dom`, where JBM's replaces the whole window and uses `react-test-renderer` (ruling R30). The alias cases use Sticky's tabs (`#tokens`, `#airdrops`); the two history-restore cases are `test/providers/project-route-context.test.tsx`'s already. Added: the phone tab's label and hash with and without `activityLabel`, the 820 px column, and the Airdrops and Tokens icons. |
+
+## Task 2.3: Overview tab
+
+`src/components/project/{OverviewTab,BackingChart,DetailsCard,ChainsCard}.tsx` and `src/hooks/useStickyOverview.ts` are written for Sticky and copy no code. They port the old client's `chartSvg` (`app.js:1795-1930`), `detailsHtml` (`app.js:2482`) and `renderSiblings` (`app.js:787-815`), without its demo chart history (`configuredChartPoints`: Sticky has no demo mode). The hooks compose the project page's queries as `useStickyProject.ts` does.
+
+### Source files
+
+| File | Source | Source commit | Sticky edits |
+|---|---|---|---|
+| `src/components/project/DetailsCard.tsx` `CopyAddress` | JBM `src/components/project/ExtrasTab.tsx`, the copy button of `PayerDeployedPanel` | JBM b3f0220 (last changed a3f7b74) | The pattern only, no code: `navigator.clipboard.writeText`, then a "Copied!" label for 1.5 s. JBM has no shared copy component (`AddressLink` links to the explorer, `AddressLabel` shows an ENS name) and ignores the write's outcome. Sticky sets the label once the write has succeeded, and says "Could not copy" and tells the console when the browser refuses, where the old client's `guard` showed the failure. |

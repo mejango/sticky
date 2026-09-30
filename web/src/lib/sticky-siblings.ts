@@ -1,8 +1,9 @@
 /**
  * A multichain launch's copies, for the Overview's Chains card: the project on each chain of the page's environment
- * that shares the page's launch id, stickiness bonus and transfer mode, with each one's backing and supply and what
- * they add up to. A launch gets a different project ID on each chain, but every copy's uri carries the same launch id;
- * Bendystraw's project list and a scan of each chain's deployer name the candidates, and the chain decides.
+ * that shares the page's launch id, stickiness bonus and transfer mode, on a chain the launch planned, with each one's
+ * backing and supply and what they add up to. A launch gets a different project ID on each chain, but every copy's uri
+ * carries the same launch id; Bendystraw's project list and a scan of each chain's deployer name the candidates, and
+ * the chain decides.
  *
  * Chains are read one after another: Center has one rate limit for all of them.
  */
@@ -18,7 +19,10 @@ import { indexedStickyProjects, type IndexedProjects } from '@/lib/sticky-indexe
 import { launchIdIn, readStickyProject, type StickyProjectInfo } from '@/lib/sticky-project'
 
 /** What makes two chains' projects one launch. */
-export type LaunchFacts = Pick<StickyProjectInfo, 'chainId' | 'projectId' | 'launchId' | 'cashOutTaxRate' | 'soulbound'>
+export type LaunchFacts = Pick<
+  StickyProjectInfo,
+  'chainId' | 'projectId' | 'launchId' | 'cashOutTaxRate' | 'soulbound' | 'plannedChains'
+>
 
 /** One chain's project of the launch: the page's own (`self`), or its copy on another chain. */
 export type Sibling = { chainId: number; projectId: bigint; self: boolean }
@@ -73,18 +77,35 @@ export function launchKey({
   return launchId === null ? null : `${launchId}:${cashOutTaxRate}:${soulbound}`
 }
 
+/** Whether `chainId` is on a plan of chains, which a uri may not list: with none, every chain is. */
+const onPlan = (plannedChains: number[] | null, chainId: number) =>
+  plannedChains === null || plannedChains.includes(chainId)
+
 /**
- * The page's project first, then for each other chain among `candidates` the first project (the lowest ID) that
- * shares its launch key, in the order the chains first appear. First, so a later copy of the uri cannot displace the
- * real sibling.
+ * Whether `candidate`, a project of another chain, is `info`'s launch there: it shares the launch key, its chain is one
+ * the page's uri planned, and its own uri plans its own chain (the rule of the home's grouping, `groupHomeCards`). A
+ * launch writes one uri on every chain, so a project whose uri copies a launch's onto a chain the launch did not plan
+ * cannot join it, and neither can one whose copy adds its own chain to the plan.
+ */
+function isCopyOf(info: LaunchFacts, candidate: LaunchFacts): boolean {
+  return (
+    launchKey(candidate) === launchKey(info) &&
+    onPlan(info.plannedChains, candidate.chainId) &&
+    onPlan(candidate.plannedChains, candidate.chainId)
+  )
+}
+
+/**
+ * The page's project first, then for each other chain among `candidates` the first project (the lowest ID) that is a
+ * copy of its launch (`isCopyOf`), in the order the chains first appear. First, so a later copy of the uri cannot
+ * displace the real sibling.
  */
 export function siblingProjects(info: LaunchFacts, candidates: readonly LaunchFacts[]): Sibling[] {
   const self: Sibling = { chainId: info.chainId, projectId: info.projectId, self: true }
-  const key = launchKey(info)
-  if (key === null) return [self]
+  if (launchKey(info) === null) return [self]
   const first = new Map<number, Sibling>()
   for (const candidate of candidates) {
-    if (candidate.chainId === info.chainId || launchKey(candidate) !== key) continue
+    if (candidate.chainId === info.chainId || !isCopyOf(info, candidate)) continue
     const known = first.get(candidate.chainId)
     if (!known || candidate.projectId < known.projectId) {
       first.set(candidate.chainId, { chainId: candidate.chainId, projectId: candidate.projectId, self: false })
@@ -93,9 +114,9 @@ export function siblingProjects(info: LaunchFacts, candidates: readonly LaunchFa
   return [self, ...first.values()]
 }
 
-/** The copies of the launch on one chain, read in the order they launched until one shares the launch key. The launch
- * ids of all of the chain's projects are read together, and only the projects that carry this launch's are read in
- * full. */
+/** The copies of the launch on one chain, read in the order they launched until one is a copy of the launch
+ * (`isCopyOf`). The launch ids of all of the chain's projects are read together, and only the projects that carry this
+ * launch's are read in full. */
 async function candidatesOn(
   chainId: number,
   info: LaunchFacts,
@@ -111,7 +132,7 @@ async function candidatesOn(
     if (launchIds[at] !== info.launchId) continue
     const candidate = await deps.read(chainId, projectId, { signal })
     candidates.push(candidate)
-    if (launchKey(candidate) === launchKey(info)) break
+    if (isCopyOf(info, candidate)) break
   }
   return candidates
 }
@@ -121,7 +142,8 @@ async function candidatesOn(
  * searched one after another. Bendystraw lists each chain's launches, and a scan of the chain's deployer from just
  * below its indexed block adds the newer ones; when Bendystraw cannot list them, each chain's deployer is scanned from
  * its first block. A chain that cannot be searched is a failure in its place, and the others are still searched. A
- * project whose uri carries no launch id has no copies, and nothing is read.
+ * project whose uri carries no launch id has no copies, and nothing is read. When the page's uri lists the chains the
+ * launch planned, only those are searched.
  */
 export async function launchSiblings(
   info: LaunchFacts,
@@ -132,7 +154,9 @@ export async function launchSiblings(
   const self: Sibling = { chainId: info.chainId, projectId: info.projectId, self: true }
   if (launchKey(info) === null) return [self]
   const environment = environmentForChainIds([info.chainId])
-  const others = stickyChainIds(environment).filter(chainId => chainId !== info.chainId)
+  const others = stickyChainIds(environment).filter(
+    chainId => chainId !== info.chainId && onPlan(info.plannedChains, chainId),
+  )
   if (!others.length) return [self]
 
   const network: BendystrawNetwork = environment === 'testnet' ? 'testnet' : 'mainnet'
