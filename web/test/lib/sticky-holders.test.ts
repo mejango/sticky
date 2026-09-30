@@ -299,6 +299,7 @@ describe('readStickyPosition', () => {
 type Round = {
   contracts: readonly { address: Address; functionName: string; args: readonly [bigint, Address] }[]
   allowFailure?: boolean
+  batchSize?: number
   blockNumber?: bigint
 }
 
@@ -313,9 +314,11 @@ describe('verifyHolderPage', () => {
     expect(checked.map(entry => entry.staked)).toEqual([6n, 3n])
     // One request, at the block given, of the hook's stakedBalanceOf for each holder shown.
     expect(multicall).toHaveBeenCalledTimes(1)
-    const [{ contracts, blockNumber, allowFailure }] = multicall.mock.calls[0]
+    const [{ contracts, blockNumber, allowFailure, batchSize }] = multicall.mock.calls[0]
     expect(blockNumber).toBe(0x77n)
     expect(allowFailure).toBe(false)
+    // A page is one request: viem splits a batch above 1 KB of calldata unless told not to.
+    expect(batchSize).toBe(0)
     expect(contracts.map(call => [call.address, call.functionName, call.args])).toEqual([
       [HOOK, 'stakedBalanceOf', [7n, HOLDER_A]],
       [HOOK, 'stakedBalanceOf', [7n, HOLDER_B]],

@@ -211,8 +211,8 @@ export async function stickyHolders(
 }
 
 /**
- * The page of holders a page shows, with each balance read again from the hook at `block` through Multicall3: a
- * balance an index or a scan got wrong is not what the page shows. A row whose balance holds is the same row.
+ * The page of holders a page shows, with each balance read again from the hook at `block` through Multicall3, in one
+ * request: a balance an index or a scan got wrong is not what the page shows. A row whose balance holds is the same row.
  */
 export async function verifyHolderPage(
   chainId: number,
@@ -230,6 +230,7 @@ export async function verifyHolderPage(
           ({ address: hook, abi: stickyHookAbi, functionName: 'stakedBalanceOf', args: [projectId, holder] }) as const,
       ),
       allowFailure: false,
+      batchSize: 0,
       blockNumber: block,
     }),
     signal,

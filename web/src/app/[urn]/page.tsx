@@ -4,6 +4,7 @@ import { ProjectHeader } from '@/components/project/ProjectHeader'
 import { ProjectLatest } from '@/components/project/ProjectLatest'
 import { StickCard } from '@/components/project/StickCard'
 import { ProjectTabs } from '@/components/project/Tabs'
+import { TokensTab } from '@/components/project/TokensTab'
 import { decodeProjectRouteSegment } from '@/lib/project-route'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import { resolveProjectHandle } from '@/lib/sticky-handles'
@@ -60,7 +61,7 @@ export default async function ProjectPage({ params }: PageProps<'/[urn]'>) {
           },
           {
             label: 'Tokens',
-            content: null,
+            content: <TokensTab chainId={chainId} projectId={projectId} />,
           },
           {
             label: 'Airdrops',
