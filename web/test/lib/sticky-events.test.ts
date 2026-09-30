@@ -524,6 +524,70 @@ describe('stickyHolderEvents', () => {
     ])
   })
 
+  describe('given the projects Bendystraw lists the holder in', () => {
+    const down = (extra: Partial<Spec> = {}) => fakeDeps({ indexed: new Error('down'), tail: [], ...extra })
+
+    it('scans from the block the oldest of them was created in, when Bendystraw fails', async () => {
+      const deps = down()
+      await stickyHolderEvents(CHAIN, HOLDER, { ...deps, projects: [30n, 23n, 40n] })
+      expect(deps.creationBlock).toHaveBeenCalledTimes(1)
+      expect(deps.creationBlock).toHaveBeenCalledWith(CHAIN, 23n, expect.objectContaining({ signal: undefined }))
+      expect(deps.filters.map(filter => filter.fromBlock)).toEqual([CREATED])
+    })
+
+    it('scans from there when Bendystraw has no status for the chain, too', async () => {
+      const deps = fakeDeps({ indexed: { events: [] }, tail: [] })
+      await stickyHolderEvents(CHAIN, HOLDER, { ...deps, projects: [23n] })
+      expect(deps.filters.map(filter => filter.fromBlock)).toEqual([CREATED])
+    })
+
+    it('hands the caller\'s signal to the read of the creation block', async () => {
+      const controller = new AbortController()
+      const deps = down()
+      await stickyHolderEvents(CHAIN, HOLDER, { ...deps, projects: [23n], signal: controller.signal })
+      expect(deps.creationBlock).toHaveBeenCalledWith(CHAIN, 23n, expect.objectContaining({ signal: controller.signal }))
+    })
+
+    it('never scans from below the deployer\'s block', async () => {
+      const deps = down()
+      deps.creationBlock.mockResolvedValue(deployment.fromBlock - 5n)
+      await stickyHolderEvents(CHAIN, HOLDER, { ...deps, projects: [23n] })
+      expect(deps.filters.map(filter => filter.fromBlock)).toEqual([deployment.fromBlock])
+    })
+
+    it('scans from the deployer\'s block when the oldest project\'s creation block cannot be found', async () => {
+      const deps = down()
+      deps.creationBlock.mockResolvedValue(null)
+      await stickyHolderEvents(CHAIN, HOLDER, { ...deps, projects: [23n] })
+      expect(deps.filters.map(filter => filter.fromBlock)).toEqual([deployment.fromBlock])
+    })
+
+    it('looks for no creation block when Bendystraw answers, or when there is no project', async () => {
+      const indexed = fakeDeps({ indexed: { block: CREATED + 700n }, tail: [] })
+      await stickyHolderEvents(CHAIN, HOLDER, { ...indexed, projects: [23n] })
+      expect(indexed.filters.map(filter => filter.fromBlock)).toEqual([CREATED + 701n - 64n])
+
+      const none = down()
+      await stickyHolderEvents(CHAIN, HOLDER, { ...none, projects: [] })
+      await stickyHolderEvents(CHAIN, HOLDER, none)
+      expect(none.filters.map(filter => filter.fromBlock)).toEqual([deployment.fromBlock, deployment.fromBlock])
+      expect(indexed.creationBlock).not.toHaveBeenCalled()
+      expect(none.creationBlock).not.toHaveBeenCalled()
+    })
+
+    it('stops when the caller cancels while the creation block is read, without scanning', async () => {
+      const controller = new AbortController()
+      const reason = new Error('left the page')
+      const deps = down()
+      deps.creationBlock.mockImplementation(async () => {
+        controller.abort(reason)
+        throw reason
+      })
+      await expect(stickyHolderEvents(CHAIN, HOLDER, { ...deps, projects: [23n], signal: controller.signal })).rejects.toBe(reason)
+      expect(deps.scan).not.toHaveBeenCalled()
+    })
+  })
+
   it('leaves out other holders\' events and every other kind', async () => {
     const deps = fakeDeps({
       indexed: { block: 700n, events: [row.staked(OTHER, OTHER, 1n, 1n, { txHash: '0x9', logIndex: 0, timestamp: 1 })] },

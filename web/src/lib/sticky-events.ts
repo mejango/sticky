@@ -265,6 +265,22 @@ export function scanFrom(asOf: bigint, { fromBlock }: StickyDeployment): bigint 
   return start > fromBlock ? start : fromBlock
 }
 
+/** Where a scan of a holder's events starts when Bendystraw cannot say where its index ends: the block the oldest of
+ * their `projects` was created in (project IDs rise with creation), and never below the deployer's block. With no
+ * project, or none whose creation block can be found, it is the deployer's block. */
+async function holderStart(
+  deps: StickyReadDeps,
+  chainId: number,
+  { fromBlock }: StickyDeployment,
+  projects: readonly bigint[],
+  options: StickyReadOptions,
+): Promise<bigint> {
+  if (!projects.length) return fromBlock
+  const oldest = projects.reduce((low, projectId) => (projectId < low ? projectId : low))
+  const created = await deps.creationBlock(chainId, oldest, options)
+  return created !== null && created > fromBlock ? created : fromBlock
+}
+
 /** The first of each event: one both sources reported is counted once. */
 function once(events: StickyEvent[]): StickyEvent[] {
   const seen = new Set<string>()
@@ -346,14 +362,16 @@ export async function stickyEvents(
 /**
  * One holder's sticks, unsticks and streaks in every Sticky project of a chain, through the chain's head. Bendystraw
  * answers and a scan of the hook, from just below its block, adds what it did not have. When it fails, or has no
- * status for the chain, the hook is scanned from the deployer's block: no Sticky project is older.
+ * status for the chain, the hook is scanned from the block the oldest of `projects` was created in, or with none from
+ * the deployer's block: no Sticky project is older. `projects` are the ones Bendystraw lists positions of the holder
+ * in: an event in a project it does not list is newer than the listing.
  */
 export async function stickyHolderEvents(
   chainId: number,
   holder: Address,
-  options: StickyReadOptions = {},
+  options: StickyReadOptions & { projects?: readonly bigint[] } = {},
 ): Promise<StickyEventsResult> {
-  const { signal, ...given } = options
+  const { signal, projects = [], ...given } = options
   const deps: StickyReadDeps = { ...live, ...given }
   const deployment = deploymentOn(chainId)
   if (!isAddress(holder, { strict: false })) throw new TypeError(`${holder} is not an address.`)
@@ -363,7 +381,10 @@ export async function stickyHolderEvents(
   const read = () => deps.indexedEvents({ chainId, holder: who }, signal)
   const index = await orNull(read, signal, INDEX_UNAVAILABLE, { chainId })
   const block = index?.blocks.get(chainId)
-  const fromBlock = block === undefined ? deployment.fromBlock : scanFrom(block, deployment)
+  const fromBlock =
+    block === undefined
+      ? await holderStart(deps, chainId, deployment, projects, { ...given, signal })
+      : scanFrom(block, deployment)
   const topics = [POSITION_TOPICS, null, pad(who)]
   const logs = await deps.scan(chainId, { address: deployment.hook, topics, fromBlock }, { signal })
   const scanned = decodeAll(chainId, logs).filter(theirs)

@@ -13,6 +13,7 @@ import { useMemo } from 'react'
 import type { Address } from 'viem'
 import { chainsForEnvironment } from '@/lib/chains'
 import { untilAborted } from '@/lib/hook-logs'
+import { inTurn } from '@/lib/in-turn'
 import { PERSIST } from '@/lib/query-persist'
 import { stickyChainIds } from '@/lib/sticky-addresses'
 import { FEED_WINDOW, type FeedRow } from '@/lib/sticky-feed'
@@ -36,21 +37,6 @@ const DAY_MS = 86_400_000
 const CHAIN_UNREADABLE = "Could not read a chain's Sticky tokens; the home names the chain in its note."
 /** When a refresh reads the home again: Bendystraw lists a launch a few seconds after it lands. */
 const REFRESH_AFTER_MS = [0, 4_000, 12_000]
-
-/** The home read under way with each query client. */
-const reading = new WeakMap<QueryClient, Promise<unknown>>()
-
-/** `read`, once the home's earlier reads with this client have ended, however they ended: Center has one rate limit for
- * every chain, so the chains are read one after another. A read cancelled while it waits does not start. */
-function inTurn<T>(client: QueryClient, signal: AbortSignal, read: () => Promise<T>): Promise<T> {
-  const turn = (reading.get(client) ?? Promise.resolve()).then(() => {
-    if (signal.aborted) throw signal.reason
-    return read()
-  })
-  // The next read waits for this one to settle. This one's failure goes to its own caller, through `turn`.
-  reading.set(client, turn.catch(() => undefined))
-  return turn
-}
 
 export type StickyHome = {
   /** The network's Sticky chains. None when Sticky is not deployed on it. */
