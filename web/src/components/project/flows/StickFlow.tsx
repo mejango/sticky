@@ -1,7 +1,7 @@
 'use client'
 
 import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { formatUnits, getAddress, isAddress, isAddressEqual, zeroAddress, type Address } from 'viem'
 import { Revalidating } from '@/components/ui/Revalidating'
 import { TxConfirmDialog, type TxConfirmRow } from '@/components/ui/TxConfirmDialog'
@@ -32,6 +32,7 @@ const INVALID_RECIPIENT = 'Enter a valid recipient address.'
 const ACCOUNT_CHANGED = 'Your connected account changed. Review again.'
 const REVIEW_UNREADABLE = 'Could not prepare a stick; its review says what could not be read.'
 const QUOTE_UNREADABLE = 'Could not quote a stick; the line under the amount says what could not be read.'
+const BALANCE_UNREADABLE = 'Could not check the balance before sending a step of a stick; the dialog says so.'
 
 /** The start of a sentence, which ends with a full stop unless it already ends in a mark. */
 const sentence = (message: string) => {
@@ -98,6 +99,8 @@ export function StickFlow({
   const client = useQueryClient()
   const terminal = stickyDeployment(chainId)?.terminal
 
+  const recipientId = useId()
+  const amountId = useId()
   const [amount, setAmount] = useState('')
   const [recipient, setRecipient] = useState('')
   const settledAmount = useSettled(amount, QUOTE_SETTLE_MS)
@@ -105,8 +108,12 @@ export function StickFlow({
   const [plan, setPlan] = useState<Plan | null>(null)
   const [preparing, setPreparing] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // The step the dialog is on: the one sent next, or the one being sent.
-  const [index, setIndex] = useState(0)
+  // How many steps have confirmed: the dialog is on the one after them. A click reads the count from the ref, which
+  // changes at once when a step is counted; the state is what the dialog shows after the next render. `accepted` is the
+  // step the engine took and whose confirmation has not been counted: a confirmation is only ever counted for a step
+  // that was sent.
+  const [landed, setLanded] = useState(0)
+  const progress = useRef<{ landed: number; accepted: number | null }>({ landed: 0, accepted: null })
   // The block of the last step that confirmed: the next step is simulated at or after it.
   const confirmedAt = useRef<bigint | undefined>(undefined)
   const reading = useRef<AbortController | null>(null)
@@ -173,9 +180,7 @@ export function StickFlow({
   })
 
   const sending = tx.busy || tx.phase === 'review'
-  const stepDone = plan !== null && tx.phase === 'success'
-  const complete = plan !== null && stepDone && index === plan.steps.length - 1
-  const done = index + (stepDone ? 1 : 0)
+  const complete = plan !== null && landed === plan.steps.length
   const quoteFailed = quote.isError && settledNow
   const closed =
     !verified ||
@@ -207,7 +212,8 @@ export function StickFlow({
     tx.reset()
     setError(null)
     setPlan(null)
-    setIndex(0)
+    progress.current = { landed: 0, accepted: null }
+    setLanded(0)
     confirmedAt.current = undefined
     setPreparing(true)
     try {
@@ -238,31 +244,39 @@ export function StickFlow({
     }
   }
 
-  /** The balance just before a step is sent: an approval does not fail for want of one, and the stick after it would. */
+  /** The balance just before a step is sent: an approval does not fail for want of one, and the stick after it would. A
+   * balance that cannot be read stops the step, and the console is told why. */
   async function verify({ info: staked, terminal: spender, account: owner, amount: value }: Plan) {
-    try {
-      const { balance } = await readBalanceAndAllowance(chainId, { token: staked.stakedToken, owner, spender })
-      if (balance < value) throw new Error(`Your ${staked.symbol} balance changed. Review the amount.`)
-    } catch (reason) {
-      throw new Error(sentence(reason instanceof Error ? reason.message : 'the balance cannot be checked'))
-    }
+    const { balance } = await readBalanceAndAllowance(chainId, { token: staked.stakedToken, owner, spender }).catch(reason => {
+      const unreadable = told(BALANCE_UNREADABLE, { chainId, projectId }, reason)
+      throw new Error(sentence(unreadable.message), { cause: unreadable })
+    })
+    if (balance < value) throw new Error(`Your ${staked.symbol} balance changed. Review the amount.`)
   }
 
   async function confirm() {
-    if (!plan || sending || complete) return
+    const at = progress.current.landed
+    if (!plan || sending || at === plan.steps.length) return
     if (address?.toLowerCase() !== plan.account.toLowerCase()) {
       close()
       setError(ACCOUNT_CHANGED)
       return
     }
-    let at = index
-    if (stepDone) {
-      confirmedAt.current = tx.receipt?.blockNumber ?? confirmedAt.current
-      at = index + 1
-      setIndex(at)
-    }
-    await tx.send(plan.steps[at], { simulationBlockNumber: confirmedAt.current, reverify: () => verify(plan) })
+    const hash = await tx.send(plan.steps[at], { simulationBlockNumber: confirmedAt.current, reverify: () => verify(plan) })
+    // The engine answers null, and changes nothing, for a send it does not take: while it still holds its lock for the
+    // step that has just confirmed, or after a cancelled review or a failure. Only a step it took is waited for.
+    if (hash !== null) progress.current.accepted = at
   }
+
+  // The confirmation of the step the engine took is counted once it arrives, and the block it is in is where the next
+  // step is simulated from. A confirmation seen while no step is waiting for one is the last step's, and counts for nothing.
+  useEffect(() => {
+    const { accepted } = progress.current
+    if (plan === null || accepted === null || tx.phase !== 'success') return
+    confirmedAt.current = tx.receipt?.blockNumber ?? confirmedAt.current
+    progress.current = { landed: accepted + 1, accepted: null }
+    setLanded(accepted + 1)
+  }, [plan, tx.phase, tx.receipt])
 
   function close() {
     reading.current?.abort()
@@ -321,19 +335,29 @@ export function StickFlow({
   return (
     <div>
       {forSomeoneElse ? (
-        <input
-          aria-label="Recipient address"
-          placeholder="0x…"
-          autoComplete="off"
-          autoCapitalize="off"
-          spellCheck={false}
-          value={recipient}
-          onChange={event => edit(setRecipient, event.target.value)}
-          className={`${field} mb-2 pr-2`}
-        />
+        <>
+          <label htmlFor={recipientId} className="block text-xs text-muted">
+            Recipient
+          </label>
+          <input
+            id={recipientId}
+            aria-label="Recipient address"
+            placeholder="0x…"
+            autoComplete="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            value={recipient}
+            onChange={event => edit(setRecipient, event.target.value)}
+            className={`${field} mt-1 pr-2`}
+          />
+          <label htmlFor={amountId} className="mt-2 block text-xs text-muted">
+            Amount
+          </label>
+        </>
       ) : null}
-      <div className="relative">
+      <div className={forSomeoneElse ? 'relative mt-1' : 'relative'}>
         <input
+          id={amountId}
           aria-label="Amount of underlying tokens to stick"
           inputMode="decimal"
           autoComplete="off"
@@ -376,15 +400,9 @@ export function StickFlow({
           title={complete ? 'Stick confirmed' : forSomeoneElse ? 'Confirm stick for someone else' : 'Confirm stick'}
           rows={plan ? rowsOf(plan, forSomeoneElse, chainId) : undefined}
           steps={plan ? plan.steps.map((step, at) => ({ key: String(at), title: step.label ?? step.functionName })) : []}
-          activeIndex={plan ? (complete ? plan.steps.length : done) : -1}
-          stepsIntro={plan ? stepsIntro(plan.steps.length, done) : undefined}
-          action={
-            tx.phase === 'error'
-              ? 'Retry'
-              : plan && (stepDone ? index + 1 : index) === plan.steps.length - 1
-                ? 'Confirm & stick'
-                : 'Confirm & approve'
-          }
+          activeIndex={plan ? landed : -1}
+          stepsIntro={plan ? stepsIntro(plan.steps.length, landed) : undefined}
+          action={tx.phase === 'error' ? 'Retry' : plan && landed === plan.steps.length - 1 ? 'Confirm & stick' : 'Confirm & approve'}
           onConfirm={() => void confirm()}
           busy={sending}
           complete={complete}

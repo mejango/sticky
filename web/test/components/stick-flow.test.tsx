@@ -200,6 +200,11 @@ const flowButton = (label: string) => {
 }
 const confirmButton = () => dialog()?.querySelector<HTMLButtonElement>('footer button.btn-primary') ?? null
 const click = (element: Element | null | undefined) => act(async () => void (element as HTMLElement).click())
+/** What a click on `button` runs as of the render that is on show, which a click can reach after a newer render has been scheduled. */
+const handlerOf = (button: Element) => {
+  const key = Object.keys(button).find(name => name.startsWith('__reactProps$'))!
+  return (button as unknown as Record<string, { onClick: () => void }>)[key].onClick
+}
 const hint = () => host.querySelector('[data-stick-hint]')?.textContent || null
 /** The steps the review lists, as the titles the person reads. */
 const steps = () =>
@@ -543,6 +548,87 @@ describe('the review', () => {
     expect(mocks.tx.send.mock.calls[2][1].simulationBlockNumber).toBe(4_005n)
   })
 
+  it('counts nothing for a send the engine did not take, and skips no step', async () => {
+    mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 3n * CPN })
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+    await render()
+    await review()
+    await click(confirmButton())
+    await confirmed(APPROVAL_HASH, 4_001n)
+    expect(stepStates()).toEqual(['complete', 'active', 'pending'])
+
+    // The engine answers null and changes nothing for a send it will not take, as it does while it still holds its lock
+    // for the step that has just confirmed. The dialog is where it was.
+    mocks.tx.send.mockImplementationOnce(async () => null)
+    await click(confirmButton())
+    await rerender()
+    expect(mocks.tx.send).toHaveBeenCalledTimes(2)
+    expect(mocks.tx.send.mock.calls[1][0]).toMatchObject({ functionName: 'approve', args: [TERMINAL, 5n * CPN] })
+    expect(stepStates()).toEqual(['complete', 'active', 'pending'])
+    expect(dialog()!.querySelector('h2')!.textContent).toBe('Confirm stick')
+    expect(dialog()!.textContent).toContain('2 transactions left.')
+    expect(confirmButton()!.textContent).toBe('Confirm & approve')
+
+    // The engine still says the last step confirmed, and says it again, as when its watcher and its poll both answer.
+    // That confirmation is the last step's and is not counted for the next.
+    mocks.tx.receipt = { blockNumber: 4_001n }
+    await rerender()
+    expect(stepStates()).toEqual(['complete', 'active', 'pending'])
+
+    // The next click sends the step that is next, the approval.
+    await click(confirmButton())
+    expect(mocks.tx.send.mock.calls[2][0]).toMatchObject({ functionName: 'approve', args: [TERMINAL, 5n * CPN] })
+    await confirmed(APPROVAL_HASH, 4_005n)
+    expect(stepStates()).toEqual(['complete', 'complete', 'active'])
+
+    // And the same for the stick: a refused send neither completes the dialog nor counts a stick that was never sent.
+    mocks.tx.send.mockImplementationOnce(async () => null)
+    await click(confirmButton())
+    await rerender()
+    expect(stepStates()).toEqual(['complete', 'complete', 'active'])
+    expect(dialog()!.querySelector('h2')!.textContent).toBe('Confirm stick')
+    expect(dialog()!.textContent).toContain('1 transaction left.')
+    expect([...dialog()!.querySelectorAll('footer button')].map(button => button.textContent)).toEqual(['Cancel', 'Confirm & stick'])
+    expect(invalidate).not.toHaveBeenCalled()
+
+    await click(confirmButton())
+    expect(mocks.tx.send.mock.calls[4][0]).toMatchObject({ functionName: 'pay' })
+    await confirmed(STICK_HASH, 4_010n)
+    expect(dialog()!.querySelector('h2')!.textContent).toBe('Stick confirmed')
+    expect(invalidate).toHaveBeenCalled()
+  })
+
+  it('sends the step after the last one that confirmed for a click that a render behind handles, never one sent already', async () => {
+    mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 3n * CPN })
+    await render()
+    await review()
+    // What a click runs while the dialog still shows the reset: the confirmation below is counted before it is handled.
+    const behind = handlerOf(confirmButton()!)
+    await click(confirmButton())
+    await confirmed(APPROVAL_HASH, 4_001n)
+    expect(stepStates()).toEqual(['complete', 'active', 'pending'])
+
+    await act(async () => behind())
+    expect(mocks.tx.send).toHaveBeenCalledTimes(2)
+    expect(mocks.tx.send.mock.calls[0][0]).toMatchObject({ functionName: 'approve', args: [TERMINAL, 0n] })
+    expect(mocks.tx.send.mock.calls[1][0]).toMatchObject({ functionName: 'approve', args: [TERMINAL, 5n * CPN] })
+  })
+
+  it('sends nothing for a click that a render behind handles once every step has been counted', async () => {
+    mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 5n * CPN })
+    await render()
+    await review()
+    const behind = handlerOf(confirmButton()!)
+    await click(confirmButton())
+    await confirmed(STICK_HASH, 4_010n)
+    expect(dialog()!.querySelector('h2')!.textContent).toBe('Stick confirmed')
+
+    await act(async () => behind())
+    expect(mocks.tx.send).toHaveBeenCalledTimes(1)
+    expect(dialog()!.querySelector('h2')!.textContent).toBe('Stick confirmed')
+    expect(dialog()!.textContent).not.toContain('undefined')
+  })
+
   it('stays open on the confirmed stick with a link to its transaction until Done, and then clears the amount', async () => {
     mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 5n * CPN })
     await render()
@@ -636,6 +722,22 @@ describe('the review', () => {
     await expect(reverify(request)).rejects.toThrow('Your CPN balance changed. Review the amount.')
   })
 
+  it('tells the console why the balance could not be checked before a send, and keeps the cause', async () => {
+    await render()
+    await review()
+    await click(confirmButton())
+    const [request, { reverify }] = mocks.tx.send.mock.calls[0]
+
+    const cause = new Error('429')
+    const unreadable = new Error('the balance and the allowance could not be read.', { cause })
+    mocks.funds.mockRejectedValue(unreadable)
+    await expect(reverify(request)).rejects.toMatchObject({
+      message: 'The balance and the allowance could not be read.',
+      cause: unreadable,
+    })
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('balance'), { chainId: CHAIN, projectId: PROJECT }, unreadable)
+  })
+
   it('refuses a balance that no longer covers the amount when the review reads it, and opens nothing', async () => {
     mocks.funds.mockResolvedValue({ balance: 4n * CPN, allowance: 0n })
     await render()
@@ -715,6 +817,12 @@ describe('the review', () => {
     await settled()
     expect(steps()).toEqual(['Stick'])
     expect(mocks.tx.reset).toHaveBeenCalled()
+
+    // What the approval counted for the last plan counts for nothing in this one: its first step is sent.
+    mocks.tx.send.mockClear()
+    await click(confirmButton())
+    expect(mocks.tx.send).toHaveBeenCalledTimes(1)
+    expect(mocks.tx.send.mock.calls[0][0]).toMatchObject({ functionName: 'pay' })
   })
 })
 
@@ -816,10 +924,17 @@ describe('sticking for someone else', () => {
     expect(flowButton('Review stick').disabled).toBe(false)
   })
 
-  it('asks for a recipient and an amount, with no wallet link to fill the amount from', async () => {
+  it('asks for a recipient and an amount, each with its label, and no wallet link to fill the amount from', async () => {
     await render({ forSomeoneElse: true })
     expect(host.querySelectorAll('input')).toHaveLength(2)
     expect(host.textContent).not.toContain('in wallet')
+
+    // The labels are seen, and the fields keep the names a screen reader is given.
+    const labels = [...host.querySelectorAll('label')]
+    expect(labels.map(label => label.textContent)).toEqual(['Recipient', 'Amount'])
+    expect(labels.map(label => (label as HTMLLabelElement).control)).toEqual([recipientField(), amountField()])
+    expect(recipientField().getAttribute('aria-label')).toBe('Recipient address')
+    expect(amountField().getAttribute('aria-label')).toBe('Amount of underlying tokens to stick')
   })
 
   it('refuses a recipient who has not trusted the sender, in the hint and on the button, before the review', async () => {
@@ -935,6 +1050,7 @@ describe('the Stick card', () => {
 
     expect(host.querySelector('section[aria-labelledby="stick-title"] h2')!.textContent).toBe('Stick CPN')
     expect(host.querySelectorAll('input')).toHaveLength(1)
+    expect(host.querySelectorAll('label')).toHaveLength(0)
     expect(flowButton('Stick').disabled).toBe(true)
     await type(amountField(), '5')
     await settle(250)
