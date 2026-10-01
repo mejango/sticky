@@ -311,7 +311,7 @@ describe('trusting a sender: the review', () => {
 })
 
 describe('trusting a sender: the send', () => {
-  it('sends setTrustedSenderFor(project, sender, true) to the project\'s hook, exactly as reviewed', async () => {
+  it('wallet-action:trust-or-untrust-a-sender sends setTrustedSenderFor(project, sender, true) to the project\'s hook, exactly as reviewed', async () => {
     await render()
     await reviewTrust(SENDER)
     await press(confirm(), 'Confirm & trust')
@@ -408,7 +408,7 @@ describe('untrusting a sender', () => {
     expect(buttonIn(modal(), 'Review untrust')).toBeDefined()
   })
 
-  it('sends setTrustedSenderFor(project, sender, false) after asking the hook that the sender is trusted', async () => {
+  it('wallet-action:trust-or-untrust-a-sender sends setTrustedSenderFor(project, sender, false) after asking the hook that the sender is trusted', async () => {
     mocks.read.mockResolvedValue(trusted(true))
     await render(SENDER)
     await press(modal(), 'Review untrust')

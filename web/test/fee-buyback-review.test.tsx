@@ -107,6 +107,26 @@ describe('actionable fee review', () => {
     root = undefined
     expect(mocks.stop).toHaveBeenCalled()
   })
+  it('shows a pending first check as checking, never as unavailable', async () => {
+    let settle!: (result: unknown) => void
+    mocks.check.mockReturnValue(new Promise(resolve => (settle = resolve)))
+    await render(vi.fn())
+    expect(host.textContent).toContain('Checking fee return…')
+    expect(host.textContent).not.toContain('unavailable')
+    expect(host.textContent).not.toContain('Retry now')
+    expect(button('Checking fee return…').disabled).toBe(true)
+
+    await act(async () => settle({ status: 'ready', fees: [{ ...fee, route: 'swap' }], checkedAt: Date.now() }))
+    expect(host.textContent).toContain('Checking new blocks automatically')
+    expect(host.textContent).not.toContain('unavailable')
+  })
+  it('says automatic checks are unavailable once a check without a block watcher has settled', async () => {
+    // A call without a sender has no fee context, so nothing can watch its blocks.
+    await render(vi.fn(), [{ ...calls[0], from: undefined as unknown as (typeof calls)[number]['from'] }])
+    expect(host.textContent).toContain('Automatic checks unavailable. Retry now.')
+    button('Retry now')
+    expect(mocks.check).not.toHaveBeenCalled()
+  })
   it('shows retry when unavailable and makes submitting without an estimate explicit', async () => {
     mocks.check.mockResolvedValue({ status: 'unknown', fees: [] })
     await render(vi.fn())

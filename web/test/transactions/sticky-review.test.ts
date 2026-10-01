@@ -2,9 +2,9 @@
 
 /**
  * Every write Sticky sends, as the review dialog shows it before the wallet does: the decoded call, never the
- * "ABI is not available" fallback, with Sticky's contracts named from its own deployment records and its reward
- * groups described in the SDK's words. The writes are the old client's (`webclient/calldata.js`, its `ABIS` less
- * the unused `beginVesting`), each held to the old client's selector.
+ * "ABI is not available" fallback, with Sticky's contracts named by the SDK's address table, which carries Sticky's
+ * deployment records (`test/sticky-addresses.test.ts` holds the two together). The writes are the old client's
+ * (`webclient/calldata.js`, its `ABIS` less the unused `beginVesting`), each held to the old client's selector.
  */
 
 import { act, createElement } from 'react'
@@ -13,8 +13,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { encodeFunctionData, erc20Abi, pad, parseAbi, zeroHash, type Abi, type Address, type Hex } from 'viem'
 import { jbMultiTerminalAbi } from '@bananapus/nana-sdk-core'
 import { jbSuckerV6Abi, stickyGroupId } from '@bananapus/nana-sdk-core/v6'
-
-const sdk = vi.hoisted(() => ({ hideAddressTable: false }))
 
 vi.mock('wagmi', () => ({
   useAccount: () => ({ address: '0x1111111111111111111111111111111111111111', chainId: 84532 }),
@@ -29,19 +27,8 @@ vi.mock('@/lib/fee-buyback-client', () => ({
     throw new Error('Unsupported chain')
   },
 }))
-// The SDK's own address table names Sticky's contracts too; hiding it shows the names come from Sticky's records.
-vi.mock('@bananapus/nana-sdk-core', async importOriginal => {
-  const actual = await importOriginal<typeof import('@bananapus/nana-sdk-core')>()
-  return {
-    ...actual,
-    get jbContractAddress() {
-      return sdk.hideAddressTable ? { '6': {} } : actual.jbContractAddress
-    },
-  }
-})
-
+import { describeSplitGroups } from '@bananapus/nana-sdk-core/review/decode'
 import { TransactionReviewProvider } from '@/components/TransactionReviewProvider'
-import { describeSplitGroups } from '@/components/TransactionReviewDialog'
 import {
   stickyAutoStickAbi,
   stickyDeployerAbi,
@@ -66,8 +53,6 @@ const GRANTER: Address = '0x6666666666666666666666666666666666666666'
 const SENDER: Address = '0xabc0000000000000000000000000000000000abc'
 const BUNDLE: Hex = '0x0123456789abcdef0123456789abcdef'
 const ONE = 10n ** 18n
-const EVERYONE = 'Sticky group 0 (all holders by voting power)'
-const FOUR_WEEKS = 'Sticky holders stuck 4 weeks or more'
 // Relayr's payment contract. Nothing in the SDK carries its ABI yet; the launch flow (Phase 5) will.
 const relayrPaymentAbi = parseAbi(['function prepayment(bytes16 bundle, uint40 deadline) payable'])
 
@@ -136,7 +121,7 @@ const WRITES: Record<string, Write> = {
     stickyDistributorAbi,
     'fund',
     [ST, TOKEN, ONE, stickyGroupId({ minWeeks: 4 })],
-    ['groupId', `4000 | ${FOUR_WEEKS}`],
+    ['groupId', '4000'],
     { destination: 'StickyDistributor' },
   ),
   collectVestedRewards: write(
@@ -145,7 +130,7 @@ const WRITES: Record<string, Write> = {
     stickyDistributorAbi,
     'collectVestedRewards',
     [ST, 0n, [BigInt(HOLDER)], [TOKEN], HOLDER],
-    ['groupId', `0 | ${EVERYONE}`],
+    ['beneficiary', HOLDER],
     { destination: 'StickyDistributor' },
   ),
   setConfigFor: write(
@@ -163,7 +148,7 @@ const WRITES: Record<string, Write> = {
     stickyAutoStickAbi,
     'compoundFor',
     [23n, HOLDER, [0n, 4052n]],
-    ['groupIds', '4052 | Sticky holders stuck 4 to 52 weeks'],
+    ['groupIds', '4052'],
     { destination: 'StickyAutoStick' },
   ),
   stickRewardsFor: write(
@@ -172,7 +157,7 @@ const WRITES: Record<string, Write> = {
     stickyAutoStickAbi,
     'stickRewardsFor',
     [23n, [4000n]],
-    ['groupIds', `4000 | ${FOUR_WEEKS}`],
+    ['groupIds', '4000'],
     { destination: 'StickyAutoStick' },
   ),
   beginVestingFor: write(
@@ -199,7 +184,7 @@ const WRITES: Record<string, Write> = {
     stickyRewardReceiverFactoryAbi,
     'settleFor',
     [ST, 4000n, TOKEN],
-    ['groupId', `4000 | ${FOUR_WEEKS}`],
+    ['groupId', '4000'],
     { destination: 'StickyRewardReceiverFactory' },
   ),
   deployReceiverFor: write(
@@ -208,7 +193,7 @@ const WRITES: Record<string, Write> = {
     stickyRewardReceiverFactoryAbi,
     'deployReceiverFor',
     [ST, 0n],
-    ['groupId', `0 | ${EVERYONE}`],
+    ['stickyToken', ST],
     { destination: 'StickyRewardReceiverFactory' },
   ),
   prepayment: write('0x103903a7', RELAYR, relayrPaymentAbi, 'prepayment', [BUNDLE, 1_900_000_000], ['bundle', BUNDLE], {
@@ -243,7 +228,6 @@ let container: HTMLDivElement
 let root: Root
 
 beforeEach(() => {
-  sdk.hideAddressTable = false
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
@@ -294,23 +278,6 @@ describe('the review of every write Sticky sends', () => {
     expect(text).not.toContain('·')
     expect(argument(dialog, row[0])).toContain(row[1])
     if (destination) expect(text).toContain(`Destination | ${destination}`)
-  })
-
-  it('names Sticky’s contracts from its own deployment records', async () => {
-    sdk.hideAddressTable = true
-    const dialog = await review(WRITES.setTrustedSenderFor.call)
-    expect(dialog.textContent).toContain('Destination | StickyHook')
-
-    await act(async () => root.unmount())
-    root = createRoot(container)
-    const approval = await review(WRITES.approve.call)
-    expect(argument(approval, 'spender')).toContain(`JBMultiTerminal | ${sticky.terminal}`)
-  })
-
-  it('leaves a group number undescribed where the call is not to a Sticky contract', async () => {
-    const lookalike = parseAbi(['function fund(address hook, address token, uint256 amount, uint256 groupId) payable'])
-    const dialog = await review({ ...WRITES.fund.call, address: TOKEN, abi: lookalike })
-    expect(argument(dialog, 'groupId')).not.toContain('Sticky')
   })
 
   it('decodes a split group that pays Sticky holders, never as a project', () => {

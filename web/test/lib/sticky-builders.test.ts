@@ -98,7 +98,7 @@ describe('approveSteps', () => {
     expect(() => decodeFunctionResult({ abi: erc20Abi, functionName: 'approve', data: '0x' })).toThrow()
   })
 
-  it('resets a nonzero allowance that is not the amount first, then approves the exact amount', () => {
+  it('wallet-action:approve-the-staked-token-for-a-stick resets a nonzero allowance that is not the amount first, then approves the exact amount', () => {
     const txs = steps(25_000_000n, 100_000_000n)
     expect(calls(txs)).toEqual([
       [A, 'approve', [B, 0n]],
@@ -112,7 +112,7 @@ describe('approveSteps', () => {
     expect(steps(0n, 0n)).toEqual([])
   })
 
-  it('brings a larger allowance down to the amount, unless it is only asked to cover it', () => {
+  it('wallet-action:approve-the-staked-token-for-a-stick brings a larger allowance down to the amount, unless it is only asked to cover it', () => {
     expect(calls(steps(100_000_000n, 50_000_000n))).toEqual([
       [A, 'approve', [B, 0n]],
       [A, 'approve', [B, 50_000_000n]],
@@ -136,7 +136,7 @@ describe('approveSteps', () => {
 })
 
 describe('stickTx', () => {
-  it('pays the project\'s terminal the staked token, for the beneficiary, with the quote as its minimum', () => {
+  it('wallet-action:stick pays the project\'s terminal the staked token, for the beneficiary, with the quote as its minimum', () => {
     const tx = stickTx(info, B, 10_000_000n, 9_990_000_000_000_000_000n)
     expect(tx).toMatchObject({
       chainId: CHAIN,
@@ -149,7 +149,7 @@ describe('stickTx', () => {
     })
   })
 
-  it('names someone else as the beneficiary when a holder sticks for them', () => {
+  it('wallet-action:stick-for-someone-else names someone else as the beneficiary when a holder sticks for them', () => {
     expect(stickTx(info, C, 1n, 1n).args[3]).toBe(C)
   })
 
@@ -167,7 +167,7 @@ describe('unstickTxs', () => {
   const balance = 10n ** 18n
   const on = { enabled: true, minimum: 1_000_000n, cooldown: 86_400, personallyTrusted: true, allowance: 100n }
 
-  it('cashes the Sticky tokens out of the project\'s terminal to the holder, in the staked token, with the net as the minimum', () => {
+  it('wallet-action:unstick-sticky-tokens cashes the Sticky tokens out of the project\'s terminal to the holder, in the staked token, with the net as the minimum', () => {
     const txs = unstickTxs(info, B, balance, 1_950_000n)
     expect(txs).toHaveLength(1)
     expect(txs[0]).toMatchObject({
@@ -183,7 +183,7 @@ describe('unstickTxs', () => {
     expect(unstickTxs(info, B, balance, 0n)[0].label).toBe('Unstick without reclaiming tokens')
   })
 
-  it('takes a full exit through the holder\'s auto-stick first: off, the adapter untrusted, and its allowance withdrawn', () => {
+  it('wallet-action:turn-off-auto-stick wallet-action:take-back-the-auto-stick-adapter-s-trust wallet-action:take-back-the-auto-stick-adapter-s-allowance takes a full exit through the holder\'s auto-stick first: off, the adapter untrusted, and its allowance withdrawn', () => {
     const txs = unstickTxs(info, B, balance, 975_000n, { state: on, balance })
     expect(calls(txs)).toEqual([
       [adapter, 'setConfigFor', [12n, false, 1_000_000n, 86_400]],
@@ -221,7 +221,7 @@ describe('unstickTxs', () => {
 })
 
 describe('transferTx', () => {
-  it('moves Sticky tokens, of 18 decimals, to the recipient', () => {
+  it('wallet-action:transfer-sticky-tokens moves Sticky tokens, of 18 decimals, to the recipient', () => {
     const tx = transferTx(info, B, 1_000_000_000_000_000_001n)
     expect(tx).toMatchObject({
       chainId: CHAIN,
@@ -234,7 +234,7 @@ describe('transferTx', () => {
 })
 
 describe('trustTx', () => {
-  it('trusts a sender to stick for the holder in a project, or takes that back', () => {
+  it('wallet-action:trust-or-untrust-a-sender trusts a sender to stick for the holder in a project, or takes that back', () => {
     expect(trustTx(CHAIN, 12n, B, true)).toMatchObject({
       chainId: CHAIN,
       address: deployment.hook,

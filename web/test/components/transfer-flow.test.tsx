@@ -464,7 +464,7 @@ describe('the review', () => {
 })
 
 describe('the send', () => {
-  it('sends exactly the reviewed transfer of Sticky tokens: the token, the recipient and 18 decimals, in a request that cannot change', async () => {
+  it('wallet-action:transfer-sticky-tokens sends exactly the reviewed transfer of Sticky tokens: the token, the recipient and 18 decimals, in a request that cannot change', async () => {
     await render()
     await review(BOB, '1.000000000000000001')
     await press(confirm(), 'Confirm & transfer')

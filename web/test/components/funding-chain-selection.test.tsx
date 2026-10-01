@@ -66,7 +66,7 @@ describe('funding chain selection modal', () => {
     expect(document.querySelector(`label[for="${select.id}"]`)?.textContent).toBe('Pay on')
     expect(document.getElementById(dialog.getAttribute('aria-labelledby')!)?.textContent).toBe('Choose where to pay')
     expect(document.getElementById(dialog.getAttribute('aria-describedby')!)?.textContent).toBe(
-      "One payment covers every chain. You'll review it before your wallet sends it.",
+      "One payment covers every chain. You’ll review it before your wallet sends it.",
     )
     expect(select.textContent).toContain(OPTIONS[0].label)
     expect(select.textContent).toContain(OPTIONS[1].label)

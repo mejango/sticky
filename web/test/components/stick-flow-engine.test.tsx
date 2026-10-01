@@ -17,6 +17,8 @@ const CHAIN = 84532
 const PROJECT = 23
 const TERMINAL = stickyDeployment(CHAIN)!.terminal
 const ALICE = getAddress(`0x${'a'.repeat(40)}`)
+const FRIEND = getAddress(`0x${'9'.repeat(40)}`)
+const BOB = getAddress(`0x${'b'.repeat(40)}`)
 const CPN = 10n ** 6n
 const MINTED = 9_870_000_000_000_000_000n
 const APPROVAL = `0x${'a1'.repeat(32)}` as Hex
@@ -82,9 +84,12 @@ let root: Root
 let client: QueryClient
 /** Whether React is told it runs under act(), which the tests of a race are not: they run it as a browser does. */
 let acting = true
+/** Whether the flow sticks for someone else, as the Airdrops tab's form does. */
+let gift = false
 
 beforeEach(() => {
   acting = true
+  gift = false
   notifyManager.setScheduler(callback => queueMicrotask(callback))
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   mocks.wallet = { isConnected: true, address: ALICE, isCenterWallet: false, openSignIn: vi.fn() }
@@ -127,7 +132,7 @@ afterEach(async () => {
 
 const tree = () => (
   <QueryClientProvider client={client}>
-    <StickFlow chainId={CHAIN} projectId={PROJECT} />
+    <StickFlow chainId={CHAIN} projectId={PROJECT} forSomeoneElse={gift} />
   </QueryClientProvider>
 )
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
@@ -150,18 +155,24 @@ const stepStates = () => [...(dialog()?.querySelectorAll('ol li') ?? [])].map(it
 const title = () => dialog()?.querySelector('h2')?.textContent
 const writes = () => mocks.writeContract.mock.calls.map(([request]) => request.functionName)
 
-/** An amount typed, the review opened, and its plan listed. */
+const typeInto = (label: string, value: string) => {
+  const field = host.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!
+  return inAct(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(field, value)
+    field.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+}
+
+/** An amount typed, the review opened, and its plan listed. With `gift`, the recipient is FRIEND. */
 async function openReview() {
   if (acting) await act(async () => root.render(tree()))
   else root.render(tree())
   await until(() => host.querySelector('input'), 'the Stick card')
-  const field = host.querySelector<HTMLInputElement>('input[aria-label="Amount of underlying tokens to stick"]')!
-  await inAct(() => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(field, '5')
-    field.dispatchEvent(new Event('input', { bubbles: true }))
-  })
-  await until(() => flowButton('Stick') && !flowButton('Stick').disabled, 'the Stick button to open')
-  await inAct(() => flowButton('Stick').click())
+  if (gift) await typeInto('Recipient address', FRIEND)
+  await typeInto('Amount of underlying tokens to stick', '5')
+  const label = gift ? 'Review stick' : 'Stick'
+  await until(() => flowButton(label) && !flowButton(label).disabled, 'the Stick button to open')
+  await inAct(() => flowButton(label).click())
   await until(() => confirmButton() && !confirmButton()!.disabled, 'the review to list its steps')
 }
 /** The chain has mined `hash` in `block`, and the flow renders again. */
@@ -172,7 +183,7 @@ async function mined(hash: Hex, block: bigint) {
 }
 
 describe('the stick flow on the real engine', () => {
-  it('sends one wallet call for a double click, and never sends a step again once it has landed', async () => {
+  it('wallet-action:approve-the-staked-token-for-a-stick wallet-action:stick sends one wallet call for a double click, and never sends a step again once it has landed', async () => {
     mocks.writeContract.mockResolvedValueOnce(APPROVAL).mockResolvedValueOnce(STICK)
     await openReview()
     expect(confirmButton()!.textContent).toBe('Confirm & approve')
@@ -276,6 +287,45 @@ describe('the stick flow on the real engine', () => {
     await act(async () => confirmButton()!.click())
     await until(() => mocks.writeContract.mock.calls.length === 2, 'the approval to be sent again')
     expect(writes()).toEqual(['approve', 'approve'])
+  })
+})
+
+describe('a stick for someone else on the real engine', () => {
+  it('wallet-action:stick-for-someone-else reaches the review, the simulation and the wallet as a pay for the recipient, once the sender may stick for them', async () => {
+    gift = true
+    mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 5n * CPN })
+    mocks.writeContract.mockResolvedValueOnce(STICK)
+    await openReview()
+    // The review asked the hook again whether the sender may stick for the recipient.
+    expect(mocks.canStick).toHaveBeenLastCalledWith(CHAIN, BigInt(PROJECT), ALICE, FRIEND, expect.anything())
+
+    await act(async () => confirmButton()!.click())
+    await until(() => mocks.writeContract.mock.calls.length === 1, 'the stick to be sent')
+    const pay = { address: TERMINAL, functionName: 'pay', args: [BigInt(PROJECT), TOKEN, 5n * CPN, FRIEND, MINTED, '', '0x'] }
+    expect(mocks.requestReview).toHaveBeenCalledOnce()
+    expect(mocks.requestReview.mock.calls[0][0]).toMatchObject({ ...pay, account: ALICE })
+    expect(mocks.publicClient.simulateContract.mock.calls[0][0]).toMatchObject({ ...pay, account: ALICE })
+    expect(writes()).toEqual(['pay'])
+  })
+
+  // The plan is the reviewing account's: its trust check and its quote were for that sender. The engine checks the
+  // account it is handed, so the flow is what stops another account from sending the plan.
+  it('sends nothing when the wallet switches accounts between the review and the confirm', async () => {
+    gift = true
+    mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 5n * CPN })
+    await openReview()
+
+    mocks.wallet = { ...mocks.wallet, address: BOB }
+    mocks.getAccount.mockImplementation(() => ({ address: BOB, chainId: CHAIN }))
+    await act(async () => root.render(tree()))
+    await act(async () => confirmButton()!.click())
+    await pump()
+
+    expect(dialog()).toBeNull()
+    expect(host.textContent).toContain('Your connected account changed. Review again.')
+    expect(mocks.requestReview).not.toHaveBeenCalled()
+    expect(mocks.publicClient.simulateContract).not.toHaveBeenCalled()
+    expect(mocks.writeContract).not.toHaveBeenCalled()
   })
 })
 

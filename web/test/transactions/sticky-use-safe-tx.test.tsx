@@ -85,7 +85,7 @@ afterEach(async () => {
 })
 
 describe('useSafeTx in Sticky', () => {
-  it('moves the wallet to the request’s chain before it simulates or asks for a signature', async () => {
+  it('wallet-action:submit-a-reviewed-direct-write moves the wallet to the request’s chain before it simulates or asks for a signature', async () => {
     await act(async () => {
       await tx.current!.send(request)
     })
@@ -106,7 +106,8 @@ describe('useSafeTx in Sticky', () => {
     await act(async () => {
       await tx.current!.send(request)
     })
-    expect(tx.current).toMatchObject({ phase: 'error', error: 'Switch your wallet to the right chain to continue.' })
+    // The engine names the chain the wallet must move to (jbm's D10).
+    expect(tx.current).toMatchObject({ phase: 'error', error: 'Switch your wallet to Base Sepolia to continue.' })
     expect(mocks.publicClient.simulateContract).not.toHaveBeenCalled()
     expect(mocks.writeContract).not.toHaveBeenCalled()
   })

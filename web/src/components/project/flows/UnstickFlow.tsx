@@ -474,7 +474,6 @@ export function UnstickFlow({
     <ModalShell
       title={`Unstick ${info.symbol}`}
       onClose={plan || preparing ? closeReview : onClose}
-      busy={sending}
       maxWidth="max-w-md"
     >
       <form onSubmit={submit}>
