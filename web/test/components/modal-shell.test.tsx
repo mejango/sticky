@@ -4,6 +4,7 @@ import { act, useState, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ModalDialog, ModalShell } from '@/components/ui/ModalShell'
+import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { topLayerDialogs } from '../dialog-shim'
 
 let container: HTMLDivElement
@@ -177,6 +178,57 @@ describe('ModalShell', () => {
 
     expect(dialog.open).toBe(false)
     expect(topLayerDialogs()).toEqual([])
+  })
+})
+
+describe('a confirm hosted in the shell', () => {
+  function Hosted({
+    busy,
+    onClose,
+    onConfirmClose,
+  }: {
+    busy: boolean
+    onClose: () => void
+    onConfirmClose: () => void
+  }) {
+    return (
+      <ModalShell title="Add liquidity" onClose={onClose}>
+        <TxConfirmDialog
+          open
+          title="Confirm"
+          steps={[{ title: 'Approve' }, { title: 'Mint' }]}
+          activeIndex={1}
+          action="Adding liquidity…"
+          onConfirm={() => {}}
+          onClose={onConfirmClose}
+          busy={busy}
+        />
+      </ModalShell>
+    )
+  }
+
+  it('keeps the shell open while it is busy, and lets it close once it is not', () => {
+    const onClose = vi.fn()
+    const onConfirmClose = vi.fn()
+    render(<Hosted busy onClose={onClose} onConfirmClose={onConfirmClose} />)
+    // The confirm replaced the card's content in place: one dialog, the shell's.
+    const dialog = only()
+    expect(dialog.querySelector('[data-tx-confirm]')).not.toBeNull()
+    const [shellClose] = dialog.querySelectorAll<HTMLButtonElement>('button[aria-label="Close"]')
+
+    pressEscape()
+    mouseDownOn(dialog)
+    act(() => shellClose.click())
+
+    expect(onClose).not.toHaveBeenCalled()
+    expect(onConfirmClose).not.toHaveBeenCalled()
+    expect(dialog.open).toBe(true)
+    expect(shellClose.disabled).toBe(true)
+
+    render(<Hosted busy={false} onClose={onClose} onConfirmClose={onConfirmClose} />)
+    expect(shellClose.disabled).toBe(false)
+    pressEscape()
+    expect(onClose).toHaveBeenCalledTimes(1)
   })
 })
 

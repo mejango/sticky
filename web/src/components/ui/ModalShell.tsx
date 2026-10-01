@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, type ButtonHTMLAttributes, type ReactNode, useCallback, useContext, useEffect, useId, useRef, useState } from 'react'
+import { createContext, type ButtonHTMLAttributes, type ReactNode, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 /**
  * Body scroll lock, reference counted.
@@ -150,12 +150,13 @@ export function ModalCloseButton({
 }
 
 /**
- * The shared modal chrome: a native modal dialog with a bordered header
- * carrying the title and a × button. `busy` blocks every close path (backdrop,
- * Escape, ×) while transactions are in flight; `onClose` may layer its own
- * guards (e.g. a discard-confirm) on top.
+ * The ModalShell a component is rendered inside: its card, and `hold`, which
+ * keeps the shell open until the release it returns is called.
  */
-const ModalCardContext = createContext<HTMLDivElement | null>(null)
+const ModalCardContext = createContext<{
+  card: HTMLDivElement | null
+  hold: () => () => void
+} | null>(null)
 
 /**
  * The card of the ModalShell this component is rendered inside, or null when
@@ -163,9 +164,27 @@ const ModalCardContext = createContext<HTMLDivElement | null>(null)
  * in place rather than open a second dialog over the first.
  */
 export function useEnclosingModalCard(): HTMLDivElement | null {
-  return useContext(ModalCardContext)
+  return useContext(ModalCardContext)?.card ?? null
 }
 
+/**
+ * While `held`, the enclosing ModalShell refuses every close path: Escape, a
+ * backdrop click and its ×. A confirm hosted in the shell has no dialog of its
+ * own, so this is how its busy reaches the shell. A layout effect, so no event
+ * lands between the render that sets it and the shell's refusal.
+ */
+export function useHoldEnclosingModal(held: boolean) {
+  const hold = useContext(ModalCardContext)?.hold
+  useLayoutEffect(() => (held && hold ? hold() : undefined), [held, hold])
+}
+
+/**
+ * The shared modal chrome: a native modal dialog with a bordered header
+ * carrying the title and a × button. `busy`, or a hosted confirm that is busy
+ * (see {@link useHoldEnclosingModal}), blocks every close path (backdrop,
+ * Escape, ×) while transactions are in flight; `onClose` may layer its own
+ * guards (e.g. a discard-confirm) on top.
+ */
 export function ModalShell({
   title,
   subtitle,
@@ -186,15 +205,22 @@ export function ModalShell({
 }) {
   const titleId = useId()
   const [card, setCard] = useState<HTMLDivElement | null>(null)
+  const [holds, setHolds] = useState(0)
+  const hold = useCallback(() => {
+    setHolds(count => count + 1)
+    return () => setHolds(count => count - 1)
+  }, [])
+  const enclosing = useMemo(() => ({ card, hold }), [card, hold])
+  const blocked = busy || holds > 0
 
   const close = useCallback(() => {
-    if (!busy) onClose()
-  }, [busy, onClose])
+    if (!blocked) onClose()
+  }, [blocked, onClose])
 
   return (
     <ModalDialog
       onClose={close}
-      dismissible={!busy}
+      dismissible={!blocked}
       labelledBy={titleId}
       className="items-start justify-center px-3 py-5 sm:px-6 sm:py-10"
     >
@@ -220,7 +246,7 @@ export function ModalShell({
           </div>
           <ModalCloseButton
             onClick={close}
-            disabled={busy}
+            disabled={blocked}
             aria-label="Close"
             className="-mr-2 -mt-2 text-smoke-700 hover:bg-smoke-75 hover:text-ink disabled:opacity-50"
           />
@@ -232,7 +258,7 @@ export function ModalShell({
             footer ? 'min-h-0 flex-1' : 'max-h-[calc(100vh-10rem)]'
           }`}
         >
-          <ModalCardContext.Provider value={card}>{children}</ModalCardContext.Provider>
+          <ModalCardContext.Provider value={enclosing}>{children}</ModalCardContext.Provider>
         </div>
         {footer ? (
           <div

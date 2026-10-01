@@ -6,6 +6,7 @@ import {
   ModalCloseButton,
   ModalDialog,
   useEnclosingModalCard,
+  useHoldEnclosingModal,
 } from '@/components/ui/ModalShell'
 import { ExternalWalletAction } from '@/components/ui/ExternalWalletAction'
 import { TxSteps } from '@/components/ui/TxSteps'
@@ -69,6 +70,9 @@ export function TxConfirmDialog({
   // Inside a ModalShell already, the confirm replaces that card's content in
   // place: one scrim, one card, and closing brings the form back.
   const host = useEnclosingModalCard()
+  // Hosted, the confirm has no dialog of its own: while busy it keeps the
+  // enclosing shell open, or Escape there would drop a send in flight.
+  useHoldEnclosingModal(open && busy)
   useEffect(() => {
     if (!host || !open) return
     const hidden = Array.from(host.children).filter(
