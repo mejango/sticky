@@ -14,9 +14,10 @@ const config = {
         err: '#b34a35',
         // jbm's scale names, in Sticky's colors, for the transaction engine's UI copied from jbm (ModalShell,
         // TxConfirmDialog, TxSteps, TxError, TransactionReviewDialog, FeeBuybackNotice). Only the shades those
-        // files use; each text shade keeps WCAG AA on the backgrounds it sits on.
+        // files use; each text shade keeps WCAG AA on the backgrounds it sits on. 300 is only ever an edge (a
+        // dialog's frame, a pending step's ring, the select), light in jbm, so it is `line`, as every Sticky edge is.
         bone: '#f8fcfd',
-        smoke: { 75: '#f0f7f9', 200: '#d8e7eb', 300: '#57727c', 500: '#57727c', 600: '#57727c', 700: '#1c2d33' },
+        smoke: { 75: '#f0f7f9', 200: '#d8e7eb', 300: '#d8e7eb', 500: '#57727c', 600: '#57727c', 700: '#1c2d33' },
         grey: { 25: '#f0f7f9', 900: '#1c2d33' },
         bluebs: {
           25: '#e4f2f5',

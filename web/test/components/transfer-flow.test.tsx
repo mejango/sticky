@@ -5,12 +5,12 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { encodeFunctionData, erc20Abi, getAddress, zeroAddress, type Address } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { stickyDeployment } from '@/lib/sticky-addresses'
+import records from '@/lib/sticky-deployments.json'
 import type { StickyPosition } from '@/lib/sticky-holders'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 import { EXTERNAL_WALLET_REQUIRED, WalletAuthContext } from '@/providers/WalletAuthContext'
-import { E18, stickyInfo } from '../home-fixtures'
+import { E18, TOKEN, stickyInfo } from '../home-fixtures'
 
 // The Transfer flow: who can send Sticky tokens, to whom and how much, what it reads before it asks the wallet, and what
 // it refreshes afterwards. The engine has tests of its own (test/transactions): its hook is a mock here, its dialogs
@@ -27,7 +27,11 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/hooks/useWallet', () => ({ useWallet: () => ({ ...mocks.wallet, openSignIn: mocks.openSignIn }) }))
-vi.mock('@/hooks/useSafeTx', () => ({ useSafeTx: () => mocks.tx }))
+// The engine's hook is a mock; its labels for the phases it reports are its own.
+vi.mock('@/hooks/useSafeTx', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/hooks/useSafeTx')>()),
+  useSafeTx: () => mocks.tx,
+}))
 vi.mock('@/lib/sticky-rewards', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-rewards')>()),
   readAt: mocks.read,
@@ -73,7 +77,7 @@ const idle = () => ({
   receipt: null,
   isSafe: false,
   safeProposalHash: null,
-  safeNonceGuidance: null,
+  safeNonceGuidance: null as string | null,
   confirmationUncertain: false,
   send: vi.fn().mockResolvedValue(null),
   reset: vi.fn(),
@@ -154,6 +158,10 @@ async function type(label: string, text: string) {
   })
 }
 const errorText = () => modal().querySelector('p.wrap-anywhere')?.textContent ?? null
+/** What the confirmation says of its send, under its steps, and the state of each step. */
+const statusLine = () => confirm()?.querySelector('p.text-bluebs-700')?.textContent ?? null
+const stepStates = () => [...(confirm()?.querySelectorAll('ol li') ?? [])].map(item => item.getAttribute('data-state'))
+const primary = () => confirm()!.querySelector<HTMLButtonElement>('footer button.btn-primary')!
 
 /** Fills the form and asks for the review. */
 async function review(recipient: string, amount: string) {
@@ -280,15 +288,28 @@ describe('the recipient', () => {
     expect(tx().send).not.toHaveBeenCalled()
   })
 
+  /** Every address in the chain's deployment record, by the field that holds it, read from the record itself: a
+   * contract the record gains is refused, and tested, with no change here. */
+  const recorded = Object.entries(records[String(CHAIN) as keyof typeof records]).filter(
+    (entry): entry is [string, Address] => entry[0] !== 'fromBlock',
+  )
+
+  it('counts the auto-stick adapter, and every other Sticky contract, among the recorded contracts it refuses', () => {
+    expect(recorded).toContainEqual(['autoStick', '0x9B091e21d25c424De67751F4b6Ae8494351218C5'])
+    expect(recorded.map(([field]) => field)).toEqual(
+      expect.arrayContaining(['deployer', 'hook', 'terminal', 'controller', 'distributor', 'rewardReceiverFactory', 'autoStick']),
+    )
+  })
+
   it.each([
+    ...recorded.map(([field, address]): [string, Address] => [`the recorded ${field}`, address]),
     ['the Sticky token itself', STICKY],
-    ['the hook', stickyDeployment(CHAIN)!.hook],
-    ['the terminal', stickyDeployment(CHAIN)!.terminal],
-  ])('refuses %s, which would keep the tokens for good, in any case, before it reads or asks anything', async (_name, contract) => {
+    ['the token it sticks', TOKEN],
+  ])('refuses %s, where the tokens are lost for good, in any case, before it reads or asks anything', async (_name, contract) => {
     await render()
-    for (const recipient of [contract, contract.toLowerCase()]) {
+    for (const recipient of [getAddress(contract), contract.toLowerCase()]) {
       await review(recipient, '1')
-      expect(errorText()).toBe('Tokens sent to this Sticky contract are lost. Choose a different recipient.')
+      expect(errorText()).toBe('Sticky tokens sent to this contract are lost. Choose a different recipient.')
     }
     expect(confirm()).toBeNull()
     expect(mocks.read).not.toHaveBeenCalled()
@@ -482,8 +503,42 @@ describe('the send', () => {
     tx().phase = 'signing'
     await render()
     const dialog = confirm()!
-    expect(buttonIn(dialog, 'Confirm & transfer')!.disabled).toBe(true)
+    expect(primary().disabled).toBe(true)
     expect(buttonIn(dialog, 'Cancel')!.disabled).toBe(true)
+  })
+
+  it('shows its one step as the one to confirm before it is sent, and as done once it is', async () => {
+    await render()
+    await review(BOB, '1')
+    expect(stepStates()).toEqual(['active'])
+    tx().phase = 'success'
+    tx().hash = HASH
+    await render()
+    expect(stepStates()).toEqual(['complete'])
+  })
+
+  it('says what the engine is doing while it sends, from its check to the wallet to the chain', async () => {
+    await render()
+    await review(BOB, '1')
+    expect(statusLine()).toBeNull()
+    expect(primary().textContent).toBe('Confirm & transfer')
+    tx().busy = true
+    for (const [phase, line, button] of [
+      ['simulating', 'Double-checking the transaction…', 'Double-checking the transaction…'],
+      ['signing', 'Confirm in your wallet…', 'Confirm in your wallet…'],
+      ['pending', 'Waiting for confirmation…', 'Confirming…'],
+    ]) {
+      tx().phase = phase
+      await render()
+      expect(statusLine(), phase).toBe(line)
+      expect(primary().textContent, phase).toBe(button)
+      expect(stepStates()).toEqual(['active'])
+    }
+
+    // A Safe's guidance stands in for the wait while its proposal is pending.
+    tx().safeNonceGuidance = 'Safe nonce guidance'
+    await render()
+    expect(statusLine()).toBe('Safe nonce guidance')
   })
 
   it('shows the engine\'s error in the confirm, and offers to try again', async () => {

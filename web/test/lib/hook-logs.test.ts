@@ -1,6 +1,6 @@
 import { getAddress, pad, toHex, type Address, type Hex, type PublicClient } from 'viem'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { HistoryTooLongError, keptLogs, projectHookLogs, scanLogs, statedRange, type ScannedLog } from '@/lib/hook-logs'
+import { HistoryTooLongError, keptLogs, keptLogsOf, projectHookLogs, scanLogs, statedRange, type ScannedLog } from '@/lib/hook-logs'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 
 const center = vi.hoisted(() => ({ client: vi.fn() }))
@@ -1291,6 +1291,116 @@ describe('projectHookLogs', () => {
           if (original) Object.defineProperty(globalThis, 'localStorage', original)
         }
       })
+    })
+  })
+
+  describe('several histories in one scan (keptLogsOf)', () => {
+    // Projects 7 and 8 of one filter, each history kept under a key of its own, as the terminal's pays of several
+    // projects are.
+    const filter = { address: deployment.hook, topics: [PROJECT_TOPICS, [word(7n), word(8n)]], fromBlock: 0x10n }
+    const ownedBy = (projectId: bigint) => (entry: ScannedLog) => entry.topics[1] === word(projectId)
+    const histories = [
+      { key: 'of 7', owns: ownedBy(7n) },
+      { key: 'of 8', owns: ownedBy(8n) },
+    ]
+    const keptOf = (key: string) =>
+      JSON.parse(localStorage.getItem(`sticky.history.v1:${key}`) ?? 'null') as { from: string; through: string; all: { blockNumber: string }[] } | null
+    const keptBlocks = (key: string) => keptOf(key)?.all.map(entry => BigInt(entry.blockNumber))
+
+    it('keeps each history under its own key, with its own logs, from one scan', async () => {
+      events = [hookLog(0x20n, 7n), hookLog(0x30n, 8n), hookLog(0xff0n, 7n)]
+      const node = serve()
+
+      expect(blocks(await keptLogsOf(CHAIN, histories, filter))).toEqual([0x20n, 0x30n, 0xff0n])
+
+      // One scan for both, from the filter's block to the head: 4,081 blocks are nine windows.
+      expect(node.asked).toHaveLength(9)
+      expect(firstAsked(node)).toBe(0x10n)
+      expect(node.asked.at(-1)?.toBlock).toBe(0x1000n)
+      expect(node.asked.every(range => range.topics[1] === filter.topics[1])).toBe(true)
+      expect(keptOf('of 7')).toMatchObject({ from: '16', through: String(0x1000n - 64n) })
+      expect(keptBlocks('of 7')).toEqual([0x20n])
+      expect(keptOf('of 8')).toMatchObject({ from: '16', through: String(0x1000n - 64n) })
+      expect(keptBlocks('of 8')).toEqual([0x30n])
+    })
+
+    it('asks only for the blocks after the least that one of them kept, and keeps each log once', async () => {
+      events = [hookLog(0x20n, 7n), hookLog(0x30n, 8n)]
+      serve()
+      await keptLogsOf(CHAIN, [histories[0]], filter)
+      head = 0x1100n
+      serve()
+      await keptLogsOf(CHAIN, [histories[1]], filter)
+      // 7 is kept through 0xfc0, 8 through 0x10c0.
+
+      events = [...events, hookLog(0x1005n, 7n), hookLog(0x1105n, 8n)]
+      head = 0x1200n
+      const node = serve()
+      const found = await keptLogsOf(CHAIN, histories, filter)
+
+      expect(firstAsked(node)).toBe(0x1000n - 64n + 1n)
+      expect(blocks(found)).toEqual([0x20n, 0x30n, 0x1005n, 0x1105n])
+      // 8 was read again from 0xfc1, which it already held: it keeps each of its logs once.
+      expect(keptBlocks('of 7')).toEqual([0x20n, 0x1005n])
+      expect(keptBlocks('of 8')).toEqual([0x30n, 0x1105n])
+      expect(keptOf('of 8')).toMatchObject({ from: '16', through: String(0x1200n - 64n) })
+    })
+
+    it('scans from the start again for a history it cannot use, and keeps the others it reads again', async () => {
+      events = [hookLog(0x20n, 7n), hookLog(0x30n, 8n)]
+      serve()
+      await keptLogsOf(CHAIN, histories, filter)
+      // 8's history now begins later than the filter asks for.
+      localStorage.setItem('sticky.history.v1:of 8', JSON.stringify({ from: '256', through: '4032', all: [] }))
+
+      head = 0x1100n
+      const node = serve()
+      expect(blocks(await keptLogsOf(CHAIN, histories, filter))).toEqual([0x20n, 0x30n])
+
+      expect(firstAsked(node)).toBe(0x10n)
+      expect(keptOf('of 8')).toMatchObject({ from: '16', through: String(0x1100n - 64n) })
+      expect(keptBlocks('of 8')).toEqual([0x30n])
+      expect(keptBlocks('of 7')).toEqual([0x20n])
+    })
+
+    it('does not read the blocks between a history that ends before the read starts and the read: it starts again there', async () => {
+      events = [hookLog(0x20n, 7n), hookLog(0x5000n, 7n), hookLog(0x9000n, 7n)]
+      serve()
+      await keptLogsOf(CHAIN, [histories[0]], filter)
+      expect(keptOf('of 7')).toMatchObject({ from: '16', through: String(0x1000n - 64n) })
+
+      // Long after, a read from block 0x8000, which the kept history ends well before.
+      head = 0x9100n
+      const node = serve()
+      const found = await keptLogsOf(CHAIN, [histories[0]], { ...filter, fromBlock: 0x8000n })
+
+      expect(firstAsked(node)).toBe(0x8000n)
+      expect(node.asked).toHaveLength(9)
+      expect(blocks(found)).toContain(0x9000n)
+      expect(blocks(found)).not.toContain(0x5000n)
+      expect(keptOf('of 7')).toMatchObject({ from: String(0x8000), through: String(0x9100n - 64n) })
+      expect(keptBlocks('of 7')).toEqual([0x9000n])
+
+      // And the next read goes on from it.
+      head = 0x9200n
+      const next = serve()
+      await keptLogsOf(CHAIN, [histories[0]], { ...filter, fromBlock: 0x8000n })
+      expect(firstAsked(next)).toBe(0x9100n - 64n + 1n)
+    })
+
+    it('returns a log no history owns, and keeps it under none', async () => {
+      events = [hookLog(0x20n, 7n), hookLog(0x30n, 8n)]
+      serve()
+      expect(blocks(await keptLogsOf(CHAIN, [histories[0]], filter))).toEqual([0x20n, 0x30n])
+      expect(keptBlocks('of 7')).toEqual([0x20n])
+      expect(localStorage.length).toBe(1)
+    })
+
+    it('writes nothing when the scan fails', async () => {
+      failWith = new Error('archive unavailable')
+      serve()
+      await expect(keptLogsOf(CHAIN, histories, filter)).rejects.toThrow('archive unavailable')
+      expect(localStorage.length).toBe(0)
     })
   })
 })

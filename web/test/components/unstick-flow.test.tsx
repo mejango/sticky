@@ -532,8 +532,9 @@ describe('a send that stops halfway', () => {
 
     const dialog = confirm()!
     expect(dialog.textContent).toContain('The wallet did not send it.')
+    // Only the step that was tried did not go through; the ones after it were never sent.
     expect(dialog.textContent).toContain(
-      "Went through: Turn off auto-stick. Did not go through: Stop the auto-stick contract from sticking ART for you; Remove the auto-stick contract's ART allowance; Unstick.",
+      "Went through: Turn off auto-stick. Did not go through: Stop the auto-stick contract from sticking ART for you. Not sent yet: Remove the auto-stick contract's ART allowance; Unstick.",
     )
     expect(steps().map(step => step.state)).toEqual(['complete', 'active', 'pending', 'pending'])
     expect(nameOf(dialog)).toEqual(['Close', 'Retry'])
@@ -752,7 +753,9 @@ describe('a send that stops halfway', () => {
     await until(() => nameOf(confirm()!).includes('Retry'), 'the revert')
 
     expect(confirm()!.textContent).toContain('Transaction reverted onchain (0x')
-    expect(confirm()!.textContent).toContain('Went through: Turn off auto-stick. Did not go through: Stop the auto-stick contract from sticking ART for you;')
+    expect(confirm()!.textContent).toContain(
+      "Went through: Turn off auto-stick. Did not go through: Stop the auto-stick contract from sticking ART for you. Not sent yet: Remove the auto-stick contract's ART allowance; Unstick.",
+    )
     expect(steps().map(step => step.state)).toEqual(['complete', 'active', 'pending', 'pending'])
 
     mocks.confirming.status = 'success'

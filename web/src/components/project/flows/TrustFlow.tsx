@@ -8,7 +8,7 @@ import { reviewGate } from '@/components/project/flows/review-gate'
 import { ModalShell } from '@/components/ui/ModalShell'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
-import { stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
+import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
 import { useWallet } from '@/hooks/useWallet'
 import { stickyHookAbi } from '@/lib/sticky-abis'
@@ -184,20 +184,20 @@ export function TrustFlow({
               : undefined
           }
           steps={[{ title: plan?.label ?? (trusting ? 'Trust sender' : 'Untrust sender') }]}
-          activeIndex={sending ? 0 : -1}
+          activeIndex={0}
           stepsIntro={stepsIntro(1, complete ? 1 : 0)}
           complete={complete}
           busy={sending}
-          action={tx.phase === 'error' ? 'Retry' : trusting ? 'Confirm & trust' : 'Confirm & untrust'}
+          action={confirmAction(tx.phase, tx.phase === 'error' ? 'Retry' : trusting ? 'Confirm & trust' : 'Confirm & untrust')}
           onConfirm={() => void send()}
           status={
             complete ? (
               <ViewTransactionLink chainId={chainId} hash={tx.hash} />
             ) : !plan ? (
               'Checking whether this sender is trusted…'
-            ) : tx.phase === 'pending' ? (
-              'Waiting for confirmation…'
-            ) : undefined
+            ) : (
+              (sendingStatus(tx) ?? undefined)
+            )
           }
           error={tx.error}
         />

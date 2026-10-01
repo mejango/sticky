@@ -9,19 +9,11 @@
  * The pays and cash outs come from Bendystraw, and a scan of the terminal from just below the block it is indexed
  * through adds the newer ones. Bendystraw records no fee a project paid, so the fees, and the additions to the balance
  * that share their layout, come from one scan of the terminal over the project's life, which this browser keeps so that
- * a return visit scans only the blocks since. When Bendystraw cannot answer, the pays and cash outs are scanned too.
+ * a return visit scans only the blocks since. When Bendystraw cannot answer, the pays and cash outs are scanned too,
+ * and kept the same way.
  */
 
-import {
-  decodeEventLog,
-  encodeAbiParameters,
-  getAbiItem,
-  pad,
-  toEventSelector,
-  toHex,
-  type AbiEvent,
-  type Hex,
-} from 'viem'
+import { decodeEventLog, getAbiItem, pad, toEventSelector, toHex, type AbiEvent, type Hex } from 'viem'
 import type { ScannedLog } from '@/lib/hook-logs'
 import { terminalEventsAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
@@ -35,6 +27,7 @@ import {
 } from '@/lib/sticky-events'
 import { indexedStickyMoves, type IndexedMove } from '@/lib/sticky-indexed'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
+import { terminalHistoryKey, withoutMemo } from '@/lib/terminal-history'
 
 /** A change to the project's terminal balance, in the staked token's units, at a time in Unix seconds. */
 export type Flow = { timestamp: number; delta: bigint }
@@ -182,19 +175,6 @@ export function backingSeries(
   return { points, unit: { decimals: info.decimals, symbol: info.symbol }, supplyFallback: false }
 }
 
-/** AddToBalance's fields that are not topics: amount, returnedFees, memo, metadata, caller. */
-const ADDITION_DATA = eventNamed('AddToBalance').inputs.filter(input => !input.indexed)
-
-/** What the fee history keeps of a log: all of it, except an addition's memo and metadata. Anyone may add to a
- * project's balance with a memo as long as they like, and a history longer than its size cap is not kept at all, so
- * the kept log carries the addition's amounts with an empty memo and metadata: the flow it gives is the same. */
-function withoutMemo(log: ScannedLog): ScannedLog {
-  if (log.topics[0]?.toLowerCase() !== ADD_TO_BALANCE) return log
-  const { topics, data } = log
-  const { args } = decodeEventLog({ abi: terminalEventsAbi, eventName: 'AddToBalance', topics, data })
-  return { ...log, data: encodeAbiParameters(ADDITION_DATA, [args.amount, args.returnedFees, '', '0x', args.caller]) }
-}
-
 /** A flow with where it happened, so flows in one block keep the chain's order. */
 type Placed = Flow & { logIndex: number }
 
@@ -257,11 +237,11 @@ const MOVES_UNAVAILABLE = 'Bendystraw could not list the pays and cash outs; sca
  * units, in the order of their time.
  * - The pays and cash outs are Bendystraw's, with a scan of the terminal's from just below the block it is indexed
  *   through, or from `fromBlock` when that is later, to the head. When Bendystraw cannot answer, or has no status for
- *   the chain, the terminal's are scanned from `fromBlock` instead.
+ *   the chain, the terminal's are scanned from `fromBlock` instead, and kept in this browser as the fees are.
  * - The fees and additions to the balance come from one scan of the terminal from `fromBlock`, which index the project
- *   first, kept in this browser like a project's hook history, without the additions' memos: a return visit scans
- *   only the blocks since.
- * Scans run one after the other. A null `fromBlock` is a creation block that could not be found: the kept history is
+ *   first, kept in this browser like a project's hook history, without the additions' memos: a return visit, and a
+ *   read again after a send, scans only the blocks since.
+ * Scans run one after the other. A null `fromBlock` is a creation block that could not be found: a kept history is
  * used whatever block it began at, and otherwise the scans start at the deployer's block. A scan that fails, or a
  * history longer than a scan may read, rejects, and the page charts the share supply instead.
  */
@@ -290,13 +270,13 @@ export async function backingFlows(
     const filter = { address, topics: moveTopics, fromBlock: fromBlock !== null && fromBlock > past ? fromBlock : past }
     moves = mergedMoves(chainId, projectId, indexed.rows, await deps.scan(chainId, filter, { signal }))
   } else {
-    const filter = { address, topics: moveTopics, fromBlock: fromBlock ?? deployment.fromBlock }
-    const logs = await deps.scan(chainId, filter, { signal })
+    const key = terminalHistoryKey(chainId, address, projectId, 'moves')
+    const logs = await deps.keptScan(chainId, key, { address, topics: moveTopics, fromBlock }, { signal, keep: withoutMemo })
     moves = logs.flatMap(log => flowOf(chainId, projectId, log) ?? [])
   }
   if (signal?.aborted) throw signal.reason
 
-  const key = `${chainId}:${address.toLowerCase()}:${projectId}:fees`
+  const key = terminalHistoryKey(chainId, address, projectId, 'fees')
   const filter = { address, topics: [[PROCESS_FEE, ADD_TO_BALANCE], project], fromBlock }
   const others = (await deps.keptScan(chainId, key, filter, { signal, keep: withoutMemo })).flatMap(
     log => flowOf(chainId, projectId, log) ?? [],

@@ -7,12 +7,12 @@ import { reviewGate } from '@/components/project/flows/review-gate'
 import { Revalidating } from '@/components/ui/Revalidating'
 import { TxConfirmDialog, type TxConfirmRow } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
-import { stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
+import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { useSafeTx } from '@/hooks/useSafeTx'
 import { useSettled } from '@/hooks/useSettled'
 import { useStickyPosition, useStickyProject } from '@/hooks/useStickyProject'
 import { useWallet } from '@/hooks/useWallet'
-import { stickyDeployment } from '@/lib/sticky-addresses'
+import { isLostRecipient, LOST_RECIPIENT, stickyDeployment } from '@/lib/sticky-addresses'
 import { readBalanceAndAllowance } from '@/lib/sticky-allowance'
 import { parseAmount } from '@/lib/sticky-amount'
 import { approveSteps, stickTx, type TxRequest } from '@/lib/sticky-builders'
@@ -49,8 +49,13 @@ function told(label: string, about: object, reason: unknown): Error {
 }
 
 /** What the fields hold: the amount, and who it is for. An amount of 0n is an empty or unusable one; a beneficiary of
- * null is one that is not yet a usable address. */
-type Inputs = { amount: bigint; amountError: string | null; beneficiary: Address | null; recipientInvalid: boolean }
+ * null is one that is not yet a usable address, or one the tokens would be lost in, which `recipientError` says. */
+type Inputs = { amount: bigint; amountError: string | null; beneficiary: Address | null; recipientError: string | null }
+
+/** What a review refused or could not read, and the account it was for (lowercase). It says nothing of another account,
+ * whose own standing the quote under the amount checks again. A refusal of the wallet itself, Signa or View as, is no
+ * account's: it stands until the wallet can send. */
+type Failure = { message: string; account: string | null }
 
 /** What a review froze: for whom, how much, what it mints at least, and the steps that send it. */
 type Plan = {
@@ -97,7 +102,7 @@ export function StickFlow({
   const settledRecipient = useSettled(recipient)
   const [plan, setPlan] = useState<Plan | null>(null)
   const [preparing, setPreparing] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [failure, setFailure] = useState<Failure | null>(null)
   // How many steps have confirmed: the dialog is on the one after them. A click reads the count from the ref, which
   // changes at once when a step is counted; the state is what the dialog shows after the next render. `accepted` is the
   // step the engine took and whose confirmation has not been counted: a confirmation is only ever counted for a step
@@ -125,10 +130,16 @@ export function StickFlow({
         amountError = sentence(reason instanceof Error ? reason.message : 'enter a valid amount')
       }
     }
-    if (!forSomeoneElse) return { amount: parsed, amountError, beneficiary: payer, recipientInvalid: false }
+    if (!forSomeoneElse) return { amount: parsed, amountError, beneficiary: payer, recipientError: null }
     const text = recipientText.trim()
     const valid = isAddress(text) && getAddress(text) !== zeroAddress
-    return { amount: parsed, amountError, beneficiary: valid ? getAddress(text) : null, recipientInvalid: text !== '' && !valid }
+    const lost = valid && info !== undefined && isLostRecipient(info, text)
+    return {
+      amount: parsed,
+      amountError,
+      beneficiary: valid && !lost ? getAddress(text) : null,
+      recipientError: lost ? LOST_RECIPIENT : text !== '' && !valid ? INVALID_RECIPIENT : null,
+    }
   }
   // What the fields hold, and what they held when typing last settled, which the quote under the amount is for.
   const typed = inputsOf(amount, recipient)
@@ -171,6 +182,8 @@ export function StickFlow({
 
   const sending = tx.busy || tx.phase === 'review'
   const complete = plan !== null && landed === plan.steps.length
+  const who = address?.toLowerCase() ?? null
+  const error = failure && (failure.account === null || failure.account === who) ? failure.message : null
   const quoteFailed = quote.isError && settledNow
   const closed =
     !verified ||
@@ -187,7 +200,7 @@ export function StickFlow({
     }
     // The engine refuses these too; saying so now keeps a plan from being built for an account that cannot send it.
     if (gate.refusal) {
-      setError(gate.refusal)
+      setFailure({ message: gate.refusal, account: null })
       return
     }
     const { account } = gate
@@ -198,7 +211,7 @@ export function StickFlow({
     reading.current = controller
     const { signal } = controller
     tx.reset()
-    setError(null)
+    setFailure(null)
     setPlan(null)
     progress.current = { landed: 0, accepted: null }
     setLanded(0)
@@ -226,7 +239,10 @@ export function StickFlow({
       if (signal.aborted) return
       setPlan({ info, terminal, account, beneficiary, amount: value, minted, steps })
     } catch (reason) {
-      if (!signal.aborted) setError(sentence(told(REVIEW_UNREADABLE, { chainId, projectId }, reason).message))
+      if (!signal.aborted) {
+        const message = sentence(told(REVIEW_UNREADABLE, { chainId, projectId }, reason).message)
+        setFailure({ message, account: account.toLowerCase() })
+      }
     } finally {
       if (!signal.aborted) setPreparing(false)
     }
@@ -245,9 +261,9 @@ export function StickFlow({
   async function confirm() {
     const at = progress.current.landed
     if (!plan || sending || at === plan.steps.length) return
-    if (address?.toLowerCase() !== plan.account.toLowerCase()) {
+    if (who !== plan.account.toLowerCase()) {
       close()
-      setError(ACCOUNT_CHANGED)
+      setFailure({ message: ACCOUNT_CHANGED, account: who })
       return
     }
     const hash = await tx.send(plan.steps[at], { simulationBlockNumber: confirmedAt.current, reverify: () => verify(plan) })
@@ -270,7 +286,7 @@ export function StickFlow({
     reading.current?.abort()
     setPlan(null)
     setPreparing(false)
-    setError(null)
+    setFailure(null)
     if (complete) setAmount('')
     if (tx.phase !== 'success') tx.reset()
   }
@@ -279,16 +295,16 @@ export function StickFlow({
   // that could not send, so it is planned again for the one that connects.
   const reviewNow = useRef(review)
   reviewNow.current = review
-  const refused = error === EXTERNAL_WALLET_REQUIRED || tx.error === EXTERNAL_WALLET_REQUIRED
+  const refused = failure?.message === EXTERNAL_WALLET_REQUIRED || tx.error === EXTERNAL_WALLET_REQUIRED
   useEffect(() => {
     if (!refused || !isConnected || isCenterWallet) return
-    setError(null)
+    setFailure(null)
     void reviewNow.current()
   }, [refused, isConnected, isCenterWallet])
 
   // A refusal for View as stands until View as ends.
   useEffect(() => {
-    if (!viewAs) setError(current => (current === VIEW_AS_WRITE_BLOCKED ? null : current))
+    if (!viewAs) setFailure(current => (current?.message === VIEW_AS_WRITE_BLOCKED ? null : current))
   }, [viewAs])
 
   // What a stick changed is read again once its transaction has confirmed.
@@ -301,12 +317,14 @@ export function StickFlow({
   const action = forSomeoneElse ? 'Review stick' : 'Stick'
   const label = verified ? (isConnected ? action : 'Sign in to stick') : failed ? action : 'Checking…'
 
+  // What the review said, under the button, while no plan is open. The line under the amount does not say it again.
+  const shownError = plan ? null : error
   let hint: ReactNode = null
   if (quoted.amountError) hint = quoted.amountError
-  else if (quoted.recipientInvalid) hint = INVALID_RECIPIENT
+  else if (quoted.recipientError) hint = quoted.recipientError
   else if (quoted.amount > 0n && quoted.beneficiary !== null && info) {
     if (exceeds(quoted.amount)) hint = MORE_THAN_HELD
-    else if (quote.isError) hint = <span className="text-err">{quote.error.message}</span>
+    else if (quote.isError) hint = quote.error.message === shownError ? null : <span className="text-err">{quote.error.message}</span>
     else if (quote.data !== undefined) hint = stickQuoteSentence(quote.data, info, forSomeoneElse)
     else if (quote.isFetching) hint = 'Checking the current backing price…'
   }
@@ -317,7 +335,7 @@ export function StickFlow({
   // What a refusal said is about what was in the fields, which are no longer.
   const edit = (set: (value: string) => void, value: string) => {
     set(value)
-    setError(null)
+    setFailure(null)
   }
 
   return (
@@ -376,7 +394,7 @@ export function StickFlow({
           </Revalidating>
         )}
       </div>
-      <TxError error={plan ? null : error} />
+      <TxError error={shownError} />
       <button type="button" disabled={closed} onClick={() => void review()} className="btn-primary mt-3 w-full px-4 py-[9px]">
         {label}
       </button>
@@ -390,7 +408,12 @@ export function StickFlow({
           steps={plan ? plan.steps.map((step, at) => ({ key: String(at), title: step.label ?? step.functionName })) : []}
           activeIndex={plan ? landed : -1}
           stepsIntro={plan ? stepsIntro(plan.steps.length, landed) : undefined}
-          action={tx.phase === 'error' ? 'Retry' : plan && landed === plan.steps.length - 1 ? 'Confirm & stick' : 'Confirm & approve'}
+          action={confirmAction(
+            tx.phase,
+            tx.phase === 'error' ? 'Retry' : plan && landed === plan.steps.length - 1 ? 'Confirm & stick' : 'Confirm & approve',
+          )}
+          // Once a step has gone through, closing undoes nothing: what went through stays, and the next review finds it.
+          cancelLabel={landed > 0 ? 'Close' : 'Cancel'}
           onConfirm={() => void confirm()}
           busy={sending}
           complete={complete}
@@ -399,9 +422,9 @@ export function StickFlow({
               'Reading your balance, allowance and the current price…'
             ) : tx.phase === 'success' ? (
               <ViewTransactionLink chainId={chainId} hash={tx.hash} />
-            ) : tx.phase === 'pending' ? (
-              'Waiting for confirmation…'
-            ) : undefined
+            ) : (
+              (sendingStatus(tx) ?? undefined)
+            )
           }
           error={tx.error}
         />

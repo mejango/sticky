@@ -27,7 +27,11 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/hooks/useWallet', () => ({ useWallet: () => ({ ...mocks.wallet, openSignIn: mocks.openSignIn }) }))
-vi.mock('@/hooks/useSafeTx', () => ({ useSafeTx: () => mocks.tx }))
+// The engine's hook is a mock; its labels for the phases it reports are its own.
+vi.mock('@/hooks/useSafeTx', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/hooks/useSafeTx')>()),
+  useSafeTx: () => mocks.tx,
+}))
 vi.mock('@/lib/sticky-rewards', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-rewards')>()),
   readAt: mocks.read,
@@ -137,6 +141,10 @@ async function type(label: string, text: string) {
   })
 }
 const errorText = () => modal().querySelector('p.wrap-anywhere')?.textContent ?? null
+/** What the confirmation says of its send, under its steps, and the state of each step. */
+const statusLine = () => confirm()?.querySelector('p.text-bluebs-700')?.textContent ?? null
+const stepStates = () => [...(confirm()?.querySelectorAll('ol li') ?? [])].map(item => item.getAttribute('data-state'))
+const primary = () => confirm()!.querySelector<HTMLButtonElement>('footer button.btn-primary')!
 /** The confirmation's rows, by label. */
 const rowsOf = () =>
   Object.fromEntries(
@@ -341,13 +349,43 @@ describe('trusting a sender: the send', () => {
     await expect(options.reverify(request)).rejects.toThrow('Could not read whether this sender is trusted. Try again.')
   })
 
+  it('shows its one step as the one to confirm before it is sent, and as done once it is', async () => {
+    await render()
+    await reviewTrust(SENDER)
+    expect(stepStates()).toEqual(['active'])
+    tx().phase = 'success'
+    tx().hash = HASH
+    await render()
+    expect(stepStates()).toEqual(['complete'])
+  })
+
+  it('says what the engine is doing while it sends, from its check to the wallet to the chain, and is busy meanwhile', async () => {
+    await render()
+    await reviewTrust(SENDER)
+    expect(statusLine()).toBeNull()
+    tx().busy = true
+    for (const [phase, line, button] of [
+      ['simulating', 'Double-checking the transaction…', 'Double-checking the transaction…'],
+      ['signing', 'Confirm in your wallet…', 'Confirm in your wallet…'],
+      ['pending', 'Waiting for confirmation…', 'Confirming…'],
+    ]) {
+      tx().phase = phase
+      await render()
+      expect(statusLine(), phase).toBe(line)
+      expect(primary().textContent, phase).toBe(button)
+      expect(primary().disabled).toBe(true)
+      expect(buttonIn(confirm(), 'Cancel')!.disabled).toBe(true)
+      expect(stepStates()).toEqual(['active'])
+    }
+  })
+
   it('is busy while the engine is, and shows its error with a way to try again', async () => {
     await render()
     await reviewTrust(SENDER)
     tx().busy = true
     tx().phase = 'signing'
     await render()
-    expect(buttonIn(confirm(), 'Confirm & trust')!.disabled).toBe(true)
+    expect(primary().disabled).toBe(true)
     expect(buttonIn(confirm(), 'Cancel')!.disabled).toBe(true)
 
     tx().busy = false

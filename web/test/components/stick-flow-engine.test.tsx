@@ -248,6 +248,24 @@ describe('the stick flow on the real engine', () => {
     expect(writes()).toEqual(['approve', 'pay'])
   })
 
+  it("says so while the wallet's prompt is open, on the button and under the step, then waits for the chain", async () => {
+    const prompt = Promise.withResolvers<Hex>()
+    mocks.writeContract.mockReturnValueOnce(prompt.promise)
+    await openReview()
+    const statusLine = () => dialog()?.querySelector('p.text-bluebs-700')?.textContent ?? null
+    expect(statusLine()).toBeNull()
+
+    await act(async () => confirmButton()!.click())
+    await until(() => mocks.writeContract.mock.calls.length === 1, 'the wallet to be asked')
+    expect(statusLine()).toBe('Confirm in your wallet…')
+    expect(confirmButton()!.textContent).toBe('Confirm in your wallet…')
+    expect(confirmButton()!.disabled).toBe(true)
+
+    await act(async () => prompt.resolve(APPROVAL))
+    await until(() => statusLine() === 'Waiting for confirmation…', 'the wait for the chain')
+    expect(confirmButton()!.textContent).toBe('Confirming…')
+  })
+
   it('sends the approval again, and only the approval, when the wallet refused it', async () => {
     mocks.writeContract.mockRejectedValueOnce(new Error('User rejected the request.')).mockResolvedValueOnce(APPROVAL)
     await openReview()

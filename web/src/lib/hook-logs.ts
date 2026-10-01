@@ -394,6 +394,26 @@ function writeHistory(key: string, from: bigint, through: bigint, logs: ScannedL
 export async function keptLogs(
   chainId: number,
   key: string,
+  filter: { address: Address; topics: (Hex | Hex[] | null)[]; fromBlock: bigint | null },
+  opts: { signal?: AbortSignal; keep?: (log: ScannedLog) => ScannedLog } = {},
+): Promise<ScannedLog[]> {
+  return keptLogsOf(chainId, [{ key, owns: () => true }], filter, opts)
+}
+
+/** One history a scan keeps: the logs it `owns` of what the scan reads, kept under `key`. */
+type KeptHistory = { key: string; owns: (log: ScannedLog) => boolean }
+
+/**
+ * `keptLogs` for a filter whose logs make several histories, as one scan of the terminal reads the pays of several
+ * projects: each history is kept under its own key, as `keptLogs` keeps one, and one scan reads what is new to any of
+ * them, from just after the least that one of them kept. A history the scan reads again in part keeps each log once.
+ * A history that ends before `fromBlock` holds nothing the read asked for, so the scan does not read the blocks
+ * between: it starts at `fromBlock`, and so does the history it keeps from then on. What is returned is every
+ * history's logs, kept and new, and the new ones no history owns, which are not kept.
+ */
+export async function keptLogsOf(
+  chainId: number,
+  histories: readonly KeptHistory[],
   { address, topics, fromBlock }: { address: Address; topics: (Hex | Hex[] | null)[]; fromBlock: bigint | null },
   opts: { signal?: AbortSignal; keep?: (log: ScannedLog) => ScannedLog } = {},
 ): Promise<ScannedLog[]> {
@@ -402,25 +422,31 @@ export async function keptLogs(
   if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
   throwIfAborted(signal)
   const client = jbCenterPublicClient(chainId)
-  const saved = readHistory(key)
-  const kept = saved && (fromBlock === null || saved.from === undefined || saved.from <= fromBlock) ? saved : null
   const start = fromBlock ?? deployment.fromBlock
+  const kept = histories.map(({ key }) => {
+    const saved = readHistory(key)
+    return saved && (fromBlock === null || saved.from === undefined || saved.from <= fromBlock) ? saved : null
+  })
   const head = await freshHead(client, signal)
-  // The scan starts after what was kept, so the two never overlap.
-  const fresh = await scanLogs(
-    client,
-    { address, topics, fromBlock: kept ? kept.through + 1n : start, toBlock: head },
-    { signal },
-  )
-  const all = tidy([...(kept?.logs ?? []), ...fresh])
-  if (head > REORG_DEPTH) {
-    const buried = head - REORG_DEPTH
-    // A kept history never moves backwards, and keeps nothing a reorg could still replace.
-    if (!kept || buried > kept.through) {
-      writeHistory(key, kept?.from ?? start, buried, all.filter(log => log.blockNumber <= buried).map(keep))
-    }
-  }
-  return all
+  // The scan starts after what was kept, so a block every history holds is never asked for again. With no block to
+  // start at, every kept history goes on from where it ends.
+  const goesOn = (saved: Kept) => fromBlock === null || saved.through + 1n >= fromBlock
+  const starts = kept.map(saved => (saved && goesOn(saved) ? saved.through + 1n : start))
+  const scanFrom = starts.reduce((low, next) => (next < low ? next : low), starts[0] ?? start)
+  const fresh = await scanLogs(client, { address, topics, fromBlock: scanFrom, toBlock: head }, { signal })
+  const buried = head - REORG_DEPTH
+  histories.forEach(({ key, owns }, at) => {
+    const saved = kept[at]
+    // A kept history never moves backwards, and keeps nothing a reorg could still replace. It goes on from what it
+    // kept when the scan began no later than the block after it; otherwise it starts again where the scan did. Either
+    // way it holds every log it owns from where it starts.
+    if (head <= REORG_DEPTH || (saved && buried <= saved.through)) return
+    const continued = saved !== null && saved.through + 1n >= scanFrom
+    const from = continued ? (saved.from ?? start) : scanFrom
+    const logs = tidy([...(continued ? saved.logs : []), ...fresh.filter(owns)])
+    writeHistory(key, from, buried, logs.filter(log => log.blockNumber >= from && log.blockNumber <= buried).map(keep))
+  })
+  return tidy([...kept.flatMap(saved => saved?.logs ?? []), ...fresh])
 }
 
 /** Every hook event of one project on one chain, from `fromBlock` to the head, read through Center and kept in this

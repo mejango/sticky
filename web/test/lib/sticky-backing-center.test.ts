@@ -108,6 +108,45 @@ describe('backingFlows, reading for itself', () => {
     ])
   })
 
+  it('keeps the pays and cash outs it scans, so a read after a send, or a return visit, scans only the blocks since', async () => {
+    const MOVES = `sticky.history.v1:${CHAIN}:${TERMINAL.toLowerCase()}:42:moves`
+    const FEES = `sticky.history.v1:${CHAIN}:${TERMINAL.toLowerCase()}:42:fees`
+    const first = FROM + 400n
+    const logs = [
+      // A pay with a memo as long as a payer likes: its history keeps the pay's amounts and not the memo.
+      raw(
+        PAID,
+        encodeAbiParameters(parseAbiParameters('address, address, uint256, uint256, string, bytes, address'), [
+          HOLDER,
+          HOLDER,
+          100n,
+          100n,
+          'x'.repeat(250_000),
+          '0x',
+          HOLDER,
+        ]),
+        on(FROM + 1n),
+      ),
+      raw(CASHED_OUT, words(HOLDER, HOLDER, 40n, 1000n, 39n, 224n, HOLDER, 0n), on(FROM + 5n, 1)),
+    ]
+    node(first, logs)
+    expect((await backingFlows(CHAIN, 42n, FROM)).map(flow => flow.delta)).toEqual([100n, -39n])
+    const kept = JSON.parse(localStorage.getItem(MOVES) ?? 'null') as { from: string; through: string; all: unknown[] }
+    expect(kept).toMatchObject({ from: String(FROM), through: String(first - 64n) })
+    expect(kept.all).toHaveLength(2)
+    expect(localStorage.getItem(MOVES)!.length).toBeLessThan(5_000)
+
+    // A stick lands, and the chart reads again.
+    const second = first + 100n
+    const center = node(second, [...logs, raw(PAID, words(HOLDER, HOLDER, 7n, 7n, 224n, 256n, HOLDER, 0n, 0n), on(first + 50n))])
+    expect((await backingFlows(CHAIN, 42n, FROM)).map(flow => flow.delta)).toEqual([100n, -39n, 7n])
+    expect(center.requests.map(({ topics, fromBlock, toBlock }) => [topics[0], fromBlock, toBlock])).toEqual([
+      [[PAY, CASH_OUT], toHex(first - 64n + 1n), toHex(second)],
+      [[PROCESS_FEE, ADD_TO_BALANCE], toHex(first - 64n + 1n), toHex(second)],
+    ])
+    expect(Object.keys(localStorage).sort()).toEqual([FEES, MOVES])
+  })
+
   it('refuses a history longer than a scan may read, before it sends a request', async () => {
     const center = node(FROM + 1_024n * 500n)
     await expect(backingFlows(CHAIN, 42n, FROM)).rejects.toThrow('more than this RPC can scan in 1024 requests')

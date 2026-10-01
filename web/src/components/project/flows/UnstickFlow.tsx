@@ -8,8 +8,8 @@ import { ModalShell } from '@/components/ui/ModalShell'
 import { Revalidating } from '@/components/ui/Revalidating'
 import { TxConfirmDialog, type TxConfirmRow } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
-import { stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
-import { txPhaseLabel, useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
+import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
+import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
 import { useSettled } from '@/hooks/useSettled'
 import { useWallet } from '@/hooks/useWallet'
 import { untilAborted } from '@/lib/hook-logs'
@@ -226,13 +226,15 @@ async function stillFits(info: StickyProjectInfo, plan: Plan, step: TxRequest): 
   }
 }
 
-/** Which transactions went through and which did not, in words. `left` is what has not: one being sent is waited for,
- * and after a failure none of it went through, and otherwise it has not been sent yet. */
+/** Which transactions went through and which did not, in words. `left` is what has not: the first of it is the one being
+ * sent, which is waited for, or the one that was tried and failed, which did not go through; the rest of it, and all of
+ * it otherwise, has not been sent yet. */
 function progress(went: readonly TxRequest[], left: readonly TxRequest[], state: 'sending' | 'failed' | 'idle'): string {
   const [next, ...later] = left
   const head = `Went through: ${titlesOf(went)}.`
-  if (state === 'sending') return `${head} Waiting for: ${titleOf(next)}.${later.length ? ` Not sent yet: ${titlesOf(later)}.` : ''}`
-  return `${head} ${state === 'failed' ? 'Did not go through' : 'Not sent yet'}: ${titlesOf(left)}.`
+  if (state === 'idle') return `${head} Not sent yet: ${titlesOf(left)}.`
+  const tried = `${state === 'sending' ? 'Waiting for' : 'Did not go through'}: ${titleOf(next)}.`
+  return `${head} ${tried}${later.length ? ` Not sent yet: ${titlesOf(later)}.` : ''}`
 }
 
 /** The account changed under a plan: what went through for the one that sent it is said, when anything did. */
@@ -433,7 +435,7 @@ export function UnstickFlow({
 
   const failed = error !== null || tx.phase === 'error'
   const flowError = error ?? tx.error
-  const inFlight = txPhaseLabel(tx.phase, { idle: '', pending: 'Waiting for confirmation…' })
+  const inFlight = sendingStatus(tx)
   const steps = [...landed, ...(plan?.steps ?? [])]
   const takesAutoStickApart = plan !== null && plan.count === plan.balance && steps.some(isTeardown)
   const partway = landed.length > 0 && plan !== null && !complete
@@ -446,7 +448,7 @@ export function UnstickFlow({
   ) : plan && (partway || inFlight || showsLink) ? (
     <>
       {partway ? <span className="block">{progress(landed, plan.steps, sending ? 'sending' : failed ? 'failed' : 'idle')}</span> : null}
-      {inFlight ? <span className="block">{tx.safeNonceGuidance ?? inFlight}</span> : null}
+      {inFlight ? <span className="block">{inFlight}</span> : null}
       {showsLink ? <ViewTransactionLink chainId={chainId} hash={tx.hash} /> : null}
     </>
   ) : undefined
@@ -520,7 +522,7 @@ export function UnstickFlow({
           steps={steps.map((step, at) => ({ key: `${at}:${step.functionName}`, title: titleOf(step) }))}
           activeIndex={landed.length}
           stepsIntro={stepsIntro(steps.length, landed.length)}
-          action={txPhaseLabel(tx.phase, { idle: actionLabel, pending: 'Confirming…' })}
+          action={confirmAction(tx.phase, actionLabel)}
           cancelLabel={landed.length > 0 ? 'Close' : 'Cancel'}
           onConfirm={() => (failed ? retry() : void sendNext())}
           busy={sending}

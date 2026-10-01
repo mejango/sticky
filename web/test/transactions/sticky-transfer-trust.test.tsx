@@ -139,6 +139,9 @@ async function type(label: string, text: string) {
   })
 }
 const transfer = () => <TransferFlow info={info} onClose={() => {}} />
+/** The confirm's main button, and the line under its step that says what the engine is doing. */
+const primary = () => confirm().querySelector<HTMLButtonElement>('footer button.btn-primary')!
+const statusLine = () => confirm().querySelector('p.text-bluebs-700')?.textContent ?? null
 
 describe('a transfer', () => {
   async function reviewed(amount = '1.5') {
@@ -182,6 +185,23 @@ describe('a transfer', () => {
     await render(transfer())
     expect(confirm().textContent).toContain('Sticky tokens transferred')
     expect(confirm().querySelector('a')!.getAttribute('href')).toBe(`https://sepolia.basescan.org/tx/${HASH}`)
+  })
+
+  it("says so while the wallet's prompt is open, on the button and under the step, then waits for the chain", async () => {
+    const prompt = Promise.withResolvers<string>()
+    mocks.writeContract.mockReturnValue(prompt.promise)
+    await reviewed('1')
+    await press(confirm(), 'Confirm & transfer')
+
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
+    expect(statusLine()).toBe('Confirm in your wallet…')
+    expect(primary().textContent).toBe('Confirm in your wallet…')
+    expect(primary().disabled).toBe(true)
+
+    await act(async () => prompt.resolve(HASH))
+    await settle()
+    expect(statusLine()).toBe('Waiting for confirmation…')
+    expect(primary().textContent).toBe('Confirming…')
   })
 
   it('stops before the simulation and the wallet when the balance has fallen since the review', async () => {
@@ -233,6 +253,22 @@ describe('a change of trust', () => {
     })
     expect(mocks.writeContract).toHaveBeenCalledOnce()
     expect(mocks.read).toHaveBeenCalledTimes(2)
+  })
+
+  it("says so while the wallet's prompt is open, on the button and under the step", async () => {
+    const prompt = Promise.withResolvers<string>()
+    mocks.writeContract.mockReturnValue(prompt.promise)
+    mocks.read.mockResolvedValue(answer(false))
+    await render(trust(null))
+    await type('Sender address', BOB)
+    await press(modal(), 'Review trust')
+    await press(confirm(), 'Confirm & trust')
+
+    expect(statusLine()).toBe('Confirm in your wallet…')
+    expect(primary().textContent).toBe('Confirm in your wallet…')
+    await act(async () => prompt.resolve(HASH))
+    await settle()
+    expect(statusLine()).toBe('Waiting for confirmation…')
   })
 
   it('reaches the wallet as setTrustedSenderFor(project, sender, false) for an untrust', async () => {

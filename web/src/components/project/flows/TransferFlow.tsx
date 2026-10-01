@@ -8,11 +8,11 @@ import { reviewGate } from '@/components/project/flows/review-gate'
 import { ModalShell } from '@/components/ui/ModalShell'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
-import { stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
+import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
 import { useStickyPosition } from '@/hooks/useStickyProject'
 import { useWallet } from '@/hooks/useWallet'
-import { stickyDeployment } from '@/lib/sticky-addresses'
+import { isLostRecipient, LOST_RECIPIENT } from '@/lib/sticky-addresses'
 import { parseShares, SHARE_DECIMALS } from '@/lib/sticky-amount'
 import { transferTx } from '@/lib/sticky-builders'
 import { formatAmount, stickyLabel } from '@/lib/sticky-format'
@@ -25,16 +25,6 @@ const LOCKED = 'This Sticky token is locked and cannot be transferred.'
 const MORE_THAN_HELD = 'That is more than you hold.'
 const BALANCE_CHANGED = 'Your token balance changed. Review the amount.'
 const BALANCE_UNREADABLE = 'Could not read your Sticky balance. Try again.'
-const LOST = 'Tokens sent to this Sticky contract are lost. Choose a different recipient.'
-
-/** Sticky's own contracts that Sticky tokens can be sent to and never come back from: the Sticky token itself, the hook
- * and the terminal. */
-function losesTokens(info: StickyProjectInfo, recipient: Address): boolean {
-  const deployment = stickyDeployment(info.chainId)
-  return [info.stToken, deployment?.hook, deployment?.terminal].some(
-    contract => contract !== undefined && isAddressEqual(contract, recipient),
-  )
-}
 
 /** What `holder` holds of the project's Sticky token now, from the token itself: a read that cannot be made is an
  * error, never zero. */
@@ -117,7 +107,7 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
     const to = parseAddress(recipient)
     if (!to) return refuse('Enter a valid recipient address.')
     if (isAddressEqual(to, account)) return refuse('Choose a different recipient.')
-    if (losesTokens(info, to)) return refuse(LOST)
+    if (isLostRecipient(info, to)) return refuse(LOST_RECIPIENT)
     const count = amount.trim() === '' ? 0n : parseShares(amount)
     if (count === null) return refuse('Enter a valid amount.')
     if (count === 0n) return refuse('Enter an amount greater than zero.')
@@ -231,20 +221,20 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
               : undefined
           }
           steps={[{ title: plan?.label ?? 'Transfer' }]}
-          activeIndex={sending ? 0 : -1}
+          activeIndex={0}
           stepsIntro={stepsIntro(1, complete ? 1 : 0)}
           complete={complete}
           busy={sending}
-          action={tx.phase === 'error' ? 'Retry' : 'Confirm & transfer'}
+          action={confirmAction(tx.phase, tx.phase === 'error' ? 'Retry' : 'Confirm & transfer')}
           onConfirm={() => void send()}
           status={
             complete ? (
               <ViewTransactionLink chainId={chainId} hash={tx.hash} />
             ) : !plan ? (
               'Reading your balance…'
-            ) : tx.phase === 'pending' ? (
-              'Waiting for confirmation…'
-            ) : undefined
+            ) : (
+              (sendingStatus(tx) ?? undefined)
+            )
           }
           error={tx.error}
         >

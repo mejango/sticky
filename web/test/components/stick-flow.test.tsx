@@ -60,7 +60,11 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/hooks/useWallet', () => ({ useWallet: () => mocks.wallet }))
-vi.mock('@/hooks/useSafeTx', () => ({ useSafeTx: () => mocks.tx }))
+// The engine's hook is a mock; its labels for the phases it reports are its own.
+vi.mock('@/hooks/useSafeTx', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/hooks/useSafeTx')>()),
+  useSafeTx: () => mocks.tx,
+}))
 vi.mock('@/lib/sticky-project', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-project')>()),
   readStickyProject: mocks.project,
@@ -216,6 +220,11 @@ const rows = () => {
   return Array.from({ length: cells.length / 2 }, (_, at) => [cells[at * 2], cells[at * 2 + 1]])
 }
 const alerts = () => [...host.querySelectorAll('p.text-red-700')].map(alert => alert.textContent)
+/** What the review says of the step being sent, under its steps. */
+const statusLine = () => dialog()?.querySelector('p.text-bluebs-700')?.textContent ?? null
+/** How many times `text` is on the page. */
+const timesShown = (text: string) => (host.textContent ?? '').split(text).length - 1
+const footer = () => [...(dialog()?.querySelectorAll('footer button') ?? [])].map(button => button.textContent)
 
 /** The review of a stick of `amount` CPN, opened and read. */
 async function review(amount = '5', label = 'Stick') {
@@ -588,7 +597,7 @@ describe('the review', () => {
     expect(stepStates()).toEqual(['complete', 'complete', 'active'])
     expect(dialog()!.querySelector('h2')!.textContent).toBe('Confirm stick')
     expect(dialog()!.textContent).toContain('1 transaction left.')
-    expect([...dialog()!.querySelectorAll('footer button')].map(button => button.textContent)).toEqual(['Cancel', 'Confirm & stick'])
+    expect([...dialog()!.querySelectorAll('footer button')].map(button => button.textContent)).toEqual(['Close', 'Confirm & stick'])
     expect(invalidate).not.toHaveBeenCalled()
 
     await click(confirmButton())
@@ -689,6 +698,53 @@ describe('the review', () => {
     await click(confirmButton())
     expect(mocks.tx.send).toHaveBeenCalledTimes(2)
     expect(mocks.tx.send.mock.calls[1][0]).toMatchObject({ functionName: 'pay' })
+  })
+
+  it('says what the engine is doing while it sends a step, from its check to the wallet to the chain', async () => {
+    await render()
+    await review()
+    expect(statusLine()).toBeNull()
+    expect(confirmButton()!.textContent).toBe('Confirm & approve')
+
+    // The engine takes the approval, and goes through its phases.
+    await click(confirmButton())
+    for (const [phase, line, button] of [
+      ['simulating', 'Double-checking the transaction…', 'Double-checking the transaction…'],
+      ['signing', 'Confirm in your wallet…', 'Confirm in your wallet…'],
+      ['pending', 'Waiting for confirmation…', 'Confirming…'],
+    ] as const) {
+      mocks.tx.phase = phase
+      await rerender()
+      expect(statusLine(), phase).toBe(line)
+      expect(confirmButton()!.textContent, phase).toBe(button)
+      expect(confirmButton()!.disabled).toBe(true)
+      expect(stepStates()).toEqual(['active', 'pending'])
+    }
+
+    // The approval confirms: the review says where it is and offers the stick.
+    await confirmed(APPROVAL_HASH, 4_001n)
+    expect(dialog()!.querySelector('a')!.textContent).toBe('View transaction ↗')
+    expect(confirmButton()!.textContent).toBe('Confirm & stick')
+  })
+
+  it('offers Cancel until a step has gone through, and Close after, since closing undoes nothing', async () => {
+    await render()
+    await review()
+    expect(footer()).toEqual(['Cancel', 'Confirm & approve'])
+
+    await click(confirmButton())
+    await rerender()
+    await confirmed(APPROVAL_HASH, 4_001n)
+    expect(footer()).toEqual(['Close', 'Confirm & stick'])
+
+    // The stick fails: the approval stays, and so does Close.
+    await click(confirmButton())
+    mocks.tx.phase = 'error'
+    mocks.tx.busy = false
+    mocks.tx.error = 'Transaction cancelled.'
+    await rerender()
+    expect(footer()).toEqual(['Close', 'Retry'])
+    expect(stepStates()).toEqual(['complete', 'active'])
   })
 
   it('simulates a retried stick after the block of the approval that came before it', async () => {
@@ -808,7 +864,7 @@ describe('the review', () => {
     await review()
     await click(confirmButton())
     await confirmed(APPROVAL_HASH, 4_001n)
-    await click(buttonIn(dialog()!, 'Cancel'))
+    await click(buttonIn(dialog()!, 'Close'))
     expect(dialog()).toBeNull()
 
     // The approval landed, then the page was closed: the next review finds it and does not ask for another.
@@ -1000,6 +1056,111 @@ describe('sticking for someone else', () => {
     expect(mocks.tx.send).not.toHaveBeenCalled()
     await click(confirmButton())
     expect(mocks.tx.send.mock.calls[0][0].args[3]).toBe(ALICE)
+  })
+
+  const REFUSAL = 'This holder must trust your address before you can stick for them.'
+  /** FRIEND trusts BOB and nobody else. */
+  const trustsBob = () =>
+    mocks.canStick.mockImplementation(async (_chainId: number, _projectId: bigint, sender: string) => {
+      if (sender !== BOB) throw new Error('this holder must trust your address before you can stick for them')
+    })
+
+  it('says a refusal once when the review is pressed before the quote under the amount has settled', async () => {
+    trustsBob()
+    await render({ forSomeoneElse: true })
+    await type(recipientField(), FRIEND)
+    await type(amountField(), '5')
+    // Pressed at once: the review refuses, and the quote under the amount, which settles after, refuses the same.
+    await click(flowButton('Review stick'))
+    await settled()
+    expect(alerts()).toEqual([REFUSAL])
+    await settle(250)
+    await settled()
+    expect(mocks.canStick).toHaveBeenCalledTimes(2)
+    expect(timesShown(REFUSAL)).toBe(1)
+    expect(hint()).toBeNull()
+    expect(flowButton('Review stick').disabled).toBe(true)
+
+    // Another refusal is the line's own once the review's is gone, as an edit clears it.
+    await typeAmount('6')
+    expect(alerts()).toEqual([])
+    expect(hint()).toBe(REFUSAL)
+    expect(timesShown(REFUSAL)).toBe(1)
+  })
+
+  it("checks again for the account that is connected now: a refusal for the last one is not this one's", async () => {
+    trustsBob()
+    await render({ forSomeoneElse: true })
+    await type(recipientField(), FRIEND)
+    await type(amountField(), '5')
+    await click(flowButton('Review stick'))
+    await settle(250)
+    await settled()
+    expect(alerts()).toEqual([REFUSAL])
+
+    // The wallet switches to BOB, whom FRIEND trusts: the refusal goes, and the line under the amount quotes for BOB.
+    mocks.quote.mockClear()
+    mocks.wallet = { ...mocks.wallet, address: BOB }
+    await rerender()
+    await settle(250)
+    await settled()
+    expect(alerts()).toEqual([])
+    expect(mocks.canStick).toHaveBeenLastCalledWith(CHAIN, BigInt(PROJECT), BOB, FRIEND, expect.anything())
+    expect(mocks.quote).toHaveBeenCalledWith(CHAIN, BigInt(PROJECT), TOKEN, 5n * CPN, BOB, FRIEND, expect.anything())
+    expect(hint()).toBe('They get at least 9.87 STICKYCPN')
+    expect(flowButton('Review stick').disabled).toBe(false)
+
+    // And to another account FRIEND does not trust: the line says so, once.
+    const carol = getAddress(`0x${'c'.repeat(40)}`)
+    mocks.wallet = { ...mocks.wallet, address: carol }
+    await rerender()
+    await settle(250)
+    await settled()
+    expect(alerts()).toEqual([])
+    expect(hint()).toBe(REFUSAL)
+    expect(timesShown(REFUSAL)).toBe(1)
+  })
+
+  it("does not show a review's refusal that lands after the account has changed", async () => {
+    trustsBob()
+    const checking = Promise.withResolvers<void>()
+    await render({ forSomeoneElse: true })
+    // The review's check is the first: the quote under the amount has not settled yet.
+    mocks.canStick.mockReturnValueOnce(checking.promise)
+    await type(recipientField(), FRIEND)
+    await type(amountField(), '5')
+    await click(flowButton('Review stick'))
+    expect(dialog()!.querySelector('[role="status"]')).not.toBeNull()
+    expect(mocks.canStick).toHaveBeenCalledWith(CHAIN, BigInt(PROJECT), ALICE, FRIEND, expect.anything())
+
+    mocks.wallet = { ...mocks.wallet, address: BOB }
+    await rerender()
+    await act(async () => checking.reject(new Error('this holder must trust your address before you can stick for them')))
+    await settled()
+    expect(dialog()).toBeNull()
+    expect(alerts()).toEqual([])
+    expect(timesShown(REFUSAL)).toBe(0)
+  })
+
+  it.each([
+    ...Object.entries(stickyDeployment(CHAIN)!).flatMap(([field, address]) =>
+      typeof address === 'string' ? [[`the recorded ${field}`, address] as [string, string]] : [],
+    ),
+    ['the Sticky token', `0x${'5'.repeat(40)}`],
+    ['the token it sticks', TOKEN],
+  ])('refuses %s as a recipient, in any case, before it quotes or reviews: the Sticky tokens would be lost', async (_name, contract) => {
+    // A granter may stick for anyone, so no trust check stands between it and a contract.
+    for (const recipient of [getAddress(contract), contract.toLowerCase()]) {
+      await render({ forSomeoneElse: true })
+      await fill(recipient)
+      expect(hint()).toBe('Sticky tokens sent to this contract are lost. Choose a different recipient.')
+      expect(flowButton('Review stick').disabled).toBe(true)
+      await click(flowButton('Review stick'))
+      expect(dialog()).toBeNull()
+    }
+    expect(mocks.canStick).not.toHaveBeenCalled()
+    expect(mocks.quote).not.toHaveBeenCalled()
+    expect(mocks.funds).not.toHaveBeenCalled()
   })
 
   it('refuses the zero address as a recipient before it quotes or reviews', async () => {
