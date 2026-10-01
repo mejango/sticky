@@ -277,7 +277,7 @@ async function sendStep(label: string, next?: string) {
 describe('a full exit', () => {
   const on = { enabled: true, trusted: true, allowance: 100n }
 
-  it('turns auto-stick off, takes back its trust and its allowance, and then unsticks: four transactions, one after another', async () => {
+  it('wallet-action:turn-off-auto-stick wallet-action:take-back-the-auto-stick-adapter-s-trust wallet-action:take-back-the-auto-stick-adapter-s-allowance wallet-action:unstick-sticky-tokens turns auto-stick off, takes back its trust and its allowance, and then unsticks: four transactions, one after another', async () => {
     world(on)
     await review('1')
 

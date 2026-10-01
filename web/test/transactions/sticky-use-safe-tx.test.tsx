@@ -85,7 +85,7 @@ afterEach(async () => {
 })
 
 describe('useSafeTx in Sticky', () => {
-  it('moves the wallet to the request’s chain before it simulates or asks for a signature', async () => {
+  it('wallet-action:submit-a-reviewed-direct-write moves the wallet to the request’s chain before it simulates or asks for a signature', async () => {
     await act(async () => {
       await tx.current!.send(request)
     })

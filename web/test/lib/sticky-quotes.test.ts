@@ -152,7 +152,7 @@ describe('assertCanStickFor', () => {
     expect(chain.requests).toEqual([])
   })
 
-  it('lets a granter of the project stick for anyone, and a sender the beneficiary trusts stick for them', async () => {
+  it('wallet-action:stick-for-someone-else lets a granter of the project stick for anyone, and a sender the beneficiary trusts stick for them', async () => {
     const { assertCanStickFor } = await load()
     for (const { granter, trusted } of [
       { granter: true, trusted: false },
@@ -385,7 +385,7 @@ describe('a quote as the minimum of its call', () => {
     backing: 25_000_000n,
   }
 
-  it('is what a stick mints at least, for the holder or for someone else', async () => {
+  it('wallet-action:stick wallet-action:stick-for-someone-else is what a stick mints at least, for the holder or for someone else', async () => {
     const chain = rewardChain()
     chain.stock(TERMINAL, terminalAbi, 'previewPayFor', preview(777n))
     const { quoteStick } = await load()
@@ -393,7 +393,7 @@ describe('a quote as the minimum of its call', () => {
     expect(stickTx(project, OTHER, 1_000_001n, minted).args).toEqual([PROJECT, STAKED, 1_000_001n, OTHER, 777n, '', '0x'])
   })
 
-  it('is what an unstick pays at least: the dialog says it, and the review sends it', async () => {
+  it('wallet-action:unstick-sticky-tokens is what an unstick pays at least: the dialog says it, and the review sends it', async () => {
     const chain = rewardChain()
     chain.stock(TERMINAL, terminalAbi, 'previewCashOutFrom', [RULESET, 2_000_000n, 1_000n, []])
     chain.stock(TERMINAL, terminalAbi, 'feeFreeSurplusOf', 0n)

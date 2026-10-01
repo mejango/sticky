@@ -495,7 +495,7 @@ describe('the review', () => {
     expect(rows()[1]).toEqual(['You get at least', '9.876543210987654321 STICKYCPN'])
   })
 
-  it('after an approval that landed before a reload, plans the stick alone and makes one wallet call', async () => {
+  it('wallet-action:stick after an approval that landed before a reload, plans the stick alone and makes one wallet call', async () => {
     mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 5n * CPN })
     await render()
     await review()
@@ -523,7 +523,7 @@ describe('the review', () => {
     expect(steps()).toEqual(['Stick'])
   })
 
-  it('sends the steps in order, one for each confirmation, and simulates each after the block of the one before', async () => {
+  it('wallet-action:approve-the-staked-token-for-a-stick sends the steps in order, one for each confirmation, and simulates each after the block of the one before', async () => {
     mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 3n * CPN })
     await render()
     await review()
@@ -1019,7 +1019,7 @@ describe('sticking for someone else', () => {
     expect(mocks.tx.send).not.toHaveBeenCalled()
   })
 
-  it('reviews a stick for a recipient who trusts the sender, with the recipient as the beneficiary', async () => {
+  it('wallet-action:stick-for-someone-else reviews a stick for a recipient who trusts the sender, with the recipient as the beneficiary', async () => {
     mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 5n * CPN })
     await render({ forSomeoneElse: true })
     await fill(FRIEND)

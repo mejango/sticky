@@ -151,7 +151,7 @@ describe('a transfer', () => {
     await press(modal(), 'Review transfer')
   }
 
-  it('reaches the review, the simulation and the wallet as the exact transfer the confirm showed', async () => {
+  it('wallet-action:transfer-sticky-tokens reaches the review, the simulation and the wallet as the exact transfer the confirm showed', async () => {
     await reviewed('1.000000000000000001')
     expect(confirm().textContent).toContain('1.000000000000000001 STICKYART')
     expect(mocks.requestReview).not.toHaveBeenCalled()
@@ -230,7 +230,7 @@ describe('a change of trust', () => {
     <TrustFlow chainId={CHAIN} projectId={12} info={info} sender={sender} onClose={() => {}} />
   )
 
-  it('reaches the wallet as setTrustedSenderFor(project, sender, true), after the hook was read again', async () => {
+  it('wallet-action:trust-or-untrust-a-sender reaches the wallet as setTrustedSenderFor(project, sender, true), after the hook was read again', async () => {
     mocks.read.mockResolvedValue(answer(false))
     await render(trust(null))
     await type('Sender address', BOB)
@@ -271,7 +271,7 @@ describe('a change of trust', () => {
     expect(statusLine()).toBe('Waiting for confirmation…')
   })
 
-  it('reaches the wallet as setTrustedSenderFor(project, sender, false) for an untrust', async () => {
+  it('wallet-action:trust-or-untrust-a-sender reaches the wallet as setTrustedSenderFor(project, sender, false) for an untrust', async () => {
     mocks.read.mockResolvedValue(answer(true))
     await render(trust(BOB))
     await press(modal(), 'Review untrust')

@@ -13,6 +13,14 @@ Legend:
 - **P**: pure planning/state-machine assertions
 - **-**: no dedicated regression test yet
 
+Each test file named for an action that a wallet write maps to carries the
+action's marker in the `it` or `test` title (`.each` included) of a test that
+proves it, for example `wallet-action:stick-for-someone-else` for "Stick for
+someone else". A `describe` or `suite` title, and any test under `.skip`,
+`.todo`, `.skipIf`, `.runIf`, `.fails` or a bracketed modifier
+(`describe['skip']`), does not count. `npm run transaction:check` fails on a
+missing marker.
+
 | User action | Contract function or authorization | Coverage | Test |
 | --- | --- | :---: | --- |
 | Submit a reviewed direct write | review → chain/account check → simulate → exact simulated write | **P** | `transactions/contract-write.test.ts`, `transactions/use-safe-tx.test.ts`, `transactions/sticky-use-safe-tx.test.tsx`, `transactions/signa-gate.test.tsx` |

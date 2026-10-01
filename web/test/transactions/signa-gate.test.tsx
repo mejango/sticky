@@ -142,7 +142,7 @@ const dialog = () => document.querySelector('dialog')!
 const button = (name: string) => [...document.querySelectorAll('button')].find(item => item.textContent === name)
 
 describe('a write while Signa is the connected wallet', () => {
-  it('is refused before the wallet is asked anything, and offers to connect an external wallet', async () => {
+  it('wallet-action:submit-a-reviewed-direct-write is refused before the wallet is asked anything, and offers to connect an external wallet', async () => {
     const { config, asked } = await connected('juicebox-center')
     await render(config, <TrustFlow />)
 

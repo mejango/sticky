@@ -2,6 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { dirname, extname, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
+import { provingTitleWords } from './lib/test-titles.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const sourceRoot = join(root, 'src')
@@ -247,6 +248,21 @@ for (const line of readFileSync(coveragePath, 'utf8').split(/\r?\n/)) {
   })
 }
 
+/** The marker a test carries for the action it proves: "Approve an ERC-20" → wallet-action:approve-an-erc-20. */
+function actionMarker(action) {
+  return `wallet-action:${action.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`
+}
+
+const testTitleCache = new Map()
+/** The words of the titles in a test file that can prove an action. */
+function testTitleWords(test) {
+  if (!testTitleCache.has(test)) {
+    const path = join(root, 'test', test)
+    testTitleCache.set(test, provingTitleWords(readFileSync(path, 'utf8'), path))
+  }
+  return testTitleCache.get(test)
+}
+
 function checkActionReference(file, action, { requireExact = false } = {}) {
   const row = coverageRows.get(action)
   if (!row) {
@@ -269,7 +285,20 @@ function checkActionReference(file, action, { requireExact = false } = {}) {
       `${file} action ${action} only references the shared useSafeTx wrapper test`,
     )
   }
+  // A listed test must say which of its tests proves the action, so a broad
+  // file cannot make a new operation look covered.
+  const marker = actionMarker(action)
+  for (const test of row.tests) {
+    if (missingTests.includes(test) || markedTests.has(`${test}#${marker}`)) continue
+    markedTests.add(`${test}#${marker}`)
+    if (!testTitleWords(test).has(marker)) {
+      failures.push(
+        `${file} action ${action} needs the marker ${marker} in the title of a test in test/${test} that proves it`,
+      )
+    }
+  }
 }
+const markedTests = new Set()
 
 const sendSiteIds = new Set()
 let mappedSendCount = 0
