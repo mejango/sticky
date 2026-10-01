@@ -201,10 +201,9 @@ async function liveSchema(endpoint) {
   return buildClientSchema(envelope.data)
 }
 
-const ENDPOINTS = [
-  'https://bendystraw.up.railway.app/graphql',
-  'https://testnet.bendystraw.xyz/graphql',
-]
+const MAINNET_ENDPOINT = 'https://bendystraw.up.railway.app/graphql'
+const TESTNET_ENDPOINT = 'https://testnet.bendystraw.xyz/graphql'
+const ENDPOINTS = [MAINNET_ENDPOINT, TESTNET_ENDPOINT]
 
 // The Sticky tables of peripheralist/bendystraw#36, which StickyEvents, StickyPositions and StickySettings query.
 const STICKY_TABLES = [
@@ -216,19 +215,18 @@ const STICKY_TABLES = [
   'stickySettingEventFilter',
 ]
 
-// Documents that query fields an unmerged indexer PR adds. They run behind a
+// Documents that query fields an indexer deploy adds. They run behind a
 // fallback — a schema error degrades to the on-chain read — so shipping them
-// ahead of the indexer is safe, but they cannot be validated until it deploys.
-// Each entry names the PR that removes it and the ONE endpoint still missing the
-// field, and the check FAILS once that endpoint serves it, so the list cannot
-// quietly rot after the feature lands.
-const PENDING_SCHEMA_FIELDS = ENDPOINTS.flatMap(endpoint =>
-  STICKY_TABLES.map(field => ({
-    endpoint,
-    field,
-    reason: 'peripheralist/bendystraw#36, Sticky events, positions and settings',
-  })),
-)
+// ahead of an endpoint's deploy is safe, but they cannot be validated against
+// that endpoint until it deploys. The endpoints deploy separately, so each entry
+// names the ONE endpoint still missing the field and the PR that adds it; every
+// other endpoint is validated against the field. The check FAILS once the named
+// endpoint serves it, so the list cannot quietly rot after the feature lands.
+const PENDING_SCHEMA_FIELDS = STICKY_TABLES.map(field => ({
+  endpoint: MAINNET_ENDPOINT,
+  field,
+  reason: 'peripheralist/bendystraw#36, Sticky events, positions and settings',
+}))
 
 if (offline) {
   console.log(`Registry is current for ${documents.size} Bendystraw documents (schema validation skipped).`)
