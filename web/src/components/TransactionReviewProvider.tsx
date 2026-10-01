@@ -76,7 +76,10 @@ export function TransactionReviewProvider({ children }: PropsWithChildren) {
           ...request,
           calls: request.calls.map(call => ({
             ...call,
-            from: call.from ?? accountRef.current,
+            // The connected wallet sends a transaction. An authorization is sent
+            // by a relayer, a Safe or a sponsor, so only a call that names its
+            // own sender shows one.
+            from: call.from ?? (request.kind === 'authorization' ? undefined : accountRef.current),
             args: call.args ? [...call.args] : undefined,
           })),
         }

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getAccount } from '@wagmi/core'
-import { BaseError, type Abi } from 'viem'
+import { BaseError, type Abi, type Address } from 'viem'
 import {
   usePublicClient,
   useSwitchChain,
@@ -13,12 +13,17 @@ import { useWallet } from '@/hooks/useWallet'
 import { submitReviewedContractWrite } from '@/lib/contract-write'
 import { gasWithHeadroom } from '@bananapus/nana-sdk-core/review'
 import { getViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
-import { requestContractTransactionReview, TransactionReviewCancelledError } from '@/lib/transaction-review'
+import {
+  requestContractTransactionReview,
+  TransactionReviewCancelledError,
+} from '@/lib/transaction-review'
+import { chainName } from '@/lib/urn'
 import { wagmiConfig } from '@/providers/Providers'
 import { EXTERNAL_WALLET_REQUIRED } from '@/providers/WalletAuthContext'
 import {
   isSafeConnection,
   SAFE_NONCE_GUIDANCE,
+  safeExecutionFailed,
   useSafeConnection,
   waitForSafeExecutionHash,
 } from '@/lib/safe-connector'
@@ -54,6 +59,12 @@ export type TxRequest = {
 
 export type TxSendOptions = {
   reverify?: (request: TxRequest) => Promise<unknown>
+  /** Persist an unknown-submission marker immediately before the wallet write. */
+  beforeWrite?: () => unknown | Promise<unknown>
+  /** Called if the final account gate aborts a persisted intent before the wallet write. */
+  onBeforeWriteAborted?: () => unknown | Promise<unknown>
+  /** Called only for a typed, explicit wallet rejection of the write itself. */
+  onWriteRejected?: () => unknown | Promise<unknown>
   /**
    * The exact request was already rendered in a parent confirmation surface.
    * This skips only the second app-owned review; account checks, revalidation,
@@ -126,6 +137,8 @@ export function useSafeTx(chainId: number) {
     null,
   )
   const [safeConfirmationUncertain, setSafeConfirmationUncertain] = useState(false)
+  /** The Safe and proposal whose execution `hash` is, once it is known. */
+  const [safeExecution, setSafeExecution] = useState<{ safe: Address; proposalHash: `0x${string}` } | null>(null)
   const inFlightRef = useRef(false)
 
   const receipt = useWaitForTransactionReceipt({
@@ -205,22 +218,30 @@ export function useSafeTx(chainId: number) {
   }, [chainId, safeProposalHash])
 
   // A successful receipt *query* can still contain an onchain revert. Only the
-  // receipt's status is authoritative. A receipt RPC error leaves the already
-  // submitted transaction pending/unknown so the UI never invites a duplicate
-  // submission merely because confirmation could not be read.
+  // receipt's status is authoritative, and for a Safe execution, the Safe's own
+  // ExecutionFailure. A receipt RPC error leaves the already submitted
+  // transaction pending/unknown so the UI never invites a duplicate submission
+  // merely because confirmation could not be read.
+  const safeExecutionReverted =
+    phase === 'pending' &&
+    receiptData?.status === 'success' &&
+    !!safeExecution &&
+    safeExecutionFailed(receiptData, safeExecution.safe, safeExecution.proposalHash)
   const receiptReverted =
-    phase === 'pending' && receiptData?.status === 'reverted'
+    phase === 'pending' && (receiptData?.status === 'reverted' || safeExecutionReverted)
   const effectivePhase: TxPhase =
-    phase === 'pending' && receiptData?.status === 'success'
+    phase === 'pending' && receiptData?.status === 'success' && !safeExecutionReverted
       ? 'success'
       : receiptReverted
         ? 'error'
         : phase
-  const effectiveError = receiptReverted
-    ? `Transaction reverted onchain${hash ? ` (${hash})` : ''}.`
-    : phase === 'pending' && receipt.isError && !receiptData
-      ? `Transaction${hash ? ` ${hash}` : ''} was submitted, but confirmation is temporarily unavailable. Check the explorer and do not submit it again yet.`
-    : error
+  const effectiveError = safeExecutionReverted
+    ? `Safe executed the proposal, but the onchain transaction failed${hash ? ` (${hash})` : ''}.`
+    : receiptReverted
+      ? `Transaction reverted onchain${hash ? ` (${hash})` : ''}.`
+      : phase === 'pending' && receipt.isError && !receiptData
+        ? `Transaction${hash ? ` ${hash}` : ''} was submitted, but confirmation is temporarily unavailable. Check the explorer and do not submit it again yet.`
+        : error
 
   useEffect(() => {
     if (effectivePhase === 'success' || effectivePhase === 'error') {
@@ -254,7 +275,11 @@ export function useSafeTx(chainId: number) {
       setHash(null)
       setSafeProposalHash(null)
       setSafeConfirmationUncertain(false)
+      setSafeExecution(null)
       setPolledReceipt(null)
+      // Read once: the review, the sent gas and the proposal tracking must all
+      // agree on whether a Safe proposes this call.
+      const viaSafe = isSafeConnection(wagmiConfig)
       try {
         const txHash = await submitReviewedContractWrite({
           request,
@@ -264,7 +289,6 @@ export function useSafeTx(chainId: number) {
             // already rendered the payload — the notice exists precisely
             // because what was rendered is no longer what will be signed.
             if (options?.reviewedInParent && !options?.reviewNotice) return
-            const viaSafe = isSafeConnection(wagmiConfig)
             const description = [
               options?.reviewNotice,
               viaSafe ? SAFE_NONCE_GUIDANCE : null,
@@ -291,11 +315,14 @@ export function useSafeTx(chainId: number) {
           switchChain: async reviewedChainId => {
             if (getAccount(wagmiConfig).chainId === reviewedChainId) return
             await switchChainAsync({ chainId: reviewedChainId }).catch(() => {
-              throw new Error('Switch your wallet to the right chain to continue.')
+              throw new Error(`Switch your wallet to ${chainName(reviewedChainId)} to continue.`)
             })
           },
           currentAccount: () => getAccount(wagmiConfig).address,
           reverify: options?.reverify,
+          beforeWrite: options?.beforeWrite,
+          onBeforeWriteAborted: options?.onBeforeWriteAborted,
+          onWriteRejected: options?.onWriteRejected,
           // Simulation is the safety gate: the exact reviewed call, args, and
           // value must succeed before a signature is requested. Only the
           // simulation result reaches the wallet writer.
@@ -317,14 +344,23 @@ export function useSafeTx(chainId: number) {
             ])
             return {
               ...simulated,
-              gas: isSafeConnection(wagmiConfig) ? 0n : gasWithHeadroom(estimate),
+              gas: viaSafe ? 0n : gasWithHeadroom(estimate),
             }
           },
-          write: simulated => writeContractAsync(simulated),
+          write: async simulated => {
+            // A WalletConnect peer read can land mid-flow and change the answer.
+            if (isSafeConnection(wagmiConfig) !== viaSafe) {
+              // Nothing reaches the wallet, so a marker written for this write is withdrawn.
+              if (options?.beforeWrite) await options.onBeforeWriteAborted?.()
+              throw new Error('Wallet connection changed. Review the transaction again.')
+            }
+            return writeContractAsync(simulated)
+          },
           onPhase: setPhase,
         })
         setHash(txHash)
-        if (isSafeConnection(wagmiConfig)) setSafeProposalHash(txHash)
+        if (viaSafe) setSafeProposalHash(txHash)
+        if (viaSafe && address) setSafeExecution({ safe: address, proposalHash: txHash })
         setPhase('pending')
         return txHash
       } catch (e) {
@@ -348,6 +384,7 @@ export function useSafeTx(chainId: number) {
     setHash(null)
     setSafeProposalHash(null)
     setSafeConfirmationUncertain(false)
+    setSafeExecution(null)
   }, [])
 
   return {

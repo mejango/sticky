@@ -1,41 +1,25 @@
 'use client'
 
+import { useState } from 'react'
+import { zeroAddress, type AbiFunction, type AbiParameter } from 'viem'
 import {
-  useState,
-} from 'react'
-import {
-  decodeAbiParameters,
-  decodeFunctionData,
-  encodeAbiParameters,
-  encodeFunctionData,
-  erc20Abi,
-  formatEther,
-  toFunctionSelector,
-  zeroAddress,
-  type Abi,
-  type AbiFunction,
-  type AbiParameter,
-  type Address,
-  type Hex,
-} from 'viem'
-import { safeSetupAbi, safeToL2SetupAbi } from '@/lib/cross-chain-authority'
-import {
-  jbControllerAbi,
-  jbDirectoryAbi,
-  jbMultiTerminalAbi,
-  jbPermissionsAbi,
-  jbProjectsAbi,
-  jbSplitsAbi,
-  jbTokensAbi,
-  SPLITS_TOTAL_PERCENT,
-} from '@bananapus/nana-sdk-core'
-import { JBPermissionCatalogV6, describeStickySplit } from '@bananapus/nana-sdk-core/v6'
-import {
-  USDC_ADDRESSES,
-  jbContractAddress,
-  type JBChainId,
-} from '@bananapus/nana-sdk-core'
-import { uniswapV4Deployment } from '@bananapus/nana-sdk-core/v6/uniswap-v4-deployments'
+  describeJBHookMetadata,
+  describePermissionsData,
+  describeSafeInitializer,
+  describeSafeInnerCall,
+  describeSplitGroups,
+  describeSuckerClaim,
+  describeUniversalRouterExecute,
+  describeV4UnlockData,
+  functionFromCall,
+  knownAddressName,
+  namedValue,
+  nativeValue,
+  readableValue,
+  reviewDescription,
+  type PrettyStep,
+  type V4PlanStep,
+} from '@bananapus/nana-sdk-core/review/decode'
 import { ChainIcon } from '@/components/ChainIcon'
 import {
   ModalCloseButton,
@@ -47,81 +31,13 @@ import {
   type TransactionReviewCall,
 } from '@/lib/transaction-review'
 import { chainName } from '@/lib/urn'
-import { isStickyHook } from '@/lib/sticky'
-import { stickyContractName } from '@/lib/sticky-addresses'
 
 import { FeeBuybackNotice, useFeeBuybackReview } from './FeeBuybackNotice'
 
 import type { PendingReview, PendingFundingChainSelection, TransactionReviewDialogProps } from './TransactionReviewProvider'
 
-function knownAddressName(chainId: number, value: unknown): string | null {
-  if (typeof value !== 'string' || !/^0x[0-9a-f]{40}$/iu.test(value)) return null
-  const address = value.toLowerCase()
-  const sticky = stickyContractName(chainId, address)
-  if (sticky) return sticky
-  try {
-    const deployment = uniswapV4Deployment(chainId as JBChainId)
-    if (deployment?.permit2?.toLowerCase() === address) return 'Permit2'
-    if (deployment?.universalRouter?.toLowerCase() === address) {
-      return 'Uniswap Universal Router'
-    }
-  } catch {
-    // Unsupported chains can still be reviewed as raw addresses below.
-  }
-  if (USDC_ADDRESSES[chainId as JBChainId]?.toLowerCase() === address) return 'USDC'
-  const contracts = jbContractAddress['6'] as unknown as Record<
-    string,
-    Partial<Record<number, Address>>
-  >
-  return (
-    Object.entries(contracts).find(
-      ([, addresses]) => addresses[chainId]?.toLowerCase() === address,
-    )?.[0] ?? null
-  )
-}
-
 function knownContractName(call: TransactionReviewCall): string | null {
   return call.contractName ?? knownAddressName(call.chainId, call.to)
-}
-
-function stringify(value: unknown): string {
-  try {
-    return (
-      JSON.stringify(
-        value,
-        (_, item) => (typeof item === 'bigint' ? item.toString() : item),
-        2,
-      ) ?? String(value)
-    )
-  } catch {
-    return String(value)
-  }
-}
-
-function readableValue(type: string, value: unknown, chainId: number): string {
-  if (value === null || value === undefined) return '—'
-  if (typeof value === 'bigint') return value.toString()
-  if (typeof value === 'boolean' || typeof value === 'number') return String(value)
-  if (typeof value === 'string') {
-    if (type === 'address') {
-      const name = knownAddressName(chainId, value)
-      return name ? `${name} | ${value}` : value
-    }
-    if (type.startsWith('bytes') && value.length > 50) {
-      return `${value.slice(0, 22)}…${value.slice(-12)}`
-    }
-    return value
-  }
-  return stringify(value)
-}
-
-function namedValue(value: unknown, name: string, index: number): unknown {
-  if (Array.isArray(value)) return value[index]
-  if (value && typeof value === 'object') {
-    const row = value as Record<string, unknown>
-    return row[name] ?? row[index]
-  }
-  return undefined
 }
 
 function hasComponents(
@@ -193,179 +109,6 @@ function ArgumentValue({
   )
 }
 
-export type V4PlanStep =
-  | {
-      action: 'INCREASE_LIQUIDITY'
-      position: string
-      liquidity: bigint
-      maximumIn: { currency0: bigint; currency1: bigint }
-    }
-  | {
-      action: 'DECREASE_LIQUIDITY'
-      position: string
-      liquidity: bigint
-      minimumOut: { currency0: bigint; currency1: bigint }
-    }
-  | {
-      action: 'MINT_POSITION'
-      owner: string
-      pool: { currency0: string; currency1: string; fee: number; tickSpacing: number; hook: string }
-      ticks: { lower: number; upper: number }
-      liquidity: bigint
-      maximumIn: { currency0: bigint; currency1: bigint }
-    }
-  | {
-      action: 'BURN_POSITION'
-      position: string
-      minimumOut: { currency0: bigint; currency1: bigint }
-    }
-  | { action: 'TAKE_PAIR'; currency0: string; currency1: string; recipient: string }
-  | { action: 'CLOSE_CURRENCY'; currency: string }
-  | { action: 'SWEEP'; currency: string; recipient: string }
-
-/**
- * Decode a Uniswap V4 PositionManager `unlockData` plan into typed steps.
- * Covers only the actions this app builds (increase/decrease/mint/burn/take/
- * close/sweep); anything unrecognized falls back to the raw argument view — a
- * pretty rendering must never paper over bytes it can't fully account for.
- * Amounts stay in raw token units on purpose: this dialog shows the exact
- * payload. Addresses stay raw here; the renderer resolves known names.
- */
-export function describeV4UnlockData(value: unknown): V4PlanStep[] | null {
-  if (typeof value !== 'string' || !value.startsWith('0x')) return null
-  try {
-    const [actions, params] = decodeAbiParameters(
-      [{ type: 'bytes' }, { type: 'bytes[]' }],
-      value as Hex,
-    )
-    const codes = actions.slice(2).match(/.{2}/g) ?? []
-    if (!codes.length || codes.length !== params.length) return null
-    const steps: V4PlanStep[] = []
-    for (const [index, byte] of codes.entries()) {
-      const data = params[index]
-      switch (parseInt(byte, 16)) {
-        case 0x00: {
-          const [tokenId, liquidity, amount0Max, amount1Max] = decodeAbiParameters(
-            [
-              { type: 'uint256' },
-              { type: 'uint256' },
-              { type: 'uint128' },
-              { type: 'uint128' },
-              { type: 'bytes' },
-            ],
-            data,
-          )
-          steps.push({
-            action: 'INCREASE_LIQUIDITY',
-            position: `#${tokenId}`,
-            liquidity,
-            maximumIn: { currency0: amount0Max, currency1: amount1Max },
-          })
-          break
-        }
-        case 0x01: {
-          // The liquidity word is a uint256 in the PositionManager's decoder.
-          const [tokenId, liquidity, amount0Min, amount1Min] = decodeAbiParameters(
-            [
-              { type: 'uint256' },
-              { type: 'uint256' },
-              { type: 'uint128' },
-              { type: 'uint128' },
-              { type: 'bytes' },
-            ],
-            data,
-          )
-          steps.push({
-            action: 'DECREASE_LIQUIDITY',
-            position: `#${tokenId}`,
-            liquidity,
-            minimumOut: { currency0: amount0Min, currency1: amount1Min },
-          })
-          break
-        }
-        case 0x02: {
-          const [key, tickLower, tickUpper, liquidity, amount0Max, amount1Max, owner] =
-            decodeAbiParameters(
-              [
-                {
-                  type: 'tuple',
-                  components: [
-                    { type: 'address' },
-                    { type: 'address' },
-                    { type: 'uint24' },
-                    { type: 'int24' },
-                    { type: 'address' },
-                  ],
-                },
-                { type: 'int24' },
-                { type: 'int24' },
-                { type: 'uint256' },
-                { type: 'uint128' },
-                { type: 'uint128' },
-                { type: 'address' },
-                { type: 'bytes' },
-              ],
-              data,
-            )
-          steps.push({
-            action: 'MINT_POSITION',
-            owner,
-            pool: {
-              currency0: key[0],
-              currency1: key[1],
-              fee: key[2],
-              tickSpacing: key[3],
-              hook: key[4],
-            },
-            ticks: { lower: tickLower, upper: tickUpper },
-            liquidity,
-            maximumIn: { currency0: amount0Max, currency1: amount1Max },
-          })
-          break
-        }
-        case 0x03: {
-          const [tokenId, amount0Min, amount1Min] = decodeAbiParameters(
-            [{ type: 'uint256' }, { type: 'uint128' }, { type: 'uint128' }, { type: 'bytes' }],
-            data,
-          )
-          steps.push({
-            action: 'BURN_POSITION',
-            position: `#${tokenId}`,
-            minimumOut: { currency0: amount0Min, currency1: amount1Min },
-          })
-          break
-        }
-        case 0x11: {
-          const [currency0, currency1, recipient] = decodeAbiParameters(
-            [{ type: 'address' }, { type: 'address' }, { type: 'address' }],
-            data,
-          )
-          steps.push({ action: 'TAKE_PAIR', currency0, currency1, recipient })
-          break
-        }
-        case 0x12: {
-          const [currency] = decodeAbiParameters([{ type: 'address' }], data)
-          steps.push({ action: 'CLOSE_CURRENCY', currency })
-          break
-        }
-        case 0x14: {
-          const [currency, recipient] = decodeAbiParameters(
-            [{ type: 'address' }, { type: 'address' }],
-            data,
-          )
-          steps.push({ action: 'SWEEP', currency, recipient })
-          break
-        }
-        default:
-          return null
-      }
-    }
-    return steps
-  } catch {
-    return null
-  }
-}
-
 /** The pay-confirm row grammar: `Label: value`, addresses resolved to known names. */
 function V4PlanRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -376,10 +119,24 @@ function V4PlanRow({ label, children }: { label: string; children: React.ReactNo
   )
 }
 
-function v4AddressLabel(chainId: number, address: string): string {
-  if (address.toLowerCase() === zeroAddress) return `native ETH | ${address}`
+/** "Name | 0x…" for a known address, otherwise the address. */
+function addressLabel(chainId: number, address: string): string {
   const label = knownAddressName(chainId, address)
   return label ? `${label} | ${address}` : address
+}
+
+/** A Uniswap currency, where address zero is native ETH. An owner, hook or recipient never is. */
+function currencyLabel(chainId: number, currency: string): string {
+  return currency.toLowerCase() === zeroAddress
+    ? `native ETH | ${currency}`
+    : addressLabel(chainId, currency)
+}
+
+/** Unix seconds as UTC plus the raw value, the way the decoded rows show every time. */
+function utcTime(seconds: bigint): string {
+  if (seconds > 8_640_000_000_000n) return `${seconds} (after year 275760)`
+  const time = new Date(Number(seconds) * 1000).toISOString()
+  return `${time.replace('.000Z', ' UTC').replace('T', ' ')} (${seconds})`
 }
 
 function v4Amounts(pair: { currency0: bigint; currency1: bigint }): string {
@@ -438,17 +195,17 @@ function V4PlanView({ steps, chainId }: { steps: V4PlanStep[]; chainId: number }
             return (
               <dl key={index} className="space-y-0.5">
                 {title('Mint a new position')}
-                <V4PlanRow label="Owner">{v4AddressLabel(chainId, step.owner)}</V4PlanRow>
+                <V4PlanRow label="Owner">{addressLabel(chainId, step.owner)}</V4PlanRow>
                 <V4PlanRow label="Currency0">
-                  {v4AddressLabel(chainId, step.pool.currency0)}
+                  {currencyLabel(chainId, step.pool.currency0)}
                 </V4PlanRow>
                 <V4PlanRow label="Currency1">
-                  {v4AddressLabel(chainId, step.pool.currency1)}
+                  {currencyLabel(chainId, step.pool.currency1)}
                 </V4PlanRow>
                 <V4PlanRow label="Fee">
                   {step.pool.fee} ({step.pool.fee / 10_000}%) | tick spacing {step.pool.tickSpacing}
                 </V4PlanRow>
-                <V4PlanRow label="Hook">{v4AddressLabel(chainId, step.pool.hook)}</V4PlanRow>
+                <V4PlanRow label="Hook">{addressLabel(chainId, step.pool.hook)}</V4PlanRow>
                 <V4PlanRow label="Ticks">
                   {step.ticks.lower} → {step.ticks.upper}
                 </V4PlanRow>
@@ -461,27 +218,27 @@ function V4PlanView({ steps, chainId }: { steps: V4PlanStep[]; chainId: number }
               <dl key={index} className="space-y-0.5">
                 {title('Take both currencies')}
                 <V4PlanRow label="Currency0">
-                  {v4AddressLabel(chainId, step.currency0)}
+                  {currencyLabel(chainId, step.currency0)}
                 </V4PlanRow>
                 <V4PlanRow label="Currency1">
-                  {v4AddressLabel(chainId, step.currency1)}
+                  {currencyLabel(chainId, step.currency1)}
                 </V4PlanRow>
-                <V4PlanRow label="Recipient">{v4AddressLabel(chainId, step.recipient)}</V4PlanRow>
+                <V4PlanRow label="Recipient">{addressLabel(chainId, step.recipient)}</V4PlanRow>
               </dl>
             )
           case 'CLOSE_CURRENCY':
             return (
               <dl key={index} className="space-y-0.5">
                 {title('Close currency — settle the net; leftovers return to the caller')}
-                <V4PlanRow label="Currency">{v4AddressLabel(chainId, step.currency)}</V4PlanRow>
+                <V4PlanRow label="Currency">{currencyLabel(chainId, step.currency)}</V4PlanRow>
               </dl>
             )
           case 'SWEEP':
             return (
               <dl key={index} className="space-y-0.5">
                 {title('Sweep — refund unused balance')}
-                <V4PlanRow label="Currency">{v4AddressLabel(chainId, step.currency)}</V4PlanRow>
-                <V4PlanRow label="Recipient">{v4AddressLabel(chainId, step.recipient)}</V4PlanRow>
+                <V4PlanRow label="Currency">{currencyLabel(chainId, step.currency)}</V4PlanRow>
+                <V4PlanRow label="Recipient">{addressLabel(chainId, step.recipient)}</V4PlanRow>
               </dl>
             )
         }
@@ -515,270 +272,8 @@ function ArgumentRow({
   )
 }
 
-/** Universal Router sentinels the direct-pay swap builders use. */
-const UR_MSG_SENDER = "0x0000000000000000000000000000000000000001";
-const UR_ADDRESS_THIS = "0x0000000000000000000000000000000000000002";
-const UR_CONTRACT_BALANCE = 1n << 255n;
-
-export type UrStep = { title: string; rows: [string, string][] };
-
-function urRecipient(chainId: number, address: string): string {
-  if (address.toLowerCase() === UR_MSG_SENDER) return "you (msg.sender)";
-  if (address.toLowerCase() === UR_ADDRESS_THIS) return "the router (kept for the next step)";
-  return v4AddressLabel(chainId, address);
-}
-
-function urAmount(value: bigint): string {
-  if (value === UR_CONTRACT_BALANCE) return "the router's entire balance from the previous step";
-  if (value === 0n) return "0 (the open amount from the previous step)";
-  return value.toString();
-}
-
-/** A packed V3 path: 20-byte token, 3-byte fee, 20-byte token, … */
-function urV3Path(chainId: number, path: string): string | null {
-  const raw = path.slice(2);
-  if (raw.length < 86 || (raw.length - 40) % 46 !== 0) return null;
-  const parts: string[] = [v4AddressLabel(chainId, `0x${raw.slice(0, 40)}`)];
-  for (let offset = 40; offset < raw.length; offset += 46) {
-    const fee = parseInt(raw.slice(offset, offset + 6), 16);
-    parts.push(`-${fee / 10_000}%→`, v4AddressLabel(chainId, `0x${raw.slice(offset + 6, offset + 46)}`));
-  }
-  return parts.join(" ");
-}
-
-/** The V4_SWAP command's inner action plan (the shapes the pay builders emit). */
-function urV4SwapSteps(chainId: number, input: Hex): UrStep[] | null {
-  const [actions, params] = decodeAbiParameters(
-    [{ type: "bytes" }, { type: "bytes[]" }],
-    input,
-  );
-  const codes = actions.slice(2).match(/.{2}/g) ?? [];
-  if (!codes.length || codes.length !== params.length) return null;
-  const steps: UrStep[] = [];
-  for (const [index, byte] of codes.entries()) {
-    const data = params[index];
-    switch (parseInt(byte, 16)) {
-      case 0x06: {
-        const [swap] = decodeAbiParameters(
-          [
-            {
-              type: "tuple",
-              components: [
-                {
-                  type: "tuple",
-                  components: [
-                    { type: "address" },
-                    { type: "address" },
-                    { type: "uint24" },
-                    { type: "int24" },
-                    { type: "address" },
-                  ],
-                },
-                { type: "bool" },
-                { type: "uint128" },
-                { type: "uint128" },
-                { type: "bytes" },
-              ],
-            },
-          ],
-          data,
-        );
-        const [key, zeroForOne, amountIn, minimumOut] = swap;
-        const currencyIn = zeroForOne ? key[0] : key[1];
-        const currencyOut = zeroForOne ? key[1] : key[0];
-        steps.push({
-          title: "Swap in the project's V4 pool (exact input)",
-          rows: [
-            ["Sell", v4AddressLabel(chainId, currencyIn)],
-            ["Buy", v4AddressLabel(chainId, currencyOut)],
-            ["Amount in", urAmount(amountIn)],
-            ["Minimum out", `${minimumOut} — reverts below this`],
-            ["Fee", `${key[2]} (${key[2] / 10_000}%) | tick spacing ${key[3]}`],
-            ["Hook", v4AddressLabel(chainId, key[4])],
-          ],
-        });
-        break;
-      }
-      case 0x0b: {
-        const [currency, amount] = decodeAbiParameters(
-          [{ type: "address" }, { type: "uint256" }, { type: "bool" }],
-          data,
-        );
-        steps.push({
-          title: "Pay the pool",
-          rows: [
-            ["Currency", v4AddressLabel(chainId, currency)],
-            ["Amount", urAmount(amount)],
-          ],
-        });
-        break;
-      }
-      case 0x0c: {
-        const [currency, maximum] = decodeAbiParameters(
-          [{ type: "address" }, { type: "uint256" }],
-          data,
-        );
-        steps.push({
-          title: "Pay the pool everything owed",
-          rows: [
-            ["Currency", v4AddressLabel(chainId, currency)],
-            ["At most", maximum.toString()],
-          ],
-        });
-        break;
-      }
-      case 0x0e: {
-        const [currency, recipient, amount] = decodeAbiParameters(
-          [{ type: "address" }, { type: "address" }, { type: "uint256" }],
-          data,
-        );
-        steps.push({
-          title: "Take the swap output",
-          rows: [
-            ["Currency", v4AddressLabel(chainId, currency)],
-            ["Recipient", urRecipient(chainId, recipient)],
-            ["Amount", urAmount(amount)],
-          ],
-        });
-        break;
-      }
-      default:
-        return null;
-    }
-  }
-  return steps;
-}
-
-/**
- * Decode a Uniswap Universal Router `execute(commands, inputs, deadline)` into
- * readable steps. Covers only the command shapes the pay flow builds (Permit2
- * permit, wrap, V3 hop, unwrap, V4 swap); anything unrecognized falls back to
- * the raw argument view — a pretty rendering must never paper over bytes it
- * can't fully account for.
- */
-export function describeUniversalRouterExecute(
-  chainId: number,
-  args: readonly unknown[] | undefined,
-): UrStep[] | null {
-  if (!args || args.length < 2) return null;
-  const [commands, inputs] = args as [unknown, unknown];
-  if (typeof commands !== "string" || !commands.startsWith("0x") || !Array.isArray(inputs)) {
-    return null;
-  }
-  try {
-    const codes = commands.slice(2).match(/.{2}/g) ?? [];
-    if (!codes.length || codes.length !== inputs.length) return null;
-    const steps: UrStep[] = [];
-    for (const [index, byte] of codes.entries()) {
-      const data = inputs[index] as Hex;
-      switch (parseInt(byte, 16)) {
-        case 0x00: {
-          const [recipient, amountIn, minimumOut, path, payerIsUser] = decodeAbiParameters(
-            [
-              { type: "address" },
-              { type: "uint256" },
-              { type: "uint256" },
-              { type: "bytes" },
-              { type: "bool" },
-            ],
-            data,
-          );
-          const route = urV3Path(chainId, path);
-          if (!route) return null;
-          steps.push({
-            title: "Swap through a V3 pool (exact input)",
-            rows: [
-              ["Route", route],
-              ["Amount in", urAmount(amountIn)],
-              ["Minimum out", minimumOut === 0n ? "0 — the final V4 minimum below is the real floor" : minimumOut.toString()],
-              ["Paid by", payerIsUser ? "you (via Permit2)" : "the router's balance"],
-              ["Recipient", urRecipient(chainId, recipient)],
-            ],
-          });
-          break;
-        }
-        case 0x0a: {
-          const [permit] = decodeAbiParameters(
-            [
-              {
-                type: "tuple",
-                components: [
-                  {
-                    type: "tuple",
-                    components: [
-                      { type: "address" },
-                      { type: "uint160" },
-                      { type: "uint48" },
-                      { type: "uint48" },
-                    ],
-                  },
-                  { type: "address" },
-                  { type: "uint256" },
-                ],
-              },
-              { type: "bytes" },
-            ],
-            data,
-          );
-          const [details, spender, sigDeadline] = permit;
-          steps.push({
-            title: "Apply your signed Permit2 authorization",
-            rows: [
-              ["Token", v4AddressLabel(chainId, details[0])],
-              ["Amount", details[1].toString()],
-              ["Spender", v4AddressLabel(chainId, spender)],
-              ["Expires", new Date(Number(details[2]) * 1000).toLocaleString()],
-              ["Signature deadline", new Date(Number(sigDeadline) * 1000).toLocaleString()],
-            ],
-          });
-          break;
-        }
-        case 0x0b: {
-          const [recipient, amount] = decodeAbiParameters(
-            [{ type: "address" }, { type: "uint256" }],
-            data,
-          );
-          steps.push({
-            title: "Wrap ETH into WETH",
-            rows: [
-              ["Amount", urAmount(amount)],
-              ["Recipient", urRecipient(chainId, recipient)],
-            ],
-          });
-          break;
-        }
-        case 0x0c: {
-          const [recipient, minimum] = decodeAbiParameters(
-            [{ type: "address" }, { type: "uint256" }],
-            data,
-          );
-          steps.push({
-            title: "Unwrap WETH back to ETH",
-            rows: [
-              ["Minimum", urAmount(minimum)],
-              ["Recipient", urRecipient(chainId, recipient)],
-            ],
-          });
-          break;
-        }
-        case 0x10: {
-          const inner = urV4SwapSteps(chainId, data);
-          if (!inner) return null;
-          steps.push(...inner);
-          break;
-        }
-        default:
-          return null;
-      }
-    }
-    return steps;
-  } catch {
-    return null;
-  }
-}
-
 /** A decoded Universal Router plan in the same row grammar as everything else. */
-function UrPlanView({ steps, deadline }: { steps: UrStep[]; deadline?: unknown }) {
+function UrPlanView({ steps, deadline }: { steps: PrettyStep[]; deadline?: unknown }) {
   return (
     <div className="mt-3 space-y-3 text-xs">
       {steps.map((step, index) => (
@@ -793,503 +288,14 @@ function UrPlanView({ steps, deadline }: { steps: UrStep[]; deadline?: unknown }
           ))}
         </dl>
       ))}
-      {deadline != null ? (
+      {typeof deadline === 'bigint' || typeof deadline === 'number' ? (
         <dl className="space-y-0.5">
-          <V4PlanRow label="Deadline">
-            {new Date(Number(deadline) * 1000).toLocaleString()}
-          </V4PlanRow>
+          <V4PlanRow label="Deadline">{utcTime(BigInt(deadline))}</V4PlanRow>
         </dl>
       ) : null}
       <p className="text-smoke-500">The exact bytes are in the raw payload below.</p>
     </div>
   )
-}
-
-// ── Precise decoders for the remaining opaque arguments ──────────────────────
-// Every decoder is strict: it re-encodes what it decoded and compares bytes
-// (or validates the full structure) before claiming an interpretation, and
-// returns null on ANY mismatch so the raw argument view shows instead — a
-// pretty rendering must never paper over bytes it can't fully account for.
-
-export type PrettyStep = { title: string; rows: [string, string][] };
-
-const bigintJson = (value: unknown) =>
-  JSON.stringify(value, (_, item) => (typeof item === "bigint" ? item.toString() : item));
-
-/** Strict decode + byte-exact re-encode round trip, else null. */
-function roundTripDecode<T extends readonly unknown[]>(
-  types: Parameters<typeof decodeAbiParameters>[0],
-  payload: Hex,
-): T | null {
-  try {
-    const decoded = decodeAbiParameters(types, payload);
-    const reencoded = encodeAbiParameters(types, decoded);
-    if (reencoded.toLowerCase() !== payload.toLowerCase()) return null;
-    return decoded as unknown as T;
-  } catch {
-    return null;
-  }
-}
-
-// ── 1. JB hook metadata (JBMetadataResolver envelope) ────────────────────────
-
-/**
- * Parse the JBMetadataResolver layout exactly as `getDataFor` reads it: a
- * 32-byte reserved word, a word-padded table of `(bytes4 id, uint8 wordOffset)`
- * entries, then word-aligned payload segments. Offsets must be strictly
- * increasing and the segments must tile the remainder of the bytes.
- */
-function parseHookMetadataEnvelope(
-  value: unknown,
-): { reserved: Hex; entries: { id: Hex; payload: Hex }[] } | null {
-  if (typeof value !== "string" || !/^0x([0-9a-fA-F]{2})+$/.test(value)) return null;
-  const body = value.slice(2).toLowerCase();
-  if (body.length % 64 !== 0) return null;
-  const totalWords = body.length / 64;
-  if (totalWords < 3) return null; // reserved word + table word + ≥1 payload word
-  const firstOffset = parseInt(body.slice(64 + 8, 64 + 10), 16);
-  const tableWords = firstOffset - 1;
-  if (tableWords < 1 || firstOffset >= totalWords) return null;
-  const tableArea = body.slice(64, 64 + tableWords * 64);
-  const entries: { id: Hex; offset: number }[] = [];
-  let cursor = 0;
-  while (cursor + 10 <= tableArea.length) {
-    const chunk = tableArea.slice(cursor, cursor + 10);
-    if (/^0+$/.test(chunk)) break;
-    const id = chunk.slice(0, 8);
-    const offset = parseInt(chunk.slice(8, 10), 16);
-    if (/^0+$/.test(id)) return null; // a zero id with a nonzero offset is malformed
-    entries.push({ id: `0x${id}`, offset });
-    cursor += 10;
-  }
-  if (!entries.length) return null;
-  // The rest of the table must be pure zero padding.
-  if (!/^0*$/.test(tableArea.slice(cursor))) return null;
-  // The declared entry count must be what sized the table.
-  if (Math.ceil((entries.length * 5) / 32) !== tableWords) return null;
-  // Offsets must ascend and the payloads must tile the remaining bytes exactly.
-  for (let i = 0; i < entries.length; i++) {
-    if (entries[i].offset >= totalWords) return null;
-    if (i > 0 && entries[i].offset <= entries[i - 1].offset) return null;
-  }
-  if (entries[0].offset !== firstOffset) return null;
-  const segments = entries.map((entry, i) => {
-    const start = entry.offset * 64;
-    const end = i + 1 < entries.length ? entries[i + 1].offset * 64 : body.length;
-    return { id: entry.id, payload: `0x${body.slice(start, end)}` as Hex };
-  });
-  return { reserved: `0x${body.slice(0, 64)}`, entries: segments };
-}
-
-/** Aggregate repeated tier ids into "2× #4" form, preserving first-seen order. */
-function tierIdCounts(tierIds: readonly number[]): string {
-  const counts = new Map<number, number>();
-  for (const id of tierIds) counts.set(id, (counts.get(id) ?? 0) + 1);
-  return [...counts.entries()]
-    .map(([id, count]) => (count > 1 ? `${count}× #${id}` : `#${id}`))
-    .join(", ");
-}
-
-/**
- * Decode a `pay`/`addToBalanceOf`/`cashOutTokensOf` `metadata` argument into
- * its hook entries, with typed interpretations for the payload shapes this
- * ecosystem's builders produce (721 mints/redeems, buyback routing).
- */
-export function describeJBHookMetadata(
-  context: "pay" | "cashOut",
-  value: unknown,
-): PrettyStep[] | null {
-  const envelope = parseHookMetadataEnvelope(value);
-  if (!envelope) return null;
-  const steps: PrettyStep[] = [];
-  if (!/^0x0+$/.test(envelope.reserved)) {
-    steps.push({
-      title: "Protocol-reserved word (nonzero)",
-      rows: [["Value", envelope.reserved]],
-    });
-  }
-  for (const entry of envelope.entries) {
-    const payloadWords = (entry.payload.length - 2) / 64;
-    const base: [string, string][] = [["Hook lookup id", entry.id]];
-    // Collect EVERY known shape that byte-exactly round-trips. Exactly one
-    // match is an interpretation; several (degenerate payloads like empty
-    // arrays) are reported as ambiguous rather than picking one.
-    const readings: PrettyStep[] = [];
-    if (context === "pay") {
-      const mint = roundTripDecode<readonly [boolean, readonly number[]]>(
-        [{ type: "bool" }, { type: "uint16[]" }],
-        entry.payload,
-      );
-      if (mint) {
-        readings.push({
-          title: "721 shop mint instructions",
-          rows: [
-            ...base,
-            ["Tier IDs to mint", mint[1].length ? tierIdCounts(mint[1]) : "none (credits only)"],
-            [
-              "Allow overspending",
-              mint[0] ? "yes — excess becomes pay credits" : "no — any excess reverts",
-            ],
-          ],
-        });
-      }
-      if (payloadWords === 3) {
-        const buyback = roundTripDecode<readonly [bigint, bigint, boolean]>(
-          [{ type: "uint256" }, { type: "uint256" }, { type: "bool" }],
-          entry.payload,
-        );
-        if (buyback) {
-          readings.push({
-            title: "Buyback hook swap instructions",
-            rows: [
-              ...base,
-              ["Amount to swap", buyback[0].toString()],
-              ["Minimum swap output", `${buyback[1]} — reverts below this`],
-              ["Skip splits on swapped tokens", buyback[2] ? "yes" : "no"],
-            ],
-          });
-        }
-      }
-    } else {
-      if (payloadWords === 2) {
-        const buyback = roundTripDecode<readonly [bigint, boolean]>(
-          [{ type: "uint256" }, { type: "bool" }],
-          entry.payload,
-        );
-        if (buyback) {
-          readings.push({
-            title: "Buyback hook cash-out routing",
-            rows: [
-              ...base,
-              ["Minimum swap output", buyback[0].toString()],
-              [
-                "Force the direct terminal path",
-                buyback[1] ? "yes — never route through the pool" : "no",
-              ],
-            ],
-          });
-        }
-      }
-      const redeem = roundTripDecode<readonly [readonly bigint[]]>(
-        [{ type: "uint256[]" }],
-        entry.payload,
-      );
-      if (redeem) {
-        readings.push({
-          title: "721 shop items to redeem",
-          rows: [
-            ...base,
-            ["Token IDs", redeem[0].length ? redeem[0].map((id) => `#${id}`).join(", ") : "none"],
-          ],
-        });
-      }
-    }
-    if (readings.length === 1) {
-      steps.push(readings[0]);
-    } else if (readings.length > 1) {
-      steps.push({
-        title: "Payload matches multiple known shapes — verify against the raw bytes",
-        rows: [
-          ...base,
-          ...readings.map(
-            (reading, i) =>
-              [
-                `Reading ${i + 1}`,
-                `${reading.title}: ${reading.rows
-                  .slice(base.length)
-                  .map(([label, val]) => `${label.toLowerCase()}: ${val}`)
-                  .join("; ")}`,
-              ] as [string, string],
-          ),
-        ],
-      });
-    } else {
-      steps.push({
-        title: `Unrecognized hook payload (${payloadWords} word${payloadWords === 1 ? "" : "s"})`,
-        rows: [...base, ["Payload", entry.payload]],
-      });
-    }
-  }
-  return steps;
-}
-
-// ── 2. Sucker bridge claim ───────────────────────────────────────────────────
-
-/** A bytes32 that is a left-padded address renders as the address. */
-function paddedAddress(value: string): string {
-  if (/^0x000000000000000000000000[0-9a-fA-F]{40}$/.test(value)) {
-    return `0x${value.slice(26)}`;
-  }
-  return value;
-}
-
-export function describeSuckerClaim(chainId: number, value: unknown): PrettyStep[] | null {
-  const claim = value as {
-    token?: unknown;
-    leaf?: {
-      index?: unknown;
-      beneficiary?: unknown;
-      projectTokenCount?: unknown;
-      terminalTokenAmount?: unknown;
-      metadata?: unknown;
-    };
-    proof?: unknown;
-  } | null;
-  if (
-    !claim ||
-    typeof claim.token !== "string" ||
-    !claim.leaf ||
-    typeof claim.leaf.beneficiary !== "string" ||
-    typeof claim.leaf.index !== "bigint" ||
-    typeof claim.leaf.projectTokenCount !== "bigint" ||
-    typeof claim.leaf.terminalTokenAmount !== "bigint" ||
-    !Array.isArray(claim.proof) ||
-    claim.proof.length !== 32 ||
-    !claim.proof.every((hash) => typeof hash === "string" && /^0x[0-9a-fA-F]{64}$/.test(hash))
-  ) {
-    return null;
-  }
-  const rows: [string, string][] = [
-    ["Terminal token", v4AddressLabel(chainId, claim.token)],
-    ["Leaf index", claim.leaf.index.toString()],
-    ["Beneficiary", paddedAddress(claim.leaf.beneficiary)],
-    ["Project tokens", claim.leaf.projectTokenCount.toString()],
-    ["Terminal token amount", claim.leaf.terminalTokenAmount.toString()],
-  ];
-  if (typeof claim.leaf.metadata === "string" && !/^0x0+$/.test(claim.leaf.metadata)) {
-    rows.push(["Leaf metadata", claim.leaf.metadata]);
-  }
-  rows.push(["Merkle proof", "32 hashes — exact bytes in the raw payload below"]);
-  return [{ title: "Claim a bridged balance from the sucker's inbox tree", rows }];
-}
-
-// ── 3. Safe execTransaction inner call ───────────────────────────────────────
-
-const SAFE_INNER_ABIS: { name: string; abi: Abi }[] = [
-  { name: "JBController", abi: jbControllerAbi as Abi },
-  { name: "JBMultiTerminal", abi: jbMultiTerminalAbi as Abi },
-  { name: "JBDirectory", abi: jbDirectoryAbi as Abi },
-  { name: "JBTokens", abi: jbTokensAbi as Abi },
-  { name: "JBPermissions", abi: jbPermissionsAbi as Abi },
-  { name: "JBSplits", abi: jbSplitsAbi as Abi },
-  { name: "JBProjects", abi: jbProjectsAbi as Abi },
-  { name: "ERC-20", abi: erc20Abi as Abi },
-];
-
-export function describeSafeInnerCall(value: unknown): PrettyStep[] | null {
-  if (typeof value !== "string" || !value.startsWith("0x") || value.length < 10) return null;
-  for (const candidate of SAFE_INNER_ABIS) {
-    try {
-      const decoded = decodeFunctionData({ abi: candidate.abi, data: value as Hex });
-      const item = candidate.abi.find(
-        (entry) => entry.type === "function" && entry.name === decoded.functionName,
-      ) as AbiFunction | undefined;
-      const rows: [string, string][] = (decoded.args ?? []).map((argument, index) => [
-        item?.inputs[index]?.name || `argument ${index + 1}`,
-        bigintJson(argument),
-      ]);
-      return [
-        {
-          title: `Queued call — ${candidate.name}.${decoded.functionName}(…)`,
-          rows: rows.length ? rows : [["Arguments", "none"]],
-        },
-      ];
-    } catch {
-      // try the next candidate ABI
-    }
-  }
-  return null;
-}
-
-// ── 4. Safe proxy initializer ────────────────────────────────────────────────
-
-export function describeSafeInitializer(chainId: number, value: unknown): PrettyStep[] | null {
-  if (typeof value !== "string" || !value.startsWith("0x")) return null;
-  let decoded: { functionName: string; args: readonly unknown[] };
-  try {
-    decoded = decodeFunctionData({ abi: safeSetupAbi, data: value as Hex }) as typeof decoded;
-  } catch {
-    return null;
-  }
-  if (decoded.functionName !== "setup" || !decoded.args) return null;
-  // Reject noncanonical encodings so the summary can never disagree with the bytes.
-  const canonical = encodeFunctionData({
-    abi: safeSetupAbi,
-    functionName: "setup",
-    args: decoded.args as never,
-  });
-  if (canonical.toLowerCase() !== value.toLowerCase()) return null;
-  const [owners, threshold, to, data, fallbackHandler, paymentToken, payment, paymentReceiver] =
-    decoded.args as [
-      readonly string[],
-      bigint,
-      string,
-      string,
-      string,
-      string,
-      bigint,
-      string,
-    ];
-  const rows: [string, string][] = [
-    ["Owners", owners.join(", ") || "none"],
-    ["Threshold", `${threshold} of ${owners.length}`],
-    ["Fallback handler", v4AddressLabel(chainId, fallbackHandler)],
-  ];
-  if (to.toLowerCase() === zeroAddress && data === "0x") {
-    rows.push(["Setup hook", "none"]);
-  } else {
-    let hook = `DELEGATECALL to ${to} — data in the raw payload below`;
-    try {
-      const inner = decodeFunctionData({ abi: safeToL2SetupAbi, data: data as Hex });
-      if (inner.functionName === "setupToL2" && inner.args) {
-        const canonicalInner = encodeFunctionData({
-          abi: safeToL2SetupAbi,
-          functionName: "setupToL2",
-          args: inner.args as never,
-        });
-        if (canonicalInner.toLowerCase() === data.toLowerCase()) {
-          hook = `SafeToL2Setup.setupToL2(${String(inner.args[0])}) via ${to}`;
-        }
-      }
-    } catch {
-      // keep the generic delegatecall warning
-    }
-    rows.push(["Setup hook", hook]);
-  }
-  if (payment !== 0n || paymentToken.toLowerCase() !== zeroAddress) {
-    rows.push([
-      "Deployment payment",
-      `${payment} of ${v4AddressLabel(chainId, paymentToken)} to ${paymentReceiver} — unusual, verify`,
-    ]);
-  }
-  return [{ title: "Safe setup", rows }];
-}
-
-// ── 5. Permission grants ─────────────────────────────────────────────────────
-
-const PERMISSION_NAME_BY_ID = new Map<number, string>(
-  JBPermissionCatalogV6.map(({ key, id }) => [id, key]),
-);
-
-export function describePermissionsData(chainId: number, value: unknown): PrettyStep[] | null {
-  const data = value as { operator?: unknown; projectId?: unknown; permissionIds?: unknown } | null;
-  if (
-    !data ||
-    typeof data.operator !== "string" ||
-    (typeof data.projectId !== "bigint" && typeof data.projectId !== "number") ||
-    !Array.isArray(data.permissionIds) ||
-    !data.permissionIds.every((id) => typeof id === "number" && Number.isInteger(id))
-  ) {
-    return null;
-  }
-  const projectId = BigInt(data.projectId);
-  const names = (data.permissionIds as number[]).map((id) => {
-    const name = PERMISSION_NAME_BY_ID.get(id);
-    return name ? `${name} (${id})` : `UNKNOWN PERMISSION (${id})`;
-  });
-  const rows: [string, string][] = [
-    ["Operator", v4AddressLabel(chainId, data.operator)],
-    [
-      "Scope",
-      projectId === 0n
-        ? "project 0 — EVERY project this account ever owns"
-        : `project #${projectId}`,
-    ],
-    [
-      "Permissions",
-      names.length ? names.join(", ") : "none — revokes everything previously granted",
-    ],
-  ];
-  if ((data.permissionIds as number[]).includes(1)) {
-    rows.push(["Warning", "ROOT grants every permission across all Juicebox contracts"]);
-  }
-  return [{ title: "Set operator permissions", rows }];
-}
-
-// ── 6. Split groups ──────────────────────────────────────────────────────────
-
-function splitPercent(percent: number): string {
-  const share = (percent * 100) / Number(SPLITS_TOTAL_PERCENT);
-  return `${Number(share.toFixed(4))}%`;
-}
-
-export function describeSplitGroups(chainId: number, value: unknown): PrettyStep[] | null {
-  if (!Array.isArray(value)) return null;
-  const steps: PrettyStep[] = [];
-  for (const group of value as {
-    groupId?: unknown;
-    splits?: {
-      percent?: unknown;
-      projectId?: unknown;
-      beneficiary?: unknown;
-      preferAddToBalance?: unknown;
-      lockedUntil?: unknown;
-      hook?: unknown;
-    }[];
-  }[]) {
-    if (typeof group?.groupId !== "bigint" || !Array.isArray(group.splits)) return null;
-    const groupLabel =
-      group.groupId === 1n
-        ? "Reserved tokens"
-        : group.groupId < 1n << 160n
-          ? `Payouts of ${v4AddressLabel(chainId, `0x${group.groupId.toString(16).padStart(40, "0")}`)}`
-          : `Group ${group.groupId}`;
-    const rows: [string, string][] = [];
-    let total = 0;
-    for (const [index, split] of group.splits.entries()) {
-      if (
-        typeof split?.percent !== "number" ||
-        typeof split.beneficiary !== "string" ||
-        typeof split.projectId !== "bigint"
-      ) {
-        return null;
-      }
-      total += split.percent;
-      // A Sticky split's projectId is its holder group and its beneficiary is the Sticky token.
-      const sticky = typeof split.hook === "string" && isStickyHook(split.hook, chainId);
-      const parts = [
-        sticky
-          ? `${describeStickySplit({ projectId: split.projectId })} → Sticky token ${v4AddressLabel(chainId, split.beneficiary)}`
-          : split.projectId !== 0n
-            ? `project #${split.projectId} (beneficiary ${split.beneficiary})`
-            : v4AddressLabel(chainId, split.beneficiary),
-      ];
-      if (sticky) {
-        parts.push(`via StickyDistributor ${split.hook}`);
-      } else if (typeof split.hook === "string" && split.hook.toLowerCase() !== zeroAddress) {
-        parts.push(`via hook ${split.hook}`);
-      }
-      if (split.preferAddToBalance === true) parts.push("prefers add-to-balance");
-      if (typeof split.lockedUntil === "number" && split.lockedUntil > 0) {
-        parts.push(`locked until ${new Date(split.lockedUntil * 1000).toLocaleString()}`);
-      }
-      rows.push([`Split ${index + 1} — ${splitPercent(split.percent)}`, parts.join(" | ")]);
-    }
-    rows.push([
-      "Total",
-      `${splitPercent(total)}${total === Number(SPLITS_TOTAL_PERCENT) ? "" : " — the remainder follows the ruleset's default"}`,
-    ]);
-    steps.push({ title: groupLabel, rows: rows.length > 1 ? rows : [["Splits", "none"]] });
-  }
-  return steps.length ? steps : null;
-}
-
-// ── 7. Sticky reward groups ──────────────────────────────────────────────────
-
-/** The Sticky contracts that take a reward group as `groupId` or `groupIds`. */
-const STICKY_GROUP_TAKERS = new Set(["StickyDistributor", "StickyAutoStick", "StickyRewardReceiverFactory"]);
-
-/**
- * A Sticky contract's reward group arguments, each as its number and the holders it rewards in the SDK's words
- * (`describeStickySplit` reads a group as the distributor does). Null for any other argument or contract.
- */
-function describeStickyGroups(call: TransactionReviewCall, inputName: string, value: unknown): string[] | null {
-  if (inputName !== "groupId" && inputName !== "groupIds") return null;
-  const contract = stickyContractName(call.chainId, call.to);
-  if (!contract || !STICKY_GROUP_TAKERS.has(contract)) return null;
-  const groups = Array.isArray(value) ? value : [value];
-  if (!groups.length || !groups.every((group) => typeof group === "bigint")) return null;
-  return groups.map((group) => `${group} | ${describeStickySplit({ projectId: group })}`);
 }
 
 /** Route an argument to its precise decoded view, or null for the raw default. */
@@ -1317,7 +323,7 @@ function specialArgumentView(
     if (steps) return <UrPlanView steps={steps} />
   }
   if (fn.name === 'execTransaction' && inputName === 'data') {
-    const steps = describeSafeInnerCall(value)
+    const steps = describeSafeInnerCall(call.chainId, call.args?.[0], value)
     if (steps) return <UrPlanView steps={steps} />
   }
   if (fn.name === 'execTransaction' && inputName === 'operation') {
@@ -1343,25 +349,15 @@ function specialArgumentView(
     const steps = describeSplitGroups(call.chainId, value)
     if (steps) return <UrPlanView steps={steps} />
   }
-  const groups = describeStickyGroups(call, inputName, value)
-  if (groups) {
-    return (
-      <div className="mt-1 space-y-1">
-        {groups.map((group, index) => (
-          <p key={index} className="break-all font-mono text-xs leading-relaxed text-ink">{group}</p>
-        ))}
-      </div>
-    )
-  }
-  if (nestsCallsIn(fn, inputName) && call.calls?.length) {
+  if (inputName === 'transactions' && nestsCallsInArgument(fn) && call.calls?.length) {
     return <NestedCalls calls={call.calls} />
   }
   return null
 }
 
-/** A MultiSend lists its calls under the argument that encodes them. */
-function nestsCallsIn(fn: AbiFunction, inputName: string): boolean {
-  return fn.name === 'multiSend' && inputName === 'transactions'
+/** MultiSend's `transactions` argument is where its decoded calls show. */
+function nestsCallsInArgument(fn: AbiFunction | null): boolean {
+  return fn?.name === 'multiSend' && fn.inputs.some(input => input.name === 'transactions')
 }
 
 function NestedCalls({ calls }: { calls: readonly TransactionReviewCall[] }) {
@@ -1372,23 +368,6 @@ function NestedCalls({ calls }: { calls: readonly TransactionReviewCall[] }) {
       ))}
     </div>
   )
-}
-
-function functionFromCall(call: TransactionReviewCall): AbiFunction | null {
-  if (!call.abi || !call.functionName) return null
-  const selector = call.data.slice(0, 10)
-  return (
-    (call.abi.find(
-      item =>
-        item.type === 'function' &&
-        item.name === call.functionName &&
-        (selector.length !== 10 || toFunctionSelector(item) === selector),
-    ) as AbiFunction | undefined) ?? null
-  )
-}
-
-function nativeValue(value = 0n): string {
-  return `${formatEther(value)} ETH | ${value.toString()} wei`
 }
 
 function PrettyCall({
@@ -1407,7 +386,8 @@ function PrettyCall({
   const args = call.args ?? []
   const byteLength = Math.max(0, (call.data.length - 2) / 2)
   const contractName = knownContractName(call)
-  const callsInArgument = !!fn && fn.inputs.some(input => nestsCallsIn(fn, input.name ?? ''))
+  // Decoded calls show in MultiSend's `transactions` argument, and below any other call.
+  const batched = call.calls?.length && !nestsCallsInArgument(fn) ? call.calls : null
   return (
     <section className="rounded-xl border border-smoke-200 bg-white p-4 sm:p-5">
       {total > 1 ? (
@@ -1460,7 +440,7 @@ function PrettyCall({
             <dd className="mt-1 font-mono text-xs text-ink">
               {call.safeTxGas.toLocaleString('en-US')}
             </dd>
-            {call.safeTxGas ? (
+            {call.safeTxGas !== 0n ? (
               <dd className="mt-1 text-xs text-split-800">
                 If this call fails, the Safe still executes and uses this nonce.
               </dd>
@@ -1539,15 +519,15 @@ function PrettyCall({
         </div>
       )}
 
-      {call.calls?.length && !callsInArgument ? (
+      {batched ? (
         <div className="mt-5 border-t border-smoke-200 pt-4">
           <p className="text-xs font-medium text-smoke-600">Calls it makes, in order</p>
-          <NestedCalls calls={call.calls} />
+          <NestedCalls calls={batched} />
         </div>
       ) : null}
 
       <p className="mt-3 text-[11px] text-smoke-500">
-        Calldata: {byteLength.toLocaleString()} byte{byteLength === 1 ? '' : 's'}
+        Calldata: {byteLength.toLocaleString('en-US')} byte{byteLength === 1 ? '' : 's'}
       </p>
     </section>
   )
@@ -1578,13 +558,9 @@ function ReviewModal({
   const titleId = `transaction-review-title-${pending.id}`
   const descriptionId = `transaction-review-description-${pending.id}`
   const isAuthorization = request.kind === 'authorization'
-  const defaultDescription = isAuthorization
-    ? 'This authorization commits to the exact destination, native value, and calldata below. A Safe or relayer can submit that call onchain after you continue.'
-    : `This is the exact destination, native value, and calldata the app will ask your wallet to send. ${
-        request.calls.every(call => call.gas !== undefined || call.safeTxGas !== undefined)
-          ? 'Your wallet adds the nonce and network fees.'
-          : 'Your wallet shows the gas limit and network fees before you send.'
-      }`
+  /** Some authorizations are signed as a plain message rather than typed data. */
+  const signsMessage =
+    (request.authorization as { kind?: string } | undefined)?.kind === 'message'
 
   return (
     <ModalDialog
@@ -1622,13 +598,14 @@ function ReviewModal({
               id={descriptionId}
               className="whitespace-pre-line text-sm leading-relaxed text-bluebs-800"
             >
-              {request.description ?? defaultDescription}
+              {reviewDescription(request)}
             </p>
           </div>
           {request.authorization ? (
             <div className="mt-3 rounded-xl border border-bluebs-100 bg-bluebs-25 px-4 py-3 text-xs leading-relaxed text-bluebs-700">
-              The Raw view also includes the exact typed-data domain and message
-              your signature commits to.
+              {signsMessage
+                ? 'The Raw view also includes the exact message your signature commits to.'
+                : 'The Raw view also includes the exact typed-data domain and message your signature commits to.'}
             </div>
           ) : null}
 
@@ -1664,7 +641,9 @@ function ReviewModal({
             <div className="border-t border-smoke-200 p-4">
               <p className="mb-2 text-xs leading-relaxed text-smoke-600">
                 {request.authorization
-                  ? 'Exact typed data plus the resulting app-controlled call. Hex value is the native token amount; data is the complete calldata.'
+                  ? signsMessage
+                    ? 'The exact message your signature commits to, plus the resulting app-controlled call. Hex value is the native token amount; data is the complete calldata.'
+                    : 'Exact typed data plus the resulting app-controlled call. Hex value is the native token amount; data is the complete calldata.'
                   : 'Exact app-controlled JSON-RPC call fields. Hex value is the native token amount; data is the complete calldata.'}
               </p>
               <pre className="max-h-[28rem] overflow-auto rounded-xl border border-smoke-200 bg-grey-900 p-4 font-mono text-[11px] leading-relaxed text-grey-25">
@@ -1685,7 +664,11 @@ function ReviewModal({
             />
             <span>
               I reviewed the chain, destination, native value, and calldata
-              {request.authorization ? ', plus the exact typed data' : ''}. I
+              {request.authorization
+                ? signsMessage
+                  ? ', plus the exact message your signature commits to'
+                  : ', plus the exact typed data'
+                : ''}. I
               agree to {isAuthorization ? 'authorize' : 'send'} this exact call.
             </span>
           </label>
@@ -1720,9 +703,7 @@ function FundingChainSelectionModal({
   pending: PendingFundingChainSelection
   onFinish: (chainId: number | null) => void
 }) {
-  const [selected, setSelected] = useState(
-    pending.initialChainId === null ? '' : String(pending.initialChainId),
-  )
+  const [selected, setSelected] = useState(String(pending.initialChainId ?? ''))
   const selectedOption = pending.options.find(
     option => String(option.chainId) === selected,
   )
@@ -1750,8 +731,7 @@ function FundingChainSelectionModal({
         </header>
         <div className="px-5 py-5 sm:px-6">
           <p id={descriptionId} className="text-sm leading-relaxed text-smoke-700">
-            One payment covers every chain. You&apos;ll review it before your
-            wallet sends it.
+            One payment covers every chain. You’ll review it before your wallet sends it.
           </p>
           <label
             htmlFor={selectId}

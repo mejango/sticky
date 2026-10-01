@@ -26,7 +26,7 @@ describe('Juicebox Money reviewed writes', () => {
     expect(write.write).not.toHaveBeenCalled()
   })
 
-  it('writes once after review otherwise', async () => {
+  it('wallet-action:submit-a-reviewed-direct-write writes once after review otherwise', async () => {
     const write = options()
     await expect(submitReviewedContractWrite(write)).resolves.toBe('0xhash')
     expect(write.write).toHaveBeenCalledOnce()

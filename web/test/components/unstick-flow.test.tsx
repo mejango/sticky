@@ -37,7 +37,7 @@ vi.mock('wagmi', () => ({
   useSwitchChain: () => ({ switchChainAsync: mocks.switchChain }),
   // A transaction is confirmed as soon as it has a hash to watch, unless a test says it is not.
   useWaitForTransactionReceipt: ({ hash, query }: { hash?: string; query?: { enabled?: boolean } }) => ({
-    data: hash && query?.enabled !== false && mocks.confirming.on ? { status: mocks.confirming.status, transactionHash: hash } : undefined,
+    data: hash && query?.enabled !== false && mocks.confirming.on ? { status: mocks.confirming.status, transactionHash: hash, logs: [] } : undefined,
     isError: false,
   }),
   useWriteContract: () => ({ writeContractAsync: mocks.writeContract }),
@@ -67,7 +67,9 @@ vi.mock('@/hooks/useSafeTx', async importOriginal => {
   }
 })
 vi.mock('@/providers/Providers', () => ({ wagmiConfig: {} }))
-vi.mock('@/lib/safe-connector', () => ({
+vi.mock('@/lib/safe-connector', async importOriginal => ({
+  // The engine reads a Safe's executed proposal for the Safe's own ExecutionFailure.
+  safeExecutionFailed: (await importOriginal<typeof import('@/lib/safe-connector')>()).safeExecutionFailed,
   isSafeConnection: () => mocks.safe.on,
   SAFE_NONCE_GUIDANCE: 'Safe nonce guidance',
   useSafeConnection: () => mocks.safe.on,
@@ -731,6 +733,23 @@ describe('a send that stops halfway', () => {
     expect(formText()).toContain('Went through: Turn off auto-stick. Not sent yet:')
     await escape()
     expect(closed).toHaveBeenCalledOnce()
+  })
+
+  // The confirm holds the shell while it is busy (JBM's ModalShell hold), and the flow refuses to close a review mid-send:
+  // either keeps the send's tracking on screen.
+  it('stays open on Escape while a step is being sent', async () => {
+    world(on)
+    await review('1')
+    mocks.confirming.on = false
+    await press('Turn off auto-stick', confirm()!)
+    await until(() => confirm()!.textContent!.includes('Waiting for confirmation'), 'the wait')
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    })
+    expect(confirm()).not.toBeNull()
+    expect(closed).not.toHaveBeenCalled()
+    expect(called()).toEqual(['setConfigFor'])
   })
 
   it('does not send a step the holder cancelled in the review, and offers the same step again', async () => {
