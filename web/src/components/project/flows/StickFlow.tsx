@@ -52,9 +52,9 @@ function told(label: string, about: object, reason: unknown): Error {
  * null is one that is not yet a usable address, or one the tokens would be lost in, which `recipientError` says. */
 type Inputs = { amount: bigint; amountError: string | null; beneficiary: Address | null; recipientError: string | null }
 
-/** What a review refused or could not read, and the account it was for (lowercase). It says nothing of another account,
- * whose own standing the quote under the amount checks again. A refusal of the wallet itself, Signa or View as, is no
- * account's: it stands until the wallet can send. */
+/** What a review refused or could not read, and the account it was for (lowercase). It is shown only while the page shows
+ * that account, the one the quote under the amount is for: it says nothing of another, whose own standing that quote
+ * checks again. A refusal of the wallet itself, Signa or View as, is no account's: it stands until the wallet can send. */
 type Failure = { message: string; account: string | null }
 
 /** What a review froze: for whom, how much, what it mints at least, and the steps that send it. */
@@ -183,7 +183,8 @@ export function StickFlow({
   const sending = tx.busy || tx.phase === 'review'
   const complete = plan !== null && landed === plan.steps.length
   const who = address?.toLowerCase() ?? null
-  const error = failure && (failure.account === null || failure.account === who) ? failure.message : null
+  const shown = viewer?.toLowerCase() ?? null
+  const error = failure && (failure.account === null || failure.account === shown) ? failure.message : null
   const quoteFailed = quote.isError && settledNow
   const closed =
     !verified ||
@@ -263,7 +264,7 @@ export function StickFlow({
     if (!plan || sending || at === plan.steps.length) return
     if (who !== plan.account.toLowerCase()) {
       close()
-      setFailure({ message: ACCOUNT_CHANGED, account: who })
+      setFailure({ message: ACCOUNT_CHANGED, account: shown })
       return
     }
     const hash = await tx.send(plan.steps[at], { simulationBlockNumber: confirmedAt.current, reverify: () => verify(plan) })

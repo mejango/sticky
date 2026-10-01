@@ -1121,6 +1121,32 @@ describe('sticking for someone else', () => {
     expect(timesShown(REFUSAL)).toBe(1)
   })
 
+  it("hides the wallet's refusal while View as shows an account the recipient trusts, as the line under the amount does", async () => {
+    trustsBob()
+    await render({ forSomeoneElse: true })
+    await type(recipientField(), FRIEND)
+    await type(amountField(), '5')
+    await click(flowButton('Review stick'))
+    await settle(250)
+    await settled()
+    expect(alerts()).toEqual([REFUSAL])
+
+    // The page views BOB, whom FRIEND trusts: the line under the amount quotes for BOB, and the box for the wallet goes.
+    await act(async () => setViewAs(BOB))
+    await settle(250)
+    await settled()
+    expect(mocks.canStick).toHaveBeenLastCalledWith(CHAIN, BigInt(PROJECT), BOB, FRIEND, expect.anything())
+    expect(hint()).toBe('They get at least 9.87 STICKYCPN')
+    expect(alerts()).toEqual([])
+    expect(timesShown(REFUSAL)).toBe(0)
+
+    // View as ends: the page shows the wallet again, and its refusal, once.
+    await act(async () => clearViewAs())
+    await settle(250)
+    await settled()
+    expect(timesShown(REFUSAL)).toBe(1)
+  })
+
   it("does not show a review's refusal that lands after the account has changed", async () => {
     trustsBob()
     const checking = Promise.withResolvers<void>()

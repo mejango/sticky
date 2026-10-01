@@ -194,7 +194,8 @@ const live: MoveReaders = {
   indexedMoves: indexedStickyMoves,
   /** One scan of the terminal for every project asked for, with what is buried of each project's pays and cash outs
    * kept in this browser under a key of its own, as its hook history is (`keptLogsOf`), without their memos: the next
-   * read, a refresh after a send or a return visit, scans only the blocks since. */
+   * read, a refresh after a send or a return visit, scans only the blocks since. Each history starts where the read
+   * does, at the oldest event the feed shows, so it holds what a feed reads and no more. */
   terminalLogs(chainId, { terminal, projectIds, fromBlock }, { signal }) {
     const words = projectIds.map(projectId => pad(toHex(projectId), { size: 32 }))
     const histories = projectIds.map((projectId, at) => ({
@@ -202,7 +203,7 @@ const live: MoveReaders = {
       owns: (log: ScannedLog) => log.topics[3]?.toLowerCase() === words[at],
     }))
     const filter = { address: terminal, topics: [[PAY, CASH_OUT], null, null, words], fromBlock }
-    return keptLogsOf(chainId, histories, filter, { signal, keep: withoutMemo })
+    return keptLogsOf(chainId, histories, filter, { signal, keep: withoutMemo, trim: true })
   },
 }
 

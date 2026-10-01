@@ -289,6 +289,23 @@ describe('the terminal history terminalMoves keeps in the browser', () => {
     expect(kept(42n)).toMatchObject({ from: '302950', through: String(303_000 - 64) })
   })
 
+  it('keeps its history from the oldest event the feed shows, and drops what is older as the feed moves on', async () => {
+    const pays = [payLog(HOLDER, 10n * E6, 10n * E18, 'a1', 1_000n), payLog(HOLDER, 20n * E6, 20n * E18, 'a2', 1_100n)]
+    node(1_300n, pays)
+    await terminalMoves([stick(10n * E18, 'a1', 1_000n), stick(20n * E18, 'a2', 1_100n)])
+    expect(kept(42n)).toMatchObject({ from: '1000', through: String(1_300 - 64) })
+    expect(kept(42n)!.all.map(log => BigInt(log.blockNumber))).toEqual([1_000n, 1_100n])
+
+    // A newer stick pushes the oldest out of the feed: the history starts at the oldest event the feed shows now.
+    const landed = payLog(HOLDER, 5n * E6, 5n * E18, 'a3', 1_250n)
+    const refresh = node(1_400n, [...pays, landed])
+    const moves = await terminalMoves([stick(20n * E18, 'a2', 1_100n), stick(5n * E18, 'a3', 1_250n)])
+    expect(amountsOf(moves)).toEqual(expect.arrayContaining([20n * E6, 5n * E6]))
+    expect(refresh.requests.map(({ fromBlock }) => fromBlock)).toEqual([toHex(1_300n - 64n + 1n)])
+    expect(kept(42n)).toMatchObject({ from: '1100', through: String(1_400 - 64) })
+    expect(kept(42n)!.all.map(log => BigInt(log.blockNumber))).toEqual([1_100n, 1_250n])
+  })
+
   it('keeps what a reorg cannot replace, 64 blocks below the head, and only that, with the block it scanned from', async () => {
     node(1_200n, [payLog(HOLDER, 10n * E6, 10n * E18, 'a1', 1_000n), payLog(HOLDER, 20n * E6, 20n * E18, 'a2', 1_150n)])
     await terminalMoves([stick(10n * E18, 'a1', 1_000n), stick(20n * E18, 'a2', 1_150n)])
