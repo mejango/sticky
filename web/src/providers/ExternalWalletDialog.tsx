@@ -33,9 +33,10 @@ function ViewAsAddress({ onDone }: { onDone: () => void }) {
 }
 
 /** Two ways in: a passkey account at Signa, or an external wallet through the
- * shared wagmi stack. Keep the SDK's connection and dismissal behavior with Sticky's typography. */
-export function ExternalWalletDialog({ onClose }: { onClose: () => void }) {
-  const { connectors, connectWith, isConnected } = useWallet()
+ * shared wagmi stack. Keep the SDK's connection and dismissal behavior with Sticky's typography.
+ * `walletsOnly` offers the external wallets alone and waits for one of them: a write from a Signa session needs one. */
+export function ExternalWalletDialog({ onClose, walletsOnly = false }: { onClose: () => void; walletsOnly?: boolean }) {
+  const { connectors, connectWith, isConnected, isCenterWallet } = useWallet()
   const mobileWallet = useMobileWallet()
   const [deviceLabel, setDeviceLabel] = useState('Device')
   const [frameTitle, setFrameTitle] = useState('Sign in')
@@ -59,7 +60,16 @@ export function ExternalWalletDialog({ onClose }: { onClose: () => void }) {
   useEffect(() => () => { if (opener?.isConnected) opener.focus({ preventScroll: true }) }, [opener])
   const latest = useRef({ connectWith, onClose })
   latest.current = { connectWith, onClose }
-  useEffect(() => { if (isConnected) onClose() }, [isConnected, onClose])
+  useEffect(() => { if (isConnected && !(walletsOnly && isCenterWallet)) onClose() }, [isConnected, isCenterWallet, walletsOnly, onClose])
+  // Dialogs replace each other: a dialog the chooser opens over, like a flow's confirm asking for an external wallet,
+  // paints nothing until the chooser closes (`[data-covered]` in globals.css, as ModalDialog does).
+  useEffect(() => {
+    const covered = [...document.querySelectorAll('dialog[open]:not([data-covered])')].filter(
+      dialog => !dialog.classList.contains('sticky-connect'),
+    )
+    covered.forEach(dialog => dialog.setAttribute('data-covered', ''))
+    return () => covered.forEach(dialog => dialog.removeAttribute('data-covered'))
+  }, [])
   useEffect(() => {
     const issuer = CENTER_WALLET_CONFIG?.issuer
     if (!issuer) return
@@ -84,7 +94,7 @@ export function ExternalWalletDialog({ onClose }: { onClose: () => void }) {
     const framed = typeof window !== 'undefined' && window.self !== window.top
     const options: ConnectOption[] = []
     let runtime: typeof import('./center-runtime') | undefined
-    if (CENTER_WALLET_ENABLED) options.push({ ...passkeyOption({
+    if (CENTER_WALLET_ENABLED && !walletsOnly) options.push({ ...passkeyOption({
       // The option loads the runtime before it asks for the return path, so the save is synchronous.
       wallet: async () => { runtime = await import('./center-runtime'); return runtime.centerWalletClient() },
       beforeLaunch: () => runtime!.saveCenterReturnPath(),

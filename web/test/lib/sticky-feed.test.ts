@@ -170,11 +170,11 @@ function readers({ terminal = [], moves = [] }: Spec = {}) {
     if (moves instanceof Error) throw moves
     return { rows: moves, blocks: new Map([[chainId, 100n]]) }
   })
-  const scan = vi.fn<MoveReaders['scan']>(async () => {
+  const terminalLogs = vi.fn<MoveReaders['terminalLogs']>(async () => {
     if (terminal instanceof Error) throw terminal
     return terminal
   })
-  return { indexedMoves, scan }
+  return { indexedMoves, terminalLogs }
 }
 
 const slop = (value: bigint): FeedAmount => ({ value, decimals: 6, symbol: 'SLOPSHOP' })
@@ -236,10 +236,10 @@ describe('sticks and unsticks', () => {
       row('a1', 'in', slop(1010n * E6), { kind: 'stuck', holder: HOLDER }),
     ])
     // One terminal scan, from the oldest shown event's block, for the shown projects only.
-    expect(reads.scan).toHaveBeenCalledTimes(1)
-    expect(reads.scan).toHaveBeenCalledWith(
+    expect(reads.terminalLogs).toHaveBeenCalledTimes(1)
+    expect(reads.terminalLogs).toHaveBeenCalledWith(
       CHAIN,
-      { address: TERMINAL, topics: [[PAY, CASH_OUT], null, null, [topic(42n)]], fromBlock: 0x10n },
+      { terminal: TERMINAL, projectIds: [42n], fromBlock: 0x10n },
       { signal: undefined },
     )
     expect(reads.indexedMoves).not.toHaveBeenCalled()
@@ -314,7 +314,7 @@ describe('sticks and unsticks', () => {
       row('d2', 'in', shares(4n * E18), { kind: 'stuck', holder: HOLDER }, { chainId: 424_242 }),
       row('d1', 'in', shares(3n * E18), { kind: 'stuck', holder: HOLDER }, { chainId: 424_242 }),
     ])
-    expect(reads.scan).not.toHaveBeenCalled()
+    expect(reads.terminalLogs).not.toHaveBeenCalled()
     expect(reads.indexedMoves).not.toHaveBeenCalled()
   })
 
@@ -928,7 +928,7 @@ describe("a feed built from Bendystraw's pays and cash outs", () => {
       await terminalMoves(moveEvents(moves), reads)
 
       expect(reads.indexedMoves).toHaveBeenCalledWith(84532, [37n], undefined, 60)
-      expect(reads.scan).not.toHaveBeenCalled()
+      expect(reads.terminalLogs).not.toHaveBeenCalled()
     })
   })
 
@@ -1023,7 +1023,7 @@ describe('terminalMoves', () => {
     // The read starts at the time of the oldest event, the one at 90, so it reads no older pay or cash out.
     expect(reads.indexedMoves).toHaveBeenCalledTimes(1)
     expect(reads.indexedMoves).toHaveBeenCalledWith(CHAIN, [42n], signal, 90)
-    expect(reads.scan).not.toHaveBeenCalled()
+    expect(reads.terminalLogs).not.toHaveBeenCalled()
     expect(feedRows(events, moves, options).map(({ amount }) => amount)).toEqual([
       shares(1n),
       slop(5n * E6),
@@ -1071,10 +1071,10 @@ describe('terminalMoves', () => {
     const moves = await terminalMoves(events, { ...reads, signal })
 
     expect(reads.indexedMoves).toHaveBeenCalledWith(CHAIN, [42n], signal, 100)
-    expect(reads.scan).toHaveBeenCalledTimes(1)
-    expect(reads.scan).toHaveBeenCalledWith(
+    expect(reads.terminalLogs).toHaveBeenCalledTimes(1)
+    expect(reads.terminalLogs).toHaveBeenCalledWith(
       CHAIN,
-      { address: TERMINAL, topics: [[PAY, CASH_OUT], null, null, [topic(42n), topic(44n)]], fromBlock: 850n },
+      { terminal: TERMINAL, projectIds: [42n, 44n], fromBlock: 850n },
       { signal },
     )
     expect(feedRows(events, moves, options).map(({ amount }) => amount?.value)).toEqual([
@@ -1093,7 +1093,7 @@ describe('terminalMoves', () => {
     expect(feedRows(events, await terminalMoves(events, reads), options)).toStrictEqual([
       row('a1', 'in', shares(3n * E18), { kind: 'stuck', holder: HOLDER }),
     ])
-    expect(reads.scan).not.toHaveBeenCalled()
+    expect(reads.terminalLogs).not.toHaveBeenCalled()
     expect(vi.mocked(console.warn).mock.calls).toEqual([[LABEL, { chainId: CHAIN }, down]])
   })
 
@@ -1133,8 +1133,8 @@ describe('terminalMoves', () => {
         order.push(`bendystraw ${chainId}`)
         return { rows: await slow(), blocks: new Map() }
       },
-      scan: async (chainId, { address, fromBlock }) => {
-        order.push(`terminal ${chainId} ${address} from ${fromBlock}`)
+      terminalLogs: async (chainId, { terminal, fromBlock }) => {
+        order.push(`terminal ${chainId} ${terminal} from ${fromBlock}`)
         return slow()
       },
     }
@@ -1151,7 +1151,7 @@ describe('terminalMoves', () => {
 
     expect((await terminalMoves(events, reads)).size).toBe(0)
     expect((await terminalMoves([], reads)).size).toBe(0)
-    expect(reads.scan).not.toHaveBeenCalled()
+    expect(reads.terminalLogs).not.toHaveBeenCalled()
     expect(reads.indexedMoves).not.toHaveBeenCalled()
   })
 
@@ -1183,7 +1183,7 @@ describe('terminalMoves', () => {
     // Cancelled while the terminal scan is under way.
     const scanning = new AbortController()
     const third = readers()
-    third.scan.mockImplementation(async () => {
+    third.terminalLogs.mockImplementation(async () => {
       scanning.abort(reason)
       throw new Error('aborted')
     })

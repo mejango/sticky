@@ -124,6 +124,26 @@
     @apply cursor-not-allowed opacity-45;
   }
 
+  /* A square icon control, like a dialog's close button. */
+  .icon-button {
+    @apply inline-flex h-11 w-11 items-center justify-center rounded-lg text-ink transition-colors hover:bg-bg hover:text-accent;
+  }
+
+  /* A small rounded label, like the chain a review names. */
+  .chip {
+    @apply inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium leading-none;
+  }
+
+  /* A native select drawn with its own caret; pair with pr-9. */
+  .select-caret {
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2357727c' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    cursor: pointer;
+  }
+
   /* A row of label and value pairs, like the project header's. Each pair stays
      on one line, and the pipe that would start a wrapped line is clipped off
      the left edge, so no line starts with a separator. */

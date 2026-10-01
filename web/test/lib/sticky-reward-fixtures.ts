@@ -42,8 +42,10 @@ const RAW = Symbol('raw')
 export const returning = (data: Hex) => ({ [RAW]: data })
 
 export type Read = { target: Address; functionName: string; args: readonly unknown[] }
-export type Request = { method: string; block?: unknown; reads?: Read[] }
+/** `from` is the sender a read that is not batched names: a batched read has none, since Multicall3 is its sender. */
+export type Request = { method: string; block?: unknown; reads?: Read[]; from?: Address }
 type Answer = (args: readonly unknown[]) => unknown
+type Stocked = { abi: Abi; item: AbiFunction; answer: unknown }
 
 type Call = { target: Address; callData: Hex }
 type Filter = { address: Address; topics: (Hex | Hex[] | null)[]; fromBlock: Hex; toBlock: Hex }
@@ -71,9 +73,10 @@ function inFilter(entry: ScannedLog, { address: wanted, topics, fromBlock, toBlo
 }
 
 /** The fake Center. `stock` says what a contract returns, `lose` makes it refuse requests, and `requests` lists every
- * request it got, with the calls a Multicall3 request carried. */
+ * request it got, with the calls a Multicall3 request carried. A read that names a sender is not batched, and is
+ * answered alone with that sender in the request. */
 export function rewardChain(logs: ScannedLog[] = []) {
-  const table = new Map<string, { abi: Abi; item: AbiFunction; answer: unknown }>()
+  const table = new Map<string, Stocked>()
   const requests: Request[] = []
   let refuses: (reads: readonly Read[]) => boolean = () => false
   let blockNumberDown = false
@@ -107,35 +110,41 @@ export function rewardChain(logs: ScannedLog[] = []) {
         requests.push({ method, block: filter })
         return envelope(logs.filter(entry => inFilter(entry, filter)).map(rpcLog))
       }
-      const [call, block] = params as [{ to: string; data: Hex }, unknown]
-      if (method !== 'eth_call' || call.to.toLowerCase() !== MULTICALL3) throw new Error(`unexpected ${method} to ${call?.to}`)
-      const [calls] = decodeFunctionData({ abi: multicall3Abi, data: call.data }).args as readonly [readonly Call[]]
-      const decoded = calls.map(({ target, callData }) => {
+      const [call, block] = params as [{ from?: Address; to: string; data: Hex }, unknown]
+      if (method !== 'eth_call') throw new Error(`unexpected ${method} to ${call?.to}`)
+      const find = (target: string, callData: Hex) => {
         const entry = table.get(`${target.toLowerCase()}:${callData.slice(0, 10)}`)
         if (!entry) throw new Error(`the fake chain has nothing at ${target} for ${callData.slice(0, 10)}`)
         const { functionName, args } = decodeFunctionData({ abi: entry.abi, data: callData })
-        return { entry, read: { target, functionName, args: args ?? [] } }
-      })
+        return { entry, read: { target: target as Address, functionName, args: args ?? [] } }
+      }
+      const answerOf = ({ entry, read }: ReturnType<typeof find>) => {
+        const value = typeof entry.answer === 'function' ? entry.answer(read.args) : entry.answer
+        if (value === REVERT) return { success: false, returnData: '0x' as Hex }
+        if (typeof value === 'object' && value !== null && RAW in value) {
+          return { success: true, returnData: (value as { [RAW]: Hex })[RAW] }
+        }
+        return {
+          success: true,
+          // The overloads of a function share their name, so only its own item is asked to encode.
+          returnData: encodeFunctionResult({ abi: [entry.item], functionName: entry.item.name, result: value } as never),
+        }
+      }
+      if (call.to.toLowerCase() !== MULTICALL3) {
+        const found = find(call.to, call.data)
+        requests.push({ method, block, reads: [found.read], from: call.from })
+        if (refuses([found.read])) return refused()
+        const { success, returnData } = answerOf(found)
+        if (success) return envelope(returnData)
+        const error = { code: 3, message: 'execution reverted', data: '0x' }
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id, error }), { headers: { 'content-type': 'application/json' } })
+      }
+      const [calls] = decodeFunctionData({ abi: multicall3Abi, data: call.data }).args as readonly [readonly Call[]]
+      const decoded = calls.map(({ target, callData }) => find(target, callData))
       requests.push({ method, block, reads: decoded.map(({ read }) => read) })
       if (refuses(decoded.map(({ read }) => read))) return refused()
-      return envelope(
-        encodeFunctionResult({
-          abi: multicall3Abi,
-          functionName: 'aggregate3',
-          result: decoded.map(({ entry, read }) => {
-            const value = typeof entry.answer === 'function' ? entry.answer(read.args) : entry.answer
-            if (value === REVERT) return { success: false, returnData: '0x' as Hex }
-            if (typeof value === 'object' && value !== null && RAW in value) {
-              return { success: true, returnData: (value as { [RAW]: Hex })[RAW] }
-            }
-            return {
-              success: true,
-              // The overloads of a function share their name, so only its own item is asked to encode.
-              returnData: encodeFunctionResult({ abi: [entry.item], functionName: entry.item.name, result: value } as never),
-            }
-          }),
-        }),
-      )
+      const result = decoded.map(answerOf)
+      return envelope(encodeFunctionResult({ abi: multicall3Abi, functionName: 'aggregate3', result }))
     }),
   )
 

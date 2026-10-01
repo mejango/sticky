@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   connectors: [] as unknown[],
   connectWith: vi.fn(),
   isConnected: false,
+  isCenterWallet: false,
   config: null as { issuer: string } | null,
   saveCenterReturnPath: vi.fn(),
   wallet: {
@@ -38,7 +39,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/hooks/useWallet', () => ({
   useWallet: () => ({
     connectors: mocks.connectors, connectWith: mocks.connectWith, isConnected: mocks.isConnected,
-    address: undefined, isCenterWallet: false, openSignIn: vi.fn(), disconnect: vi.fn(),
+    address: undefined, isCenterWallet: mocks.isCenterWallet, openSignIn: vi.fn(), disconnect: vi.fn(),
   }),
 }))
 // The header beside the dialog, in the tests of viewing as an address.
@@ -73,6 +74,7 @@ const launch = vi.fn()
 beforeEach(() => {
   mocks.connectors = [rabby(), sneaky()]
   mocks.isConnected = false
+  mocks.isCenterWallet = false
   mocks.config = { issuer: ISSUER }
   mocks.connectWith.mockResolvedValue(undefined)
   mocks.wallet.prepareConnection.mockResolvedValue({ authorizationUrl: `${ISSUER}/authorize?request=1`, launch })
@@ -266,6 +268,64 @@ describe('the sign-in chooser', () => {
     await until(() => dialog().textContent?.includes('Scan with your wallet app'))
     expect(dialog().querySelector<HTMLAnchorElement>('a')!.getAttribute('href')).toBe('wc:abc@2?relay-protocol=irn')
     expect(wallet.emitter.on).toHaveBeenCalledWith('message', expect.any(Function))
+  })
+})
+
+describe('the wallets-only chooser, for a write from a Signa session', () => {
+  const openWalletsOnly = () => act(async () => root.render(<ExternalWalletDialog onClose={onClose} walletsOnly />))
+
+  it('offers the external wallets alone, under the same title', async () => {
+    await openWalletsOnly()
+    expect(heading().textContent).toBe('Sign in')
+    expect(primary()).toBeNull()
+    expect(dialog().querySelector('.jb-connect-divider')!.textContent).toBe('Connect a wallet')
+    expect(tiles().map(item => item.getAttribute('aria-label'))).toEqual(['Rabby', 'Sneaky'])
+  })
+
+  it('stays open while Signa is the connected wallet, and closes once an external wallet connects', async () => {
+    mocks.isConnected = true
+    mocks.isCenterWallet = true
+    await openWalletsOnly()
+    expect(dialog().open).toBe(true)
+    expect(onClose).not.toHaveBeenCalled()
+
+    mocks.isCenterWallet = false
+    await openWalletsOnly()
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('connects the wallet that was picked beside Signa, then closes', async () => {
+    mocks.isConnected = true
+    mocks.isCenterWallet = true
+    await openWalletsOnly()
+    await click(tile('Rabby'))
+    await until(() => onClose.mock.calls.length === 1)
+    expect(mocks.connectWith).toHaveBeenCalledExactlyOnceWith('io.rabby')
+  })
+
+  it('replaces the dialog it opens over, which shows again once it closes', async () => {
+    const confirm = document.createElement('dialog')
+    document.body.append(confirm)
+    confirm.showModal()
+    try {
+      await openWalletsOnly()
+      expect(confirm.hasAttribute('data-covered')).toBe(true)
+      expect(dialog().hasAttribute('data-covered')).toBe(false)
+
+      await act(async () => root.unmount())
+      expect(confirm.hasAttribute('data-covered')).toBe(false)
+    } finally {
+      root = createRoot(host)
+      confirm.close()
+      confirm.remove()
+    }
+  })
+
+  it('leaves the sign-in chooser closing for any connected wallet, Signa included', async () => {
+    mocks.isConnected = true
+    mocks.isCenterWallet = true
+    await open()
+    expect(onClose).toHaveBeenCalled()
   })
 })
 

@@ -1,13 +1,14 @@
 import { dehydrate, QueryClient, useQueryClient } from '@tanstack/react-query'
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { erc20Abi } from 'viem'
 import { useConfig } from 'wagmi'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { serializeState } from '@/lib/query-persist'
 
 vi.mock('@/providers/ExternalWalletDialog', () => ({
-  ExternalWalletDialog: ({ onClose }: { onClose: () => void }) => (
-    <div data-testid="chooser">
+  ExternalWalletDialog: ({ onClose, walletsOnly }: { onClose: () => void; walletsOnly?: boolean }) => (
+    <div data-testid="chooser" data-wallets-only={String(walletsOnly === true)}>
       <button type="button" onClick={onClose}>Close chooser</button>
     </div>
   ),
@@ -115,6 +116,53 @@ describe('Providers', () => {
 
     await act(async () => { void requestSignIn() })
     expect(chooser()).not.toBeNull()
+  })
+
+  it('opens the chooser with the external wallets alone when a write from a Signa session asks for one', async () => {
+    const { Providers, useWalletAuth } = await load()
+    let requestSignIn: (options?: { walletsOnly?: boolean }) => Promise<void> = () => Promise.resolve()
+    function Probe() {
+      requestSignIn = useWalletAuth().requestSignIn
+      return null
+    }
+    await mount(<Providers><Probe /></Providers>)
+
+    let asked!: Promise<void>
+    await act(async () => { asked = requestSignIn({ walletsOnly: true }) })
+    expect(chooser()!.getAttribute('data-wallets-only')).toBe('true')
+    await act(async () => host.querySelector('button')!.click())
+    await expect(asked).resolves.toBeUndefined()
+    expect(chooser()).toBeNull()
+
+    await act(async () => { void requestSignIn() })
+    expect(chooser()!.getAttribute('data-wallets-only')).toBe('false')
+  })
+
+  it('holds the one review queue every write waits on', async () => {
+    const { Providers } = await load()
+    const { requestContractTransactionReview } = await import('@/lib/transaction-review')
+    const call = {
+      chainId: 84532,
+      address: '0x1111111111111111111111111111111111111111',
+      abi: erc20Abi,
+      functionName: 'approve',
+      args: ['0x2222222222222222222222222222222222222222', 1n],
+    } as const
+    await expect(requestContractTransactionReview(call)).rejects.toThrow('Transaction review is unavailable')
+
+    await mount(<Providers><p>the app</p></Providers>)
+    let answered = false
+    const asked = requestContractTransactionReview(call).then(approved => {
+      answered = true
+      return approved
+    })
+    await act(async () => { await Promise.resolve() })
+    expect(answered).toBe(false)
+
+    // Leaving the page declines what is waiting: nothing is approved by default.
+    await act(async () => root.unmount())
+    await expect(asked).resolves.toBe(false)
+    root = createRoot(host)
   })
 
   it('has no wallets, no reconnect and no chooser in the deterministic browser', async () => {

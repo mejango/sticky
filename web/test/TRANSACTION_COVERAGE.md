@@ -15,3 +15,13 @@ Legend:
 
 | User action | Contract function or authorization | Coverage | Test |
 | --- | --- | :---: | --- |
+| Submit a reviewed direct write | review → chain/account check → simulate → exact simulated write | **P** | `transactions/contract-write.test.ts`, `transactions/use-safe-tx.test.ts`, `transactions/sticky-use-safe-tx.test.tsx`, `transactions/signa-gate.test.tsx` |
+| Approve the staked token for a stick | `ERC20.approve` to the project's terminal: a reset to zero first when the allowance is not zero, the exact amount, and nothing when the allowance already covers it | **E** | `lib/sticky-builders.test.ts`, `components/stick-flow.test.tsx`, `components/stick-flow-engine.test.tsx` |
+| Stick | `JBMultiTerminal.pay` for the holder, with the freshly read `previewPayFor` as its minimum | **E** | `lib/sticky-builders.test.ts`, `lib/sticky-quotes.test.ts`, `components/stick-flow.test.tsx`, `components/stick-flow-engine.test.tsx` |
+| Stick for someone else | `JBMultiTerminal.pay` with another beneficiary, sent only after `isGranterOf` or `isTrustedSenderOf` says the sender may | **E** | `lib/sticky-builders.test.ts`, `lib/sticky-quotes.test.ts`, `components/stick-flow.test.tsx`, `components/stick-flow-engine.test.tsx` |
+| Turn off auto-stick | `StickyAutoStick.setConfigFor(projectId, false, minimum, cooldown)` | **E** | `components/unstick-flow.test.tsx`, `lib/sticky-builders.test.ts` |
+| Take back the auto-stick adapter's trust | `StickyHook.setTrustedSenderFor(projectId, adapter, false)` | **E** | `components/unstick-flow.test.tsx`, `lib/sticky-builders.test.ts` |
+| Take back the auto-stick adapter's allowance | staked token `approve(adapter, 0)` | **E** | `components/unstick-flow.test.tsx`, `lib/sticky-builders.test.ts` |
+| Unstick Sticky tokens | `JBMultiTerminal.cashOutTokensOf` with the quote's net as its minimum | **E** | `components/unstick-flow.test.tsx`, `lib/sticky-builders.test.ts`, `lib/sticky-quotes.test.ts` |
+| Transfer Sticky tokens | Sticky token `transfer` of an 18-decimal amount, refused for a locked token, for the zero address, for the sender's own address and for the Sticky token, hook and terminal, and stopped when the balance has fallen | **E** | `lib/sticky-builders.test.ts`, `components/transfer-flow.test.tsx`, `transactions/sticky-transfer-trust.test.tsx` |
+| Trust or untrust a sender | `StickyHook.setTrustedSenderFor`, refused for the zero address, and stopped when the hook already says so | **E** | `lib/sticky-builders.test.ts`, `components/trust-flow.test.tsx`, `transactions/sticky-transfer-trust.test.tsx` |

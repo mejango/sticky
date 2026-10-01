@@ -5,10 +5,12 @@ import './center-callback'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { type PropsWithChildren, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createConfig, injected, WagmiProvider } from 'wagmi'
+import { TransactionReviewProvider } from '@/components/TransactionReviewProvider'
 import { SUPPORTED_CHAINS } from '@/lib/chains'
 import { jbCenterRpcTransport } from '@/lib/jbcenter-rpc'
 import { installQueryPersistence } from '@/lib/query-persist'
-import { WalletAuthContext } from './WalletAuthContext'
+import { watchSafeWalletPeer } from '@/lib/safe-wallet-peer'
+import { WalletAuthContext, type SignInOptions } from './WalletAuthContext'
 import { lazyCenterConnector } from './lazy-center-connector'
 import { externalWalletConnectors } from './wallet-connectors'
 import { CENTER_WALLET_ENABLED } from './wallet-config'
@@ -38,15 +40,17 @@ export function Providers({ children }: PropsWithChildren) {
   // What the browser kept of earlier visits is restored at once. Its reads go through useKeptQuery, which renders what
   // the server rendered until the component has hydrated, whatever the cache holds, and the kept copy right after.
   useEffect(() => installQueryPersistence(queryClient), [queryClient])
-  const [walletOpen, setWalletOpen] = useState(false)
+  // Safe{Wallet} over WalletConnect proposes like the Safe app, and Safe tracking reads each chain through this config.
+  useEffect(() => watchSafeWalletPeer(wagmiConfig), [])
+  const [walletOpen, setWalletOpen] = useState<Required<SignInOptions> | null>(null)
   const waiting = useRef<(() => void)[]>([])
-  const requestSignIn = useCallback(() => {
+  const requestSignIn = useCallback((options?: SignInOptions) => {
     if (IS_DETERMINISTIC_BROWSER) return Promise.resolve()
-    setWalletOpen(true)
+    setWalletOpen({ walletsOnly: options?.walletsOnly === true })
     return new Promise<void>(resolve => { waiting.current = [...waiting.current, resolve] })
   }, [])
   const closeWallet = useCallback(() => {
-    setWalletOpen(false)
+    setWalletOpen(null)
     const pending = waiting.current
     waiting.current = []
     for (const resolve of pending) resolve()
@@ -55,8 +59,14 @@ export function Providers({ children }: PropsWithChildren) {
   return <QueryClientProvider client={queryClient}>
     <WagmiProvider config={wagmiConfig} reconnectOnMount={!IS_DETERMINISTIC_BROWSER}>
       <WalletAuthContext.Provider value={walletAuth}>
-        {children}
-        {walletOpen ? <ExternalWalletDialog onClose={closeWallet} /> : null}
+        <TransactionReviewProvider>{children}</TransactionReviewProvider>
+        {walletOpen ? (
+          <ExternalWalletDialog
+            key={walletOpen.walletsOnly ? 'wallets' : 'sign-in'}
+            walletsOnly={walletOpen.walletsOnly}
+            onClose={closeWallet}
+          />
+        ) : null}
       </WalletAuthContext.Provider>
     </WagmiProvider>
   </QueryClientProvider>

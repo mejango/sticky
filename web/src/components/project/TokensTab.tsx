@@ -1,8 +1,10 @@
 'use client'
 
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import type { Address } from 'viem'
 import { BonusSplit } from '@/components/project/BonusSplit'
+import { TransferFlow } from '@/components/project/flows/TransferFlow'
+import { UnstickFlow } from '@/components/project/flows/UnstickFlow'
 import { Leaderboard } from '@/components/project/Leaderboard'
 import { TrancheTable } from '@/components/project/TrancheTable'
 import { Revalidating } from '@/components/ui/Revalidating'
@@ -54,7 +56,8 @@ function Stat({
  * The viewer's stick: what it has stuck (the backing its shares claim, in the staked token, with the Sticky shares in
  * its title), its oldest active stick and its record, then its tranches. With no account these are zero, in each
  * figure's unit. A stick that cannot be read shows – and offers to read it again, never zero. Unstick, and Transfer
- * for a token that is not soulbound, are closed: the page only reads.
+ * for a token that is not soulbound, open their flows once this visit has read the project: nothing is sent on the
+ * word of a copy the browser kept.
  */
 function YouCard({
   chainId,
@@ -72,6 +75,8 @@ function YouCard({
   const position = useStickyPosition(chainId, projectId, holder, info)
   const stick = position.data
   const failed = holder !== null && position.isError && stick === undefined
+  const [unsticking, setUnsticking] = useState(false)
+  const [transferring, setTransferring] = useState(false)
 
   /** A figure of the stick: `signedOut` with no account, null while it is read, and – when it cannot be. */
   const figure = (from: (stick: StickyPosition) => string, signedOut: string) =>
@@ -110,15 +115,24 @@ function YouCard({
       ) : null}
       <TrancheTable key={holder ?? 'signed-out'} chainId={chainId} projectId={projectId} holder={holder} info={info} />
       <div className="mt-4 flex flex-wrap gap-2">
-        <button type="button" disabled className="btn-primary max-w-full px-4 py-[9px]">
+        <button
+          type="button"
+          disabled={!info || unconfirmed}
+          onClick={() => setUnsticking(true)}
+          className="btn-primary max-w-full px-4 py-[9px]"
+        >
           <span className="truncate">{info ? `Unstick ${info.symbol}` : 'Unstick'}</span>
         </button>
         {info && !info.soulbound ? (
-          <button type="button" disabled className="btn-secondary px-4 py-[9px]">
+          <button type="button" disabled={unconfirmed} onClick={() => setTransferring(true)} className="btn-secondary px-4 py-[9px]">
             Transfer
           </button>
         ) : null}
       </div>
+      {unsticking && info ? (
+        <UnstickFlow chainId={chainId} projectId={projectId} info={info} onClose={() => setUnsticking(false)} />
+      ) : null}
+      {transferring && info ? <TransferFlow info={info} onClose={() => setTransferring(false)} /> : null}
     </section>
   )
 }

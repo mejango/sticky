@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   rewards: vi.fn(),
   autoStick: vi.fn(),
   trusted: vi.fn(),
+  ens: vi.fn(),
   address: undefined as string | undefined,
 }))
 
@@ -47,9 +48,42 @@ vi.mock('@/lib/sticky-autostick', async importOriginal => ({
   trustedSenders: mocks.trusted,
 }))
 vi.mock('@/hooks/useWallet', () => ({ useWallet: () => ({ address: mocks.address }) }))
+// What mainnet names an account: a production chain asks, a testnet does not.
+vi.mock('@/lib/ens', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/lib/ens')>()),
+  lookupEnsName: mocks.ens,
+}))
+// The form for sticking for someone else has a test of its own (test/components/stick-flow.test.tsx); here it is marked.
+vi.mock('@/components/project/flows/StickFlow', () => ({
+  StickFlow: (props: { chainId: number; projectId: number; forSomeoneElse?: boolean }) => (
+    <div data-stick-flow={JSON.stringify(props)} />
+  ),
+}))
+vi.mock('@/components/project/flows/TrustFlow', () => ({
+  TrustFlow: ({
+    chainId,
+    projectId,
+    info,
+    sender,
+    onClose,
+  }: {
+    chainId: number
+    projectId: number
+    info: { stSymbol: string } | undefined
+    sender: Address | null
+    onClose: () => void
+  }) => (
+    <div data-flow="trust" data-chain={chainId} data-project={projectId} data-token={info?.stSymbol ?? ''} data-sender={sender ?? ''}>
+      <button type="button" onClick={onClose}>
+        Close trust
+      </button>
+    </div>
+  ),
+}))
 
 import { AirdropsTab } from '@/components/project/AirdropsTab'
 import { AS_STATUS, type AutoStickState } from '@/lib/sticky-autostick'
+import { refreshAfterTrust } from '@/lib/sticky-refresh'
 import { type FundedPot, type RewardCard, type RewardPot } from '@/lib/sticky-rewards'
 
 const CHAIN = 8453
@@ -58,6 +92,8 @@ const WEEK = 604_800n
 const VIEWER = `0x${'d'.repeat(40)}` as Address
 const SENDER = `0x${'7'.repeat(40)}` as Address
 const OTHER = `0x${'9'.repeat(40)}` as Address
+/** An address as the page shows it without a name: its first six and last four characters. */
+const short = (address: Address) => `${address.slice(0, 6)}…${address.slice(-4)}`
 const TX = `0x${'e1'.repeat(32)}` as Hex
 
 /** STICKYSLOPSHOP #23 on Base: SLOPSHOP has 6 decimals. */
@@ -129,6 +165,7 @@ beforeEach(() => {
   mocks.rewards.mockReset().mockResolvedValue([underlying()])
   mocks.autoStick.mockReset().mockResolvedValue(autoStickOn())
   mocks.trusted.mockReset().mockResolvedValue([])
+  mocks.ens.mockReset().mockResolvedValue(null)
   client = newClient()
   host = document.createElement('div')
   document.body.append(host)
@@ -168,6 +205,23 @@ const linesOf = (pot: HTMLElement) =>
   Object.fromEntries([...pot.querySelectorAll('dt')].map(term => [term.textContent, term.nextElementSibling?.textContent]))
 const buttonsOf = (within: Element) => [...within.querySelectorAll('button')].map(button => button.textContent)
 const buttonNamed = (within: Element, label: string) => [...within.querySelectorAll('button')].find(button => button.textContent === label)!
+
+describe('sticking for someone else', () => {
+  it('is the first card of the tab, with the form that sticks for someone else', async () => {
+    await renderTab()
+
+    const card = section('stick-for-title')!
+    expect(card.querySelector('h2')?.textContent).toBe('Stick for someone else')
+    expect(card.textContent).toContain('They must trust your wallet, unless you are a trusted sender.')
+    expect(JSON.parse(card.querySelector<HTMLElement>('[data-stick-flow]')!.dataset.stickFlow!)).toEqual({
+      chainId: CHAIN,
+      projectId: 23,
+      forSomeoneElse: true,
+    })
+    expect(host.querySelector('section')).toBe(card)
+    expect(host.querySelectorAll('[data-stick-flow]')).toHaveLength(1)
+  })
+})
 
 describe('the rewards', () => {
   it('shows the round, and a card for each pot with its group, its token and its lines', async () => {
@@ -616,7 +670,7 @@ describe('the reads behind the rewards', () => {
     await renderTab()
     expect(pots().map(pot => pot.textContent)).toEqual([expect.stringContaining('MINE')])
     expect(autoStick()).not.toBeNull()
-    expect(trusted().textContent).toContain(SENDER)
+    expect(trusted().textContent).toContain(short(SENDER))
 
     // Another account is in View as, and its reads have not landed.
     await act(async () => setViewAs(HOLDER))
@@ -625,7 +679,7 @@ describe('the reads behind the rewards', () => {
     expect(rewards().querySelector('.skeleton-shimmer')).not.toBeNull()
     expect(host.textContent).not.toContain('MINE')
     expect(host.querySelector('section[aria-busy="true"]')).not.toBeNull()
-    expect(trusted().textContent).not.toContain(SENDER)
+    expect(trusted().textContent).not.toContain(short(SENDER))
     expect(trusted().querySelector('.skeleton-shimmer')).not.toBeNull()
   })
 
@@ -638,7 +692,7 @@ describe('the reads behind the rewards', () => {
     await settle(1_000)
     stop()
     expect(rewards().querySelector('li')).not.toBeNull()
-    expect(trusted().textContent).toContain(SENDER)
+    expect(trusted().textContent).toContain(short(SENDER))
     const kept = storage.getItem('sticky:query-cache:v1') ?? ''
     expect(kept.toLowerCase()).not.toContain(VIEWER.toLowerCase())
     expect(kept.toLowerCase()).not.toContain(SENDER.toLowerCase())
@@ -852,7 +906,7 @@ describe('auto-stick', () => {
 describe('who can stick for the viewer', () => {
   const rows = () => [...trusted().querySelectorAll('li')]
 
-  it('lists the senders the hook says they trust, each with an Untrust button that waits for the transaction engine', async () => {
+  it('lists the senders the hook says they trust, each with an Untrust button, and a Trust button', async () => {
     const events = [trust(SENDER), trust(OTHER)]
     mocks.events.mockResolvedValue({ events, source: 'indexed', degraded: null })
     mocks.trusted.mockResolvedValue([SENDER, OTHER])
@@ -860,11 +914,87 @@ describe('who can stick for the viewer', () => {
 
     expect(trusted().querySelector('h2')?.textContent).toBe('Who can stick for you')
     expect(trusted().textContent).toContain('Addresses you trust can stick tokens for you.')
-    expect(rows().map(row => row.querySelector('span')?.textContent)).toEqual([SENDER, OTHER])
+    expect(rows().map(row => row.querySelector('span')?.textContent)).toEqual([short(SENDER), short(OTHER)])
     expect(rows().map(row => buttonsOf(row))).toEqual([['Untrust'], ['Untrust']])
-    expect([...trusted().querySelectorAll('button')].every(button => button.disabled)).toBe(true)
+    expect([...trusted().querySelectorAll('button')].every(button => !button.disabled)).toBe(true)
     expect(buttonsOf(trusted()).at(-1)).toBe('Trust')
     expect(mocks.trusted).toHaveBeenCalledWith(events, { chainId: CHAIN, projectId: 23n, holder: VIEWER, signal: expect.any(AbortSignal) })
+    expect(trusted().querySelector('[data-flow="trust"]')).toBeNull()
+  })
+
+  it('names each sender as the rest of the page does: by its name on a production chain, else its short address', async () => {
+    const LOWER = `0x${'ab'.repeat(20)}` as Address
+    mocks.events.mockResolvedValue({ events: [trust(SENDER), trust(LOWER)], source: 'indexed', degraded: null })
+    // The hook's list holds addresses in lowercase.
+    mocks.trusted.mockResolvedValue([SENDER, LOWER])
+    mocks.ens.mockImplementation(async (address: string) => (address.toLowerCase() === SENDER.toLowerCase() ? 'sender.eth' : null))
+    await renderTab()
+    await settled()
+
+    const labels = rows().map(row => row.querySelector('span[title]')!)
+    expect(labels.map(label => label.textContent)).toEqual(['sender.eth', '0xabab…abab'])
+    // The whole address is there on hover, and nowhere in the row's text.
+    expect(labels.map(label => label.getAttribute('title'))).toEqual([SENDER, LOWER])
+    expect(rows().every(row => !row.textContent!.includes(LOWER))).toBe(true)
+    expect(mocks.ens).toHaveBeenCalledWith(SENDER, CHAIN)
+
+    // A testnet asks mainnet for no names.
+    mocks.ens.mockClear()
+    await act(async () =>
+      root.render(
+        <QueryClientProvider client={client}>
+          <AirdropsTab chainId={84532} projectId={23} />
+        </QueryClientProvider>,
+      ),
+    )
+    await settled()
+    expect(rows().map(row => row.querySelector('span[title]')!.textContent)).toEqual([short(SENDER), '0xabab…abab'])
+    expect(mocks.ens).not.toHaveBeenCalled()
+  })
+
+  it('opens the trust flow for a new sender from Trust, and shows the list again when it closes', async () => {
+    await renderTab()
+    await act(async () => buttonNamed(trusted(), 'Trust').click())
+    const flow = trusted().querySelector('[data-flow="trust"]')!
+    expect(flow.getAttribute('data-chain')).toBe(String(CHAIN))
+    expect(flow.getAttribute('data-project')).toBe('23')
+    // The project the page has read, which the confirmation names.
+    expect(flow.getAttribute('data-token')).toBe('STICKYSLOPSHOP')
+    expect(flow.getAttribute('data-sender')).toBe('')
+
+    await act(async () => buttonNamed(flow as HTMLElement, 'Close trust').click())
+    expect(trusted().querySelector('[data-flow="trust"]')).toBeNull()
+  })
+
+  it('opens the trust flow for that sender from a row\'s Untrust', async () => {
+    mocks.events.mockResolvedValue({ events: [trust(SENDER), trust(OTHER)], source: 'indexed', degraded: null })
+    mocks.trusted.mockResolvedValue([SENDER, OTHER])
+    await renderTab()
+    await act(async () => buttonNamed(rows()[1], 'Untrust').click())
+    const flow = trusted().querySelector('[data-flow="trust"]')!
+    expect(flow.getAttribute('data-sender')).toBe(OTHER)
+    expect(trusted().querySelectorAll('[data-flow="trust"]')).toHaveLength(1)
+  })
+
+  it('reads again, after a change of trust, who is trusted and the auto-stick, and not the rewards or the airdrops scan', async () => {
+    mocks.events.mockResolvedValue({ events: [trust(SENDER)], source: 'indexed', degraded: null })
+    mocks.trusted.mockResolvedValue([SENDER])
+    await renderTab()
+    const reads = [mocks.events, mocks.trusted, mocks.autoStick]
+    const before = reads.map(read => read.mock.calls.length)
+    const untouched = [mocks.rewards, mocks.funding, mocks.project].map(read => read.mock.calls.length)
+
+    await act(async () => refreshAfterTrust(client, CHAIN, 23))
+    await settled()
+    reads.forEach((read, at) => expect(read.mock.calls.length).toBeGreaterThan(before[at]))
+    expect([mocks.rewards, mocks.funding, mocks.project].map(read => read.mock.calls.length)).toEqual(untouched)
+  })
+
+  it('opens the trust flow with no account too: the flow asks them to sign in', async () => {
+    mocks.address = undefined
+    await renderTab()
+    await act(async () => buttonNamed(trusted(), 'Trust').click())
+    expect(trusted().querySelector('[data-flow="trust"]')).not.toBeNull()
   })
 
   it('says none yet when nobody is trusted', async () => {

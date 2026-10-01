@@ -1,7 +1,81 @@
 {
   "version": 1,
-  "useSafeTx": {},
+  "useSafeTx": {
+    "src/components/project/flows/StickFlow.tsx": {
+      "hooks": 1,
+      "sends": 1,
+      "sendSites": [
+        {
+          "id": "stick-step",
+          "actions": [
+            "Approve the staked token for a stick",
+            "Stick",
+            "Stick for someone else"
+          ]
+        }
+      ]
+    },
+    "src/components/project/flows/TransferFlow.tsx": {
+      "hooks": 1,
+      "sends": 1,
+      "sendSites": [
+        {
+          "id": "transfer-sticky-tokens",
+          "actions": [
+            "Transfer Sticky tokens"
+          ]
+        }
+      ]
+    },
+    "src/components/project/flows/TrustFlow.tsx": {
+      "hooks": 1,
+      "sends": 1,
+      "sendSites": [
+        {
+          "id": "set-trusted-sender",
+          "actions": [
+            "Trust or untrust a sender"
+          ]
+        }
+      ]
+    },
+    "src/components/project/flows/UnstickFlow.tsx": {
+      "hooks": 1,
+      "sends": 1,
+      "sendSites": [
+        {
+          "id": "unstick-steps",
+          "actions": [
+            "Turn off auto-stick",
+            "Take back the auto-stick adapter's trust",
+            "Take back the auto-stick adapter's allowance",
+            "Unstick Sticky tokens"
+          ]
+        }
+      ]
+    }
+  },
   "authorityCalls": {},
-  "reviewedDirectWrites": {},
-  "rawWalletCalls": {}
+  "reviewedDirectWrites": {
+    "src/hooks/useSafeTx.ts": {
+      "calls": 1,
+      "actions": [
+        "Submit a reviewed direct write"
+      ]
+    },
+    "src/lib/contract-write.ts": {
+      "calls": 1,
+      "actions": [
+        "Submit a reviewed direct write"
+      ]
+    }
+  },
+  "rawWalletCalls": {
+    "useWriteContract": {
+      "src/hooks/useSafeTx.ts": 1
+    },
+    "writeContractAsync": {
+      "src/hooks/useSafeTx.ts": 1
+    }
+  }
 }

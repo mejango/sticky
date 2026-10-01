@@ -69,7 +69,13 @@ vi.mock('next/link', () => ({
 vi.mock('@/hooks/useProjectMetadata', () => ({
   useProjectMetadata: () => ({ data: undefined, isPending: false, isError: false, error: null }),
 }))
-vi.mock('@/hooks/useWallet', () => ({ useWallet: () => ({ address: mocks.address }) }))
+vi.mock('@/hooks/useWallet', () => ({
+  useWallet: () => ({ address: mocks.address, isConnected: mocks.address !== undefined, isCenterWallet: false, openSignIn: vi.fn() }),
+}))
+// The Stick card's transaction engine, idle: sending has tests of its own (stick-flow.test.tsx).
+vi.mock('@/hooks/useSafeTx', () => ({
+  useSafeTx: () => ({ phase: 'idle', busy: false, error: null, hash: null, receipt: null, send: vi.fn(), reset: vi.fn() }),
+}))
 vi.mock('@/lib/ens', () => ({ ensAvailable: () => false, lookupEnsName: async () => null }))
 // The Airdrops tab's reads have tests of their own (airdrops.test.tsx). Here they answer at once, with nothing.
 vi.mock('@/lib/sticky-rewards', async importOriginal => ({
@@ -613,7 +619,7 @@ describe('the reads behind the page', () => {
     await act(async () => read.resolve(slopshop(23n)))
     await settle()
     expect(pair('Stuck')?.querySelector('.revalidating')).toBeNull()
-    expect(stickButton().textContent).toBe('Stick')
+    expect(stickButton().textContent).toBe('Sign in to stick')
   })
 
   it('keep no account\'s stick', async () => {
@@ -640,9 +646,9 @@ describe('the Stick card', () => {
     await act(async () => read.resolve(slopshop(23n)))
     await settle()
     expect(stickCard().querySelector('h2')?.textContent).toBe('Stick SLOPSHOP')
-    expect(stickButton().textContent).toBe('Stick')
-    // Sticking opens with the transaction engine; the page reads only.
-    expect(stickButton().disabled).toBe(true)
+    // A visitor without a wallet is asked to sign in (stick-flow.test.tsx has what happens with one).
+    expect(stickButton().textContent).toBe('Sign in to stick')
+    expect(stickButton().disabled).toBe(false)
   })
 
   it('shows no wallet, and reads no stick, without an account', async () => {

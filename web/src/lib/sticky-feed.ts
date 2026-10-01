@@ -22,13 +22,13 @@
 
 import { decodeEventLog, getAbiItem, pad, toEventSelector, toHex, type AbiEvent, type Address, type Hex } from 'viem'
 import { groupSameTx } from '@/lib/activity-groups'
-import { scanLogs, untilAborted, type ScannedLog } from '@/lib/hook-logs'
-import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
+import { keptLogsOf, type ScannedLog } from '@/lib/hook-logs'
 import { terminalEventsAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
-import { orNull, type StickyEvent, type StickyEventKind, type StickyReadDeps } from '@/lib/sticky-events'
+import { orNull, type StickyEvent, type StickyEventKind } from '@/lib/sticky-events'
 import { indexedStickyMoves, type IndexedMove } from '@/lib/sticky-indexed'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
+import { terminalHistoryKey, withoutMemo } from '@/lib/terminal-history'
 
 /** A quantity of one token, for the page to format. */
 export type FeedAmount = { value: bigint; decimals: number; symbol: string }
@@ -176,12 +176,15 @@ const selector = (name: 'Pay' | 'CashOutTokens') =>
 const PAY = selector('Pay')
 const CASH_OUT = selector('CashOutTokens')
 
+/** The pays and cash outs `terminalLogs` reads: some of a chain's projects on its terminal, from a block on. */
+type TerminalQuery = { terminal: Address; projectIds: readonly bigint[]; fromBlock: bigint }
+
 /** The reads terminalMoves makes, so a test can stand in for Bendystraw and Center. */
 export type MoveReaders = {
   /** Bendystraw's pays and cash outs of some of a chain's projects. */
   indexedMoves: typeof indexedStickyMoves
-  /** The terminal's logs that match a filter, from `fromBlock` through the head. */
-  scan: StickyReadDeps['scan']
+  /** The terminal's Pay and CashOutTokens logs of `projectIds`, from `fromBlock` through the head. */
+  terminalLogs: (chainId: number, query: TerminalQuery, opts: { signal?: AbortSignal }) => Promise<ScannedLog[]>
 }
 
 /** A caller's signal, which every read gets, and in tests the reads to use instead of the real ones. */
@@ -189,10 +192,18 @@ export type MoveOptions = { signal?: AbortSignal } & Partial<MoveReaders>
 
 const live: MoveReaders = {
   indexedMoves: indexedStickyMoves,
-  async scan(chainId, filter, { signal }) {
-    const client = jbCenterPublicClient(chainId)
-    const toBlock = await untilAborted(client.getBlockNumber(), signal)
-    return scanLogs(client, { ...filter, toBlock }, { signal })
+  /** One scan of the terminal for every project asked for, with what is buried of each project's pays and cash outs
+   * kept in this browser under a key of its own, as its hook history is (`keptLogsOf`), without their memos: the next
+   * read, a refresh after a send or a return visit, scans only the blocks since. Each history starts where the read
+   * does, at the oldest event the feed shows, so it holds what a feed reads and no more. */
+  terminalLogs(chainId, { terminal, projectIds, fromBlock }, { signal }) {
+    const words = projectIds.map(projectId => pad(toHex(projectId), { size: 32 }))
+    const histories = projectIds.map((projectId, at) => ({
+      key: terminalHistoryKey(chainId, terminal, projectId, 'feed'),
+      owns: (log: ScannedLog) => log.topics[3]?.toLowerCase() === words[at],
+    }))
+    const filter = { address: terminal, topics: [[PAY, CASH_OUT], null, null, words], fromBlock }
+    return keptLogsOf(chainId, histories, filter, { signal, keep: withoutMemo, trim: true })
   },
 }
 
@@ -233,10 +244,10 @@ function byChain(moves: Move[]): Map<number, Move[]> {
  * What the terminal took in for each stick in `events` and paid out for each unstick, in the staked token, by
  * `moveKey`. A stick or unstick Bendystraw indexed has no block number, and its amount is Bendystraw's pay or cash
  * out, read for its projects in one request per chain, from the time of the oldest such event. One the chain gave us
- * is found in the terminal's logs, in one scan per chain from the oldest such event's block. A transfer between
- * holders has no terminal event, so it has no entry. A read that fails leaves its events without one, which the
- * console hears about, and their rows show the Sticky shares instead. Chains are read one after another, and a
- * caller's cancel rejects with its reason.
+ * is found in the terminal's logs, in one scan per chain from the oldest such event's block, which goes on from what
+ * this browser kept of each project's earlier scans. A transfer between holders has no terminal event, so it has no
+ * entry. A read that fails leaves its events without one, which the console hears about, and their rows show the
+ * Sticky shares instead. Chains are read one after another, and a caller's cancel rejects with its reason.
  *
  * Pass the events a feed shows, the newest `FEED_WINDOW` of a project's history: both reads reach back to the oldest.
  */
@@ -264,8 +275,8 @@ export async function terminalMoves(
     const found = moves.filter((move): move is Move & { blockNumber: bigint } => move.blockNumber !== null)
     if (found.length) {
       const fromBlock = found.map(({ blockNumber }) => blockNumber).reduce((low, block) => (block < low ? block : low))
-      const topics = [[PAY, CASH_OUT], null, null, projectsOf(found).map(id => pad(toHex(id), { size: 32 }))]
-      const read = () => readers.scan(chainId, { address: deployment.terminal, topics, fromBlock }, { signal })
+      const query = { terminal: deployment.terminal, projectIds: projectsOf(found), fromBlock }
+      const read = () => readers.terminalLogs(chainId, query, { signal })
       for (const log of (await orNull(read, signal, AMOUNTS_UNAVAILABLE, about)) ?? []) {
         const moved = movedBy(chainId, log)
         if (moved) amounts.set(...moved)

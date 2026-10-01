@@ -156,7 +156,8 @@ describe('readStickyProject', () => {
       plannedChains: [84532, 11155420],
       blockNumber: HEAD,
     })
-    expect(getBlockNumber).toHaveBeenCalledOnce()
+    // The block is the head as Center says it now, not one viem kept from a read before a write landed.
+    expect(getBlockNumber.mock.calls).toEqual([[{ cacheTime: 0 }]])
     expect(multicall.mock.calls.map(([round]) => [round.blockNumber, round.allowFailure])).toEqual([
       [HEAD, true],
       [HEAD, true],
@@ -567,7 +568,7 @@ describe('readStickyProjects', () => {
           [expect.stringMatching(/project/), { chainId: CHAIN, projectId: lost }],
         ])
         // Center is asked afresh whether it still answers, and every read stays at the block the first asked for.
-        expect(getBlockNumber.mock.calls).toEqual([[], [{ cacheTime: 0 }]])
+        expect(getBlockNumber.mock.calls).toEqual([[{ cacheTime: 0 }], [{ cacheTime: 0 }]])
         expect(multicall.mock.calls.map(([round]) => round.contracts.length)).toEqual(requests)
         expect(multicall.mock.calls.every(([round]) => round.blockNumber === HEAD)).toBe(true)
         warn.mockRestore()

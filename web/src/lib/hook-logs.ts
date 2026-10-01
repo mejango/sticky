@@ -115,6 +115,24 @@ export function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefine
   })
 }
 
+/** The chain's head as the node says it now. viem hands a head it read in the last few seconds to the next read, and
+ * a read made right after a write lands must not pin a block before it; a head request already under way is shared. */
+export function freshHead(client: Pick<PublicClient, 'getBlockNumber'>, signal: AbortSignal | undefined): Promise<bigint> {
+  return untilAborted(client.getBlockNumber({ cacheTime: 0 }), signal)
+}
+
+/** What `work` gives, or an error that names `what` and keeps the cause. A signal that has aborted stops it before it
+ * starts, and its reason, like any it aborts with, is the caller's own and goes through as it is. */
+export async function asked<T>(what: string, work: () => Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  try {
+    if (signal?.aborted) throw signal.reason
+    return await untilAborted(work(), signal)
+  } catch (cause) {
+    if (signal?.aborted) throw cause
+    throw new Error(`${what} could not be read.`, { cause })
+  }
+}
+
 /** [from, to] ranges of at most `span` blocks that cover `from` to `to` exactly. */
 function windowsOf(from: bigint, to: bigint, span: bigint): [bigint, bigint][] {
   const windows: [bigint, bigint][] = []
@@ -353,13 +371,62 @@ function readHistory(key: string): Kept | null {
   }
 }
 
+/** Whether `error` is the browser saying this site's storage is full, as each browser words it. */
+function isQuotaExceeded(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false
+  const { name, code } = error as { name?: unknown; code?: unknown }
+  return name === 'QuotaExceededError' || name === 'NS_ERROR_DOM_QUOTA_REACHED' || code === 22 || code === 1014
+}
+
+/** When a kept history was written, in milliseconds, from its first field, which is read without parsing the rest. One
+ * the old client wrote has none, and counts as the oldest. */
+function writtenAt(stored: string | null): number {
+  const match = /^\{"at":(\d{1,16})[,}]/.exec(stored?.slice(0, 32) ?? '')
+  return match ? Number(match[1]) : 0
+}
+
+/** Makes room for `needed` characters by removing the kept histories written longest ago, other than `writing`, the one
+ * that needs it: each one removed is scanned again when it is next read. Nothing else this site keeps is ever removed:
+ * not the persisted query cache, the wallet's connection or View as. */
+function evictHistories(needed: number, writing: string): void {
+  const histories: { name: string; at: number; size: number }[] = []
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const name = localStorage.key(index)
+    if (name === null || name === writing || !name.startsWith(HISTORY_KEY)) continue
+    const stored = localStorage.getItem(name)
+    histories.push({ name, at: writtenAt(stored), size: name.length + (stored?.length ?? 0) })
+  }
+  histories.sort((a, b) => a.at - b.at)
+  let freed = 0
+  for (const { name, size } of histories) {
+    if (freed >= needed) return
+    localStorage.removeItem(name)
+    freed += size
+  }
+}
+
+/** Keeps a history under `key`, every kept history's one way in. When the site's storage is full, the histories written
+ * longest ago make room and the write is tried once more; when it still does not fit it is not kept, and the next read
+ * scans again. */
 function writeHistory(key: string, from: bigint, through: bigint, logs: ScannedLog[]): void {
+  const name = HISTORY_KEY + key
   try {
-    const payload = JSON.stringify({ from: from.toString(), through: through.toString(), all: logs.map(toRpc) })
-    if (payload.length > HISTORY_MAX_CHARS) localStorage.removeItem(HISTORY_KEY + key)
-    else localStorage.setItem(HISTORY_KEY + key, payload)
+    // The write time comes first, so that making room reads it without parsing a history.
+    const at = Date.now()
+    const payload = JSON.stringify({ at, from: from.toString(), through: through.toString(), all: logs.map(toRpc) })
+    if (payload.length > HISTORY_MAX_CHARS) {
+      localStorage.removeItem(name)
+      return
+    }
+    try {
+      localStorage.setItem(name, payload)
+    } catch (error) {
+      if (!isQuotaExceeded(error)) throw error
+      evictHistories(name.length + payload.length, name)
+      localStorage.setItem(name, payload)
+    }
   } catch {
-    // Storage is full, blocked or absent: the next visit scans again.
+    // Storage is blocked or absent, or still full: the next visit scans again.
   }
 }
 
@@ -376,33 +443,69 @@ function writeHistory(key: string, from: bigint, through: bigint, logs: ScannedL
 export async function keptLogs(
   chainId: number,
   key: string,
-  { address, topics, fromBlock }: { address: Address; topics: (Hex | Hex[] | null)[]; fromBlock: bigint | null },
+  filter: { address: Address; topics: (Hex | Hex[] | null)[]; fromBlock: bigint | null },
   opts: { signal?: AbortSignal; keep?: (log: ScannedLog) => ScannedLog } = {},
 ): Promise<ScannedLog[]> {
-  const { signal, keep = (log: ScannedLog) => log } = opts
+  return keptLogsOf(chainId, [{ key, owns: () => true }], filter, opts)
+}
+
+/** One history a scan keeps: the logs it `owns` of what the scan reads, kept under `key`. */
+type KeptHistory = { key: string; owns: (log: ScannedLog) => boolean }
+
+/**
+ * `keptLogs` for a filter whose logs make several histories, as one scan of the terminal reads the pays of several
+ * projects: each history is kept under its own key, as `keptLogs` keeps one, and one scan reads what is new to any of
+ * them, from just after the least that one of them kept. A history the scan reads again in part keeps each log once.
+ * A history that ends before `fromBlock` holds nothing the read asked for, so the scan does not read the blocks
+ * between: it starts at `fromBlock`, and so does the history it keeps from then on. No history ever moves backwards:
+ * one is not rewritten through an earlier block than it holds, whether or not this read could use it. With `trim`, a
+ * history keeps nothing from before `fromBlock`, so that it holds what its reads ask for and no more. What is returned
+ * is every history's logs, kept and new, and the new ones no history owns, which are not kept.
+ */
+export async function keptLogsOf(
+  chainId: number,
+  histories: readonly KeptHistory[],
+  { address, topics, fromBlock }: { address: Address; topics: (Hex | Hex[] | null)[]; fromBlock: bigint | null },
+  opts: { signal?: AbortSignal; keep?: (log: ScannedLog) => ScannedLog; trim?: boolean } = {},
+): Promise<ScannedLog[]> {
+  const { signal, keep = (log: ScannedLog) => log, trim = false } = opts
   const deployment = stickyDeployment(chainId)
   if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
   throwIfAborted(signal)
   const client = jbCenterPublicClient(chainId)
-  const saved = readHistory(key)
-  const kept = saved && (fromBlock === null || saved.from === undefined || saved.from <= fromBlock) ? saved : null
   const start = fromBlock ?? deployment.fromBlock
-  const head = await untilAborted(client.getBlockNumber(), signal)
-  // The scan starts after what was kept, so the two never overlap.
-  const fresh = await scanLogs(
-    client,
-    { address, topics, fromBlock: kept ? kept.through + 1n : start, toBlock: head },
-    { signal },
+  // What each key holds, and of that what this read can use: a history that began after `fromBlock` lacks what came
+  // before it, and is set aside.
+  const stored = histories.map(({ key }) => readHistory(key))
+  const kept = stored.map(saved =>
+    saved && (fromBlock === null || saved.from === undefined || saved.from <= fromBlock) ? saved : null,
   )
-  const all = tidy([...(kept?.logs ?? []), ...fresh])
-  if (head > REORG_DEPTH) {
-    const buried = head - REORG_DEPTH
-    // A kept history never moves backwards, and keeps nothing a reorg could still replace.
-    if (!kept || buried > kept.through) {
-      writeHistory(key, kept?.from ?? start, buried, all.filter(log => log.blockNumber <= buried).map(keep))
-    }
-  }
-  return all
+  const head = await freshHead(client, signal)
+  // The scan starts after what was kept, so a block every history holds is never asked for again. With no block to
+  // start at, every kept history goes on from where it ends.
+  const goesOn = (saved: Kept) => fromBlock === null || saved.through + 1n >= fromBlock
+  const starts = kept.map(saved => (saved && goesOn(saved) ? saved.through + 1n : start))
+  const scanFrom = starts.reduce((low, next) => (next < low ? next : low), starts[0] ?? start)
+  const fresh = await scanLogs(client, { address, topics, fromBlock: scanFrom, toBlock: head }, { signal })
+  const buried = head - REORG_DEPTH
+  histories.forEach(({ key, owns }, at) => {
+    // Nothing a reorg could still replace is kept.
+    if (head <= REORG_DEPTH) return
+    // A history goes on from what it kept when the scan began no later than the block after it; otherwise it starts
+    // again where the scan did. Either way it holds every log it owns from where it starts, and a trimmed one starts at
+    // `fromBlock`.
+    const saved = kept[at]
+    const continued = saved !== null && saved.through + 1n >= scanFrom
+    const begins = continued ? (saved.from ?? start) : scanFrom
+    const from = trim && fromBlock !== null && fromBlock > begins ? fromBlock : begins
+    // No history moves backwards, the one this read set aside included: it is rewritten only through a later block, or
+    // through the same one from an earlier block, which holds more.
+    const before = stored[at]
+    if (before && (buried < before.through || (buried === before.through && from >= (before.from ?? start)))) return
+    const logs = tidy([...(continued ? saved.logs : []), ...fresh.filter(owns)])
+    writeHistory(key, from, buried, logs.filter(log => log.blockNumber >= from && log.blockNumber <= buried).map(keep))
+  })
+  return tidy([...kept.flatMap(saved => saved?.logs ?? []), ...fresh])
 }
 
 /** Every hook event of one project on one chain, from `fromBlock` to the head, read through Center and kept in this

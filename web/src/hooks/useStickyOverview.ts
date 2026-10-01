@@ -16,6 +16,7 @@ import {
   type Flow,
 } from '@/lib/sticky-backing'
 import { projectCreationBlock } from '@/lib/sticky-events'
+import { projectKey } from '@/lib/sticky-keys'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { launchSiblings, missingChains, siblingRows, type SiblingRow } from '@/lib/sticky-siblings'
 
@@ -49,7 +50,7 @@ const reasonOf = (error: unknown) => (error instanceof Error ? error.message : S
 /** What the terminal's balance did over a project's life, or null when it cannot be read, which the chart says. */
 const flowsOptions = (client: QueryClient, chainId: number, projectId: number) =>
   queryOptions<Flow[] | null>({
-    queryKey: ['sticky-project', chainId, projectId, 'flows'],
+    queryKey: projectKey(chainId, projectId, 'flows'),
     queryFn: ({ signal }) =>
       inTurn(client, signal, async () => {
         try {

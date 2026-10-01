@@ -1,6 +1,6 @@
 import { getAddress, pad, toHex, type Address, type Hex, type PublicClient } from 'viem'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { HistoryTooLongError, keptLogs, projectHookLogs, scanLogs, statedRange, type ScannedLog } from '@/lib/hook-logs'
+import { HistoryTooLongError, keptLogs, keptLogsOf, projectHookLogs, scanLogs, statedRange, type ScannedLog } from '@/lib/hook-logs'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 
 const center = vi.hoisted(() => ({ client: vi.fn() }))
@@ -818,7 +818,12 @@ describe('projectHookLogs', () => {
     return Object.assign(node, { getBlockNumber })
   }
   const saved = () =>
-    JSON.parse(localStorage.getItem(KEY) ?? 'null') as { from?: string; through: string; all: Record<string, unknown>[] } | null
+    JSON.parse(localStorage.getItem(KEY) ?? 'null') as {
+      at?: number
+      from?: string
+      through: string
+      all: Record<string, unknown>[]
+    } | null
   const savedBlocks = () => saved()?.all.map(entry => BigInt(entry.blockNumber as string))
   const firstAsked = (node: FakeClient) => node.asked[0]?.fromBlock
 
@@ -841,6 +846,8 @@ describe('projectHookLogs', () => {
     expect(node.asked.every(range => range.topics.length === 2 && range.topics[1] === word(7n))).toBe(true)
     expect(new Set(node.asked[0].topics[0])).toEqual(new Set(PROJECT_TOPICS))
     expect(node.asked.at(-1)?.toBlock).toBe(0x1000n)
+    // Through the head as Center says it now: a scan made right after a write reaches the write's block.
+    expect(node.getBlockNumber.mock.calls).toEqual([[{ cacheTime: 0 }]])
   })
 
   it('says so when Sticky is not deployed on the chain, without asking anyone', async () => {
@@ -969,11 +976,16 @@ describe('projectHookLogs', () => {
       expect(firstAsked(node)).toBe(0x1000n - 64n + 1n)
     })
 
-    it('writes the old client\'s format, JSON-RPC logs through a block, and adds the block it scanned from', async () => {
+    it('writes the old client\'s format, JSON-RPC logs through a block, and adds the block it scanned from and when', async () => {
       events = [hookLog(0x20n, 7n, 2)]
       serve()
+      const before = Date.now()
       await projectHookLogs(CHAIN, 7n, 0n)
+      // The time it was written comes first, where making room for another history reads it without parsing this one.
+      expect(localStorage.getItem(KEY)!.startsWith('{"at":')).toBe(true)
+      expect(saved()!.at).toBeGreaterThanOrEqual(before)
       expect(saved()).toEqual({
+        at: expect.any(Number),
         from: '0',
         through: '4032',
         all: [
@@ -1228,6 +1240,155 @@ describe('projectHookLogs', () => {
       })
     })
 
+    describe("when the site's storage is full", () => {
+      // What else the site keeps beside the histories: the persisted query cache, the wallet's connection and View as.
+      const OTHERS = {
+        'sticky:query-cache:v1': 'q'.repeat(20_000),
+        'wagmi.store': 'w'.repeat(5_000),
+        'wagmi.recentConnectorId': '"injected"',
+        'jb-view-as-v1': '0x00000000000000000000000000000000000000aa',
+      }
+      /** A kept history of another project, written at `at` (none: the old client's, which has no write time), taking
+       * about `size` characters. */
+      const another = (name: string, at: number | null, size = 10_000) => {
+        const head = at === null ? '{' : `{"at":${at},`
+        localStorage.setItem(`sticky.history.v1:${name}`, `${head}"from":"0","through":"1","all":[],"pad":"${'p'.repeat(size)}"}`)
+      }
+      const used = (except = '') =>
+        Object.keys(localStorage)
+          .filter(name => name !== except)
+          .reduce((total, name) => total + name.length + (localStorage.getItem(name)?.length ?? 0), 0)
+      /** A browser that keeps at most `limit` characters for the site, keys included, and refuses a write past it as
+       * browsers do. `refused` counts its refusals. */
+      function quota(limit: number) {
+        const setItem = Storage.prototype.setItem
+        const refused = { count: 0 }
+        vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, name: string, value: string) {
+          if (used(name) + name.length + value.length > limit) {
+            refused.count += 1
+            throw new DOMException('The quota has been exceeded.', 'QuotaExceededError')
+          }
+          setItem.call(this, name, value)
+        })
+        return refused
+      }
+      const historyNames = () => Object.keys(localStorage).filter(name => name.startsWith('sticky.history.v1:')).sort()
+      /** A history of project 7 of about `size` characters. */
+      const sized = (size: number) => {
+        events = [{ ...hookLog(0x20n), data: `0x${'a'.repeat(size)}` as Hex }]
+        serve()
+      }
+
+      beforeEach(() => {
+        for (const [name, value] of Object.entries(OTHERS)) localStorage.setItem(name, value)
+      })
+
+      it('makes room by removing the history written longest ago, and nothing the site keeps besides', async () => {
+        another('oldest', 1_000)
+        another('middle', 2_000)
+        another('newest', 3_000)
+        // The history takes about 5,700 characters, and 3,000 are free.
+        sized(5_000)
+        const refused = quota(used() + 3_000)
+
+        expect(blocks(await projectHookLogs(CHAIN, 7n, 0n))).toEqual([0x20n])
+
+        expect(refused.count).toBe(1)
+        expect(saved()?.through).toBe(String(0x1000n - 64n))
+        expect(historyNames()).toEqual(['sticky.history.v1:middle', 'sticky.history.v1:newest', KEY].sort())
+        for (const [name, value] of Object.entries(OTHERS)) expect(localStorage.getItem(name)).toBe(value)
+      })
+
+      it("removes them oldest first until there is room, the old client's, which have no write time, before any", async () => {
+        another('newest', 4_000)
+        another('second', 2_000)
+        another('old client', null)
+        another('first', 1_000)
+        another('third', 3_000)
+        // The history takes about 25,700 characters and 2,000 are free: room only once three of the five have gone.
+        sized(25_000)
+        quota(used() + 2_000)
+
+        await projectHookLogs(CHAIN, 7n, 0n)
+
+        expect(historyNames()).toEqual(['sticky.history.v1:newest', 'sticky.history.v1:third', KEY].sort())
+        expect(saved()?.through).toBe(String(0x1000n - 64n))
+        for (const [name, value] of Object.entries(OTHERS)) expect(localStorage.getItem(name)).toBe(value)
+      })
+
+      it('tries once more after making room, and gives up when the history still does not fit: the read still answers', async () => {
+        another('first', 1_000)
+        another('second', 2_000)
+        sized(40_000)
+        // Not even with every other history gone.
+        const refused = quota(used() + 1_000)
+
+        expect(blocks(await projectHookLogs(CHAIN, 7n, 0n))).toEqual([0x20n])
+
+        expect(refused.count).toBe(2)
+        expect(saved()).toBeNull()
+        expect(historyNames()).toEqual([])
+        for (const [name, value] of Object.entries(OTHERS)) expect(localStorage.getItem(name)).toBe(value)
+
+        // The next read scans again, and makes room no further: there is nothing left to remove.
+        const node = serve()
+        expect(blocks(await projectHookLogs(CHAIN, 7n, 0n))).toEqual([0x20n])
+        expect(firstAsked(node)).toBe(0n)
+        expect(refused.count).toBe(4)
+      })
+
+      it('keeps the history it is writing when making room, and replaces it', async () => {
+        sized(100)
+        await projectHookLogs(CHAIN, 7n, 0n)
+        const first = localStorage.getItem(KEY)
+        another('older', 1)
+        head = 0x1100n
+        events = [...events, { ...hookLog(0x1010n), data: `0x${'b'.repeat(8_000)}` as Hex }]
+        serve()
+        // The history grows by about 8,200 characters, and 4,000 are free.
+        const refused = quota(used() + 4_000)
+
+        await projectHookLogs(CHAIN, 7n, 0n)
+
+        expect(refused.count).toBe(1)
+        expect(localStorage.getItem('sticky.history.v1:older')).toBeNull()
+        expect(localStorage.getItem(KEY)).not.toBe(first)
+        expect(savedBlocks()).toEqual([0x20n, 0x1010n])
+      })
+
+      it('removes nothing for a write the browser refuses for another reason', async () => {
+        another('first', 1_000)
+        sized(100)
+        const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+          throw new DOMException('denied', 'SecurityError')
+        })
+
+        expect(blocks(await projectHookLogs(CHAIN, 7n, 0n))).toEqual([0x20n])
+
+        expect(setItem).toHaveBeenCalledOnce()
+        expect(historyNames()).toEqual(['sticky.history.v1:first'])
+      })
+
+      it.each([
+        ['Firefox', () => new DOMException('full', 'NS_ERROR_DOM_QUOTA_REACHED')],
+        ['an old Safari', () => Object.assign(new Error('full'), { code: 22 })],
+      ])("takes %s's way of saying it is full as full", async (_browser, full) => {
+        another('first', 1_000)
+        sized(100)
+        const setItem = Storage.prototype.setItem
+        let refusals = 0
+        vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, name: string, value: string) {
+          if (name === KEY && refusals++ === 0) throw full()
+          setItem.call(this, name, value)
+        })
+
+        await projectHookLogs(CHAIN, 7n, 0n)
+
+        expect(historyNames()).toEqual([KEY])
+        expect(saved()?.through).toBe(String(0x1000n - 64n))
+      })
+    })
+
     describe('storage that cannot be trusted', () => {
       const kept = () => hookLog(0x20n)
 
@@ -1289,6 +1450,160 @@ describe('projectHookLogs', () => {
           if (original) Object.defineProperty(globalThis, 'localStorage', original)
         }
       })
+    })
+  })
+
+  describe('several histories in one scan (keptLogsOf)', () => {
+    // Projects 7 and 8 of one filter, each history kept under a key of its own, as the terminal's pays of several
+    // projects are.
+    const filter = { address: deployment.hook, topics: [PROJECT_TOPICS, [word(7n), word(8n)]], fromBlock: 0x10n }
+    const ownedBy = (projectId: bigint) => (entry: ScannedLog) => entry.topics[1] === word(projectId)
+    const histories = [
+      { key: 'of 7', owns: ownedBy(7n) },
+      { key: 'of 8', owns: ownedBy(8n) },
+    ]
+    const keptOf = (key: string) =>
+      JSON.parse(localStorage.getItem(`sticky.history.v1:${key}`) ?? 'null') as { from: string; through: string; all: { blockNumber: string }[] } | null
+    const keptBlocks = (key: string) => keptOf(key)?.all.map(entry => BigInt(entry.blockNumber))
+
+    it('keeps each history under its own key, with its own logs, from one scan', async () => {
+      events = [hookLog(0x20n, 7n), hookLog(0x30n, 8n), hookLog(0xff0n, 7n)]
+      const node = serve()
+
+      expect(blocks(await keptLogsOf(CHAIN, histories, filter))).toEqual([0x20n, 0x30n, 0xff0n])
+
+      // One scan for both, from the filter's block to the head: 4,081 blocks are nine windows.
+      expect(node.asked).toHaveLength(9)
+      expect(firstAsked(node)).toBe(0x10n)
+      expect(node.asked.at(-1)?.toBlock).toBe(0x1000n)
+      expect(node.asked.every(range => range.topics[1] === filter.topics[1])).toBe(true)
+      expect(keptOf('of 7')).toMatchObject({ from: '16', through: String(0x1000n - 64n) })
+      expect(keptBlocks('of 7')).toEqual([0x20n])
+      expect(keptOf('of 8')).toMatchObject({ from: '16', through: String(0x1000n - 64n) })
+      expect(keptBlocks('of 8')).toEqual([0x30n])
+    })
+
+    it('asks only for the blocks after the least that one of them kept, and keeps each log once', async () => {
+      events = [hookLog(0x20n, 7n), hookLog(0x30n, 8n)]
+      serve()
+      await keptLogsOf(CHAIN, [histories[0]], filter)
+      head = 0x1100n
+      serve()
+      await keptLogsOf(CHAIN, [histories[1]], filter)
+      // 7 is kept through 0xfc0, 8 through 0x10c0.
+
+      events = [...events, hookLog(0x1005n, 7n), hookLog(0x1105n, 8n)]
+      head = 0x1200n
+      const node = serve()
+      const found = await keptLogsOf(CHAIN, histories, filter)
+
+      expect(firstAsked(node)).toBe(0x1000n - 64n + 1n)
+      expect(blocks(found)).toEqual([0x20n, 0x30n, 0x1005n, 0x1105n])
+      // 8 was read again from 0xfc1, which it already held: it keeps each of its logs once.
+      expect(keptBlocks('of 7')).toEqual([0x20n, 0x1005n])
+      expect(keptBlocks('of 8')).toEqual([0x30n, 0x1105n])
+      expect(keptOf('of 8')).toMatchObject({ from: '16', through: String(0x1200n - 64n) })
+    })
+
+    it('scans from the start again for a history it cannot use, and keeps the others it reads again', async () => {
+      events = [hookLog(0x20n, 7n), hookLog(0x30n, 8n)]
+      serve()
+      await keptLogsOf(CHAIN, histories, filter)
+      // 8's history now begins later than the filter asks for.
+      localStorage.setItem('sticky.history.v1:of 8', JSON.stringify({ from: '256', through: '4032', all: [] }))
+
+      head = 0x1100n
+      const node = serve()
+      expect(blocks(await keptLogsOf(CHAIN, histories, filter))).toEqual([0x20n, 0x30n])
+
+      expect(firstAsked(node)).toBe(0x10n)
+      expect(keptOf('of 8')).toMatchObject({ from: '16', through: String(0x1100n - 64n) })
+      expect(keptBlocks('of 8')).toEqual([0x30n])
+      expect(keptBlocks('of 7')).toEqual([0x20n])
+    })
+
+    it('does not read the blocks between a history that ends before the read starts and the read: it starts again there', async () => {
+      events = [hookLog(0x20n, 7n), hookLog(0x5000n, 7n), hookLog(0x9000n, 7n)]
+      serve()
+      await keptLogsOf(CHAIN, [histories[0]], filter)
+      expect(keptOf('of 7')).toMatchObject({ from: '16', through: String(0x1000n - 64n) })
+
+      // Long after, a read from block 0x8000, which the kept history ends well before.
+      head = 0x9100n
+      const node = serve()
+      const found = await keptLogsOf(CHAIN, [histories[0]], { ...filter, fromBlock: 0x8000n })
+
+      expect(firstAsked(node)).toBe(0x8000n)
+      expect(node.asked).toHaveLength(9)
+      expect(blocks(found)).toContain(0x9000n)
+      expect(blocks(found)).not.toContain(0x5000n)
+      expect(keptOf('of 7')).toMatchObject({ from: String(0x8000), through: String(0x9100n - 64n) })
+      expect(keptBlocks('of 7')).toEqual([0x9000n])
+
+      // And the next read goes on from it.
+      head = 0x9200n
+      const next = serve()
+      await keptLogsOf(CHAIN, [histories[0]], { ...filter, fromBlock: 0x8000n })
+      expect(firstAsked(next)).toBe(0x9100n - 64n + 1n)
+    })
+
+    it('returns a log no history owns, and keeps it under none', async () => {
+      events = [hookLog(0x20n, 7n), hookLog(0x30n, 8n)]
+      serve()
+      expect(blocks(await keptLogsOf(CHAIN, [histories[0]], filter))).toEqual([0x20n, 0x30n])
+      expect(keptBlocks('of 7')).toEqual([0x20n])
+      expect(localStorage.length).toBe(1)
+    })
+
+    it('writes nothing when the scan fails', async () => {
+      failWith = new Error('archive unavailable')
+      serve()
+      await expect(keptLogsOf(CHAIN, histories, filter)).rejects.toThrow('archive unavailable')
+      expect(localStorage.length).toBe(0)
+    })
+
+    it('never moves a history it set aside backwards, when a lagging node reports an older head', async () => {
+      events = Array.from({ length: 50 }, (_, at) => hookLog(500n + BigInt(at) * 100n, 7n))
+      head = 5_064n
+      serve()
+      await keptLogsOf(CHAIN, [histories[0]], { ...filter, fromBlock: 1_000n })
+      const before = localStorage.getItem('sticky.history.v1:of 7')
+      expect(keptOf('of 7')).toMatchObject({ from: '1000', through: '5000' })
+
+      // A read from an earlier block, which sets the history aside, through a node that lags: it answers in full, and
+      // what was kept through block 5,000 is not rewritten through 3,936.
+      head = 4_000n
+      const node = serve()
+      const found = await keptLogsOf(CHAIN, [histories[0]], { ...filter, fromBlock: 500n })
+      expect(firstAsked(node)).toBe(500n)
+      expect(blocks(found)).toEqual(events.filter(entry => entry.blockNumber <= 4_000n).map(entry => entry.blockNumber))
+      expect(localStorage.getItem('sticky.history.v1:of 7')).toBe(before)
+
+      // Once the head has passed it, the earlier start is kept.
+      head = 5_200n
+      serve()
+      await keptLogsOf(CHAIN, [histories[0]], { ...filter, fromBlock: 500n })
+      expect(keptOf('of 7')).toMatchObject({ from: '500', through: String(5_200n - 64n) })
+    })
+
+    it('with trim, keeps nothing from before the block the read starts at, and goes on from it', async () => {
+      events = [hookLog(0x20n, 7n), hookLog(0x200n, 7n), hookLog(0x800n, 7n)]
+      serve()
+      await keptLogsOf(CHAIN, [histories[0]], filter, { trim: true })
+      expect(keptOf('of 7')).toMatchObject({ from: '16' })
+      expect(keptBlocks('of 7')).toEqual([0x20n, 0x200n, 0x800n])
+
+      // A read from a later block: what came before it is no longer kept.
+      head = 0x1100n
+      const node = serve()
+      expect(blocks(await keptLogsOf(CHAIN, [histories[0]], { ...filter, fromBlock: 0x100n }, { trim: true }))).toEqual([
+        0x20n,
+        0x200n,
+        0x800n,
+      ])
+      expect(firstAsked(node)).toBe(0x1000n - 64n + 1n)
+      expect(keptOf('of 7')).toMatchObject({ from: String(0x100), through: String(0x1100n - 64n) })
+      expect(keptBlocks('of 7')).toEqual([0x200n, 0x800n])
     })
   })
 })

@@ -5,6 +5,7 @@ import type { Address } from 'viem'
 import { useShowing } from '@/hooks/useShowing'
 import { FRESH_MS, warned } from '@/lib/query-reads'
 import { pinnedBlock, verifyHolderPage, type HolderRow, type StickyPosition } from '@/lib/sticky-holders'
+import { holderReadKey, projectKey } from '@/lib/sticky-keys'
 import { readTranchePage, type TranchePage } from '@/lib/sticky-tranches'
 
 /**
@@ -38,7 +39,12 @@ export function useHolderTranches(
 ) {
   const showing = useShowing()
   return useQuery<HolderTranches>({
-    queryKey: ['sticky-tranches', chainId, projectId, holder, requestedPage, position?.blockNumber.toString() ?? null],
+    queryKey: [
+      ...holderReadKey('sticky-tranches', chainId, projectId),
+      holder,
+      requestedPage,
+      position?.blockNumber.toString() ?? null,
+    ],
     queryFn: ({ signal }) =>
       warned(TRANCHES_UNREADABLE, { chainId, projectId }, signal, async () => {
         const page = await readTranchePage(chainId, BigInt(projectId), holder!, requestedPage, position!.blockNumber, { signal })
@@ -56,7 +62,7 @@ export function useHolderTranches(
  */
 export function useCheckedBalances(chainId: number, projectId: number, rows: readonly HolderRow[]) {
   return useQuery<bigint[]>({
-    queryKey: ['sticky-project', chainId, projectId, 'page-balances', rows.map(row => row.holder)],
+    queryKey: [...projectKey(chainId, projectId, 'page-balances'), rows.map(row => row.holder)],
     queryFn: ({ signal }) =>
       warned(BALANCES_UNCHECKED, { chainId, projectId }, signal, async () => {
         const pin = await pinnedBlock(chainId, { signal })

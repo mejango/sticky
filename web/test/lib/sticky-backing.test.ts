@@ -309,6 +309,7 @@ const hash = (n: number) => `0x${n.toString(16).padStart(64, '0')}`
 type Filter = Parameters<FlowReadDeps['scan']>[1]
 type KeptFilter = Parameters<FlowReadDeps['keptScan']>[2]
 const FEES_KEY = `${CHAIN}:${TERMINAL.toLowerCase()}:42:fees`
+const MOVES_KEY = `${CHAIN}:${TERMINAL.toLowerCase()}:42:moves`
 const MOVE_TOPICS = [[PAY, CASH_OUT], null, null, id()]
 const FEE_TOPICS = [[PROCESS_FEE, ADD_TO_BALANCE], id()]
 
@@ -360,7 +361,8 @@ describe('backingFlows', () => {
   })
 
   it('balance flows come from the terminal\'s Pay, CashOutTokens, AddToBalance and unheld ProcessFee', async () => {
-    // Bendystraw cannot answer here, so the pays and cash outs are scanned too: the old client's two scans.
+    // Bendystraw cannot answer here, so the pays and cash outs are scanned too, the old client's two scans, and each
+    // is kept in this browser under a key of its own.
     const deps = fakeDeps({
       logs: [
         payLog(100n * E6, 100n * E18, { block: 1n }),
@@ -378,9 +380,12 @@ describe('backingFlows', () => {
       { timestamp: 3, delta: -1n * E6 },
       { timestamp: 3, delta: -39n * E6 },
     ])
-    expect(deps.scans).toEqual([{ address: TERMINAL, topics: MOVE_TOPICS, fromBlock: 9n }])
-    expect(deps.kept).toEqual([{ key: FEES_KEY, filter: { address: TERMINAL, topics: FEE_TOPICS, fromBlock: 9n } }])
-    expect([...deps.scan.mock.calls, ...deps.keptScan.mock.calls].map(([chainId]) => chainId)).toEqual([CHAIN, CHAIN])
+    expect(deps.scans).toEqual([])
+    expect(deps.kept).toEqual([
+      { key: MOVES_KEY, filter: { address: TERMINAL, topics: MOVE_TOPICS, fromBlock: 9n } },
+      { key: FEES_KEY, filter: { address: TERMINAL, topics: FEE_TOPICS, fromBlock: 9n } },
+    ])
+    expect(deps.keptScan.mock.calls.map(([chainId]) => chainId)).toEqual([CHAIN, CHAIN])
     expect(vi.mocked(console.warn).mock.calls).toEqual([
       [MOVES_UNAVAILABLE, { chainId: CHAIN, projectId: 42n }, new Error('Bendystraw is down')],
     ])
@@ -489,14 +494,30 @@ describe('backingFlows', () => {
       logs: [payLog(5n, 5n, { block: 2n })],
     })
     expect(await backingFlows(CHAIN, 42n, 9n, deps)).toEqual([{ timestamp: 2, delta: 5n }])
-    expect(deps.scans).toEqual([{ address: TERMINAL, topics: MOVE_TOPICS, fromBlock: 9n }])
+    expect(deps.scans).toEqual([])
+    expect(deps.kept[0]).toEqual({ key: MOVES_KEY, filter: { address: TERMINAL, topics: MOVE_TOPICS, fromBlock: 9n } })
   })
 
-  it('reads a creation block it could not find as the deployer\'s for a plain scan, and hands it on as unknown to the kept one', async () => {
+  it("keeps the pays and cash outs it scans without a pay's memo or either's metadata, as it keeps the fees", async () => {
+    const deps = fakeDeps()
+    await backingFlows(CHAIN, 42n, 9n, deps)
+    const [[, movesKey, , { keep }]] = deps.keptScan.mock.calls
+    expect(movesKey).toBe(MOVES_KEY)
+    const pay = parseAbiParameters('address, address, uint256, uint256, string, bytes, address')
+    const paid = raw([PAY, topic(1n), topic(1n), id()], encodeAbiParameters(pay, [HOLDER, HOLDER, 5n, 6n, 'x'.repeat(10_000), '0xabcd', HOLDER]), on({ block: 2n }))
+    const kept = keep!(paid)
+    expect({ ...kept, data: paid.data }).toEqual(paid)
+    expect(kept.data).toBe(encodeAbiParameters(pay, [HOLDER, HOLDER, 5n, 6n, '', '0x', HOLDER]))
+  })
+
+  it('hands a creation block it could not find on as unknown to the kept scans, and reads it as the deployer\'s for a plain one', async () => {
     const down = fakeDeps()
     await backingFlows(CHAIN, 42n, null, down)
-    expect(down.scans.map(filter => filter.fromBlock)).toEqual([deployment.fromBlock])
-    expect(down.kept.map(({ filter }) => filter.fromBlock)).toEqual([null])
+    expect(down.scans).toEqual([])
+    expect(down.kept.map(({ key, filter }) => [key, filter.fromBlock])).toEqual([
+      [MOVES_KEY, null],
+      [FEES_KEY, null],
+    ])
 
     const indexed = fakeDeps({ indexed: { rows: [], block: AS_OF } })
     await backingFlows(CHAIN, 42n, null, indexed)
@@ -521,9 +542,10 @@ describe('backingFlows', () => {
 
   describe('charts the share supply instead only when no path can read the history', () => {
     it('rejects when Bendystraw cannot answer and the terminal cannot be scanned either', async () => {
-      const deps = fakeDeps({ scanFails: new Error('rpc down') })
+      const deps = fakeDeps({ keptFails: new Error('rpc down') })
       await expect(backingFlows(CHAIN, 42n, 9n, deps)).rejects.toThrow('rpc down')
-      expect(deps.keptScan).not.toHaveBeenCalled()
+      // The pays and cash outs failed: the fees are not read.
+      expect(deps.kept.map(({ key }) => key)).toEqual([MOVES_KEY])
     })
 
     it('rejects when the tail past Bendystraw\'s block cannot be read', async () => {
@@ -540,7 +562,7 @@ describe('backingFlows', () => {
     })
 
     it('a failed balance read rejects, so the page charts share supply instead', async () => {
-      const deps = fakeDeps({ scanFails: new Error('rpc down') })
+      const deps = fakeDeps({ keptFails: new Error('rpc down') })
       await expect(backingFlows(CHAIN, 42n, 9n, deps)).rejects.toThrow('rpc down')
       // What the page charts then: the Sticky supply, in shares, marked as the fallback.
       const series = backingSeries(null, { supply: points([0, 0n], [10, 5n * E18]), info: info(5n * E6, 0n) })
@@ -550,9 +572,9 @@ describe('backingFlows', () => {
 
     it('rejects a history too long to scan, so the page charts share supply instead', async () => {
       const tooLong = new Error('This history spans 9000000 blocks, more than this RPC can scan in 1024 requests.')
-      const deps = fakeDeps({ scanFails: tooLong })
+      const deps = fakeDeps({ keptFails: tooLong })
       await expect(backingFlows(CHAIN, 42n, 9n, deps)).rejects.toThrow('more than this RPC can scan')
-      expect(deps.scan).toHaveBeenCalledTimes(1)
+      expect(deps.keptScan).toHaveBeenCalledTimes(1)
     })
   })
 
