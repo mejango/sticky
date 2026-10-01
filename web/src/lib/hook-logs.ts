@@ -12,6 +12,7 @@ import {
   type Log,
   type PublicClient,
 } from 'viem'
+import { failures, isRateLimited, retryAfterOf, type Failure } from '@/lib/center-limit'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { stickyHookAbi } from '@/lib/sticky-abis'
 import { deploymentOn } from '@/lib/sticky-addresses'
@@ -43,26 +44,8 @@ export function statedRange(message: string): bigint {
   return span >= 10n && span <= 10_000_000n ? span : 0n
 }
 
-type Failure = { status?: unknown; code?: unknown; message?: unknown; details?: unknown; retryAfter?: unknown }
-
-/** An error and what it wraps, outermost first. viem wraps whatever its transport throws, so the HTTP
- * status or the JSON-RPC code Center answered with usually sits on a cause. */
-function failures(error: unknown): Failure[] {
-  const chain: Failure[] = []
-  for (
-    let next = error;
-    typeof next === 'object' && next !== null && chain.length < 8;
-    next = (next as { cause?: unknown }).cause
-  ) {
-    chain.push(next as Failure)
-  }
-  return chain
-}
-
 /** What one error says, without viem's own framing (its docs link, version and request). */
 const said = ({ details, message }: Failure) => (typeof details === 'string' ? details : String(message ?? ''))
-
-const isRateLimited = (error: unknown) => failures(error).some(({ status, code }) => status === 429 || code === 429)
 
 const refusesRange = (error: unknown) =>
   failures(error).some(link => link.status === 413 || link.code === -32005 || RANGE_ERROR.test(said(link)))
@@ -77,9 +60,7 @@ const statedIn = (error: unknown) =>
  * reads Center's Retry-After header into `retryAfter`, in seconds, on the error it throws: the range waits that
  * long, never less than the schedule and never more than a minute. With none it waits as the schedule says. */
 function waitAfter(error: unknown, retry: number): number {
-  const asked = failures(error)
-    .map(link => link.retryAfter)
-    .find((seconds): seconds is number => typeof seconds === 'number' && Number.isFinite(seconds))
+  const asked = retryAfterOf(error)
   return asked === undefined ? BACKOFF_MS[retry] : Math.min(Math.max(asked * 1_000, BACKOFF_MS[retry]), MAX_WAIT_MS)
 }
 
