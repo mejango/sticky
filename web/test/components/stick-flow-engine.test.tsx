@@ -18,6 +18,7 @@ const PROJECT = 23
 const TERMINAL = stickyDeployment(CHAIN)!.terminal
 const ALICE = getAddress(`0x${'a'.repeat(40)}`)
 const FRIEND = getAddress(`0x${'9'.repeat(40)}`)
+const BOB = getAddress(`0x${'b'.repeat(40)}`)
 const CPN = 10n ** 6n
 const MINTED = 9_870_000_000_000_000_000n
 const APPROVAL = `0x${'a1'.repeat(32)}` as Hex
@@ -305,6 +306,26 @@ describe('a stick for someone else on the real engine', () => {
     expect(mocks.requestReview.mock.calls[0][0]).toMatchObject({ ...pay, account: ALICE })
     expect(mocks.publicClient.simulateContract.mock.calls[0][0]).toMatchObject({ ...pay, account: ALICE })
     expect(writes()).toEqual(['pay'])
+  })
+
+  // The plan is the reviewing account's: its trust check and its quote were for that sender. The engine checks the
+  // account it is handed, so the flow is what stops another account from sending the plan.
+  it('sends nothing when the wallet switches accounts between the review and the confirm', async () => {
+    gift = true
+    mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 5n * CPN })
+    await openReview()
+
+    mocks.wallet = { ...mocks.wallet, address: BOB }
+    mocks.getAccount.mockImplementation(() => ({ address: BOB, chainId: CHAIN }))
+    await act(async () => root.render(tree()))
+    await act(async () => confirmButton()!.click())
+    await pump()
+
+    expect(dialog()).toBeNull()
+    expect(host.textContent).toContain('Your connected account changed. Review again.')
+    expect(mocks.requestReview).not.toHaveBeenCalled()
+    expect(mocks.publicClient.simulateContract).not.toHaveBeenCalled()
+    expect(mocks.writeContract).not.toHaveBeenCalled()
   })
 })
 
