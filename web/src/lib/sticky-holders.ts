@@ -25,6 +25,7 @@ import {
   scanFrom,
   scanToHead,
   stickyEvents,
+  tailOrNull,
   type StickyEvent,
   type StickyEventKind,
   type StickyEventsResult,
@@ -174,9 +175,10 @@ const live: HolderReadDeps = {
 /**
  * The holders of a project with shares staked, most shares first, and where the list came from. Bendystraw's positions
  * answer, as of the block its answer says it is indexed through, and one scan of the hook's position events from just
- * below that block to the head corrects them. When the positions read fails, or has no status for the chain, the rows
- * are built from the project's events instead, and `source` and `degraded` are those of the events. A read that can
- * get neither rejects: a list of holders is never quietly shorter.
+ * below that block to the head corrects them. When the positions read fails, has no status for the chain, or is so far
+ * behind the head that the blocks since are more than a scan may read (`tailOrNull`), the rows are built from the
+ * project's events instead, and `source` and `degraded` are those of the events. A read that can get neither rejects:
+ * a list of holders is never quietly shorter.
  */
 export async function stickyHolders(
   chainId: number,
@@ -188,16 +190,19 @@ export async function stickyHolders(
   const deployment = deploymentOn(chainId)
   const ours = (event: StickyEvent) => event.chainId === chainId && event.projectId === projectId
 
+  const about = { chainId, projectId }
   const read = () => deps.indexedPositions({ chainId, projectId }, signal)
-  const positions = await orNull(read, signal, POSITIONS_UNAVAILABLE, { chainId, projectId })
+  const positions = await orNull(read, signal, POSITIONS_UNAVAILABLE, about)
   const asOf = positions?.blocks.get(chainId)
   if (positions && asOf !== undefined) {
     const topics = [POSITION_TOPICS, pad(toHex(projectId))]
     const filter = { address: deployment.hook, topics, fromBlock: scanFrom(asOf, deployment) }
-    const logs = await deps.scan(chainId, filter, { signal })
-    const tail = logs.flatMap(log => decodeHookLog(log, chainId) ?? []).filter(ours).sort(inChainOrder)
-    const indexed = positions.rows.filter(row => row.chainId === chainId && row.projectId === projectId)
-    return { rows: active(positionRows(indexed, tail, now)), source: 'indexed', degraded: null }
+    const logs = await tailOrNull(() => deps.scan(chainId, filter, { signal }), POSITIONS_UNAVAILABLE, about)
+    if (logs !== null) {
+      const tail = logs.flatMap(log => decodeHookLog(log, chainId) ?? []).filter(ours).sort(inChainOrder)
+      const indexed = positions.rows.filter(row => row.chainId === chainId && row.projectId === projectId)
+      return { rows: active(positionRows(indexed, tail, now)), source: 'indexed', degraded: null }
+    }
   }
 
   const { events, source, degraded } = await deps.events(chainId, projectId, { signal })

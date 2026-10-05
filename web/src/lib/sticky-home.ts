@@ -28,6 +28,7 @@ import {
   scanFrom,
   scanToHead,
   stickyProjectsOn,
+  tailOrNull,
   type StickyEvent,
   type StickyProjectsResult,
   type StickyReadDeps,
@@ -186,7 +187,8 @@ function holdersIn(moves: readonly IndexedMove[], projectId: bigint): number {
 }
 
 /** The chain's events Bendystraw has among the network's newest, and the scan past the block they are as of, in order.
- * Null when Bendystraw has none for the chain, or the scan fails. */
+ * Null when Bendystraw has none for the chain, is so far behind the head that the blocks since are more than a scan may
+ * read (`tailOrNull`), or the scan fails. */
 async function latestEvents(
   chainId: number,
   deployment: StickyDeployment,
@@ -198,7 +200,8 @@ async function latestEvents(
   const asOf = latest?.blocks.get(chainId)
   if (!latest || asOf === undefined) return null
   const filter = { address: deployment.hook, topics: [POSITION_TOPICS], fromBlock: scanFrom(asOf, deployment) }
-  const logs = await orNull(() => deps.scan(chainId, filter, { signal }), signal, TAIL_UNAVAILABLE, { chainId })
+  const tail = () => tailOrNull(() => deps.scan(chainId, filter, { signal }), LATEST_UNAVAILABLE, { chainId })
+  const logs = await orNull(tail, signal, TAIL_UNAVAILABLE, { chainId })
   if (logs === null) return null
   const indexed = latest.rows.filter(row => row.chainId === chainId).map(fromIndexedEvent)
   return merged(indexed, decoded(chainId, logs), asOf).filter(event => ours.has(event.projectId))
