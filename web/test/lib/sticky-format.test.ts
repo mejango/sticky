@@ -1,6 +1,6 @@
 import { parseUnits } from 'viem'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ago, formatAmount, formatDuration } from '@/lib/sticky-format'
+import { ago, asSentence, formatAmount, formatDuration } from '@/lib/sticky-format'
 
 // `units` is an amount in a token's smallest units: its whole and fractional digits scaled by the token's decimals.
 const units = (amount: string, decimals = 18) => parseUnits(amount, decimals)
@@ -94,5 +94,14 @@ describe('ago', () => {
     vi.useFakeTimers()
     vi.setSystemTime(now)
     expect(ago(seconds + 30)).toBe('now')
+  })
+})
+
+describe('asSentence', () => {
+  it('starts a reason with a capital and ends it with a full stop, unless it ends in a mark already', () => {
+    expect(asSentence('enter a valid amount')).toBe('Enter a valid amount.')
+    expect(asSentence('the balance could not be read.')).toBe('The balance could not be read.')
+    expect(asSentence('Already a sentence!')).toBe('Already a sentence!')
+    expect(asSentence('is it?')).toBe('Is it?')
   })
 })

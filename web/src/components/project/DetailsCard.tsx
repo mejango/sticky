@@ -1,7 +1,9 @@
 'use client'
 
-import { useEffect, useState } from 'react'
 import type { Address } from 'viem'
+import { CopyAddress } from '@/components/ui/CopyAddress'
+import { DETAIL_LABEL, DETAIL_LIST } from '@/components/ui/detail-list'
+import { Disclosure } from '@/components/ui/Disclosure'
 import { Revalidating } from '@/components/ui/Revalidating'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { useStickyEvents, useStickyProject } from '@/hooks/useStickyProject'
@@ -11,11 +13,6 @@ import { formatAmount } from '@/lib/sticky-format'
 
 const pct = (basisPoints: bigint) => `${Number(basisPoints) / 100}%`
 
-/** How long a copy button says what became of the copy. */
-const COPY_NOTICE_MS = 1_500
-
-const COPY_REFUSED = 'Could not copy an address to the clipboard.'
-
 /** How many holders the hook lists as granters: a launch's trusted senders, who can stick for any holder. The
  * auto-stick adapter is its own pre-approval, so it is not one. */
 function trustedSenders(events: readonly StickyEvent[], adapter: Address | undefined): number {
@@ -24,61 +21,17 @@ function trustedSenders(events: readonly StickyEvent[], adapter: Address | undef
   return granters.size
 }
 
-/** A label's style: beside its value, or above it on a phone. */
-const LABEL =
-  'whitespace-nowrap border-b border-line py-2 pr-4 text-muted max-[560px]:border-b-0 max-[560px]:pb-0 max-[560px]:text-xs'
-
 /** One label and its value. The value never wraps mid-word, so a long one is cut, and its tooltip says all of it. */
 function Row({ label, text, title = text }: { label: string; text: string; title?: string }) {
   return (
     <>
-      <dt className={LABEL}>{label}</dt>
+      <dt className={DETAIL_LABEL}>{label}</dt>
       <dd
         title={title}
         className="m-0 overflow-hidden text-ellipsis whitespace-nowrap border-b border-line py-2 text-right max-[560px]:pt-0.5 max-[560px]:text-left"
       >
         {text}
       </dd>
-    </>
-  )
-}
-
-/**
- * A copy button for an address: it says "Copied!" for a moment, or "Could not copy" when the browser refuses. The button
- * is named for what it copies, which hides its text from a screen reader, so what became of the copy is also said in a
- * live region beside it, which is always there for the announcement to be made in.
- */
-function CopyAddress({ label, address }: { label: string; address: string }) {
-  const [notice, setNotice] = useState<'copied' | 'refused' | null>(null)
-  useEffect(() => {
-    if (notice === null) return
-    const timer = setTimeout(() => setNotice(null), COPY_NOTICE_MS)
-    return () => clearTimeout(timer)
-  }, [notice])
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(address)
-      setNotice('copied')
-    } catch (error) {
-      console.warn(COPY_REFUSED, error)
-      setNotice('refused')
-    }
-  }
-
-  return (
-    <>
-      <button
-        type="button"
-        aria-label={`Copy ${label} address`}
-        onClick={() => void copy()}
-        className={`btn-link ml-2 min-h-0 align-baseline text-xs font-medium decoration-amber ${notice === 'refused' ? 'text-err' : ''}`}
-      >
-        {notice === 'copied' ? 'Copied!' : notice === 'refused' ? 'Could not copy' : 'Copy'}
-      </button>
-      <span role="status" aria-atomic="true" className="sr-only">
-        {notice === 'copied' ? 'Address copied.' : notice === 'refused' ? 'Could not copy the address.' : ''}
-      </span>
     </>
   )
 }
@@ -92,7 +45,7 @@ function CopyAddress({ label, address }: { label: string; address: string }) {
 function Contract({ label, address }: { label: string; address: string }) {
   return (
     <>
-      <dt title={label} className={`${LABEL} min-w-0 max-w-[16rem] truncate max-[560px]:max-w-full`}>
+      <dt title={label} className={`${DETAIL_LABEL} min-w-0 max-w-[16rem] truncate max-[560px]:max-w-full`}>
         {label}
       </dt>
       <dd className="m-0 whitespace-normal border-b border-line py-2 text-left max-[560px]:pt-0.5">
@@ -102,13 +55,6 @@ function Contract({ label, address }: { label: string; address: string }) {
     </>
   )
 }
-
-/** The disclosure's title, with its own marker: closed points right, and open points down. */
-const SUMMARY =
-  "w-max max-w-full list-none text-accent before:inline-block before:w-[1.1em] before:content-['▸'] group-open:before:content-['▾'] [&::-webkit-details-marker]:hidden"
-
-const LIST =
-  'm-0 grid grid-cols-[max-content_minmax(0,1fr)] text-sm max-[560px]:grid-cols-[minmax(0,1fr)] [&>dd:last-of-type]:border-b-0 [&>dt:last-of-type]:border-b-0'
 
 /**
  * The Details card: one short label and value per row, then the rules and contracts behind a disclosure. The backing
@@ -143,7 +89,7 @@ export function DetailsCard({ chainId, projectId }: { chainId: number; projectId
         )
       ) : (
         <Revalidating as="div" pending={!verified}>
-          <dl className={LIST}>
+          <dl className={DETAIL_LIST}>
             <Row label="Token" text={`${info.stName} (${info.stSymbol})`} />
             <Row label="Sticks" text={`${info.name} (${info.symbol})`} />
             <Row label="Supply" text={`${formatAmount(info.totalSupply, 18)} ${info.stSymbol}`} />
@@ -164,8 +110,7 @@ export function DetailsCard({ chainId, projectId }: { chainId: number; projectId
             <Row label="Stickiness bonus" text={pct(info.cashOutTaxRate)} />
             <Row label="Transfers" text={info.soulbound ? 'Off' : 'On'} />
           </dl>
-          <details className="group mt-2.5 text-[13px]">
-            <summary className={SUMMARY}>Rules and contracts</summary>
+          <Disclosure summary="Rules and contracts" className="mt-2.5 text-[13px]">
             <ul className="mb-3.5 mt-3 list-disc pl-[18px] text-sm text-ink">
               <li className="my-1">
                 {info.cashOutTaxRate > 0n
@@ -189,12 +134,12 @@ export function DetailsCard({ chainId, projectId }: { chainId: number; projectId
                 </li>
               ) : null}
             </ul>
-            <dl className={LIST}>
+            <dl className={DETAIL_LIST}>
               <Contract label={`${info.stSymbol} token`} address={info.stToken} />
               <Contract label={`${info.symbol} token`} address={info.stakedToken} />
               {deployment ? <Contract label="Stick accounting" address={deployment.hook} /> : null}
             </dl>
-          </details>
+          </Disclosure>
         </Revalidating>
       )}
     </section>

@@ -18,6 +18,7 @@
  * Addresses of tokens are lowercase.
  */
 
+import { NATIVE_TOKEN } from '@bananapus/nana-sdk-core'
 import { STICKY_CRITERIA_BASE, STICKY_MAX_CRITERIA_WEEKS, validateStickyGroupId } from '@bananapus/nana-sdk-core/v6'
 import {
   decodeEventLog,
@@ -32,10 +33,10 @@ import {
   type ContractFunctionParameters,
   type Hex,
 } from 'viem'
-import { inChainOrder, untilAborted, type ScannedLog } from '@/lib/hook-logs'
+import { asked, inChainOrder, untilAborted, type ScannedLog } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { stickyDistributorAbi, stickyHookAbi, stickyTokenAbi } from '@/lib/sticky-abis'
-import { stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
+import { deploymentOn } from '@/lib/sticky-addresses'
 import {
   keptScanToHead,
   notIndexed,
@@ -184,6 +185,17 @@ export function roundSentence(schedule: RewardSchedule): string {
   )
 }
 
+/** How gradually collected rewards unlock, from the distributor's round and number of rounds, or nothing when they
+ * unlock in one round (OLD unlockScheduleSentence, app.js:4192). */
+export function unlockSentence({ roundDuration, vestingRounds }: Pick<RewardSchedule, 'roundDuration' | 'vestingRounds'>): string {
+  if (vestingRounds <= 1n) return ''
+  const rounds = Number(vestingRounds)
+  return (
+    `Rewards unlock over ${rounds} rounds, about ${Math.round(100 / rounds)}% every ${formatDuration(roundDuration)}, ` +
+    `all of it ${formatDuration(roundDuration * vestingRounds)} after unlocking starts.`
+  )
+}
+
 /** One pot's lines, stating amounts and dates. */
 export function rewardLines({
   position,
@@ -224,8 +236,9 @@ export function rewardLines({
 
 // ---------------------------------------------------------------- reads
 
-/** The token JB's contracts use for the chain's native currency. */
-const NATIVE_TOKEN = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+/** The token JB's contracts use for the chain's native currency (JBConstants.NATIVE_TOKEN), which the distributor
+ * books ETH under, in lowercase as the pots' tokens are. */
+export const NATIVE_REWARD_TOKEN = NATIVE_TOKEN.toLowerCase() as Address
 /** How many calls one Multicall3 request carries. */
 const CALLS_PER_REQUEST = 250
 /** How many reward tokens one request asks the symbol and decimals of. */
@@ -241,12 +254,6 @@ const REWARD_TOKEN_UNREADABLE = 'Could not read a reward token; leaving its rewa
 const FUND = toEventSelector(getAbiItem({ abi: stickyDistributorAbi, name: 'Fund' }) as AbiEvent)
 
 const shortAddress = (value: string) => `${value.slice(0, 6)}…${value.slice(-4)}`
-
-function deploymentOn(chainId: number): StickyDeployment {
-  const deployment = stickyDeployment(chainId)
-  if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
-  return deployment
-}
 
 /** What one call answered, or why the read cannot go on. */
 export function need<T>(answer: Answer<T>, what: string): T {
@@ -485,7 +492,7 @@ async function readTokenMetas(
   const keyOf = (token: Address) => `${chainId}:${token}`
   const unread: Address[] = []
   for (const token of tokens) {
-    const meta = token === NATIVE_TOKEN ? { symbol: 'ETH', decimals: 18 } : (known.get(token) ?? tokenMetas.get(keyOf(token)))
+    const meta = token === NATIVE_REWARD_TOKEN ? { symbol: 'ETH', decimals: 18 } : (known.get(token) ?? tokenMetas.get(keyOf(token)))
     if (meta) metas.set(token, meta)
     else if ((tokensUnreadable.get(keyOf(token)) ?? 0) <= Date.now()) unread.push(token)
   }
@@ -525,6 +532,23 @@ async function readTokenMetas(
     }
   }
   return metas
+}
+
+/** What a flow says of an address whose `decimals()` fails. */
+const NOT_A_TOKEN = 'that address is not a token'
+
+/**
+ * A reward token's symbol and decimals, for a flow that sends it: ETH with 18 for JB's native token, which nothing is
+ * asked of, and otherwise what the token answers. An address whose `decimals()` fails is no token, and since that is
+ * the chain's answer, it is refused with no cause; one that gives invalid decimals is refused too, and never taken to
+ * have 18. A request that gets no answer rejects, naming what could not be read and keeping the cause.
+ */
+export async function rewardTokenMeta(chainId: number, token: Address, { signal }: Cancel = {}): Promise<TokenMeta> {
+  if (token.toLowerCase() === NATIVE_REWARD_TOKEN) return { symbol: 'ETH', decimals: 18 }
+  const answers = await asked('the reward token', () => readAt(chainId, tokenCalls(token), undefined, signal), signal)
+  // `readAt` throws a request that got no answer, so a call that failed here is the address's own answer.
+  if (answers[1].status === 'failure') throw new Error(NOT_A_TOKEN)
+  return tokenMetaOf(token, answers)
 }
 
 // ---- what a holder has earned

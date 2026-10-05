@@ -10,13 +10,14 @@ import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { useSafeTx } from '@/hooks/useSafeTx'
 import { useSettled } from '@/hooks/useSettled'
+import { useStepPresses } from '@/hooks/useStepPresses'
 import { useStickyPosition, useStickyProject } from '@/hooks/useStickyProject'
 import { useWallet } from '@/hooks/useWallet'
 import { isLostRecipient, LOST_RECIPIENT, stickyDeployment } from '@/lib/sticky-addresses'
 import { readBalanceAndAllowance } from '@/lib/sticky-allowance'
 import { parseAmount } from '@/lib/sticky-amount'
 import { approveSteps, stickTx, type TxRequest } from '@/lib/sticky-builders'
-import { formatAmount } from '@/lib/sticky-format'
+import { asSentence, formatAmount } from '@/lib/sticky-format'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { assertCanStickFor, quoteStick, stickQuoteSentence } from '@/lib/sticky-quotes'
 import { refreshAfterStick } from '@/lib/sticky-refresh'
@@ -32,12 +33,6 @@ const INVALID_RECIPIENT = 'Enter a valid recipient address.'
 const REVIEW_UNREADABLE = 'Could not prepare a stick; its review says what could not be read.'
 const QUOTE_UNREADABLE = 'Could not quote a stick; the line under the amount says what could not be read.'
 const BALANCE_UNREADABLE = 'Could not check the balance before sending a step of a stick; the dialog says so.'
-
-/** The start of a sentence, which ends with a full stop unless it already ends in a mark. */
-const sentence = (message: string) => {
-  const text = message.charAt(0).toUpperCase() + message.slice(1)
-  return /[.!?]$/.test(text) ? text : `${text}.`
-}
 
 /** A read's failure as an error the holder is told of. The console is told why as well when the read failed to be made,
  * which its cause says: a refusal, like a holder who has not trusted the sender, has none. */
@@ -102,14 +97,9 @@ export function StickFlow({
   const [plan, setPlan] = useState<Plan | null>(null)
   const [preparing, setPreparing] = useState(false)
   const [failure, setFailure] = useState<Failure | null>(null)
-  // How many steps have confirmed: the dialog is on the one after them. A click reads the count from the ref, which
-  // changes at once when a step is counted; the state is what the dialog shows after the next render. `accepted` is the
-  // step the engine took and whose confirmation has not been counted: a confirmation is only ever counted for a step
-  // that was sent.
-  const [landed, setLanded] = useState(0)
-  const progress = useRef<{ landed: number; accepted: number | null }>({ landed: 0, accepted: null })
-  // The block of the last step that confirmed: the next step is simulated at or after it.
-  const confirmedAt = useRef<bigint | undefined>(undefined)
+  // The steps confirmed so far, one for each press: the dialog is on the one after them.
+  const presses = useStepPresses(tx)
+  const { landed } = presses
   const reading = useRef<AbortController | null>(null)
 
   // The account the page shows, which a visitor without a wallet has none of. A visitor's quote is asked as the zero
@@ -126,7 +116,7 @@ export function StickFlow({
       try {
         parsed = parseAmount(amountText, info.decimals)
       } catch (reason) {
-        amountError = sentence(reason instanceof Error ? reason.message : 'enter a valid amount')
+        amountError = asSentence(reason instanceof Error ? reason.message : 'enter a valid amount')
       }
     }
     if (!forSomeoneElse) return { amount: parsed, amountError, beneficiary: payer, recipientError: null }
@@ -162,7 +152,7 @@ export function StickFlow({
             try {
               await assertCanStickFor(chainId, staked.projectId, sender, beneficiary, { signal })
             } catch (reason) {
-              throw signal.aborted ? reason : new Error(sentence(told(QUOTE_UNREADABLE, about, reason).message))
+              throw signal.aborted ? reason : new Error(asSentence(told(QUOTE_UNREADABLE, about, reason).message))
             }
           }
           try {
@@ -212,9 +202,7 @@ export function StickFlow({
     tx.reset()
     setFailure(null)
     setPlan(null)
-    progress.current = { landed: 0, accepted: null }
-    setLanded(0)
-    confirmedAt.current = undefined
+    presses.restart()
     setPreparing(true)
     try {
       if (!isAddressEqual(beneficiary, account)) {
@@ -239,7 +227,7 @@ export function StickFlow({
       setPlan({ info, terminal, account, beneficiary, amount: value, minted, steps })
     } catch (reason) {
       if (!signal.aborted) {
-        const message = sentence(told(REVIEW_UNREADABLE, { chainId, projectId }, reason).message)
+        const message = asSentence(told(REVIEW_UNREADABLE, { chainId, projectId }, reason).message)
         setFailure({ message, account: account.toLowerCase() })
       }
     } finally {
@@ -252,35 +240,19 @@ export function StickFlow({
   async function verify({ info: staked, terminal: spender, account: owner, amount: value }: Plan) {
     const { balance } = await readBalanceAndAllowance(chainId, { token: staked.stakedToken, owner, spender }).catch(reason => {
       const unreadable = told(BALANCE_UNREADABLE, { chainId, projectId }, reason)
-      throw new Error(sentence(unreadable.message), { cause: unreadable })
+      throw new Error(asSentence(unreadable.message), { cause: unreadable })
     })
     if (balance < value) throw new Error(`Your ${staked.symbol} balance changed. Review the amount.`)
   }
 
   async function confirm() {
-    const at = progress.current.landed
-    if (!plan || sending || at === plan.steps.length) return
+    if (!plan || sending) return
     // The plan is the reviewing account's: its balance, its allowance, its trust check and its quote. Every step is sent
     // as that account, and the engine refuses it, before a review opens, while another is connected.
-    const hash = await tx.send(plan.steps[at], {
-      reviewedAccount: plan.account,
-      simulationBlockNumber: confirmedAt.current,
-      reverify: () => verify(plan),
-    })
-    // The engine answers null, and changes nothing, for a send it does not take: while it still holds its lock for the
-    // step that has just confirmed, or after a cancelled review or a failure. Only a step it took is waited for.
-    if (hash !== null) progress.current.accepted = at
+    await presses.press(plan.steps, (step, confirmedAt) =>
+      tx.send(step, { reviewedAccount: plan.account, simulationBlockNumber: confirmedAt, reverify: () => verify(plan) }),
+    )
   }
-
-  // The confirmation of the step the engine took is counted once it arrives, and the block it is in is where the next
-  // step is simulated from. A confirmation seen while no step is waiting for one is the last step's, and counts for nothing.
-  useEffect(() => {
-    const { accepted } = progress.current
-    if (plan === null || accepted === null || tx.phase !== 'success') return
-    confirmedAt.current = tx.receipt?.blockNumber ?? confirmedAt.current
-    progress.current = { landed: accepted + 1, accepted: null }
-    setLanded(accepted + 1)
-  }, [plan, tx.phase, tx.receipt])
 
   function close() {
     reading.current?.abort()

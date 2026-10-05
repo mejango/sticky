@@ -70,8 +70,9 @@ export function refreshAfterUnstick(client: QueryClient, chainId: number, projec
   ])
 }
 
-/** A step that takes a holder's auto-stick apart: their auto-stick and who they trust, and nothing else. */
-export function refreshAfterAutoStickOff(client: QueryClient, chainId: number, projectId: number, holder: Address): void {
+/** A change of a holder's auto-stick (turning it on or off, its settings, its trust or allowance): their auto-stick and
+ * who they trust, and nothing else. */
+export function refreshAfterAutoStick(client: QueryClient, chainId: number, projectId: number, holder: Address): void {
   refreshOnSchedule(client, ofHolder(chainId, projectId, holder, ['sticky-autostick', 'sticky-trusted']))
 }
 
@@ -91,5 +92,47 @@ export function refreshAfterTrust(client: QueryClient, chainId: number, projectI
   refreshOnSchedule(client, [
     ...ofPage(chainId, projectId, ['events']),
     ...ofEveryone(chainId, projectId, ['sticky-trusted', 'sticky-autostick']),
+  ])
+}
+
+/** An airdrop: the pots the distributor was funded for, what every account has in them and the auto-stick that reads
+ * their groups, and what the funder holds of the staked token, which can be what they sent. */
+export function refreshAfterFund(client: QueryClient, chainId: number, projectId: number, funder: Address): void {
+  refreshOnSchedule(client, [
+    ...ofPage(chainId, projectId, ['funding']),
+    ...ofEveryone(chainId, projectId, ['sticky-rewards', 'sticky-autostick']),
+    ...ofHolder(chainId, projectId, funder, ['sticky-position']),
+  ])
+}
+
+/** A collect of rewards: the holder's rewards and the auto-stick that reads them, and their stick, whose wallet a reward
+ * in the staked token is paid to. */
+export function refreshAfterCollect(client: QueryClient, chainId: number, projectId: number, holder: Address): void {
+  refreshOnSchedule(client, ofHolder(chainId, projectId, holder, ['sticky-position', 'sticky-rewards', 'sticky-autostick']))
+}
+
+/** A stick of a holder's rewards (a claim and stick, or auto-stick's stick of ready rewards now): what an unstick
+ * changes, since it mints for the holder and collects their rewards, and who they trust, which a claim's trust step can
+ * change. */
+export function refreshAfterRewardStick(client: QueryClient, chainId: number, projectId: number, holder: Address): void {
+  const who = holder.toLowerCase()
+  refreshOnSchedule(client, [
+    ...ofPage(chainId, projectId, PAGE),
+    ...ofHolder(chainId, projectId, holder, [...STAKE, 'sticky-autostick', 'sticky-trusted']),
+    { queryKey: ACCOUNT_PAGES, predicate: query => accountOfKey(query.queryKey) === who },
+  ])
+}
+
+/** A reward address created: the reward addresses, whether each is created and what it holds. */
+export function refreshAfterReceiver(client: QueryClient, chainId: number, projectId: number): void {
+  refreshOnSchedule(client, ofPage(chainId, projectId, ['receiver']))
+}
+
+/** A reward address's arrivals settled: an airdrop from the address, so the pots, what every account has in them and the
+ * auto-stick that reads their groups, and what the reward addresses hold. */
+export function refreshAfterSettle(client: QueryClient, chainId: number, projectId: number): void {
+  refreshOnSchedule(client, [
+    ...ofPage(chainId, projectId, ['funding', 'receiver']),
+    ...ofEveryone(chainId, projectId, ['sticky-rewards', 'sticky-autostick']),
   ])
 }

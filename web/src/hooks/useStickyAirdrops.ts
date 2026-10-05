@@ -104,7 +104,9 @@ export function useRewards(chainId: number, projectId: number, holder: Address |
   })
 }
 
-/** The viewer's auto-stick. It waits for the pots: the groups it asks the adapter about are theirs. */
+/** The viewer's auto-stick. It waits for the pots: the groups it asks the adapter about are theirs. When the pots gain a
+ * group, the same viewer's auto-stick shows while it is read again for the new groups, so the card, and a review its
+ * actions have open, stay. */
 export function useAutoStick(chainId: number, projectId: number, holder: Address | null) {
   const { info } = useStickyProject(chainId, projectId)
   const { groups, funding } = useRewardPots(chainId, projectId)
@@ -116,6 +118,7 @@ export function useAutoStick(chainId: number, projectId: number, holder: Address
         readAutoStick(chainId, BigInt(projectId), holder!, { info: info!, groups, signal }),
       ),
     enabled: holder !== null && isSettled(funding) && showing,
+    placeholderData: (previous, previousQuery) => (previousQuery?.queryKey[3] === holder ? previous : undefined),
     ...VIEWER_REFRESH,
   })
 }

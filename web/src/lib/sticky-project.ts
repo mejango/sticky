@@ -19,7 +19,7 @@ import {
   terminalAbi,
   terminalStoreAbi,
 } from '@/lib/sticky-abis'
-import { stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
+import { deploymentOn, type StickyDeployment } from '@/lib/sticky-addresses'
 import { parseStickyUri } from '@/lib/sticky-metadata'
 
 /** One Sticky project on one chain, as of `blockNumber`. */
@@ -90,12 +90,6 @@ export class StickyDeploymentMismatch extends Error {
     this.chainId = chainId
     this.differences = differences
   }
-}
-
-function deploymentOn(chainId: number): StickyDeployment {
-  const deployment = stickyDeployment(chainId)
-  if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
-  return deployment
 }
 
 export type Answer<T> = { status: 'success'; result: T } | { status: 'failure'; error: Error }

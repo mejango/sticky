@@ -10,18 +10,12 @@ import { encodeFunctionData, type Address, type Hex } from 'viem'
 import { asked } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { feelessAddressesAbi, stickyHookAbi, terminalAbi } from '@/lib/sticky-abis'
-import { stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
+import { deploymentOn } from '@/lib/sticky-addresses'
 import { formatAmount } from '@/lib/sticky-format'
 import { backingOfShares, capped, type Answer, type StickyProjectInfo } from '@/lib/sticky-project'
 import { need, readAt } from '@/lib/sticky-rewards'
 
 type Cancel = { signal?: AbortSignal }
-
-function deploymentOn(chainId: number): StickyDeployment {
-  const deployment = stickyDeployment(chainId)
-  if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
-  return deployment
-}
 
 /** Out of 10,000: a stickiness bonus of 100%, which an unstick cannot reclaim anything under. */
 const MAX_TAX = 10_000n

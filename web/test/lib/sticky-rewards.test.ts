@@ -3,7 +3,7 @@
 // Dates in reward copy are local; pin the zone so the expected dates hold on every machine.
 process.env.TZ = 'UTC'
 
-import { BendystrawTimeoutError } from '@bananapus/nana-sdk-core'
+import { BendystrawTimeoutError, NATIVE_TOKEN } from '@bananapus/nana-sdk-core'
 import { erc20Abi, erc20Abi_bytes32, getAbiItem, getAddress, numberToHex, pad, stringToHex, toEventSelector, type Address, type Hex } from 'viem'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ScannedLog } from '@/lib/hook-logs'
@@ -59,7 +59,10 @@ async function load() {
 const DISTRIBUTOR = deployment.distributor
 const HOOK = deployment.hook
 const TOKEN = address('4')
-const NATIVE = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+/** The distributor books ETH under JB's native token (JBConstants.NATIVE_TOKEN), and the pots' tokens are lowercase. */
+const NATIVE = NATIVE_TOKEN.toLowerCase()
+/** Not JB's native token: an address like any other. */
+const ALL_E = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
 const HOSTILE = address('8')
 
 /** A round's pot as `rewardRoundOf` returns it: the amount, the snapshot block, what was claimed, the claim deadline
@@ -215,6 +218,17 @@ describe('reward copy', () => {
       r.rewardLines({ position: { ...idle, earned: 1_000_000n }, meta, funded: 0n, fundedThisRound: 0n, schedule: daily }),
     )
     expect(earned['Earned, not vesting']).toMatch(/a share unlocks [A-Z][a-z]{2} \d+, all by [A-Z][a-z]{2} \d+\.$/)
+  })
+})
+
+describe('the unlock schedule', () => {
+  it('says how gradually rewards unlock, from the distributor\'s round and rounds, and nothing for rewards that unlock at once', async () => {
+    const r = await load()
+    expect(r.unlockSentence(CLOCK)).toBe('Rewards unlock over 4 rounds, about 25% every 7d 0h, all of it 28d 0h after unlocking starts.')
+    expect(r.unlockSentence({ ...CLOCK, roundDuration: 86_400n, vestingRounds: 3n })).toBe(
+      'Rewards unlock over 3 rounds, about 33% every 1d 0h, all of it 3d 0h after unlocking starts.',
+    )
+    expect(r.unlockSentence({ ...CLOCK, vestingRounds: 1n })).toBe('')
   })
 })
 
@@ -783,6 +797,65 @@ describe('the reward tokens', () => {
     const cards = await r.readRewards(CHAIN, STICKY, null, [funded(0n, NATIVE)])
     expect(cards.map(card => card.meta)).toEqual([{ symbol: 'ETH', decimals: 18 }])
     expect(chain.reads().some(read => read.functionName === 'symbol')).toBe(false)
+  })
+
+  it('take only JB\'s native token for ETH, and read an address of all e\'s as the token it is', async () => {
+    const chain = rewardChain()
+    stockPot(chain)
+    stockToken(chain, ALL_E as Address, 'EEE', 6)
+    const r = await load()
+    const cards = await r.readRewards(CHAIN, STICKY, null, [funded(0n, ALL_E)])
+    expect(cards.map(card => card.meta)).toEqual([{ symbol: 'EEE', decimals: 6 }])
+  })
+
+  it('reward token decimals fail closed instead of silently assuming 18', async () => {
+    const chain = rewardChain()
+    chain.stock(TOKEN, erc20Abi, 'symbol', 'BAD')
+    chain.stock(TOKEN, erc20Abi, 'decimals', REVERT)
+    chain.stock(STAKED, erc20Abi, 'symbol', 'BIG')
+    chain.stock(STAKED, erc20Abi, 'decimals', returning(numberToHex(256, { size: 32 })))
+    const r = await load()
+    // A flow that sends a token reads it alone, and refuses one without valid decimals: an address whose decimals()
+    // reverts is no token, which is the chain's answer, so the refusal carries no cause.
+    const refused = await r.rewardTokenMeta(CHAIN, TOKEN).catch((error: Error) => error)
+    expect(refused).toMatchObject({ message: 'that address is not a token' })
+    expect((refused as Error).cause).toBeUndefined()
+    await expect(r.rewardTokenMeta(CHAIN, STAKED)).rejects.toThrow('the reward token returned 256 as its decimals')
+    // The native token is ETH, and nothing is asked of it.
+    const asked = chain.requests.length
+    expect(await r.rewardTokenMeta(CHAIN, NATIVE as Address)).toEqual({ symbol: 'ETH', decimals: 18 })
+    expect(await r.rewardTokenMeta(CHAIN, getAddress(NATIVE))).toEqual({ symbol: 'ETH', decimals: 18 })
+    expect(chain.requests).toHaveLength(asked)
+  })
+
+  it('refuse an account that is not a contract as no token, and keep the cause of a request that got no answer', async () => {
+    const chain = rewardChain()
+    const ACCOUNT = address('5')
+    // An account without code answers every call with nothing, which viem reports as a failed call.
+    chain.stock(ACCOUNT, erc20Abi, 'symbol', returning('0x'))
+    chain.stock(ACCOUNT, erc20Abi, 'decimals', returning('0x'))
+    chain.stock(TOKEN, erc20Abi, 'symbol', 'TKN')
+    chain.stock(TOKEN, erc20Abi, 'decimals', 6)
+    const r = await load()
+    const refused = await r.rewardTokenMeta(CHAIN, ACCOUNT).catch((error: Error) => error)
+    expect(refused).toMatchObject({ message: 'that address is not a token' })
+    expect((refused as Error).cause).toBeUndefined()
+
+    chain.lose(reads => reads.some(read => read.target.toLowerCase() === TOKEN.toLowerCase()))
+    const lost = await r.rewardTokenMeta(CHAIN, TOKEN).catch((error: Error) => error)
+    expect(lost).toMatchObject({ message: 'the reward token could not be read.' })
+    expect((lost as Error).cause).toBeInstanceOf(Error)
+  })
+
+  it('read one token for a flow that sends it, its symbol and decimals, and name one without a symbol by its short address', async () => {
+    const chain = rewardChain()
+    stockToken(chain, STAKED, 'MKR', 18, 'bytes32')
+    chain.stock(TOKEN, erc20Abi, 'symbol', REVERT)
+    chain.stock(TOKEN, erc20Abi, 'decimals', 6)
+    const r = await load()
+    expect(await r.rewardTokenMeta(CHAIN, STAKED)).toEqual({ symbol: 'MKR', decimals: 18 })
+    const short = `${TOKEN.toLowerCase().slice(0, 6)}…${TOKEN.toLowerCase().slice(-4)}`
+    expect(await r.rewardTokenMeta(CHAIN, TOKEN)).toEqual({ symbol: short, decimals: 6 })
   })
 
   it('read a bytes32 symbol, as MKR has, and name a token that has none by its short address', async () => {

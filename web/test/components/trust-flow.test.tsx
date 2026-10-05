@@ -219,7 +219,7 @@ describe('trusting a sender: the form', () => {
     expect(tx().send).not.toHaveBeenCalled()
   })
 
-  it('takes an address in one case, or with its checksum, and reviews it as the checksummed address', async () => {
+  it('takes an address in lowercase, or with its checksum, and reviews it as the checksummed address', async () => {
     expect(SENDER).not.toBe(SENDER.toLowerCase())
     await render()
     await reviewTrust(SENDER.toLowerCase())

@@ -1,23 +1,25 @@
 'use client'
 
 import { useEffect } from 'react'
+import { AutoStickFlow } from '@/components/project/flows/AutoStickFlow'
 import { Skeleton } from '@/components/ui/Skeleton'
-import { useAutoStick, useViewer } from '@/hooks/useStickyAirdrops'
+import { useAutoStick, useRewardPots, useViewer } from '@/hooks/useStickyAirdrops'
 import { useStickyProject } from '@/hooks/useStickyProject'
-import { AS_STATUS, asStatusLine } from '@/lib/sticky-autostick'
+import { AS_STATUS, asStatusLine, hasLeftovers } from '@/lib/sticky-autostick'
 import { ago, formatAmount, formatDuration, stickyLabel } from '@/lib/sticky-format'
 
 const INVALID_PROJECT = 'Auto-stick is misconfigured for this Sticky project; the Airdrops tab leaves its card out.'
 
 /**
  * The viewer's auto-stick: whether unlocked staked-token rewards are stuck again for them as they unlock, what holds it
- * back, and what they can do about it. It fails closed: with no viewer, or a project the adapter cannot resolve, there is
- * no card. Nothing is sent from here yet, so the buttons are closed.
+ * back, and what they can do about it, which its actions do (`AutoStickFlow`). It fails closed: with no viewer, or a
+ * project the adapter cannot resolve, there is no card.
  */
 export function AutoStickCard({ chainId, projectId }: { chainId: number; projectId: number }) {
   const { info } = useStickyProject(chainId, projectId)
   const holder = useViewer()
   const read = useAutoStick(chainId, projectId, holder)
+  const { groups } = useRewardPots(chainId, projectId)
   const state = read.data
   const invalid = state?.status === AS_STATUS.INVALID_PROJECT
 
@@ -50,20 +52,6 @@ export function AutoStickCard({ chainId, projectId }: { chainId: number; project
   }
 
   const line = state.enabled ? asStatusLine(state, info) : ''
-  const repair = state.enabled
-    ? state.status === AS_STATUS.NOT_TRUSTED
-      ? 'Repair permission'
-      : state.status === AS_STATUS.INSUFFICIENT_ALLOWANCE
-        ? 'Renew allowance'
-        : ''
-    : ''
-  const buttons = [
-    { label: state.enabled ? 'Turn off auto-stick' : 'Turn on auto-stick', primary: true },
-    ...(state.enabled && state.status === AS_STATUS.READY ? [{ label: 'Stick ready rewards now', primary: false }] : []),
-    ...(state.canBeginVesting ? [{ label: 'Start unlocking', primary: false }] : []),
-    ...(repair ? [{ label: repair, primary: false }] : []),
-    ...(state.enabled ? [{ label: 'Settings', primary: false }] : []),
-  ]
 
   return (
     <section aria-labelledby="autostick-title" className="card break-words p-5">
@@ -83,15 +71,10 @@ export function AutoStickCard({ chainId, projectId }: { chainId: number; project
         {state.enabled && state.lastCompoundedAt ? (
           <span className="block text-[13px] text-muted">Last auto-stick: {ago(state.lastCompoundedAt)}</span>
         ) : null}
+        {hasLeftovers(state) ? <div className="text-[13px]">The auto-stick contract still has your permission.</div> : null}
         {line ? <div className="text-[13px]">{line}</div> : null}
       </div>
-      <div className="flex flex-wrap gap-2">
-        {buttons.map(({ label, primary }) => (
-          <button key={label} type="button" disabled className={`${primary ? 'btn-primary' : 'btn-secondary'} px-3 py-1.5 text-sm`}>
-            {label}
-          </button>
-        ))}
-      </div>
+      <AutoStickFlow chainId={chainId} projectId={projectId} info={info} state={state} groups={groups} />
     </section>
   )
 }

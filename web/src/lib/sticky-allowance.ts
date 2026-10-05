@@ -1,4 +1,4 @@
-import { erc20Abi, type Address } from 'viem'
+import { erc20Abi, multicall3Abi, type Address } from 'viem'
 import { asked, freshHead } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import type { Answer } from '@/lib/sticky-project'
@@ -30,4 +30,28 @@ export async function readBalanceAndAllowance(
     signal,
   )) as Answer<bigint>[]
   return { balance: need(balance, 'the balance'), allowance: need(allowance, 'the allowance') }
+}
+
+/** What `owner` holds of the chain's native token, read like a token's balance: from Multicall3's `getEthBalance`, at a
+ * head asked for afresh, and never filled in as zero. */
+export async function readNativeBalance(
+  chainId: number,
+  owner: Address,
+  { signal }: { signal?: AbortSignal } = {},
+): Promise<bigint> {
+  const client = jbCenterPublicClient(chainId)
+  const multicall3 = client.chain?.contracts?.multicall3?.address
+  if (!multicall3) throw new Error(`chain ${chainId} has no Multicall3 to read a balance from`)
+  const [balance] = (await asked(
+    'the balance',
+    async () =>
+      readAt(
+        chainId,
+        [{ address: multicall3, abi: multicall3Abi, functionName: 'getEthBalance', args: [owner] }],
+        await freshHead(client, signal),
+        signal,
+      ),
+    signal,
+  )) as Answer<bigint>[]
+  return need(balance, 'the balance')
 }

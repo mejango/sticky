@@ -2,7 +2,8 @@
 
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { BaseError, ContractFunctionRevertedError, erc20Abi, formatUnits, type Address } from 'viem'
+import { erc20Abi, formatUnits, type Address } from 'viem'
+import { Refusal } from '@/components/project/flows/refusal'
 import { reviewGate } from '@/components/project/flows/review-gate'
 import { ModalShell } from '@/components/ui/ModalShell'
 import { Revalidating } from '@/components/ui/Revalidating'
@@ -12,16 +13,15 @@ import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@
 import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
 import { useSettled } from '@/hooks/useSettled'
 import { useWallet } from '@/hooks/useWallet'
-import { untilAborted } from '@/lib/hook-logs'
-import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
+import { preflight } from '@/lib/preflight'
 import { warned } from '@/lib/query-reads'
 import { stickyAutoStickAbi, stickyHookAbi } from '@/lib/sticky-abis'
-import { stickyDeployment } from '@/lib/sticky-addresses'
+import { deploymentOn } from '@/lib/sticky-addresses'
 import { parseShares, SHARE_DECIMALS } from '@/lib/sticky-amount'
 import { unstickTxs } from '@/lib/sticky-builders'
 import type { Answer, StickyProjectInfo } from '@/lib/sticky-project'
 import { quoteUnstick, unstickQuoteSentence, type UnstickQuote } from '@/lib/sticky-quotes'
-import { refreshAfterAutoStickOff, refreshAfterUnstick } from '@/lib/sticky-refresh'
+import { refreshAfterAutoStick, refreshAfterUnstick } from '@/lib/sticky-refresh'
 import { need, readAt } from '@/lib/sticky-rewards'
 import { chainName } from '@/lib/urn'
 import { EXTERNAL_WALLET_REQUIRED } from '@/providers/WalletAuthContext'
@@ -86,17 +86,8 @@ type Plan = {
   steps: readonly TxRequest[]
 }
 
-/** What the holder asked for and cannot have: said to them, and no failure of the page's own. */
-class Refusal extends Error {}
-
 /** A reason that starts a sentence. */
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
-
-function deploymentOn(chainId: number) {
-  const deployment = stickyDeployment(chainId)
-  if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
-  return deployment
-}
 
 /** What a holder has of a project's Sticky tokens, read from the chain now. */
 async function heldBy(
@@ -111,34 +102,6 @@ async function heldBy(
     signal,
   )
   return need(held as Answer<bigint>, 'your Sticky token balance')
-}
-
-/** Why the chain refuses a call, in the words of its revert when it has any. */
-function reasonOf(error: unknown): string {
-  if (!(error instanceof BaseError)) return error instanceof Error ? error.message : 'no reason was given'
-  const reverted = error.walk(cause => cause instanceof ContractFunctionRevertedError)
-  return reverted instanceof ContractFunctionRevertedError
-    ? (reverted.data?.errorName ?? reverted.reason ?? reverted.shortMessage)
-    : error.shortMessage
-}
-
-/** The unstick tried against the chain as the holder will send it: the request the review shows, asked of a node. */
-async function preflight(step: TxRequest, holder: Address, signal: AbortSignal): Promise<void> {
-  try {
-    await untilAborted(
-      jbCenterPublicClient(step.chainId).simulateContract({
-        account: holder,
-        address: step.address,
-        abi: step.abi,
-        functionName: step.functionName,
-        args: step.args as unknown[],
-      }),
-      signal,
-    )
-  } catch (cause) {
-    if (signal.aborted) throw cause
-    throw new Error(`The terminal would refuse this unstick: ${reasonOf(cause)}`, { cause })
-  }
 }
 
 /**
@@ -191,7 +154,8 @@ async function planUnstick(
   const steps = unstickTxs(info, holder, count, quote.net, standing).filter(
     step => !(off && step.functionName === 'setConfigFor') && !(isTeardown(step) && went.some(sameStep(step))),
   )
-  await preflight(steps[steps.length - 1], holder, signal)
+  // The unstick is tried against the chain as the holder will send it, before the plan is shown.
+  await preflight(steps[steps.length - 1], holder, signal, 'The terminal would refuse this unstick')
   return { holder, count, balance, quote, steps }
 }
 
@@ -316,7 +280,7 @@ export function UnstickFlow({
     setPlan(current => current && { ...current, steps: current.steps.slice(1) })
     setError(null)
     // What the step changed is read again: a step of the teardown changes only the holder's auto-stick and trust.
-    if (isTeardown(step)) refreshAfterAutoStickOff(client, chainId, projectId, holder)
+    if (isTeardown(step)) refreshAfterAutoStick(client, chainId, projectId, holder)
     else refreshAfterUnstick(client, chainId, projectId, holder)
   }, [tx.phase, accepted, client, chainId, projectId])
 

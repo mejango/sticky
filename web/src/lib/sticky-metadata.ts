@@ -15,7 +15,7 @@ import type { Address } from 'viem'
 import { untilAborted } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { controllerAbi, stickyDeployerAbi, tokensAbi } from '@/lib/sticky-abis'
-import { stickyDeployment } from '@/lib/sticky-addresses'
+import { deploymentOn } from '@/lib/sticky-addresses'
 import { withTimeout } from '@/lib/with-timeout'
 
 /**
@@ -201,8 +201,7 @@ async function tokensContract(chainId: number, deployer: Address, signal: AbortS
  * project has none. The chain can change it, so it is read live; rejects when a read does not answer.
  */
 export async function projectUriOf(chainId: number, stakedToken: Address, { signal }: Cancel = {}): Promise<string | null> {
-  const deployment = stickyDeployment(chainId)
-  if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
+  const deployment = deploymentOn(chainId)
   const tokens = await tokensContract(chainId, deployment.deployer, signal)
   const client = jbCenterPublicClient(chainId)
   const projectId = await untilAborted(

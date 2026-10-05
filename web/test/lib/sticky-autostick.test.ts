@@ -1,11 +1,12 @@
 // @vitest-environment node
 
-import type { Address } from 'viem'
+import { erc20Abi, toHex, type Address } from 'viem'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { stickyAutoStickAbi, stickyDistributorAbi, stickyHookAbi, stickyTokenAbi } from '@/lib/sticky-abis'
 import type { StickyEvent } from '@/lib/sticky-events'
 import {
   CHAIN,
+  HEAD,
   HOLDER,
   NOW,
   OTHER,
@@ -385,5 +386,61 @@ describe('trustedSenders', () => {
     chain.lose(() => true)
     const { trustedSenders } = await load()
     await expect(trustedSenders([trust(SENDER, true)], reads)).rejects.toMatchObject({ functionName: 'aggregate3' })
+  })
+})
+
+describe('readAutoStickStanding', () => {
+  it("reads whether auto-stick is on, the holder's trust in the adapter and their allowance, in one request at the block asked", async () => {
+    const chain = rewardChain()
+    chain.stock(ADAPTER, stickyAutoStickAbi, 'configOf', [1n, 86_400, 0, true])
+    chain.stock(HOOK, stickyHookAbi, 'isTrustedSenderOf', false)
+    chain.stock(STAKED, erc20Abi, 'allowance', 7n)
+    const { readAutoStickStanding } = await load()
+    expect(await readAutoStickStanding(CHAIN, PROJECT, HOLDER, { stakedToken: STAKED, block: HEAD - 1n })).toEqual({
+      enabled: true,
+      personallyTrusted: false,
+      allowance: 7n,
+    })
+    expect(shape(chain.requests)).toEqual([['eth_call', toHex(HEAD - 1n), 3]])
+    expect(chain.reads().map(({ target, functionName, args }) => [target, functionName, args])).toEqual([
+      [ADAPTER, 'configOf', [PROJECT, HOLDER]],
+      [HOOK, 'isTrustedSenderOf', [PROJECT, HOLDER, ADAPTER]],
+      [STAKED, 'allowance', [HOLDER, ADAPTER]],
+    ])
+  })
+
+  it('names what it could not read, and keeps the cause', async () => {
+    const chain = rewardChain()
+    chain.stock(ADAPTER, stickyAutoStickAbi, 'configOf', REVERT)
+    chain.stock(HOOK, stickyHookAbi, 'isTrustedSenderOf', true)
+    chain.stock(STAKED, erc20Abi, 'allowance', 7n)
+    const { readAutoStickStanding } = await load()
+    const failed = await readAutoStickStanding(CHAIN, PROJECT, HOLDER, { stakedToken: STAKED }).catch((error: Error) => error)
+    expect(failed).toMatchObject({ message: "the holder's auto-stick settings could not be read." })
+    expect((failed as Error).cause).toBeInstanceOf(Error)
+  })
+
+  it('names a request that got no answer in one line, and keeps viem\'s error as the cause', async () => {
+    const chain = rewardChain()
+    chain.stock(ADAPTER, stickyAutoStickAbi, 'configOf', [1n, 86_400, 0, true])
+    chain.stock(HOOK, stickyHookAbi, 'isTrustedSenderOf', true)
+    chain.stock(STAKED, erc20Abi, 'allowance', 7n)
+    chain.lose(() => true)
+    const { readAutoStickStanding } = await load()
+    const lost = await readAutoStickStanding(CHAIN, PROJECT, HOLDER, { stakedToken: STAKED }).catch((error: Error) => error)
+    expect(lost).toMatchObject({ message: 'your auto-stick could not be read.' })
+    expect((lost as Error).cause).toBeInstanceOf(Error)
+  })
+})
+
+describe('hasLeftovers', () => {
+  it('says an auto-stick that is off still has what the holder gave it: their trust or an allowance, and nothing else', async () => {
+    const { hasLeftovers } = await load()
+    const off = { enabled: false, personallyTrusted: false, allowance: 0n }
+    expect(hasLeftovers(off)).toBe(false)
+    expect(hasLeftovers({ ...off, personallyTrusted: true })).toBe(true)
+    expect(hasLeftovers({ ...off, allowance: 1n })).toBe(true)
+    // While it is on, they are in use.
+    expect(hasLeftovers({ enabled: true, personallyTrusted: true, allowance: 1n })).toBe(false)
   })
 })

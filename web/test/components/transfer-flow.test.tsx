@@ -249,7 +249,7 @@ describe('the recipient', () => {
     expect(modal().textContent).not.toContain('bob.eth')
   })
 
-  it('takes an address in one case, or with its checksum, and reviews it as the checksummed address', async () => {
+  it('takes an address in lowercase, or with its checksum, and reviews it as the checksummed address', async () => {
     expect(BOB).not.toBe(BOB.toLowerCase())
     await render()
     await review(BOB.toLowerCase(), '1')

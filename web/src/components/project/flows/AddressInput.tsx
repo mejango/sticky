@@ -5,8 +5,9 @@ import { getAddress, isAddress, isAddressEqual, zeroAddress, type Address } from
 import { useEnsName } from '@/hooks/useEnsName'
 
 /**
- * The address `text` names, checksummed, or null. It must be a whole address, written in one case or with its checksum
- * right, and not the zero address: nothing can be sent from it, and no one holds what is sent to it.
+ * The address `text` names, checksummed, or null. It must be a whole address, written all in lowercase or with its
+ * checksum right (viem's strict `isAddress`, which refuses one written all in capitals), and not the zero address:
+ * nothing can be sent from it, and no one holds what is sent to it.
  */
 export function parseAddress(text: string): Address | null {
   const input = text.trim()

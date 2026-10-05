@@ -5,7 +5,12 @@ import { getAddress } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   REFRESH_AFTER_MS,
-  refreshAfterAutoStickOff,
+  refreshAfterAutoStick,
+  refreshAfterCollect,
+  refreshAfterFund,
+  refreshAfterReceiver,
+  refreshAfterRewardStick,
+  refreshAfterSettle,
   refreshAfterStick,
   refreshAfterTransfer,
   refreshAfterTrust,
@@ -32,6 +37,8 @@ const KEYS: Record<string, QueryKey> = {
   flows: ['sticky-project', CHAIN, 23, 'flows'],
   siblings: ['sticky-project', CHAIN, 23, 'siblings', 'v1'],
   funding: ['sticky-project', CHAIN, 23, 'funding'],
+  receiver: ['sticky-project', CHAIN, 23, 'receiver', '4000'],
+  arrivals: ['sticky-project', CHAIN, 23, 'receiver', 'arrivals', '0x8', '0x2'],
   position: ['sticky-position', CHAIN, 23, HOLDER],
   tranches: ['sticky-tranches', CHAIN, 23, HOLDER.toLowerCase(), 0, '100'],
   rewards: ['sticky-rewards', CHAIN, 23, HOLDER, '0:0x1'],
@@ -78,8 +85,8 @@ const SCOPES: [string, (client: QueryClient) => void, string[]][] = [
     [...PAGE, 'position', 'tranches', 'rewards', 'auto-stick', ...ACCOUNT],
   ],
   [
-    "a step that takes auto-stick apart: the holder's auto-stick and who they trust",
-    client => refreshAfterAutoStickOff(client, CHAIN, 23, HOLDER),
+    "a change of auto-stick: the holder's auto-stick and who they trust",
+    client => refreshAfterAutoStick(client, CHAIN, 23, HOLDER),
     ['auto-stick', 'trusted'],
   ],
   [
@@ -102,7 +109,35 @@ const SCOPES: [string, (client: QueryClient) => void, string[]][] = [
     client => refreshAfterTrust(client, CHAIN, 23),
     ['events', 'auto-stick', 'trusted', "another's auto-stick", "another's trusted"],
   ],
+  [
+    "a collect: the holder's own rewards, auto-stick and stick, whose wallet it pays",
+    client => refreshAfterCollect(client, CHAIN, 23, HOLDER),
+    ['position', 'rewards', 'auto-stick'],
+  ],
+  [
+    "a stick of rewards: the page, and the holder's own stick, tranches, rewards, auto-stick, trusted senders and account page",
+    client => refreshAfterRewardStick(client, CHAIN, 23, HOLDER),
+    [...PAGE, 'position', 'tranches', 'rewards', 'auto-stick', 'trusted', ...ACCOUNT],
+  ],
+  [
+    "an airdrop: the pots, every account's rewards and auto-stick in the project, and what the funder holds",
+    client => refreshAfterFund(client, CHAIN, 23, HOLDER),
+    ['funding', 'position', 'rewards', 'auto-stick', "another's rewards", "another's auto-stick"],
+  ],
+  [
+    'a reward address created: the reward addresses and what they hold',
+    client => refreshAfterReceiver(client, CHAIN, 23),
+    ['receiver', 'arrivals'],
+  ],
+  [
+    "a settle: the pots, every account's rewards and auto-stick in the project, and the reward addresses",
+    client => refreshAfterSettle(client, CHAIN, 23),
+    ['funding', 'receiver', 'arrivals', 'rewards', 'auto-stick', "another's rewards", "another's auto-stick"],
+  ],
 ]
+
+/** The refreshes after a send that adds a pot, which read the pots again. */
+const FUNDING = new Set(SCOPES.filter(([, , expected]) => expected.includes('funding')).map(([, refresh]) => refresh))
 
 let client: QueryClient
 beforeEach(() => {
@@ -153,8 +188,13 @@ describe('the refresh after a send', () => {
 
   it("never reads a project's whole page again, nor another project's, another chain's or the home", () => {
     for (const [, refresh] of SCOPES) refresh(client)
-    const untouched = ['flows', 'siblings', 'funding', 'another project', 'another chain', "another project's position", 'home']
+    const untouched = ['flows', 'siblings', 'another project', 'another chain', "another project's position", 'home']
     expect(invalidated().filter(name => untouched.includes(name))).toEqual([])
+  })
+
+  it('reads the pots again only after a send that adds one', () => {
+    for (const [, refresh] of SCOPES) if (!FUNDING.has(refresh)) refresh(client)
+    expect(invalidated()).not.toContain('funding')
   })
 
   it("reads again only the holder's own reads after an unstick, not another account's", () => {

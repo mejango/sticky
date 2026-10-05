@@ -131,7 +131,10 @@ import { useBackingSeries, useProjectSiblings } from '@/hooks/useStickyOverview'
 import { useProjectLatest, useProjectSticks, useStickyPosition, useStickyProject } from '@/hooks/useStickyProject'
 import { useCheckedBalances, useHolderTranches } from '@/hooks/useStickyTokens'
 import {
-  refreshAfterAutoStickOff,
+  refreshAfterAutoStick,
+  refreshAfterCollect,
+  refreshAfterFund,
+  refreshAfterRewardStick,
   refreshAfterStick,
   refreshAfterTransfer,
   refreshAfterTrust,
@@ -271,13 +274,20 @@ describe("the refreshes against the hooks' own queries", () => {
       client => refreshAfterUnstick(client, CHAIN, PROJECT, HOLDER),
       [...PAGE, 'position', 'tranches', 'rewards', 'auto-stick', ...ACCOUNT],
     ],
-    ['a step that takes auto-stick apart', client => refreshAfterAutoStickOff(client, CHAIN, PROJECT, HOLDER), ['auto-stick', 'trusted']],
+    ['a change of auto-stick', client => refreshAfterAutoStick(client, CHAIN, PROJECT, HOLDER), ['auto-stick', 'trusted']],
     [
       'a transfer',
       client => refreshAfterTransfer(client, CHAIN, PROJECT),
       [...PAGE.filter(read => read !== 'info'), 'position', 'tranches', 'rewards', ...ACCOUNT],
     ],
     ['a change of trust', client => refreshAfterTrust(client, CHAIN, PROJECT), ['events', 'auto-stick', 'trusted']],
+    ['an airdrop', client => refreshAfterFund(client, CHAIN, PROJECT, HOLDER), ['funding', 'position', 'rewards', 'auto-stick']],
+    ['a collect', client => refreshAfterCollect(client, CHAIN, PROJECT, HOLDER), ['position', 'rewards', 'auto-stick']],
+    [
+      'a stick of rewards',
+      client => refreshAfterRewardStick(client, CHAIN, PROJECT, HOLDER),
+      [...PAGE, 'position', 'tranches', 'rewards', 'auto-stick', 'trusted', ...ACCOUNT],
+    ],
   ])('reads again after %s what it changed, and nothing else', async (_send, refresh, expected) => {
     await readAll()
     expect(refreshed(refresh)).toEqual([...expected].sort())

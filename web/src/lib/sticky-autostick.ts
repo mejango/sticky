@@ -7,9 +7,10 @@
  * Addresses of senders are lowercase.
  */
 
-import type { Address, ContractFunctionParameters } from 'viem'
+import { erc20Abi, type Address, type ContractFunctionParameters } from 'viem'
+import { asked } from '@/lib/hook-logs'
 import { stickyAutoStickAbi, stickyDistributorAbi, stickyHookAbi } from '@/lib/sticky-abis'
-import { stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
+import { deploymentOn } from '@/lib/sticky-addresses'
 import type { StickyEvent } from '@/lib/sticky-events'
 import { formatAmount, formatDuration } from '@/lib/sticky-format'
 import { pinnedBlock } from '@/lib/sticky-holders'
@@ -60,12 +61,6 @@ export type AutoStickState = {
 
 const GROUP_UNREADABLE = 'Could not read what a reward group has to collect; counting it as nothing.'
 const VESTING_UNREADABLE = 'Could not tell whether rewards can start unlocking; the card leaves out Start unlocking.'
-
-function deploymentOn(chainId: number): StickyDeployment {
-  const deployment = stickyDeployment(chainId)
-  if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
-  return deployment
-}
 
 /**
  * The reward groups a holder's staked-token rewards sit in: those of `groups` with something collectable, and what they
@@ -183,6 +178,49 @@ export async function readAutoStick(
     canBeginVesting,
   }
 }
+
+/** What a holder's auto-stick rests on: whether it is on, whether they trust the adapter, and what they let it move. */
+export type AutoStickStanding = Pick<AutoStickState, 'enabled' | 'personallyTrusted' | 'allowance'>
+
+/**
+ * A holder's auto-stick standing at `block` (the head when there is none), in one request: whether they turned it on,
+ * whether they trust the adapter, and what they let it move of the staked token. A change of auto-stick reads it again
+ * before each of its steps. A read that cannot be made rejects, naming what it could not read and keeping the cause.
+ */
+export async function readAutoStickStanding(
+  chainId: number,
+  projectId: bigint,
+  holder: Address,
+  { stakedToken, block, signal }: Cancel & { stakedToken: Address; block?: bigint },
+): Promise<AutoStickStanding> {
+  const { autoStick, hook } = deploymentOn(chainId)
+  const [configOf, trustedOf, allowanceOf] = await asked(
+    'your auto-stick',
+    () =>
+      readAt(
+        chainId,
+        [
+          { address: autoStick, abi: stickyAutoStickAbi, functionName: 'configOf', args: [projectId, holder] },
+          { address: hook, abi: stickyHookAbi, functionName: 'isTrustedSenderOf', args: [projectId, holder, autoStick] },
+          { address: stakedToken, abi: erc20Abi, functionName: 'allowance', args: [holder, autoStick] },
+        ],
+        block,
+        signal,
+      ),
+    signal,
+  )
+  const [, , , enabled] = need(configOf as Answer<readonly [bigint, number, number, boolean]>, "the holder's auto-stick settings")
+  return {
+    enabled,
+    personallyTrusted: need(trustedOf as Answer<boolean>, 'whether the holder trusts the adapter'),
+    allowance: need(allowanceOf as Answer<bigint>, 'the allowance'),
+  }
+}
+
+/** Whether an auto-stick that is off still has the holder's trust or an allowance of theirs, which nothing uses: a full
+ * exit that a reload cut short turns the adapter off and leaves them. */
+export const hasLeftovers = ({ enabled, personallyTrusted, allowance }: AutoStickStanding) =>
+  !enabled && (personallyTrusted || allowance > 0n)
 
 /** The line under the settings that says what holds auto-stick back, or nothing when nothing does. */
 export function asStatusLine(
