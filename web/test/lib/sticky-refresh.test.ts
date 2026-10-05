@@ -6,9 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   REFRESH_AFTER_MS,
   refreshAfterAutoStick,
-  refreshAfterClaimAndStick,
   refreshAfterCollect,
   refreshAfterFund,
+  refreshAfterRewardStick,
   refreshAfterStick,
   refreshAfterTransfer,
   refreshAfterTrust,
@@ -111,8 +111,8 @@ const SCOPES: [string, (client: QueryClient) => void, string[]][] = [
     ['position', 'rewards', 'auto-stick'],
   ],
   [
-    "a claim and stick: the page, and the holder's own stick, tranches, rewards, auto-stick, trusted senders and account page",
-    client => refreshAfterClaimAndStick(client, CHAIN, 23, HOLDER),
+    "a stick of rewards: the page, and the holder's own stick, tranches, rewards, auto-stick, trusted senders and account page",
+    client => refreshAfterRewardStick(client, CHAIN, 23, HOLDER),
     [...PAGE, 'position', 'tranches', 'rewards', 'auto-stick', 'trusted', ...ACCOUNT],
   ],
   [

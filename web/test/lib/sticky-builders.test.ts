@@ -12,9 +12,14 @@ import { stickyDeployment } from '@/lib/sticky-addresses'
 import {
   approveSteps,
   autoStickOffTxs,
+  autoStickOnTxs,
+  autoStickSettingsTx,
+  beginVestingTx,
   claimAndStickTxs,
   collectTx,
+  compoundTx,
   fundTxs,
+  repairTxs,
   stickTx,
   transferTx,
   trustTx,
@@ -351,6 +356,107 @@ describe('claimAndStickTxs', () => {
   })
 })
 
+describe('auto-stick', () => {
+  const adapter = deployment.autoStick
+  const DAY = 86_400
+  const WEEK = 604_800
+  /** Auto-stick off and never set up, the holder trusting nothing and having approved nothing. */
+  const fresh = { enabled: false, minimum: 0n, cooldown: 0, allowance: 0n, projectGranter: false, personallyTrusted: false }
+  const settings = { minimum: 2_000_000n, cooldown: DAY, cap: maxUint256 }
+
+  it('auto-stick configuration validates contract-width bounds', () => {
+    const on = (minimum: bigint, cooldown: number) => autoStickSettingsTx(info, { enabled: true }, { minimum, cooldown })
+    expect(() => on(0n, DAY)).toThrow('the auto-stick minimum must fit in uint128 and be greater than zero')
+    expect(() => on(1n << 128n, DAY)).toThrow('the auto-stick minimum must fit in uint128 and be greater than zero')
+    expect(on((1n << 128n) - 1n, DAY).args).toEqual([12n, true, (1n << 128n) - 1n, DAY])
+    // A cooldown of nothing, or of a day past the adapter's 30 days, and one below a day.
+    expect(() => on(1n, 0)).toThrow('auto-stick cooldown must be between 1 and 30 days')
+    expect(() => on(1n, 31 * DAY)).toThrow('auto-stick cooldown must be between 1 and 30 days')
+    expect(() => on(1n, 60)).toThrow('auto-stick cooldown must be between 1 and 30 days')
+    expect(on(1n, 30 * DAY).args[3]).toBe(30 * DAY)
+    expect(() => autoStickOnTxs(info, fresh, { ...settings, cooldown: 31 * DAY })).toThrow('between 1 and 30 days')
+    expect(() => autoStickOnTxs(info, fresh, { ...settings, minimum: 0n })).toThrow('greater than zero')
+  })
+
+  it('wallet-action:approve-the-auto-stick-adapter-s-allowance wallet-action:trust-the-auto-stick-adapter wallet-action:turn-on-auto-stick turns it on: the allowance, the trust, and the settings last', () => {
+    const txs = autoStickOnTxs(info, fresh, settings)
+    expect(calls(txs)).toEqual([
+      [A, 'approve', [adapter, maxUint256]],
+      [deployment.hook, 'setTrustedSenderFor', [12n, adapter, true]],
+      [adapter, 'setConfigFor', [12n, true, 2_000_000n, DAY]],
+    ])
+    expect(txs.map(({ label }) => label)).toEqual([
+      'Allow the auto-stick contract to move eligible ART rewards',
+      'Allow the auto-stick contract to stick ART for you',
+      'Turn on auto-stick',
+    ])
+  })
+
+  it('wallet-action:turn-off-auto-stick wallet-action:approve-the-auto-stick-adapter-s-allowance wallet-action:turn-on-auto-stick auto-stick renewal disables old settings before increasing allowance, then enables new settings last', () => {
+    const on = { ...fresh, enabled: true, minimum: 1_000_000n, cooldown: WEEK, allowance: 3_000_000n, personallyTrusted: true }
+    const txs = autoStickOnTxs(info, on, { ...settings, cap: 50_000_000n })
+    expect(calls(txs)).toEqual([
+      // The old settings, which the adapter keeps, with the adapter turned off.
+      [adapter, 'setConfigFor', [12n, false, 1_000_000n, WEEK]],
+      [A, 'approve', [adapter, 0n]],
+      [A, 'approve', [adapter, 50_000_000n]],
+      [adapter, 'setConfigFor', [12n, true, 2_000_000n, DAY]],
+    ])
+    expect(txs[0].label).toBe('Turn off auto-stick')
+  })
+
+  it('asks for no approval when the allowance already is the cap, and no trust when the project granted the adapter', () => {
+    const granted = { ...fresh, allowance: maxUint256, projectGranter: true }
+    expect(calls(autoStickOnTxs(info, granted, settings))).toEqual([[adapter, 'setConfigFor', [12n, true, 2_000_000n, DAY]]])
+    // An exact cap brings a larger allowance down to it.
+    expect(calls(autoStickOnTxs(info, granted, { ...settings, cap: 5n })).map(([, name, args]) => [name, args])).toEqual([
+      ['approve', [adapter, 0n]],
+      ['approve', [adapter, 5n]],
+      ['setConfigFor', [12n, true, 2_000_000n, DAY]],
+    ])
+  })
+
+  it('refuses an allowance cap of nothing', () => {
+    expect(() => autoStickOnTxs(info, fresh, { ...settings, cap: 0n })).toThrow('set an allowance cap, or choose unlimited')
+  })
+
+  it('wallet-action:change-auto-stick-settings changes the settings of an auto-stick that is on with one call, and refuses one that is off', () => {
+    const txs = [autoStickSettingsTx(info, { enabled: true }, { minimum: 7n, cooldown: WEEK })]
+    expect(calls(txs)).toEqual([[adapter, 'setConfigFor', [12n, true, 7n, WEEK]]])
+    expect(txs[0].label).toBe('Save auto-stick settings')
+    expect(() => autoStickSettingsTx(info, { enabled: false }, { minimum: 7n, cooldown: WEEK })).toThrow(
+      'auto-stick is off. Turn it on to change its settings',
+    )
+  })
+
+  it('wallet-action:trust-the-auto-stick-adapter repairs a permission that was taken back, and refuses one that stands', () => {
+    expect(calls(repairTxs(info, { projectGranter: false, personallyTrusted: false }))).toEqual([
+      [deployment.hook, 'setTrustedSenderFor', [12n, adapter, true]],
+    ])
+    expect(() => repairTxs(info, { projectGranter: false, personallyTrusted: true })).toThrow('auto-stick permission is already enabled')
+    expect(() => repairTxs(info, { projectGranter: true, personallyTrusted: false })).toThrow('auto-stick permission is already enabled')
+  })
+
+  it('wallet-action:stick-ready-rewards-now sticks the ready rewards of the groups holding them, for the holder', () => {
+    const tx = compoundTx(info, B, [0n, 4000n])
+    expect(tx).toMatchObject({ address: adapter, abi: stickyAutoStickAbi, functionName: 'compoundFor', args: [12n, B, [0n, 4000n]] })
+    expect(tx.label).toBe('Stick ready rewards now')
+    expect(Object.isFrozen(tx.args[2])).toBe(true)
+    expect(encoded(compoundTx(info, B, [0n, 4000n]))).toBe(fixtures.compoundFor)
+  })
+
+  it('wallet-action:start-unlocking-rewards starts unlocking the finished rounds of the groups holding them, for the holder', () => {
+    const tx = beginVestingTx(info, B, [4008n])
+    expect(tx).toMatchObject({ address: adapter, abi: stickyAutoStickAbi, functionName: 'beginVestingFor', args: [12n, B, [4008n]] })
+    expect(tx.label).toBe('Start unlocking')
+    expect(encoded(tx)).toBe(fixtures.beginVestingFor)
+  })
+
+  it('encodes setConfigFor as cast did', () => {
+    expect(encoded(autoStickSettingsTx(info, { enabled: true }, { minimum: 1_000_000n, cooldown: WEEK }))).toBe(fixtures.setConfigFor)
+  })
+})
+
 describe('transferTx', () => {
   it('wallet-action:transfer-sticky-tokens moves Sticky tokens, of 18 decimals, to the recipient', () => {
     const tx = transferTx(info, B, 1_000_000_000_000_000_001n)
@@ -388,6 +494,10 @@ describe('what a builder returns', () => {
       ...autoStickOffTxs(project, { minimum: 1n, cooldown: 86_400, personallyTrusted: true, allowance: 1n }),
       ...fundTxs(CHAIN, { stToken: C, token: A, amount: 9n, groupId: 0n, allowance: 1n, ...ART }),
       collectTx(CHAIN, { stToken: C, groupId: 0n, holder: B, token: A, collectable: 1n }),
+      ...autoStickOnTxs(project, { enabled: true, minimum: 1n, cooldown: 86_400, allowance: 0n, projectGranter: false, personallyTrusted: false }, { minimum: 1n, cooldown: 86_400, cap: 9n }),
+      ...repairTxs(project, { projectGranter: false, personallyTrusted: false }),
+      compoundTx(project, B, [0n]),
+      beginVestingTx(project, B, [0n]),
       ...claimAndStickTxs(project, { groupIds: [0n], collectable: 9n, allowance: 1n, canStick: false }),
       transferTx(project, B, 9n),
       trustTx(CHAIN, 12n, B, true),

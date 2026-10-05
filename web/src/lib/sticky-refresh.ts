@@ -111,9 +111,10 @@ export function refreshAfterCollect(client: QueryClient, chainId: number, projec
   refreshOnSchedule(client, ofHolder(chainId, projectId, holder, ['sticky-position', 'sticky-rewards', 'sticky-autostick']))
 }
 
-/** A claim and stick: what an unstick changes, since it mints for the holder and collects their rewards, and who they
- * trust, which its trust step can change. */
-export function refreshAfterClaimAndStick(client: QueryClient, chainId: number, projectId: number, holder: Address): void {
+/** A stick of a holder's rewards (a claim and stick, or auto-stick's stick of ready rewards now): what an unstick
+ * changes, since it mints for the holder and collects their rewards, and who they trust, which a claim's trust step can
+ * change. */
+export function refreshAfterRewardStick(client: QueryClient, chainId: number, projectId: number, holder: Address): void {
   const who = holder.toLowerCase()
   refreshOnSchedule(client, [
     ...ofPage(chainId, projectId, PAGE),

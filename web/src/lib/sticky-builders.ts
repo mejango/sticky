@@ -94,6 +94,22 @@ export function stickTx(
  * while it is off, and whether the holder gave it trust and an allowance. */
 type AutoStickSettings = Pick<AutoStickState, 'minimum' | 'cooldown' | 'personallyTrusted' | 'allowance'>
 
+/** The adapter turned off for the holder who sends it. It asks for a valid minimum and cooldown even to be turned off,
+ * so it is told the ones it keeps. */
+function autoStickOffTx(
+  { chainId, projectId }: Pick<StickyProjectInfo, 'chainId' | 'projectId'>,
+  { minimum, cooldown }: Pick<AutoStickState, 'minimum' | 'cooldown'>,
+): TxRequest {
+  return frozen({
+    chainId,
+    address: deploymentOn(chainId).autoStick,
+    abi: stickyAutoStickAbi,
+    functionName: 'setConfigFor',
+    args: [projectId, false, minimum, cooldown],
+    label: 'Turn off auto-stick',
+  })
+}
+
 /**
  * A holder's auto-stick, taken apart: the adapter turned off, then the trust and the allowance the holder gave it taken
  * back. A project that launched with the adapter as a granter needs no trust from the holder, so there may be none to
@@ -106,15 +122,7 @@ export function autoStickOffTxs(
   const { chainId, projectId, stakedToken, symbol } = info
   const { autoStick } = deploymentOn(chainId)
   return [
-    // The adapter asks for a valid minimum and cooldown even to be turned off, so it is told the ones it has.
-    frozen({
-      chainId,
-      address: autoStick,
-      abi: stickyAutoStickAbi,
-      functionName: 'setConfigFor',
-      args: [projectId, false, minimum, cooldown],
-      label: 'Turn off auto-stick',
-    }),
+    autoStickOffTx(info, { minimum, cooldown }),
     ...(personallyTrusted
       ? [trustTx(chainId, projectId, autoStick, false, `Stop the auto-stick contract from sticking ${symbol} for you`)]
       : []),
@@ -295,4 +303,112 @@ export function claimAndStickTxs(
       label: 'Claim & stick',
     }),
   ]
+}
+
+/** The least and the most time the adapter takes between two auto-sticks (its MIN_COOLDOWN and MAX_COOLDOWN), and the
+ * largest minimum it keeps, a uint128. */
+const MIN_COOLDOWN = 86_400
+const MAX_COOLDOWN = 2_592_000
+const MAX_MINIMUM = (1n << 128n) - 1n
+
+type AutoStickProject = Pick<StickyProjectInfo, 'chainId' | 'projectId' | 'stakedToken' | 'symbol' | 'decimals'>
+
+/** Auto-stick turned on, with a holder's settings: the least it sticks at once, in the staked token's units, and the
+ * shortest time between two sticks, in seconds. Both are held to the adapter's bounds first, as the old client held them
+ * (OLD asConfigTx, app.js:4365). */
+function autoStickConfigTx(info: AutoStickProject, minimum: bigint, cooldown: number, label: string): TxRequest {
+  if (minimum <= 0n || minimum > MAX_MINIMUM) {
+    throw new Error('the auto-stick minimum must fit in uint128 and be greater than zero')
+  }
+  if (!Number.isInteger(cooldown) || cooldown < MIN_COOLDOWN || cooldown > MAX_COOLDOWN) {
+    throw new Error('auto-stick cooldown must be between 1 and 30 days')
+  }
+  const { chainId, projectId } = info
+  return frozen({
+    chainId,
+    address: deploymentOn(chainId).autoStick,
+    abi: stickyAutoStickAbi,
+    functionName: 'setConfigFor',
+    args: [projectId, true, minimum, cooldown],
+    label,
+  })
+}
+
+/** What a holder asks of auto-stick: its minimum and cooldown, and the most of their staked token it may move
+ * (`maxUint256` for unlimited). */
+export type AutoStickChoice = { minimum: bigint; cooldown: number; cap: bigint }
+
+/**
+ * Auto-stick turned on, or renewed while it is on (OLD saveAutoStick, app.js:4423): an adapter that is on is turned off
+ * first, with the settings it keeps, so that no keeper uses the new allowance with the old settings; then the allowance,
+ * set to exactly the cap (unlimited or a custom one, reset first when it is neither zero nor the cap); then the adapter
+ * trusted to stick for the holder, unless the holder or the project lets it already; and the settings last, so that a
+ * setup that stops partway cannot stick.
+ */
+export function autoStickOnTxs(
+  info: AutoStickProject,
+  state: Pick<AutoStickState, 'enabled' | 'minimum' | 'cooldown' | 'allowance' | 'projectGranter' | 'personallyTrusted'>,
+  { minimum, cooldown, cap }: AutoStickChoice,
+): TxRequest[] {
+  const on = autoStickConfigTx(info, minimum, cooldown, 'Turn on auto-stick')
+  if (cap <= 0n) throw new Error('set an allowance cap, or choose unlimited')
+  const { chainId, projectId, stakedToken, symbol, decimals } = info
+  return [
+    ...(state.enabled ? [autoStickOffTx(info, state)] : []),
+    ...approveSteps(chainId, stakedToken, deploymentOn(chainId).autoStick, state.allowance, cap, {
+      symbol,
+      decimals,
+      mode: 'exact',
+      label: `Allow the auto-stick contract to move eligible ${symbol} rewards`,
+    }),
+    ...(state.projectGranter || state.personallyTrusted ? [] : [adapterTrustTx(chainId, projectId, symbol)]),
+    on,
+  ]
+}
+
+/** New settings for an auto-stick that is on: one `setConfigFor`. The allowance stays as it is. */
+export function autoStickSettingsTx(
+  info: AutoStickProject,
+  { enabled }: Pick<AutoStickState, 'enabled'>,
+  { minimum, cooldown }: Pick<AutoStickChoice, 'minimum' | 'cooldown'>,
+): TxRequest {
+  if (!enabled) throw new Error('auto-stick is off. Turn it on to change its settings')
+  return autoStickConfigTx(info, minimum, cooldown, 'Save auto-stick settings')
+}
+
+/** An auto-stick whose trust was taken back, repaired: the adapter trusted to stick for the holder again (OLD
+ * repairAutoStick, app.js:4475). An allowance that ran out is renewed by turning it on again (`autoStickOnTxs`). */
+export function repairTxs(
+  info: AutoStickProject,
+  { projectGranter, personallyTrusted }: Pick<AutoStickState, 'projectGranter' | 'personallyTrusted'>,
+): TxRequest[] {
+  if (projectGranter || personallyTrusted) throw new Error('auto-stick permission is already enabled')
+  return [adapterTrustTx(info.chainId, info.projectId, info.symbol)]
+}
+
+/** The holder's ready rewards in `groupIds` stuck for them now by the adapter (OLD autoStickNow, app.js:4489). */
+export function compoundTx(info: AutoStickProject, holder: Address, groupIds: readonly bigint[]): TxRequest {
+  const { chainId, projectId } = info
+  return frozen({
+    chainId,
+    address: deploymentOn(chainId).autoStick,
+    abi: stickyAutoStickAbi,
+    functionName: 'compoundFor',
+    args: [projectId, holder, Object.freeze([...groupIds])],
+    label: 'Stick ready rewards now',
+  })
+}
+
+/** The finished rounds of the holder's rewards in `groupIds` started unlocking by the adapter, which moves no tokens
+ * (OLD beginAutoStickVesting, app.js:4519). */
+export function beginVestingTx(info: AutoStickProject, holder: Address, groupIds: readonly bigint[]): TxRequest {
+  const { chainId, projectId } = info
+  return frozen({
+    chainId,
+    address: deploymentOn(chainId).autoStick,
+    abi: stickyAutoStickAbi,
+    functionName: 'beginVestingFor',
+    args: [projectId, holder, Object.freeze([...groupIds])],
+    label: 'Start unlocking',
+  })
 }

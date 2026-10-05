@@ -185,6 +185,17 @@ export function roundSentence(schedule: RewardSchedule): string {
   )
 }
 
+/** How gradually collected rewards unlock, from the distributor's round and number of rounds, or nothing when they
+ * unlock in one round (OLD unlockScheduleSentence, app.js:4192). */
+export function unlockSentence({ roundDuration, vestingRounds }: Pick<RewardSchedule, 'roundDuration' | 'vestingRounds'>): string {
+  if (vestingRounds <= 1n) return ''
+  const rounds = Number(vestingRounds)
+  return (
+    `Rewards unlock over ${rounds} rounds, about ${Math.round(100 / rounds)}% every ${formatDuration(roundDuration)}, ` +
+    `all of it ${formatDuration(roundDuration * vestingRounds)} after unlocking starts.`
+  )
+}
+
 /** One pot's lines, stating amounts and dates. */
 export function rewardLines({
   position,

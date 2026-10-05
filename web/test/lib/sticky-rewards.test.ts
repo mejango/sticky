@@ -221,6 +221,17 @@ describe('reward copy', () => {
   })
 })
 
+describe('the unlock schedule', () => {
+  it('says how gradually rewards unlock, from the distributor\'s round and rounds, and nothing for rewards that unlock at once', async () => {
+    const r = await load()
+    expect(r.unlockSentence(CLOCK)).toBe('Rewards unlock over 4 rounds, about 25% every 7d 0h, all of it 28d 0h after unlocking starts.')
+    expect(r.unlockSentence({ ...CLOCK, roundDuration: 86_400n, vestingRounds: 3n })).toBe(
+      'Rewards unlock over 3 rounds, about 33% every 1d 0h, all of it 3d 0h after unlocking starts.',
+    )
+    expect(r.unlockSentence({ ...CLOCK, vestingRounds: 1n })).toBe('')
+  })
+})
+
 describe('the Fund logs', () => {
   const FUND = '0x171d1972970e548ead487a3a60cfbdfffd130a21513e44dfcd8778965935ddf2'
   const fund = (groupId: bigint, token: string, amount: bigint, at: number) =>

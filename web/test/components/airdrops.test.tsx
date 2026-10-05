@@ -138,6 +138,34 @@ vi.mock('@/components/project/flows/ClaimFlow', () => ({
   ),
 }))
 
+// The auto-stick card's actions have a test of their own (test/components/autostick-flow.test.tsx); here they are marked
+// with what the card gives them.
+vi.mock('@/components/project/flows/AutoStickFlow', () => ({
+  AutoStickFlow: ({
+    chainId,
+    projectId,
+    info,
+    state,
+    groups,
+  }: {
+    chainId: number
+    projectId: number
+    info: { stSymbol: string }
+    state: { enabled: boolean; status: number }
+    groups: readonly bigint[]
+  }) => (
+    <div
+      data-flow="autostick"
+      data-chain={chainId}
+      data-project={projectId}
+      data-token={info.stSymbol}
+      data-enabled={String(state.enabled)}
+      data-status={state.status}
+      data-groups={groups.join(',')}
+    />
+  ),
+}))
+
 import { AirdropsTab } from '@/components/project/AirdropsTab'
 import { AS_STATUS, type AutoStickState } from '@/lib/sticky-autostick'
 import { refreshAfterTrust } from '@/lib/sticky-refresh'
@@ -916,7 +944,8 @@ describe('a panel that is hidden', () => {
 
 describe('auto-stick', () => {
   const state = () => autoStick()!.querySelector('[data-autostick-state]')!.textContent
-  const actions = () => buttonsOf(autoStick()!.querySelector('div.flex')!)
+  /** What the card gives its actions. */
+  const actions = () => autoStick()!.querySelector<HTMLElement>('[data-flow="autostick"]')!.dataset
 
   it('says it is off, and offers to turn it on', async () => {
     mocks.autoStick.mockResolvedValue(autoStickOn({ enabled: false, status: AS_STATUS.DISABLED, minimum: 0n, cooldown: 0 }))
@@ -924,7 +953,7 @@ describe('auto-stick', () => {
     expect(autoStick()!.querySelector('h2')?.textContent).toBe('Auto-stick SLOPSHOP rewards')
     expect(autoStick()!.textContent).toContain('Stick your SLOPSHOP rewards into STICKYSLOPSHOP as they unlock.')
     expect(state()).toBe('OffUnlocked SLOPSHOP rewards stay claimable until you collect them.')
-    expect(actions()).toEqual(['Turn on auto-stick'])
+    expect(actions()).toMatchObject({ chain: String(CHAIN), project: '23', token: 'STICKYSLOPSHOP', enabled: 'false' })
   })
 
   it('says what it does while on, when it last did it, and what holds it back', async () => {
@@ -933,31 +962,26 @@ describe('auto-stick', () => {
     expect(state()).toBe(
       'OnUnlocked SLOPSHOP rewards auto-stick when at least 1 SLOPSHOP is ready, at most once every 1d 0h.Last auto-stick: 2h agoReady to auto-stick',
     )
-    expect(actions()).toEqual(['Turn off auto-stick', 'Stick ready rewards now', 'Settings'])
+    expect(actions()).toMatchObject({ enabled: 'true', status: String(AS_STATUS.READY) })
   })
 
   it.each([
-    [AS_STATUS.COOLDOWN, { nextCompoundAt: Math.floor(Date.now() / 1000) + 91_000 }, 'Next auto-stick in 1d 1h', ['Turn off auto-stick', 'Settings']],
-    [AS_STATUS.BELOW_MINIMUM, { collectable: 500_000n }, '0.5 SLOPSHOP ready | minimum 1', ['Turn off auto-stick', 'Settings']],
-    [AS_STATUS.NOT_TRUSTED, {}, 'Permission removed | repair setup', ['Turn off auto-stick', 'Repair permission', 'Settings']],
-    [AS_STATUS.INSUFFICIENT_ALLOWANCE, {}, 'Allowance exhausted | renew', ['Turn off auto-stick', 'Renew allowance', 'Settings']],
-    [AS_STATUS.ZERO_ISSUANCE, {}, 'Wait for more rewards: the current amount is too small to mint a Sticky token unit', ['Turn off auto-stick', 'Settings']],
-  ])('for status %i says "%s" and offers only what can help', async (status, extra, line, buttons) => {
+    [AS_STATUS.COOLDOWN, { nextCompoundAt: Math.floor(Date.now() / 1000) + 91_000 }, 'Next auto-stick in 1d 1h'],
+    [AS_STATUS.BELOW_MINIMUM, { collectable: 500_000n }, '0.5 SLOPSHOP ready | minimum 1'],
+    [AS_STATUS.NOT_TRUSTED, {}, 'Permission removed | repair setup'],
+    [AS_STATUS.INSUFFICIENT_ALLOWANCE, {}, 'Allowance exhausted | renew'],
+    [AS_STATUS.ZERO_ISSUANCE, {}, 'Wait for more rewards: the current amount is too small to mint a Sticky token unit'],
+  ])('for status %i says "%s", and gives its actions the state that says what they offer', async (status, extra, line) => {
     mocks.autoStick.mockResolvedValue(autoStickOn({ status, ...extra }))
     await renderTab()
     expect(state()).toContain(line)
-    expect(actions()).toEqual(buttons)
+    expect(actions()).toMatchObject({ status: String(status) })
   })
 
-  it('offers to start unlocking finished rounds when there are some', async () => {
-    mocks.autoStick.mockResolvedValue(autoStickOn({ canBeginVesting: true }))
+  it('gives its actions the groups the pots are in', async () => {
+    mocks.funding.mockResolvedValue([fundedPot(4008n, OTHER, 5n), fundedPot(4000n, OTHER, 5n)])
     await renderTab()
-    expect(actions()).toEqual(['Turn off auto-stick', 'Stick ready rewards now', 'Start unlocking', 'Settings'])
-  })
-
-  it('has buttons that wait for the transaction engine', async () => {
-    await renderTab()
-    expect([...autoStick()!.querySelectorAll('button')].every(button => button.disabled)).toBe(true)
+    expect(actions().groups).toBe('0,4000,4008')
   })
 
   it('reads the viewer\'s auto-stick for the groups the pots are in', async () => {

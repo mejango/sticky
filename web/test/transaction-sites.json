@@ -1,6 +1,26 @@
 {
   "version": 1,
   "useSafeTx": {
+    "src/components/project/flows/AutoStickFlow.tsx": {
+      "hooks": 1,
+      "sends": 1,
+      "sendSites": [
+        {
+          "id": "autostick-steps",
+          "actions": [
+            "Turn off auto-stick",
+            "Approve the auto-stick adapter's allowance",
+            "Trust the auto-stick adapter",
+            "Turn on auto-stick",
+            "Change auto-stick settings",
+            "Take back the auto-stick adapter's trust",
+            "Take back the auto-stick adapter's allowance",
+            "Stick ready rewards now",
+            "Start unlocking rewards"
+          ]
+        }
+      ]
+    },
     "src/components/project/flows/ClaimFlow.tsx": {
       "hooks": 1,
       "sends": 1,

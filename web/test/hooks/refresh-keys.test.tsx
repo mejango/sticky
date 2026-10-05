@@ -132,9 +132,9 @@ import { useProjectLatest, useProjectSticks, useStickyPosition, useStickyProject
 import { useCheckedBalances, useHolderTranches } from '@/hooks/useStickyTokens'
 import {
   refreshAfterAutoStick,
-  refreshAfterClaimAndStick,
   refreshAfterCollect,
   refreshAfterFund,
+  refreshAfterRewardStick,
   refreshAfterStick,
   refreshAfterTransfer,
   refreshAfterTrust,
@@ -284,8 +284,8 @@ describe("the refreshes against the hooks' own queries", () => {
     ['an airdrop', client => refreshAfterFund(client, CHAIN, PROJECT, HOLDER), ['funding', 'position', 'rewards', 'auto-stick']],
     ['a collect', client => refreshAfterCollect(client, CHAIN, PROJECT, HOLDER), ['position', 'rewards', 'auto-stick']],
     [
-      'a claim and stick',
-      client => refreshAfterClaimAndStick(client, CHAIN, PROJECT, HOLDER),
+      'a stick of rewards',
+      client => refreshAfterRewardStick(client, CHAIN, PROJECT, HOLDER),
       [...PAGE, 'position', 'tranches', 'rewards', 'auto-stick', 'trusted', ...ACCOUNT],
     ],
   ])('reads again after %s what it changed, and nothing else', async (_send, refresh, expected) => {

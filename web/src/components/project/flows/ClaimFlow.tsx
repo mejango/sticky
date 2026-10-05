@@ -20,7 +20,7 @@ import { claimAndStickTxs, collectTx } from '@/lib/sticky-builders'
 import { asSentence } from '@/lib/sticky-format'
 import type { Answer, StickyProjectInfo } from '@/lib/sticky-project'
 import { quoteStick } from '@/lib/sticky-quotes'
-import { refreshAfterClaimAndStick, refreshAfterCollect } from '@/lib/sticky-refresh'
+import { refreshAfterCollect, refreshAfterRewardStick } from '@/lib/sticky-refresh'
 import { groupLabel, hasRewardsToVest, need, readAt, type RewardCard } from '@/lib/sticky-rewards'
 import { chainName } from '@/lib/urn'
 import { useViewAs } from '@/lib/viewAs'
@@ -264,7 +264,7 @@ export function ClaimFlow({
   // What a claim changed is read again once it has confirmed.
   useEffect(() => {
     if (!complete || !plan) return
-    if (plan.kind === 'stick') refreshAfterClaimAndStick(client, chainId, projectId, plan.account)
+    if (plan.kind === 'stick') refreshAfterRewardStick(client, chainId, projectId, plan.account)
     else refreshAfterCollect(client, chainId, projectId, plan.account)
   }, [complete, plan, client, chainId, projectId])
 
