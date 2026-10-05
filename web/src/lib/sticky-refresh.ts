@@ -70,8 +70,9 @@ export function refreshAfterUnstick(client: QueryClient, chainId: number, projec
   ])
 }
 
-/** A step that takes a holder's auto-stick apart: their auto-stick and who they trust, and nothing else. */
-export function refreshAfterAutoStickOff(client: QueryClient, chainId: number, projectId: number, holder: Address): void {
+/** A change of a holder's auto-stick (turning it on or off, its settings, its trust or allowance): their auto-stick and
+ * who they trust, and nothing else. */
+export function refreshAfterAutoStick(client: QueryClient, chainId: number, projectId: number, holder: Address): void {
   refreshOnSchedule(client, ofHolder(chainId, projectId, holder, ['sticky-autostick', 'sticky-trusted']))
 }
 

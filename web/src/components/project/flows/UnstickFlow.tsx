@@ -21,7 +21,7 @@ import { parseShares, SHARE_DECIMALS } from '@/lib/sticky-amount'
 import { unstickTxs } from '@/lib/sticky-builders'
 import type { Answer, StickyProjectInfo } from '@/lib/sticky-project'
 import { quoteUnstick, unstickQuoteSentence, type UnstickQuote } from '@/lib/sticky-quotes'
-import { refreshAfterAutoStickOff, refreshAfterUnstick } from '@/lib/sticky-refresh'
+import { refreshAfterAutoStick, refreshAfterUnstick } from '@/lib/sticky-refresh'
 import { need, readAt } from '@/lib/sticky-rewards'
 import { chainName } from '@/lib/urn'
 import { EXTERNAL_WALLET_REQUIRED } from '@/providers/WalletAuthContext'
@@ -286,7 +286,7 @@ export function UnstickFlow({
     setPlan(current => current && { ...current, steps: current.steps.slice(1) })
     setError(null)
     // What the step changed is read again: a step of the teardown changes only the holder's auto-stick and trust.
-    if (isTeardown(step)) refreshAfterAutoStickOff(client, chainId, projectId, holder)
+    if (isTeardown(step)) refreshAfterAutoStick(client, chainId, projectId, holder)
     else refreshAfterUnstick(client, chainId, projectId, holder)
   }, [tx.phase, accepted, client, chainId, projectId])
 

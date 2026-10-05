@@ -131,7 +131,7 @@ import { useBackingSeries, useProjectSiblings } from '@/hooks/useStickyOverview'
 import { useProjectLatest, useProjectSticks, useStickyPosition, useStickyProject } from '@/hooks/useStickyProject'
 import { useCheckedBalances, useHolderTranches } from '@/hooks/useStickyTokens'
 import {
-  refreshAfterAutoStickOff,
+  refreshAfterAutoStick,
   refreshAfterStick,
   refreshAfterTransfer,
   refreshAfterTrust,
@@ -271,7 +271,7 @@ describe("the refreshes against the hooks' own queries", () => {
       client => refreshAfterUnstick(client, CHAIN, PROJECT, HOLDER),
       [...PAGE, 'position', 'tranches', 'rewards', 'auto-stick', ...ACCOUNT],
     ],
-    ['a step that takes auto-stick apart', client => refreshAfterAutoStickOff(client, CHAIN, PROJECT, HOLDER), ['auto-stick', 'trusted']],
+    ['a change of auto-stick', client => refreshAfterAutoStick(client, CHAIN, PROJECT, HOLDER), ['auto-stick', 'trusted']],
     [
       'a transfer',
       client => refreshAfterTransfer(client, CHAIN, PROJECT),

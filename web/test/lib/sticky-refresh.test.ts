@@ -5,7 +5,7 @@ import { getAddress } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   REFRESH_AFTER_MS,
-  refreshAfterAutoStickOff,
+  refreshAfterAutoStick,
   refreshAfterClaimAndStick,
   refreshAfterCollect,
   refreshAfterFund,
@@ -81,8 +81,8 @@ const SCOPES: [string, (client: QueryClient) => void, string[]][] = [
     [...PAGE, 'position', 'tranches', 'rewards', 'auto-stick', ...ACCOUNT],
   ],
   [
-    "a step that takes auto-stick apart: the holder's auto-stick and who they trust",
-    client => refreshAfterAutoStickOff(client, CHAIN, 23, HOLDER),
+    "a change of auto-stick: the holder's auto-stick and who they trust",
+    client => refreshAfterAutoStick(client, CHAIN, 23, HOLDER),
     ['auto-stick', 'trusted'],
   ],
   [
