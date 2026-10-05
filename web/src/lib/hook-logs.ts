@@ -16,6 +16,7 @@ import { failures, isRateLimited, retryAfterOf, type Failure } from '@/lib/cente
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { stickyHookAbi } from '@/lib/sticky-abis'
 import { deploymentOn } from '@/lib/sticky-addresses'
+import { sleep } from '@/lib/with-timeout'
 
 /** A log that is in a block, so it has a block, a hash and an index. Center also sends the block's
  * timestamp with it, which viem keeps as `blockTimestamp`. */
@@ -66,22 +67,6 @@ function waitAfter(error: unknown, retry: number): number {
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw signal.reason
-}
-
-/** Waits `ms`, or rejects with the signal's reason the moment it aborts, leaving no timer behind. */
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) return reject(signal.reason)
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', abort)
-      resolve()
-    }, ms)
-    function abort() {
-      clearTimeout(timer)
-      reject(signal?.reason)
-    }
-    signal?.addEventListener('abort', abort, { once: true })
-  })
 }
 
 /** What `work` gives, or the signal's reason the moment it aborts. Neither viem nor the SDK cancels a request
