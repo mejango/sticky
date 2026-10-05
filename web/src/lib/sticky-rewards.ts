@@ -227,7 +227,7 @@ export function rewardLines({
 
 /** The token JB's contracts use for the chain's native currency (JBConstants.NATIVE_TOKEN), which the distributor
  * books ETH under, in lowercase as the pots' tokens are. */
-const NATIVE_REWARD_TOKEN = NATIVE_TOKEN.toLowerCase() as Address
+export const NATIVE_REWARD_TOKEN = NATIVE_TOKEN.toLowerCase() as Address
 /** How many calls one Multicall3 request carries. */
 const CALLS_PER_REQUEST = 250
 /** How many reward tokens one request asks the symbol and decimals of. */
@@ -527,6 +527,14 @@ async function readTokenMetas(
     }
   }
   return metas
+}
+
+/** A reward token's symbol and decimals, for a flow that sends it: ETH with 18 for JB's native token, which nothing is
+ * asked of, and otherwise what the token answers. A token that gives no valid decimals is refused, and never taken to
+ * have 18. */
+export async function rewardTokenMeta(chainId: number, token: Address, { signal }: Cancel = {}): Promise<TokenMeta> {
+  if (token.toLowerCase() === NATIVE_REWARD_TOKEN) return { symbol: 'ETH', decimals: 18 }
+  return tokenMetaOf(token, await readAt(chainId, tokenCalls(token), undefined, signal))
 }
 
 // ---- what a holder has earned

@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { erc20Abi } from 'viem'
+import { erc20Abi, multicall3Abi } from 'viem'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   CHAIN,
@@ -94,5 +94,40 @@ describe('readBalanceAndAllowance', () => {
     controller.abort(new Error('the page moved on'))
     await expect(readBalanceAndAllowance(CHAIN, token, { signal: controller.signal })).rejects.toThrow('the page moved on')
     expect(chain.requests).toEqual([])
+  })
+})
+
+describe('readNativeBalance', () => {
+  const MULTICALL3 = '0xcA11bde05977b3631167028862bE2a173976CA11'
+
+  it('reads what an account holds of the native token from Multicall3, at the head, in one request', async () => {
+    const chain = rewardChain()
+    chain.stock(MULTICALL3, multicall3Abi, 'getEthBalance', 9n * 10n ** 17n)
+    const { readNativeBalance } = await load()
+
+    expect(await readNativeBalance(CHAIN, HOLDER)).toBe(9n * 10n ** 17n)
+
+    expect(shape(chain.requests)).toEqual([
+      ['eth_blockNumber', undefined, undefined],
+      ['eth_call', blockHex, 1],
+    ])
+    expect(chain.reads()).toEqual([{ target: MULTICALL3, functionName: 'getEthBalance', args: [HOLDER] }])
+  })
+
+  it('names the balance when it cannot be read, and keeps the cause, never reading it as nothing', async () => {
+    const chain = rewardChain()
+    chain.stock(MULTICALL3, multicall3Abi, 'getEthBalance', REVERT)
+    const { readNativeBalance } = await load()
+    await expect(readNativeBalance(CHAIN, HOLDER)).rejects.toMatchObject({
+      message: 'the balance could not be read.',
+      cause: expect.any(Error),
+    })
+
+    chain.stock(MULTICALL3, multicall3Abi, 'getEthBalance', 1n)
+    chain.lose(() => true)
+    await expect(readNativeBalance(CHAIN, HOLDER)).rejects.toMatchObject({
+      message: 'the balance could not be read.',
+      cause: expect.any(Error),
+    })
   })
 })

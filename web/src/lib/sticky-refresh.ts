@@ -93,3 +93,13 @@ export function refreshAfterTrust(client: QueryClient, chainId: number, projectI
     ...ofEveryone(chainId, projectId, ['sticky-trusted', 'sticky-autostick']),
   ])
 }
+
+/** An airdrop: the pots the distributor was funded for, what every account has in them and the auto-stick that reads
+ * their groups, and what the funder holds of the staked token, which can be what they sent. */
+export function refreshAfterFund(client: QueryClient, chainId: number, projectId: number, funder: Address): void {
+  refreshOnSchedule(client, [
+    ...ofPage(chainId, projectId, ['funding']),
+    ...ofEveryone(chainId, projectId, ['sticky-rewards', 'sticky-autostick']),
+    ...ofHolder(chainId, projectId, funder, ['sticky-position']),
+  ])
+}

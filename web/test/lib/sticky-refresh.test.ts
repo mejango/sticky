@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   REFRESH_AFTER_MS,
   refreshAfterAutoStickOff,
+  refreshAfterFund,
   refreshAfterStick,
   refreshAfterTransfer,
   refreshAfterTrust,
@@ -102,7 +103,15 @@ const SCOPES: [string, (client: QueryClient) => void, string[]][] = [
     client => refreshAfterTrust(client, CHAIN, 23),
     ['events', 'auto-stick', 'trusted', "another's auto-stick", "another's trusted"],
   ],
+  [
+    "an airdrop: the pots, every account's rewards and auto-stick in the project, and what the funder holds",
+    client => refreshAfterFund(client, CHAIN, 23, HOLDER),
+    ['funding', 'position', 'rewards', 'auto-stick', "another's rewards", "another's auto-stick"],
+  ],
 ]
+
+/** The refreshes after a send that adds a pot, which read the pots again. */
+const FUNDING = new Set<(typeof SCOPES)[number][1]>([SCOPES[SCOPES.length - 1][1]])
 
 let client: QueryClient
 beforeEach(() => {
@@ -153,8 +162,13 @@ describe('the refresh after a send', () => {
 
   it("never reads a project's whole page again, nor another project's, another chain's or the home", () => {
     for (const [, refresh] of SCOPES) refresh(client)
-    const untouched = ['flows', 'siblings', 'funding', 'another project', 'another chain', "another project's position", 'home']
+    const untouched = ['flows', 'siblings', 'another project', 'another chain', "another project's position", 'home']
     expect(invalidated().filter(name => untouched.includes(name))).toEqual([])
+  })
+
+  it('reads the pots again only after a send that adds one', () => {
+    for (const [, refresh] of SCOPES) if (!FUNDING.has(refresh)) refresh(client)
+    expect(invalidated()).not.toContain('funding')
   })
 
   it("reads again only the holder's own reads after an unstick, not another account's", () => {

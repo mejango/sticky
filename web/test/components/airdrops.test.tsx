@@ -81,9 +81,37 @@ vi.mock('@/components/project/flows/TrustFlow', () => ({
   ),
 }))
 
+// The airdrop's form has a test of its own (test/components/fund-flow.test.tsx); here it is marked, and it can say that
+// an airdrop of the token at 0x99…99 went through.
+vi.mock('@/components/project/flows/FundFlow', () => ({
+  FundFlow: ({
+    chainId,
+    projectId,
+    info,
+    onClose,
+    onFunded,
+  }: {
+    chainId: number
+    projectId: number
+    info: { stSymbol: string }
+    onClose: () => void
+    onFunded: (token: string) => void
+  }) => (
+    <div data-flow="fund" data-chain={chainId} data-project={projectId} data-token={info.stSymbol}>
+      <button type="button" onClick={() => onFunded(`0x${'9'.repeat(40)}`)}>
+        Funded
+      </button>
+      <button type="button" onClick={onClose}>
+        Close airdrop
+      </button>
+    </div>
+  ),
+}))
+
 import { AirdropsTab } from '@/components/project/AirdropsTab'
 import { AS_STATUS, type AutoStickState } from '@/lib/sticky-autostick'
 import { refreshAfterTrust } from '@/lib/sticky-refresh'
+import { stickyDeployment } from '@/lib/sticky-addresses'
 import { type FundedPot, type RewardCard, type RewardPot } from '@/lib/sticky-rewards'
 
 const CHAIN = 8453
@@ -220,6 +248,75 @@ describe('sticking for someone else', () => {
     })
     expect(host.querySelector('section')).toBe(card)
     expect(host.querySelectorAll('[data-stick-flow]')).toHaveLength(1)
+  })
+})
+
+describe('sending airdrop rewards', () => {
+  const card = () => section('send-airdrops-title')!
+  const recipe = () => Object.fromEntries(
+    [...card().querySelectorAll('[data-split-recipe] dt')].map(term => [term.textContent, term.nextElementSibling?.textContent]),
+  )
+  async function typeWeeks(label: string, text: string) {
+    const found = [...card().querySelectorAll('label')].find(each => each.textContent === label)!
+    const input = document.getElementById(found.htmlFor) as HTMLInputElement
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+    await act(async () => {
+      setValue.call(input, text)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+  }
+
+  it('comes after sticking for someone else, and opens the airdrop\'s form from Send', async () => {
+    await renderTab()
+    expect(card().querySelector('h2')?.textContent).toBe('Send airdrop rewards')
+    expect(card().textContent).toContain('Reward everyone stuck, or only stakes held for a minimum number of weeks.')
+    expect(host.querySelectorAll('section')[1]).toBe(card())
+    expect(card().querySelector('[data-flow="fund"]')).toBeNull()
+
+    await act(async () => buttonNamed(card(), 'Send').click())
+    const flow = card().querySelector<HTMLElement>('[data-flow="fund"]')!
+    expect(flow.dataset).toMatchObject({ chain: String(CHAIN), project: '23', token: 'STICKYSLOPSHOP' })
+    await act(async () => buttonNamed(flow, 'Close airdrop').click())
+    expect(card().querySelector('[data-flow="fund"]')).toBeNull()
+  })
+
+  it('keeps Send closed until this visit has read the project', async () => {
+    const read = Promise.withResolvers<ReturnType<typeof slopshop>>()
+    mocks.project.mockReturnValue(read.promise)
+    await renderTab()
+    expect(buttonNamed(card(), 'Send').disabled).toBe(true)
+    await act(async () => read.resolve(slopshop()))
+    await settled()
+    expect(buttonNamed(card(), 'Send').disabled).toBe(false)
+  })
+
+  it('looks for rewards in the token of an airdrop that went through, under every group, as a checked token is', async () => {
+    mocks.funding.mockResolvedValue([fundedPot(4000n, TOKEN.toLowerCase() as Address, 5n)])
+    await renderTab()
+    await act(async () => buttonNamed(card(), 'Send').click())
+    await act(async () => buttonNamed(card(), 'Funded').click())
+    await settled()
+    const rows = mocks.rewards.mock.calls.at(-1)![3].map((row: RewardPot) => `${row.groupId}:${row.token}`)
+    expect(rows).toEqual([`4000:${TOKEN.toLowerCase()}`, `0:${TOKEN.toLowerCase()}`, `0:${OTHER}`, `4000:${OTHER}`])
+  })
+
+  it('gives the split that funds airdrops from a Juicebox project\'s payouts: the distributor, the Sticky token and the group', async () => {
+    await renderTab()
+    expect(card().querySelector('summary')?.textContent).toBe("Recurring rewards from a Juicebox project's splits")
+    expect(recipe()).toEqual({
+      'Split hook': `${stickyDeployment(CHAIN)!.distributor}Copy`,
+      Beneficiary: `${slopshop().stToken}Copy`,
+      'Project ID': '0 (reward group: everyone)',
+    })
+    expect(card().querySelector('button[aria-label="Copy split hook address"]')).not.toBeNull()
+    expect(card().querySelector('button[aria-label="Copy beneficiary address"]')).not.toBeNull()
+
+    await typeWeeks('Minimum stake age (weeks)', '4')
+    await typeWeeks('Maximum stake age (weeks)', '8')
+    expect(recipe()['Project ID']).toBe('4008 (reward group: staked 4–8 weeks)')
+    await typeWeeks('Minimum stake age (weeks)', '9')
+    expect(recipe()['Project ID']).toBe('None')
+    expect(card().querySelector('[data-group-note]')?.textContent).toBe('The maximum stake age must be at least the minimum.')
   })
 })
 

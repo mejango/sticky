@@ -1,3 +1,4 @@
+import { NATIVE_TOKEN } from '@bananapus/nana-sdk-core'
 import { decodeFunctionData, decodeFunctionResult, encodeFunctionData, erc20Abi, getAddress, maxUint256, type Abi } from 'viem'
 import { describe, expect, it } from 'vitest'
 import {
@@ -11,6 +12,7 @@ import { stickyDeployment } from '@/lib/sticky-addresses'
 import {
   approveSteps,
   autoStickOffTxs,
+  fundTxs,
   stickTx,
   transferTx,
   trustTx,
@@ -220,6 +222,54 @@ describe('unstickTxs', () => {
   })
 })
 
+describe('fundTxs', () => {
+  const ART_POT = { stToken: C, token: A, amount: 5_000_000n, groupId: 4008n, allowance: 0n, ...ART }
+
+  it('wallet-action:approve-a-reward-token-for-an-airdrop wallet-action:send-an-airdrop approves the distributor for exactly the amount of an ERC-20, then funds the group', () => {
+    const txs = fundTxs(CHAIN, ART_POT)
+    expect(calls(txs)).toEqual([
+      [A, 'approve', [deployment.distributor, 5_000_000n]],
+      [deployment.distributor, 'fund', [C, A, 5_000_000n, 4008n]],
+    ])
+    expect(txs.map(({ label }) => label)).toEqual(['Approve 5 ART', 'Fund stuck holders'])
+    expect(txs[1]).toMatchObject({ chainId: CHAIN, abi: stickyDistributorAbi })
+    expect(txs[1].value).toBeUndefined()
+  })
+
+  it('wallet-action:approve-a-reward-token-for-an-airdrop asks for no approval when the allowance covers the amount, and resets one that does not first', () => {
+    expect(calls(fundTxs(CHAIN, { ...ART_POT, allowance: 5_000_000n }))).toEqual([
+      [deployment.distributor, 'fund', [C, A, 5_000_000n, 4008n]],
+    ])
+    expect(calls(fundTxs(CHAIN, { ...ART_POT, allowance: 9_000_000n }))).toEqual([
+      [deployment.distributor, 'fund', [C, A, 5_000_000n, 4008n]],
+    ])
+    expect(calls(fundTxs(CHAIN, { ...ART_POT, allowance: 1n })).map(([, name, args]) => [name, args])).toEqual([
+      ['approve', [deployment.distributor, 0n]],
+      ['approve', [deployment.distributor, 5_000_000n]],
+      ['fund', [C, A, 5_000_000n, 4008n]],
+    ])
+  })
+
+  it('wallet-action:send-an-airdrop native ETH reward funding attaches exact value and never approves a sentinel', () => {
+    const txs = fundTxs(CHAIN, { ...ART_POT, token: NATIVE_TOKEN, amount: 1n, groupId: 0n, allowance: 0n, symbol: 'ETH', decimals: 18 })
+    expect(calls(txs)).toEqual([[deployment.distributor, 'fund', [C, NATIVE_TOKEN, 1n, 0n]]])
+    expect(txs[0].value).toBe(1n)
+    // The value is the amount whatever case the native token is written in.
+    expect(fundTxs(CHAIN, { ...ART_POT, token: NATIVE_TOKEN.toLowerCase() as typeof A, allowance: 0n })[0].value).toBe(5_000_000n)
+  })
+
+  it('refuses a group the distributor does not accept, and an amount of nothing', () => {
+    expect(() => fundTxs(CHAIN, { ...ART_POT, groupId: 4n })).toThrow('the distributor does not accept this stake-age window')
+    expect(() => fundTxs(CHAIN, { ...ART_POT, groupId: 8004n })).toThrow('the distributor does not accept this stake-age window')
+    expect(() => fundTxs(CHAIN, { ...ART_POT, amount: 0n })).toThrow('enter an amount greater than zero')
+  })
+
+  it('encodes fund as cast did, the four-argument overload', () => {
+    const tx = fundTxs(CHAIN, { ...ART_POT, stToken: C, token: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', amount: 10n ** 18n, allowance: 10n ** 18n })
+    expect(encoded(tx.at(-1)!)).toBe(fixtures.fund)
+  })
+})
+
 describe('transferTx', () => {
   it('wallet-action:transfer-sticky-tokens moves Sticky tokens, of 18 decimals, to the recipient', () => {
     const tx = transferTx(info, B, 1_000_000_000_000_000_001n)
@@ -255,6 +305,7 @@ describe('what a builder returns', () => {
       stickTx(project, B, 9n, 1n),
       ...unstickTxs(project, B, 9n, 1n),
       ...autoStickOffTxs(project, { minimum: 1n, cooldown: 86_400, personallyTrusted: true, allowance: 1n }),
+      ...fundTxs(CHAIN, { stToken: C, token: A, amount: 9n, groupId: 0n, allowance: 1n, ...ART }),
       transferTx(project, B, 9n),
       trustTx(CHAIN, 12n, B, true),
     ]

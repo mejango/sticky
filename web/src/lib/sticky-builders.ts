@@ -1,8 +1,8 @@
 /**
  * The calls a holder sends to a Sticky project: approving the token they stick, sticking, unsticking, transferring
- * Sticky tokens and trusting a sender. Each is a request for the transaction engine and is frozen: the chain, the
- * contract and the arguments that were reviewed are the ones that are sent. A builder throws on a chain Sticky is not
- * deployed on.
+ * Sticky tokens, trusting a sender, and airdropping rewards. Each is a request for the transaction engine and is frozen:
+ * the chain, the contract and the arguments that were reviewed are the ones that are sent. A builder throws on a chain
+ * Sticky is not deployed on.
  *
  * The minimums a call carries (what a stick must mint, what an unstick must pay) are the quotes of `sticky-quotes.ts`.
  */
@@ -10,10 +10,11 @@
 import type { JBChainId } from '@bananapus/nana-sdk-core'
 import { buildCashOutTx, buildPayTx } from '@bananapus/nana-sdk-core/v6'
 import { formatUnits, maxUint256, parseAbi, type Address } from 'viem'
-import { stickyAutoStickAbi, stickyHookAbi, stickyTokenAbi } from '@/lib/sticky-abis'
+import { stickyAutoStickAbi, stickyDistributorAbi, stickyHookAbi, stickyTokenAbi } from '@/lib/sticky-abis'
 import { stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
 import type { AutoStickState } from '@/lib/sticky-autostick'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
+import { isValidGroupId, NATIVE_REWARD_TOKEN, type TokenMeta } from '@/lib/sticky-rewards'
 import type { TxRequest } from '@/hooks/useSafeTx'
 
 export type { TxRequest }
@@ -192,4 +193,40 @@ export function trustTx(
     args: [projectId, sender, trusted],
     label,
   })
+}
+
+/**
+ * An airdrop: `amount` of `token` to the distributor, for the holders of the Sticky token `stToken` in reward group
+ * `groupId`, as this round's rewards. The distributor pulls an ERC-20 from the sender, so it is approved first for the
+ * amount (`approveSteps`, which plans nothing for an `allowance` that covers it); ETH, JB's native token, is sent as the
+ * call's value and approves nothing. A group the distributor does not accept, or an amount of nothing, is refused.
+ */
+export function fundTxs(
+  chainId: number,
+  {
+    stToken,
+    token,
+    amount,
+    groupId,
+    allowance,
+    symbol,
+    decimals,
+  }: { stToken: Address; token: Address; amount: bigint; groupId: bigint; allowance: bigint } & TokenMeta,
+): TxRequest[] {
+  if (!isValidGroupId(groupId)) throw new Error('the distributor does not accept this stake-age window')
+  if (amount <= 0n) throw new Error('enter an amount greater than zero')
+  const { distributor } = deploymentOn(chainId)
+  const native = token.toLowerCase() === NATIVE_REWARD_TOKEN
+  return [
+    ...(native ? [] : approveSteps(chainId, token, distributor, allowance, amount, { symbol, decimals, mode: 'covering' })),
+    frozen({
+      chainId,
+      address: distributor,
+      abi: stickyDistributorAbi,
+      functionName: 'fund',
+      args: [stToken, token, amount, groupId],
+      ...(native ? { value: amount } : {}),
+      label: 'Fund stuck holders',
+    }),
+  ]
 }

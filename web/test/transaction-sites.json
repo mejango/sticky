@@ -1,6 +1,19 @@
 {
   "version": 1,
   "useSafeTx": {
+    "src/components/project/flows/FundFlow.tsx": {
+      "hooks": 1,
+      "sends": 1,
+      "sendSites": [
+        {
+          "id": "fund-steps",
+          "actions": [
+            "Approve a reward token for an airdrop",
+            "Send an airdrop"
+          ]
+        }
+      ]
+    },
     "src/components/project/flows/StickFlow.tsx": {
       "hooks": 1,
       "sends": 1,

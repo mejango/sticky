@@ -130,10 +130,20 @@ function CheckToken({ onCheck }: { onCheck: (token: Address) => void }) {
  * pays only stake still held, so those pots come with a warning. The cards are read again every 15 seconds. Nothing is
  * sent from here yet, so the buttons are closed.
  */
-export function RewardsCard({ chainId, projectId }: { chainId: number; projectId: number }) {
+export function RewardsCard({
+  chainId,
+  projectId,
+  checked,
+  onCheck,
+}: {
+  chainId: number
+  projectId: number
+  /** The tokens looked for rewards in by hand, in lowercase. */
+  checked: readonly Address[]
+  onCheck: (token: Address) => void
+}) {
   const { info, failed, retry } = useStickyProject(chainId, projectId)
   const holder = useViewer()
-  const [checked, setChecked] = useState<Address[]>([])
   const { funding, more, rows } = useRewardPots(chainId, projectId, checked)
   const rewards = useRewards(chainId, projectId, holder, rows)
   const autoStick = useAutoStick(chainId, projectId, holder).data
@@ -199,7 +209,7 @@ export function RewardsCard({ chainId, projectId }: { chainId: number; projectId
           {shown.some(card => card.groupId !== 0n) ? (
             <p className="mt-2.5 text-muted">Claim stake-age rewards before unsticking, or you forfeit them.</p>
           ) : null}
-          <CheckToken onCheck={token => setChecked(list => (list.includes(token) ? list : [...list, token]))} />
+          <CheckToken onCheck={onCheck} />
         </>
       )}
     </section>

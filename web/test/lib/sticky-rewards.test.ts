@@ -797,6 +797,34 @@ describe('the reward tokens', () => {
     expect(cards.map(card => card.meta)).toEqual([{ symbol: 'EEE', decimals: 6 }])
   })
 
+  it('reward token decimals fail closed instead of silently assuming 18', async () => {
+    const chain = rewardChain()
+    chain.stock(TOKEN, erc20Abi, 'symbol', 'BAD')
+    chain.stock(TOKEN, erc20Abi, 'decimals', REVERT)
+    chain.stock(STAKED, erc20Abi, 'symbol', 'BIG')
+    chain.stock(STAKED, erc20Abi, 'decimals', returning(numberToHex(256, { size: 32 })))
+    const r = await load()
+    // A flow that sends a token reads it alone, and refuses one without valid decimals.
+    await expect(r.rewardTokenMeta(CHAIN, TOKEN)).rejects.toThrow("the reward token's decimals could not be read.")
+    await expect(r.rewardTokenMeta(CHAIN, STAKED)).rejects.toThrow()
+    // The native token is ETH, and nothing is asked of it.
+    const asked = chain.requests.length
+    expect(await r.rewardTokenMeta(CHAIN, NATIVE as Address)).toEqual({ symbol: 'ETH', decimals: 18 })
+    expect(await r.rewardTokenMeta(CHAIN, getAddress(NATIVE))).toEqual({ symbol: 'ETH', decimals: 18 })
+    expect(chain.requests).toHaveLength(asked)
+  })
+
+  it('read one token for a flow that sends it, its symbol and decimals, and name one without a symbol by its short address', async () => {
+    const chain = rewardChain()
+    stockToken(chain, STAKED, 'MKR', 18, 'bytes32')
+    chain.stock(TOKEN, erc20Abi, 'symbol', REVERT)
+    chain.stock(TOKEN, erc20Abi, 'decimals', 6)
+    const r = await load()
+    expect(await r.rewardTokenMeta(CHAIN, STAKED)).toEqual({ symbol: 'MKR', decimals: 18 })
+    const short = `${TOKEN.toLowerCase().slice(0, 6)}…${TOKEN.toLowerCase().slice(-4)}`
+    expect(await r.rewardTokenMeta(CHAIN, TOKEN)).toEqual({ symbol: short, decimals: 6 })
+  })
+
   it('read a bytes32 symbol, as MKR has, and name a token that has none by its short address', async () => {
     const chain = rewardChain()
     stockPot(chain)
