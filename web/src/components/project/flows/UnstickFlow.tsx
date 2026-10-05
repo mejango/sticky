@@ -2,7 +2,7 @@
 
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { BaseError, ContractFunctionRevertedError, erc20Abi, formatUnits, type Address } from 'viem'
+import { erc20Abi, formatUnits, type Address } from 'viem'
 import { reviewGate } from '@/components/project/flows/review-gate'
 import { ModalShell } from '@/components/ui/ModalShell'
 import { Revalidating } from '@/components/ui/Revalidating'
@@ -12,8 +12,7 @@ import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@
 import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
 import { useSettled } from '@/hooks/useSettled'
 import { useWallet } from '@/hooks/useWallet'
-import { untilAborted } from '@/lib/hook-logs'
-import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
+import { preflight } from '@/lib/preflight'
 import { warned } from '@/lib/query-reads'
 import { stickyAutoStickAbi, stickyHookAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
@@ -113,34 +112,6 @@ async function heldBy(
   return need(held as Answer<bigint>, 'your Sticky token balance')
 }
 
-/** Why the chain refuses a call, in the words of its revert when it has any. */
-function reasonOf(error: unknown): string {
-  if (!(error instanceof BaseError)) return error instanceof Error ? error.message : 'no reason was given'
-  const reverted = error.walk(cause => cause instanceof ContractFunctionRevertedError)
-  return reverted instanceof ContractFunctionRevertedError
-    ? (reverted.data?.errorName ?? reverted.reason ?? reverted.shortMessage)
-    : error.shortMessage
-}
-
-/** The unstick tried against the chain as the holder will send it: the request the review shows, asked of a node. */
-async function preflight(step: TxRequest, holder: Address, signal: AbortSignal): Promise<void> {
-  try {
-    await untilAborted(
-      jbCenterPublicClient(step.chainId).simulateContract({
-        account: holder,
-        address: step.address,
-        abi: step.abi,
-        functionName: step.functionName,
-        args: step.args as unknown[],
-      }),
-      signal,
-    )
-  } catch (cause) {
-    if (signal.aborted) throw cause
-    throw new Error(`The terminal would refuse this unstick: ${reasonOf(cause)}`, { cause })
-  }
-}
-
 /**
  * The transactions an unstick of `count` takes, from what the chain says now, at one block for the holder's balance and
  * what auto-stick keeps of theirs: a full exit takes auto-stick apart first, and the unstick is last, with the quote's
@@ -191,7 +162,8 @@ async function planUnstick(
   const steps = unstickTxs(info, holder, count, quote.net, standing).filter(
     step => !(off && step.functionName === 'setConfigFor') && !(isTeardown(step) && went.some(sameStep(step))),
   )
-  await preflight(steps[steps.length - 1], holder, signal)
+  // The unstick is tried against the chain as the holder will send it, before the plan is shown.
+  await preflight(steps[steps.length - 1], holder, signal, 'The terminal would refuse this unstick')
   return { holder, count, balance, quote, steps }
 }
 
