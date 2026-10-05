@@ -37,8 +37,8 @@ import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { stickyDistributorAbi, stickyHookAbi, stickyTokenAbi } from '@/lib/sticky-abis'
 import { stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
 import {
-  eventKey,
   keptScanToHead,
+  notIndexed,
   orNull,
   projectCreationBlock,
   scanFrom,
@@ -382,9 +382,7 @@ export async function discoverFunding(
     const filter = { address: distributor, topics, fromBlock: scanFrom(asOf, deployment, fromBlock) }
     const tail = await deps.scan(chainId, filter, { signal })
     const ours = indexed.rows.filter(row => row.chainId === chainId && row.hook === hook)
-    const known = new Set(ours.map(row => eventKey(chainId, row.txHash, row.logIndex)))
-    const newer = tail.filter(log => !known.has(eventKey(chainId, log.transactionHash, log.logIndex)))
-    return potsOf([...ours, ...newer.map(fundingOfLog)].sort(inChainOrder))
+    return potsOf([...ours, ...notIndexed(chainId, ours, tail).map(fundingOfLog)].sort(inChainOrder))
   }
   const key = `${chainId}:${distributor.toLowerCase()}:fund:${hook}`
   const logs = await deps.keptScan(chainId, key, { address: distributor, topics, fromBlock }, { signal })

@@ -4,6 +4,7 @@ import type { ScannedLog } from '@/lib/hook-logs'
 import {
   decodeHookLog,
   fromIndexedEvent,
+  notIndexed,
   projectCreationBlock,
   stickyEvents,
   stickyHolderEvents,
@@ -723,6 +724,29 @@ describe('where a scan past Bendystraw\'s block starts', () => {
     })
     const listed = { blocks: new Map([[CHAIN, block]]), projects: [{ chainId: CHAIN, projectId: 80n }] }
     expect((await stickyProjectsOn(CHAIN, listed, deployer)).projects.map(entry => entry.projectId)).toEqual([80n, 81n])
+  })
+})
+
+describe('notIndexed', () => {
+  const tx = (n: number) => `0x${n.toString(16).padStart(64, '0')}`
+  const tail = [
+    raw([TOPIC.Staked], '0x', { txHash: tx(1), logIndex: 3 }),
+    raw([TOPIC.Staked], '0x', { txHash: tx(1), logIndex: 4 }),
+    raw([TOPIC.Staked], '0x', { txHash: tx(2), logIndex: 0 }),
+  ]
+
+  it('keeps the tail\'s logs no row records, an event of the same transaction at another place included', () => {
+    expect(notIndexed(CHAIN, [{ txHash: tx(1), logIndex: 3 }], tail)).toEqual([tail[1], tail[2]])
+  })
+
+  it('knows a row whatever the letter case of its hash, as Bendystraw and a node may write it', () => {
+    const shouting = tx(2).toUpperCase().replace('0X', '0x')
+    expect(notIndexed(CHAIN, [{ txHash: shouting, logIndex: 0 }], tail)).toEqual([tail[0], tail[1]])
+  })
+
+  it('keeps the whole tail when there are no rows, and nothing of an empty one', () => {
+    expect(notIndexed(CHAIN, [], tail)).toEqual(tail)
+    expect(notIndexed(CHAIN, [{ txHash: tx(1), logIndex: 3 }], [])).toEqual([])
   })
 })
 

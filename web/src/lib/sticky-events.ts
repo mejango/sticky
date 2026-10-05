@@ -273,6 +273,17 @@ export function scanFrom(asOf: bigint, { fromBlock }: StickyDeployment, created:
 export const eventKey = (chainId: number, txHash: string, logIndex: number) =>
   `${chainId}:${txHash.toLowerCase()}:${logIndex}`
 
+/** The logs of a chain's `tail` that none of Bendystraw's `rows` records. A tail reads again the blocks just below the
+ * one Bendystraw is indexed through, so an event both have is Bendystraw's row, counted once. */
+export function notIndexed<Log extends { transactionHash: string; logIndex: number }>(
+  chainId: number,
+  rows: readonly { txHash: string; logIndex: number }[],
+  tail: readonly Log[],
+): Log[] {
+  const known = new Set(rows.map(row => eventKey(chainId, row.txHash, row.logIndex)))
+  return tail.filter(log => !known.has(eventKey(chainId, log.transactionHash, log.logIndex)))
+}
+
 /** Where a scan of a holder's events starts when Bendystraw cannot say where its index ends: the block the oldest of
  * their `projects` was created in (project IDs rise with creation), and never below the deployer's block. With no
  * project, or none whose creation block can be found, it is the deployer's block. */

@@ -17,8 +17,8 @@ import type { ScannedLog } from '@/lib/hook-logs'
 import { terminalEventsAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import {
-  eventKey,
   keptScanToHead,
+  notIndexed,
   orNull,
   scanFrom,
   scanToHead,
@@ -236,8 +236,7 @@ function withTail<Row extends IndexedPlace>(
   tail: readonly ScannedLog[],
 ): Placed[] {
   const ours = rows.filter(row => row.chainId === chainId && row.projectId === projectId)
-  const known = new Set(ours.map(row => eventKey(chainId, row.txHash, row.logIndex)))
-  const newer = tail.filter(log => !known.has(eventKey(chainId, log.transactionHash, log.logIndex)))
+  const newer = notIndexed(chainId, ours, tail)
   return [...ours.flatMap(row => flowOfRow(row) ?? []), ...newer.flatMap(log => flowOf(chainId, projectId, log) ?? [])]
 }
 
