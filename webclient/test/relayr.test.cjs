@@ -51,6 +51,18 @@ function evidence(entry = ENTRY, sender = RELAYER) {
   return fixture;
 }
 
+// Relayr names ETH 0xeeee...eeee. Juicebox contracts, StickyDistributor among them, name it JBConstants.NATIVE_TOKEN
+// (0x...EEEe) and take the all-e address for an ERC-20, so no script but relayr.js may carry it.
+test("Relayr's all-e marker for ETH stays in relayr.js", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  assert.equal(R.NATIVE_TOKEN, "0x" + "e".repeat(40));
+  const root = path.join(__dirname, "..");
+  for (const file of fs.readdirSync(root).filter((name) => name.endsWith(".js") && name !== "relayr.js")) {
+    assert.doesNotMatch(fs.readFileSync(path.join(root, file), "utf8"), /0x[eE]{40}\b/, file);
+  }
+});
+
 test("Keccak matches Ethereum vectors including rate-boundary padding", () => {
   assert.equal(R.keccak256("0x"), "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470");
   assert.equal(R.keccak256("0x616263"), "0x4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45");
