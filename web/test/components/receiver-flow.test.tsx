@@ -374,6 +374,41 @@ describe('settling it', () => {
   })
 })
 
+describe('the panel', () => {
+  it('refuses a step for weeks that name no group, before it reads anything', async () => {
+    await open()
+    await type('Minimum stake age (weeks)', '9')
+    await type('Maximum stake age (weeks)', '4')
+    mocks.receiver.mockClear()
+    await press(panel(), 'Settle into airdrops')
+    expect(errorText()).toBe('The maximum stake age must be at least the minimum.')
+    expect(mocks.receiver).not.toHaveBeenCalled()
+  })
+
+  it('closes a review on Cancel with nothing sent, and reads the address again on Try again after a failed read', async () => {
+    await open()
+    await press(panel(), 'Create onchain')
+    await press(confirm(), 'Cancel')
+    expect(confirm()).toBeNull()
+    expect(mocks.tx.send).not.toHaveBeenCalled()
+
+    mocks.receiver.mockRejectedValue(new Error('the reward address could not be read.', { cause: new Error('429') }))
+    await act(async () => void (await client.invalidateQueries()))
+    await settled()
+    const alert = panel().querySelector('[role="alert"]')!
+    expect(alert.textContent).toContain('The reward address could not be read.')
+    mocks.receiver.mockResolvedValue({ address: RECEIVER, created: true })
+    await press(alert, 'Try again')
+    expect(shown().Status).toBe('Created')
+  })
+
+  it('says when what the address holds cannot be read', async () => {
+    mocks.arrivals.mockRejectedValue(new Error('the arrivals could not be read.', { cause: new Error('429') }))
+    await open()
+    expect(arrivals()).toBe('Could not read what it holds.')
+  })
+})
+
 describe('a wallet that cannot send', () => {
   it('is refused, for Signa, when a review starts, and "Connect a wallet" opens the external wallets', async () => {
     mocks.wallet = { ...mocks.wallet, isCenterWallet: true }

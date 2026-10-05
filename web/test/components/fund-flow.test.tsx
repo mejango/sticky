@@ -434,6 +434,18 @@ describe('the send', () => {
     expect(request.functionName).toBe('approve')
   })
 
+  it('stops a step whose balance cannot be read, says why, and tells the console', async () => {
+    await review({ token: 'ETH', amount: '0.5' })
+    await press(confirm(), 'Confirm & send')
+    const { reverify } = sent(0)[1]
+    await expect(reverify()).resolves.toBeUndefined()
+    expect(mocks.native).toHaveBeenLastCalledWith(CHAIN, ALICE)
+    const cause = new Error('429')
+    mocks.native.mockRejectedValue(new Error('the balance could not be read.', { cause }))
+    await expect(reverify()).rejects.toThrow('The balance could not be read.')
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('balance'), { chainId: CHAIN, projectId: PROJECT }, expect.objectContaining({ cause }))
+  })
+
   it('shows the engine\'s error with a way to send the same step again', async () => {
     await review()
     mocks.tx.phase = 'error'

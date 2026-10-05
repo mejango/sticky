@@ -456,6 +456,12 @@ describe('claiming and sticking', () => {
     expect(mocks.groups).toHaveBeenCalledWith(CHAIN, INFO, ALICE, [0n, 4000n])
     mocks.groups.mockResolvedValue({ groupIds: [0n, 4000n], collectable: 900_000n })
     await expect(reverify!()).rejects.toThrow('Your claimable rewards changed. Review again.')
+
+    // A claim that cannot be read stops the step, and the console hears why.
+    const cause = new Error('429')
+    mocks.groups.mockRejectedValue(new Error('what you can collect could not be read.', { cause }))
+    await expect(reverify!()).rejects.toThrow('What you can collect could not be read.')
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('claim'), { chainId: CHAIN, projectId: PROJECT }, expect.objectContaining({ cause }))
   })
 
   it('says it went through, and reads again what a stick and a trust change', async () => {
