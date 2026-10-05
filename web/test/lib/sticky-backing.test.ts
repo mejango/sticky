@@ -488,7 +488,7 @@ describe('backingFlows', () => {
       { timestamp: 50, delta: -1n * E6 },
       { timestamp: 60, delta: -2n * E6 },
     ])
-    // The pays and cash outs are kept as before; the fees, which Bendystraw answered for, are not.
+    // The pays and cash outs are kept in this browser; the fees, which Bendystraw answered for, are not.
     expect(deps.kept).toEqual([{ key: MOVES_KEY, filter: { address: TERMINAL, topics: MOVE_TOPICS, fromBlock: 9n } }])
     expect(deps.scans).toEqual([{ address: TERMINAL, topics: FEE_TOPICS, fromBlock: AS_OF + 1n - 64n }])
     expect(vi.mocked(console.warn).mock.calls).toEqual([
@@ -584,7 +584,7 @@ describe('backingFlows', () => {
     expect(await backingFlows(CHAIN, 42n, 9n, deps)).toEqual([{ timestamp: 12, delta: -3n }])
   })
 
-  describe('scans the terminal for the fees and additions, as before, when Bendystraw cannot answer for them', () => {
+  describe('scans the terminal for the fees and additions over the project\'s life when Bendystraw cannot answer for them', () => {
     const logs = [
       feeLog(1n * E6, false, { block: 3n, logIndex: 4, time: 30n }),
       addLog(5n * E6, 2n * E6, { block: 2n, time: 20n }),
@@ -622,7 +622,7 @@ describe('backingFlows', () => {
     })
   })
 
-  describe('scans the terminal as before when the tail past a stalled Bendystraw is too long to read', () => {
+  describe('scans the terminal\'s kept history when the tail past a stalled Bendystraw is too long to read', () => {
     // An indexer that answers but is far behind the head, as one replaying its history is: the tail would take more
     // requests than a scan may send, and the scanner refuses it before the first.
     const tooLong = new HistoryTooLongError('This history spans 600000 blocks, more than this RPC can scan in 1024 requests.')
@@ -656,7 +656,7 @@ describe('backingFlows', () => {
       expect(vi.mocked(console.warn).mock.calls).toEqual([[MOVES_UNAVAILABLE, { chainId: CHAIN, projectId: 42n }, tooLong]])
     })
 
-    it('and rejects, as before, when the kept scan is too long as well', async () => {
+    it('and rejects when the kept scan is too long as well', async () => {
       const deps = fakeDeps({ indexed: { rows: [], block: AS_OF }, fees: { rows: [], block: AS_OF }, keptFails: tooLong })
       deps.scan.mockImplementationOnce(async () => []).mockImplementationOnce(async () => {
         throw tooLong

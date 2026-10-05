@@ -43,7 +43,7 @@ vi.mock('@/lib/sticky-events', async importOriginal => {
   scanner.TooLong = (await import('@/lib/hook-logs')).HistoryTooLongError
   return { ...original, projectCreationBlock: creation.block }
 })
-// Bendystraw's airdrop funding. It cannot answer unless a test says so, so the Fund logs are scanned as before.
+// Bendystraw's airdrop funding. It cannot answer unless a test says so, so the reads below scan the Fund logs.
 const bendystraw = vi.hoisted(() => ({ funding: vi.fn() }))
 vi.mock('@/lib/sticky-indexed', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-indexed')>()),
@@ -492,7 +492,7 @@ describe('the funded pots, from Bendystraw first', () => {
     expect(stalled.scan.mock.calls.map(([, filter]) => filter.fromBlock)).toEqual([deployment.fromBlock])
   })
 
-  describe('scan the Fund logs as before, kept in this browser, when Bendystraw cannot answer', () => {
+  describe('scan the Fund logs from the project\'s creation, kept in this browser, when Bendystraw cannot answer', () => {
     it.each([
       ['an error', new Error('database is down')],
       ['the 8 s timeout', new BendystrawTimeoutError(8_000)],
@@ -517,7 +517,7 @@ describe('the funded pots, from Bendystraw first', () => {
     })
   })
 
-  it('scan the Fund logs as before when the tail past a stalled Bendystraw is too long to read, and say so', async () => {
+  it('scan the Fund logs, kept in this browser, when the tail past a stalled Bendystraw is too long to read, and say so', async () => {
     const r = await load()
     // An indexer that answers but is far behind the head, as one replaying its history is.
     const tooLong = new scanner.TooLong('This history spans 600000 blocks, more than this RPC can scan in 1024 requests.')
@@ -530,7 +530,7 @@ describe('the funded pots, from Bendystraw first', () => {
     ])
     expect(vi.mocked(console.warn).mock.calls).toEqual([[FUNDING_UNAVAILABLE, { chainId: CHAIN, projectId: PROJECT }, tooLong]])
 
-    // And it rejects, as before, when the kept scan is too long as well.
+    // And it rejects when the kept scan is too long as well.
     reads.keptScan.mockRejectedValue(tooLong)
     await expect(r.discoverFunding(CHAIN, STICKY, PROJECT, reads)).rejects.toBe(tooLong)
   })

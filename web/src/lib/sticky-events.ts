@@ -281,8 +281,7 @@ export function scanFrom(asOf: bigint, { fromBlock }: StickyDeployment, created:
 
 /** One event's identity, whichever source it came from: its chain, its transaction, and its place in the transaction's
  * receipt. Bendystraw writes a hash in lowercase, and a node may not. */
-export const eventKey = (chainId: number, txHash: string, logIndex: number) =>
-  `${chainId}:${txHash.toLowerCase()}:${logIndex}`
+const eventKey = (chainId: number, txHash: string, logIndex: number) => `${chainId}:${txHash.toLowerCase()}:${logIndex}`
 
 /** The logs of a chain's `tail` that none of Bendystraw's `rows` records. A tail reads again the blocks just below the
  * one Bendystraw is indexed through, so an event both have is Bendystraw's row, counted once. */
@@ -415,8 +414,8 @@ export async function stickyEvents(
  * One holder's sticks, unsticks and streaks in every Sticky project of a chain, through the chain's head. Bendystraw
  * answers and a scan of the hook, from just below its block, adds what it did not have. When it fails, has no status
  * for the chain, or is too far behind for that scan, the hook is scanned from the block the oldest of `projects` was
- * created in, or with none from the deployer's block: no Sticky project is older. `projects` are the ones Bendystraw lists positions of the holder
- * in: an event in a project it does not list is newer than the listing.
+ * created in, or with none from the deployer's block: no Sticky project is older. `projects` are the ones Bendystraw
+ * lists positions of the holder in: an event in a project it does not list is newer than the listing.
  */
 export async function stickyHolderEvents(
   chainId: number,

@@ -190,7 +190,8 @@ describe("backingFlows, reading Bendystraw's pays and cash outs", () => {
     })
     const head = AS_OF + 10n
     const center = node(head, [
-      // Bendystraw has this pay and this fee, and the tails do not reach down to them: each is read once, from Bendystraw.
+      // Bendystraw has this pay and this fee, and the tails do not reach down to them: each is read once, from
+      // Bendystraw.
       paid(100n, START + 5n, tx(1)),
       fee(1n, START + 6n),
       paid(3n, AS_OF + 2n),
@@ -369,7 +370,7 @@ describe("backingFlows, reading Bendystraw's pays and cash outs", () => {
       ])
     })
 
-    it('rejects, as before, when no kept history is near enough to resume', async () => {
+    it('rejects when no kept history is near enough to resume', async () => {
       replaying()
       const center = node(head, [earlier, later])
 
