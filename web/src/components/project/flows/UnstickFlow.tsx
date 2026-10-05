@@ -3,6 +3,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { erc20Abi, formatUnits, type Address } from 'viem'
+import { Refusal } from '@/components/project/flows/refusal'
 import { reviewGate } from '@/components/project/flows/review-gate'
 import { ModalShell } from '@/components/ui/ModalShell'
 import { Revalidating } from '@/components/ui/Revalidating'
@@ -84,9 +85,6 @@ type Plan = {
   quote: UnstickQuote
   steps: readonly TxRequest[]
 }
-
-/** What the holder asked for and cannot have: said to them, and no failure of the page's own. */
-class Refusal extends Error {}
 
 /** A reason that starts a sentence. */
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)

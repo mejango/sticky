@@ -5,6 +5,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useId, useRef, useState } from 'react'
 import { formatUnits, type Address } from 'viem'
 import { parseAddress } from '@/components/project/flows/AddressInput'
+import { Refusal } from '@/components/project/flows/refusal'
 import { reviewGate } from '@/components/project/flows/review-gate'
 import { FIELD_INPUT, FIELD_LABEL, StakeAgeFields } from '@/components/project/StakeAgeFields'
 import { ModalShell } from '@/components/ui/ModalShell'
@@ -57,9 +58,6 @@ type Plan = {
   groupId: bigint
   steps: readonly TxRequest[]
 }
-
-/** What the funder asked for and cannot have: said to them, and no failure of the page's own. */
-class Refusal extends Error {}
 
 /** The reward token a field names: the staked token when it is blank, JB's native token for "ETH" in any case, else a
  * whole address that is not the zero address, as the old client took it. */
