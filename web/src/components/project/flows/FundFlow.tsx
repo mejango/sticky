@@ -1,11 +1,10 @@
 'use client'
 
-import { NATIVE_TOKEN } from '@bananapus/nana-sdk-core'
 import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useId, useRef, useState } from 'react'
 import { formatUnits, type Address } from 'viem'
-import { parseAddress } from '@/components/project/flows/AddressInput'
 import { Refusal } from '@/components/project/flows/refusal'
+import { parseRewardToken } from '@/components/project/flows/reward-token'
 import { reviewGate } from '@/components/project/flows/review-gate'
 import { FIELD_INPUT, FIELD_LABEL, StakeAgeFields } from '@/components/project/StakeAgeFields'
 import { ModalShell } from '@/components/ui/ModalShell'
@@ -59,17 +58,6 @@ type Plan = {
   steps: readonly TxRequest[]
 }
 
-/** The reward token a field names: the staked token when it is blank, JB's native token for "ETH" in any case, else a
- * whole address that is not the zero address, as the old client took it. */
-function rewardTokenOf(text: string, stakedToken: Address): Address {
-  const input = text.trim()
-  if (input === '') return stakedToken
-  if (/^eth$/i.test(input)) return NATIVE_TOKEN
-  const token = parseAddress(input)
-  if (!token) throw new Refusal(NOT_A_TOKEN)
-  return token
-}
-
 /** What `owner` holds of `token` and has let `spender` take of it, read now. ETH is sent with the call, and needs no
  * allowance. */
 async function fundsOf(chainId: number, token: Address, owner: Address, spender: Address, signal?: AbortSignal) {
@@ -96,7 +84,8 @@ async function planFund(
 ): Promise<Plan> {
   const { chainId, stToken, stakedToken } = info
   const { distributor } = stickyDeployment(chainId)!
-  const token = rewardTokenOf(fields.token, stakedToken)
+  const token = parseRewardToken(fields.token, stakedToken)
+  if (!token) throw new Refusal(NOT_A_TOKEN)
   let groupId: bigint
   try {
     groupId = groupIdFromWeeks(fields.minWeeks, fields.maxWeeks)
