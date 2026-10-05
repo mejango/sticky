@@ -2,6 +2,7 @@ import { type Address } from 'viem'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ScannedLog } from '@/lib/hook-logs'
 import { stickyDeployment } from '@/lib/sticky-addresses'
+import { tailOverlap } from '@/lib/sticky-events'
 import type { IndexedProjects } from '@/lib/sticky-indexed'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
 import {
@@ -234,10 +235,13 @@ describe('launchSiblings', () => {
     ])
     expect(deps.indexedProjects).toHaveBeenCalledTimes(1)
     expect(deps.indexedProjects).toHaveBeenCalledWith('testnet', undefined)
-    // The tail from just below each chain's indexed block, not the deployment block.
+    // The tail from just below each chain's indexed block, not the deployment block: a minute of its blocks, and 64
+    // at least.
     const scans = deps.calls.filter(call => call.read === 'scan')
     expect(scans.length).toBe(3)
-    for (const scan of scans) expect(scan.detail).toBe(blocks.get(scan.chainId)! + 1n - 64n)
+    for (const scan of scans) expect(scan.detail).toBe(blocks.get(scan.chainId)! + 1n - tailOverlap(scan.chainId))
+    const overlaps = new Map(scans.map(scan => [scan.chainId, blocks.get(scan.chainId)! + 1n - (scan.detail as bigint)]))
+    expect(overlaps).toEqual(new Map([[ARB_SEPOLIA, 240n], [SEPOLIA, 64n], [OP_SEPOLIA, 64n]]))
     // Bendystraw's list and the tail give the candidates; project 3's launch id rules it out without a full read,
     // and 4 and 5 are confirmed onchain.
     const asked = deps.calls.filter(call => call.read === 'launchIds' && call.chainId === OP_SEPOLIA)

@@ -1,16 +1,19 @@
 import { zeroAddress, type Address, type Hex } from 'viem'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { HistoryTooLongError, type ScannedLog } from '@/lib/hook-logs'
+import { stickyChainIds, stickyDeployment } from '@/lib/sticky-addresses'
 import {
   PROJECTS_UNAVAILABLE,
   decodeHookLog,
   fromIndexedEvent,
   notIndexed,
   projectCreationBlock,
+  scanFrom,
   stickyEvents,
   stickyHolderEvents,
   stickyProjectsOn,
   tailOrNull,
+  tailOverlap,
   type StickyEvent,
   type StickyReadDeps,
 } from '@/lib/sticky-events'
@@ -689,6 +692,50 @@ describe('where a scan past Bendystraw\'s block starts', () => {
   it('is 64 blocks below the block after Bendystraw\'s, for a project, a holder and the deployer', async () => {
     const block = CREATED + 500n
     expect(await starts(block)).toEqual([[{ fromBlock: block - 63n }], [{ fromBlock: block - 63n }], [{ fromBlock: block - 63n }]])
+  })
+
+  it('reads at least a minute of the chain\'s blocks again: 240 on Arbitrum, where 64 blocks are 16 s', () => {
+    const arbitrum = stickyDeployment(42161)!
+    const block = arbitrum.fromBlock + 1_000_000n
+    expect(scanFrom(block, arbitrum)).toBe(block + 1n - 240n)
+    expect(scanFrom(block, stickyDeployment(421614)!)).toBe(block + 1n - 240n)
+    // A creation block or the deployer's still comes first when it is later.
+    expect(scanFrom(block, arbitrum, block - 100n)).toBe(block - 100n)
+  })
+
+  it('is at least 64 blocks and a minute of blocks on every chain, and a fresh tail is one request of 500 blocks', () => {
+    // Each chain's block time, and how far Bendystraw's status trailed the clock at most (37.3 s, polled on 2026-10-05
+    // on mainnet and testnet): a fresh tail is the overlap and that lag.
+    const BLOCK_MS: Record<number, number> = {
+      1: 12_000,
+      10: 2_000,
+      8453: 2_000,
+      42161: 250,
+      11155111: 12_000,
+      11155420: 2_000,
+      84532: 2_000,
+      421614: 250,
+    }
+    const TRAILS_MS = 38_000
+    const chains = [...stickyChainIds('production'), ...stickyChainIds('testnet')]
+    expect(chains.sort((a, b) => a - b)).toEqual(Object.keys(BLOCK_MS).map(Number).sort((a, b) => a - b))
+    for (const chainId of chains) {
+      const overlap = tailOverlap(chainId)
+      const blockMs = BLOCK_MS[chainId]
+      expect(overlap).toBeGreaterThanOrEqual(64n)
+      expect(Number(overlap) * blockMs).toBeGreaterThanOrEqual(60_000)
+      expect(overlap + BigInt(Math.ceil(TRAILS_MS / blockMs))).toBeLessThanOrEqual(500n)
+    }
+    expect(chains.map(chainId => [chainId, tailOverlap(chainId)])).toEqual([
+      [1, 64n],
+      [10, 64n],
+      [8453, 64n],
+      [42161, 240n],
+      [84532, 64n],
+      [421614, 240n],
+      [11155111, 64n],
+      [11155420, 64n],
+    ])
   })
 
   it('is never below the deployer\'s block, even when Bendystraw is as of an earlier one', async () => {

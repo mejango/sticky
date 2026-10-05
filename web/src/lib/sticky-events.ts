@@ -26,6 +26,7 @@ import {
   type Hex,
   type Log,
 } from 'viem'
+import { SUPPORTED_CHAINS } from '@/lib/chains'
 import {
   freshHead,
   HistoryTooLongError,
@@ -135,9 +136,23 @@ const PROJECT_TOPICS = [
 ]
 const DEPLOY_STICKY = selector(stickyDeployerAbi, 'DeploySticky')
 const SETTING_KINDS: ReadonlySet<StickyEventKind> = new Set(['granter', 'trust', 'excludeOrphan'])
-/** How many of the blocks Bendystraw says it is indexed through a scan reads again. Ponder's status can run ahead
- * of the rows of the answer it comes with; what both have is counted once. */
-const OVERLAP = 64n
+/** A tail reads again at least this many of the blocks Bendystraw says it is indexed through. */
+const OVERLAP_BLOCKS = 64n
+/** And at least this long of them, by the chain's block time. Polled every 2 s on 2026-10-05, Bendystraw's status was
+ * up to 8 s past rows its own answer lacked (3 of 17 new transactions, each for one answer), and it moves every chain's
+ * status together, up to 28 s at a time: a status can be that far ahead of the rows it comes with. A minute covers twice
+ * the largest move. With the status a minute or less behind the head (37 s at most that day), a fresh tail is still one
+ * request of 500 blocks on every chain: on Arbitrum, at 4 blocks a second, the overlap's 240 and the minute's 240. */
+const OVERLAP_MS = 60_000
+
+/** How many of the blocks Bendystraw says it is indexed through a tail on `chainId` reads again: at least 64, and at
+ * least a minute of the chain's blocks. A chain whose definition names no block time keeps the 64 (Sepolia, whose 12 s
+ * blocks make them more than a minute). What both sources have is counted once. */
+export function tailOverlap(chainId: number): bigint {
+  const blockMs = SUPPORTED_CHAINS.find(chain => chain.id === chainId)?.blockTime
+  const ofTime = blockMs ? BigInt(Math.ceil(OVERLAP_MS / blockMs)) : 0n
+  return ofTime > OVERLAP_BLOCKS ? ofTime : OVERLAP_BLOCKS
+}
 
 // What the console says when a read gives up on one source and uses another, the same each time.
 const INDEX_UNAVAILABLE = 'Bendystraw could not answer; reading the chain instead.'
@@ -263,12 +278,12 @@ function fromIndexedSetting(row: IndexedSetting): StickyEvent {
 const decodeAll = (chainId: number, logs: ScannedLog[]) => logs.flatMap(log => decodeHookLog(log, chainId) ?? [])
 const byTime = (a: StickyEvent, b: StickyEvent) => a.timestamp - b.timestamp || a.logIndex - b.logIndex
 
-/** Where a scan past a block Bendystraw is indexed through starts: `OVERLAP` blocks below the block after it, and
+/** Where a scan past a block Bendystraw is indexed through starts: `tailOverlap` blocks below the block after it, and
  * never before the deployer's block (webclient/app.js:616), nor before `created`, the block a project was created in
  * when the scan is of one project's history and that block is known: an indexer that stalled before the launch costs
  * no scan of the stall. */
-export function scanFrom(asOf: bigint, { fromBlock }: StickyDeployment, created: bigint | null = null): bigint {
-  const start = asOf + 1n - OVERLAP
+export function scanFrom(asOf: bigint, { chainId, fromBlock }: StickyDeployment, created: bigint | null = null): bigint {
+  const start = asOf + 1n - tailOverlap(chainId)
   const floor = created !== null && created > fromBlock ? created : fromBlock
   return start > floor ? start : floor
 }

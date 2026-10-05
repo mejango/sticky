@@ -465,7 +465,8 @@ describe('the account\'s positions, past the block Bendystraw is indexed through
       expect(filter).toEqual({ address: on.hook, topics: [POSITION_TOPICS, null, topic(HOLDER)], fromBlock: scanFrom(THROUGH, on) })
       expect(options).toEqual({ signal: expect.any(AbortSignal) })
     }
-    // Just below the block: 64 blocks, and never before the deployer's block (Arbitrum's is later than this one).
+    // Just below the block: 64 blocks on Ethereum, and never before the deployer's block (Arbitrum's is later than this
+    // one).
     expect(mocks.scan.mock.calls[0][1].fromBlock).toBe(THROUGH + 1n - 64n)
     expect(mocks.scan.mock.calls[3][1].fromBlock).toBe(stickyDeployment(42161)!.fromBlock)
     expect(mostChainsAtOnce(calls)).toBe(2)
