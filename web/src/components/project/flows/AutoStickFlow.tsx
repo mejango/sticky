@@ -532,7 +532,13 @@ export function AutoStickFlow({
             <Choices
               name="cooldown"
               label="At most once every"
-              options={COOLDOWNS.map(({ label, seconds }) => ({ label, value: seconds }))}
+              options={[
+                ...COOLDOWNS.map(({ label, seconds }) => ({ label, value: seconds })),
+                // A cooldown the holder keeps that no preset names is a choice of its own, so the form shows what it sends.
+                ...(state.cooldown > 0 && !COOLDOWNS.some(({ seconds }) => seconds === state.cooldown)
+                  ? [{ label: formatDuration(state.cooldown), value: state.cooldown }]
+                  : []),
+              ]}
               chosen={form.cooldown}
               onChoose={cooldown => setForm({ ...form, cooldown })}
             />

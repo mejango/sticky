@@ -383,11 +383,18 @@ describe('turning it on', () => {
     expect(mocks.tx.send).not.toHaveBeenCalled()
   })
 
-  it('takes a cooldown the adapter keeps that no preset names, and refuses one outside its bounds', async () => {
+  it('shows a cooldown the adapter keeps that no preset names as a choice of its own, pressed, and sends it as kept', async () => {
     fresh = off({ minimum: 1_000_000n, cooldown: 3 * DAY })
     await render(fresh)
     await press(card(), 'Turn on auto-stick')
-    expect(pressed(modal()!.querySelector('[data-choices="cooldown"]'))).toEqual([])
+    const cooldowns = () => modal()!.querySelector('[data-choices="cooldown"]')!
+    expect(buttonsOf(cooldowns())).toEqual(['DAY', 'WEEK', 'MONTH', '3d 0h'])
+    expect(pressed(cooldowns())).toEqual(['3d 0h'])
+    // A preset can be chosen instead, and the kept cooldown again.
+    await press(cooldowns(), 'WEEK')
+    expect(pressed(cooldowns())).toEqual(['WEEK'])
+    await press(cooldowns(), '3d 0h')
+    expect(pressed(cooldowns())).toEqual(['3d 0h'])
     await press(modal(), 'Turn on auto-stick')
     expect(steps().at(-1)).toBe('Turn on auto-stick')
     await sendAll()
