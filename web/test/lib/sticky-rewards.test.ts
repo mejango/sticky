@@ -3,7 +3,7 @@
 // Dates in reward copy are local; pin the zone so the expected dates hold on every machine.
 process.env.TZ = 'UTC'
 
-import { BendystrawTimeoutError } from '@bananapus/nana-sdk-core'
+import { BendystrawTimeoutError, NATIVE_TOKEN } from '@bananapus/nana-sdk-core'
 import { erc20Abi, erc20Abi_bytes32, getAbiItem, getAddress, numberToHex, pad, stringToHex, toEventSelector, type Address, type Hex } from 'viem'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ScannedLog } from '@/lib/hook-logs'
@@ -59,7 +59,10 @@ async function load() {
 const DISTRIBUTOR = deployment.distributor
 const HOOK = deployment.hook
 const TOKEN = address('4')
-const NATIVE = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+/** The distributor books ETH under JB's native token (JBConstants.NATIVE_TOKEN), and the pots' tokens are lowercase. */
+const NATIVE = NATIVE_TOKEN.toLowerCase()
+/** Not JB's native token: an address like any other. */
+const ALL_E = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
 const HOSTILE = address('8')
 
 /** A round's pot as `rewardRoundOf` returns it: the amount, the snapshot block, what was claimed, the claim deadline
@@ -783,6 +786,15 @@ describe('the reward tokens', () => {
     const cards = await r.readRewards(CHAIN, STICKY, null, [funded(0n, NATIVE)])
     expect(cards.map(card => card.meta)).toEqual([{ symbol: 'ETH', decimals: 18 }])
     expect(chain.reads().some(read => read.functionName === 'symbol')).toBe(false)
+  })
+
+  it('take only JB\'s native token for ETH, and read an address of all e\'s as the token it is', async () => {
+    const chain = rewardChain()
+    stockPot(chain)
+    stockToken(chain, ALL_E as Address, 'EEE', 6)
+    const r = await load()
+    const cards = await r.readRewards(CHAIN, STICKY, null, [funded(0n, ALL_E)])
+    expect(cards.map(card => card.meta)).toEqual([{ symbol: 'EEE', decimals: 6 }])
   })
 
   it('read a bytes32 symbol, as MKR has, and name a token that has none by its short address', async () => {

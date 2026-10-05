@@ -18,6 +18,7 @@
  * Addresses of tokens are lowercase.
  */
 
+import { NATIVE_TOKEN } from '@bananapus/nana-sdk-core'
 import { STICKY_CRITERIA_BASE, STICKY_MAX_CRITERIA_WEEKS, validateStickyGroupId } from '@bananapus/nana-sdk-core/v6'
 import {
   decodeEventLog,
@@ -224,8 +225,9 @@ export function rewardLines({
 
 // ---------------------------------------------------------------- reads
 
-/** The token JB's contracts use for the chain's native currency. */
-const NATIVE_TOKEN = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+/** The token JB's contracts use for the chain's native currency (JBConstants.NATIVE_TOKEN), which the distributor
+ * books ETH under, in lowercase as the pots' tokens are. */
+const NATIVE_REWARD_TOKEN = NATIVE_TOKEN.toLowerCase() as Address
 /** How many calls one Multicall3 request carries. */
 const CALLS_PER_REQUEST = 250
 /** How many reward tokens one request asks the symbol and decimals of. */
@@ -485,7 +487,7 @@ async function readTokenMetas(
   const keyOf = (token: Address) => `${chainId}:${token}`
   const unread: Address[] = []
   for (const token of tokens) {
-    const meta = token === NATIVE_TOKEN ? { symbol: 'ETH', decimals: 18 } : (known.get(token) ?? tokenMetas.get(keyOf(token)))
+    const meta = token === NATIVE_REWARD_TOKEN ? { symbol: 'ETH', decimals: 18 } : (known.get(token) ?? tokenMetas.get(keyOf(token)))
     if (meta) metas.set(token, meta)
     else if ((tokensUnreadable.get(keyOf(token)) ?? 0) <= Date.now()) unread.push(token)
   }
