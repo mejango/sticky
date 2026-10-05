@@ -45,6 +45,7 @@ function Reward({
   card,
   groups,
   canStick,
+  onReviewing,
 }: {
   chainId: number
   projectId: number
@@ -52,6 +53,7 @@ function Reward({
   card: RewardCard
   groups: readonly bigint[]
   canStick: boolean
+  onReviewing: (open: boolean) => void
 }) {
   return (
     <li data-reward={`${card.groupId}:${card.token}`} className="min-w-0 rounded-md border border-line p-3">
@@ -69,7 +71,15 @@ function Reward({
           </Fragment>
         ))}
       </dl>
-      <ClaimFlow chainId={chainId} projectId={projectId} info={info} card={card} groups={groups} canStick={canStick} />
+      <ClaimFlow
+        chainId={chainId}
+        projectId={projectId}
+        info={info}
+        card={card}
+        groups={groups}
+        canStick={canStick}
+        onReviewing={onReviewing}
+      />
     </li>
   )
 }
@@ -146,8 +156,11 @@ export function RewardsCard({
     autoStick !== undefined &&
     autoStick.status !== AS_STATUS.INVALID_PROJECT &&
     (autoStick.projectGranter || autoStick.personallyTrusted)
+  // The pot whose claim is under review stays listed until the review closes, whatever it comes to hold.
+  const [reviewing, setReviewing] = useState<string | null>(null)
   const cards = rewards.data
-  const shown = info && cards ? cards.filter(card => isShown(card, info.stakedToken)) : []
+  const keyOf = (card: RewardCard) => `${card.groupId}:${card.token}`
+  const shown = info && cards ? cards.filter(card => isShown(card, info.stakedToken) || keyOf(card) === reviewing) : []
 
   return (
     <section aria-labelledby="rewards-title" className="card p-5">
@@ -190,13 +203,14 @@ export function RewardsCard({
             <ul className="m-0 grid list-none gap-2.5 p-0">
               {shown.map(card => (
                 <Reward
-                  key={`${card.groupId}:${card.token}`}
+                  key={keyOf(card)}
                   chainId={chainId}
                   projectId={projectId}
                   info={info}
                   card={card}
                   groups={groups}
                   canStick={canStick}
+                  onReviewing={open => setReviewing(current => (open ? keyOf(card) : current === keyOf(card) ? null : current))}
                 />
               ))}
             </ul>

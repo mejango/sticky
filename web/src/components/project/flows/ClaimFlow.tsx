@@ -173,6 +173,7 @@ export function ClaimFlow({
   card,
   groups,
   canStick,
+  onReviewing,
 }: {
   chainId: number
   projectId: number
@@ -181,6 +182,8 @@ export function ClaimFlow({
   /** The groups the project's rewards are in, which a claim and stick collects from. */
   groups: readonly bigint[]
   canStick: boolean
+  /** Hears whether a review of this pot is open, which the card keeps the pot listed for. */
+  onReviewing?: (open: boolean) => void
 }) {
   const { address, isConnected, isCenterWallet, openSignIn } = useWallet()
   const { viewAs } = useViewAs()
@@ -270,6 +273,12 @@ export function ClaimFlow({
 
   useEffect(() => () => reading.current?.abort(), [])
 
+  // A review stays open until it is closed, whatever its pot comes to show once its step lands.
+  const open = plan !== null || preparing
+  const reviewing = useRef(onReviewing)
+  reviewing.current = onReviewing
+  useEffect(() => reviewing.current?.(open), [open])
+
   const actions: { label: string; kind: Plan['kind']; primary: boolean }[] =
     staked && canStick && collectable > 0n
       ? [
@@ -281,28 +290,30 @@ export function ClaimFlow({
         : earned > 0n
           ? [{ label: 'Start vesting', kind: 'collect', primary: false }]
           : []
-  if (!actions.length) return null
+  if (!actions.length && !open && error === null) return null
 
   const symbol = plan?.kind === 'stick' ? info.symbol : card.meta.symbol
   const doneTitle = plan?.kind === 'stick' ? 'Rewards claimed and stuck' : plan && plan.collectable > 0n ? 'Rewards collected' : 'Unlocking started'
 
   return (
     <>
-      <div className="mt-2.5 flex flex-wrap gap-2">
-        {actions.map(({ label, kind, primary }) => (
-          <button
-            key={label}
-            type="button"
-            disabled={sending || preparing}
-            onClick={() => void startReview(kind)}
-            className={`${primary ? 'btn-primary' : 'btn-secondary'} px-3 py-1.5 text-sm`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-      <TxError error={plan || preparing ? null : error} />
-      {plan || preparing ? (
+      {actions.length ? (
+        <div className="mt-2.5 flex flex-wrap gap-2">
+          {actions.map(({ label, kind, primary }) => (
+            <button
+              key={label}
+              type="button"
+              disabled={sending || preparing}
+              onClick={() => void startReview(kind)}
+              className={`${primary ? 'btn-primary' : 'btn-secondary'} px-3 py-1.5 text-sm`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <TxError error={open ? null : error} />
+      {open ? (
         <TxConfirmDialog
           open
           preparing={!plan}

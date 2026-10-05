@@ -118,6 +118,7 @@ vi.mock('@/components/project/flows/ClaimFlow', () => ({
     card,
     groups,
     canStick,
+    onReviewing,
   }: {
     chainId: number
     projectId: number
@@ -125,6 +126,7 @@ vi.mock('@/components/project/flows/ClaimFlow', () => ({
     card: { groupId: bigint; token: string }
     groups: readonly bigint[]
     canStick: boolean
+    onReviewing: (open: boolean) => void
   }) => (
     <div
       data-flow="claim"
@@ -134,7 +136,14 @@ vi.mock('@/components/project/flows/ClaimFlow', () => ({
       data-pot={`${card.groupId}:${card.token}`}
       data-groups={groups.join(',')}
       data-can-stick={String(canStick)}
-    />
+    >
+      <button type="button" onClick={() => onReviewing(true)}>
+        Open review
+      </button>
+      <button type="button" onClick={() => onReviewing(false)}>
+        Close review
+      </button>
+    </div>
   ),
 }))
 
@@ -506,7 +515,7 @@ describe('the rewards', () => {
     expect(mocks.rewards.mock.calls[0][2]).toBeNull()
     expect(pots()).toHaveLength(1)
     expect(linesOf(pots()[0])['Claimable now']).toBe('0 SLOPSHOP')
-    expect(buttonsOf(pots()[0])).toEqual([])
+    expect(pots()[0].querySelector('[data-flow="claim"]')?.getAttribute('data-pot')).toBe(`0:${TOKEN.toLowerCase()}`)
     expect(mocks.autoStick).not.toHaveBeenCalled()
   })
 
@@ -585,6 +594,25 @@ describe('the rewards', () => {
 
     it('only to collect when the adapter cannot stick for the holder', async () => {
       expect((await offers([underlying()], autoStickOn({ projectGranter: false, personallyTrusted: false })))[0].canStick).toBe('false')
+    })
+
+    it('and keeps a pot listed while its review is open, though it has nothing left to show', async () => {
+      const checked = `0x${'ab'.repeat(20)}` as Address
+      const full = underlying({ token: checked, funded: 0n, fundedThisRound: 0n, position: { ...nothing, collectable: 5n } })
+      mocks.rewards.mockResolvedValue([underlying(), full])
+      await offers([underlying(), full])
+      const flowOf = () => rewards().querySelector<HTMLElement>(`[data-pot="0:${checked}"]`)
+      await act(async () => buttonNamed(flowOf()!, 'Open review').click())
+
+      // Collected: the pot holds nothing more, and was never funded.
+      mocks.rewards.mockResolvedValue([underlying(), { ...full, position: nothing }])
+      await settle(15_000)
+      await settled()
+      expect(flowOf()).not.toBeNull()
+
+      await act(async () => buttonNamed(flowOf()!, 'Close review').click())
+      await settled()
+      expect(flowOf()).toBeNull()
     })
 
     it('only to collect until the viewer\'s auto-stick has been read', async () => {
@@ -1028,6 +1056,19 @@ describe('auto-stick', () => {
     await renderTab()
     expect(state()).toContain(line)
     expect(actions()).toMatchObject({ status: String(status) })
+  })
+
+  it('keeps its state, and its actions, while auto-stick is read again for groups the pots gained', async () => {
+    await renderTab()
+    expect(actions().groups).toBe('0')
+    mocks.autoStick.mockReturnValue(new Promise(() => {}))
+    mocks.funding.mockResolvedValue([fundedPot(4000n, OTHER, 5n)])
+    await act(async () => void (await client.invalidateQueries({ queryKey: ['sticky-project', CHAIN, 23, 'funding'] })))
+    await settled()
+    expect(mocks.autoStick.mock.calls.at(-1)![3].groups).toEqual([0n, 4000n])
+    // The new read has not answered: the card and its actions stay as they were.
+    expect(autoStick()!.querySelector('[data-flow="autostick"]')).not.toBeNull()
+    expect(state()).toContain('Ready to auto-stick')
   })
 
   it('gives its actions the groups the pots are in', async () => {

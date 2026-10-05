@@ -333,6 +333,40 @@ describe('collecting', () => {
   })
 })
 
+describe('a review whose pot changes under it', () => {
+  it('stays open, and says it went through, when its pot has nothing more to offer once its step lands', async () => {
+    chain.collectable = 0n
+    await render({ card: pot({ position: { ...nothing, earned: 5n } }) })
+    await press(host, 'Start vesting')
+    await press(confirm(), 'Confirm & start vesting')
+    // The pot is read again: what was earned is vesting now, and the pot offers nothing.
+    shown = { ...shown, card: pot({ position: { ...nothing, vesting: 5n, nextUnlockAt: 1n } }) }
+    await confirmed(10n)
+    expect(confirm()!.textContent).toContain('Unlocking started')
+    expect(confirm()!.textContent).toContain('All transactions confirmed.')
+    await press(confirm(), 'Done')
+    expect(confirm()).toBeNull()
+    expect(host.querySelectorAll('button')).toHaveLength(0)
+  })
+
+  it('tells the card while its review is open, so the card keeps its pot listed', async () => {
+    const reviewing = vi.fn()
+    await act(async () =>
+      root.render(
+        <QueryClientProvider client={client}>
+          <ClaimFlow chainId={CHAIN} projectId={PROJECT} info={INFO} card={pot()} groups={[0n]} canStick onReviewing={reviewing} />
+        </QueryClientProvider>,
+      ),
+    )
+    await settled()
+    expect(reviewing).toHaveBeenLastCalledWith(false)
+    await press(host, 'Collect only')
+    expect(reviewing).toHaveBeenLastCalledWith(true)
+    await press(confirm(), 'Cancel')
+    expect(reviewing).toHaveBeenLastCalledWith(false)
+  })
+})
+
 describe('claiming and sticking', () => {
   it('wallet-action:approve-the-staked-token-for-a-claim-and-stick wallet-action:trust-the-auto-stick-adapter wallet-action:claim-and-stick-rewards claim-and-stick adds missing holder trust before the atomic claim', async () => {
     chain.trusted = false
