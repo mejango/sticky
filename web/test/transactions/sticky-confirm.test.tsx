@@ -108,7 +108,7 @@ function TrustFlow({ onDone }: { onDone: () => void }) {
       complete={complete}
       busy={tx.busy}
       action="Confirm & trust"
-      onConfirm={() => void tx.send(request)}
+      onConfirm={() => void tx.send(request, { reviewedAccount: ALICE })}
       status={complete ? <ViewTransactionLink chainId={8453} hash={tx.hash} /> : undefined}
       error={tx.error}
     />

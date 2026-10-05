@@ -2,7 +2,8 @@
 
 /**
  * What Sticky holds useSafeTx to beyond jbm's own cases (`use-safe-tx.test.ts`): the send moves the wallet to the
- * request's chain before it simulates or asks for a signature, and a Signa session is refused before any of it.
+ * request's chain before it simulates or asks for a signature, and a Signa session or View as is refused before any of
+ * it, in its own words, whichever account the request was reviewed for.
  */
 
 import { act, forwardRef, useImperativeHandle } from 'react'
@@ -40,9 +41,11 @@ vi.mock('@/lib/safe-connector', () => ({
 }))
 
 import { useSafeTx } from '@/hooks/useSafeTx'
+import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 import { EXTERNAL_WALLET_REQUIRED } from '@/providers/WalletAuthContext'
 
 const ALICE = '0x1111111111111111111111111111111111111111' as Address
+const BOB = '0x3333333333333333333333333333333333333333' as Address
 const HOOK = '0x2222222222222222222222222222222222222222' as Address
 const HASH = `0x${'ab'.repeat(32)}` as const
 const request = {
@@ -82,12 +85,13 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await act(async () => root.unmount())
+  clearViewAs()
 })
 
 describe('useSafeTx in Sticky', () => {
   it('wallet-action:submit-a-reviewed-direct-write moves the wallet to the request’s chain before it simulates or asks for a signature', async () => {
     await act(async () => {
-      await tx.current!.send(request)
+      await tx.current!.send(request, { reviewedAccount: ALICE })
     })
 
     expect(mocks.switchChain).toHaveBeenCalledWith({ chainId: 84532 })
@@ -104,7 +108,7 @@ describe('useSafeTx in Sticky', () => {
   it('stops when the wallet will not move to the request’s chain', async () => {
     mocks.switchChain.mockRejectedValueOnce(new Error('User rejected the request.'))
     await act(async () => {
-      await tx.current!.send(request)
+      await tx.current!.send(request, { reviewedAccount: ALICE })
     })
     // The engine names the chain the wallet must move to (jbm's D10).
     expect(tx.current).toMatchObject({ phase: 'error', error: 'Switch your wallet to Base Sepolia to continue.' })
@@ -112,18 +116,40 @@ describe('useSafeTx in Sticky', () => {
     expect(mocks.writeContract).not.toHaveBeenCalled()
   })
 
-  it('refuses a Signa session before the review, the switch, the simulation or the wallet', async () => {
+  it.each([
+    ['the account that reviewed the request', ALICE],
+    ['another account', BOB],
+  ])('refuses a Signa session before the review, the switch, the simulation or the wallet, for %s, in the words that offer an external wallet', async (_, reviewedAccount) => {
     mocks.wallet = { isConnected: true, address: ALICE, isCenterWallet: true }
     await act(async () => root.render(<Harness ref={tx} />))
 
     let result: `0x${string}` | null = HASH
     await act(async () => {
-      result = await tx.current!.send(request)
+      result = await tx.current!.send(request, { reviewedAccount })
     })
 
     expect(result).toBeNull()
     expect(tx.current).toMatchObject({ phase: 'error', busy: false, error: EXTERNAL_WALLET_REQUIRED })
     expect(EXTERNAL_WALLET_REQUIRED).toBe('This action needs an external wallet.')
+    expect(mocks.requestReview).not.toHaveBeenCalled()
+    expect(mocks.switchChain).not.toHaveBeenCalled()
+    expect(mocks.publicClient.simulateContract).not.toHaveBeenCalled()
+    expect(mocks.writeContract).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['the account that reviewed the request', ALICE],
+    ['another account', BOB],
+  ])('refuses a send in View as before the review, the switch, the simulation or the wallet, for %s, in View as\'s own words', async (_, reviewedAccount) => {
+    setViewAs(BOB)
+
+    let result: `0x${string}` | null = HASH
+    await act(async () => {
+      result = await tx.current!.send(request, { reviewedAccount })
+    })
+
+    expect(result).toBeNull()
+    expect(tx.current).toMatchObject({ phase: 'error', busy: false, error: VIEW_AS_WRITE_BLOCKED })
     expect(mocks.requestReview).not.toHaveBeenCalled()
     expect(mocks.switchChain).not.toHaveBeenCalled()
     expect(mocks.publicClient.simulateContract).not.toHaveBeenCalled()

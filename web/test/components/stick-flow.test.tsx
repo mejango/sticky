@@ -514,6 +514,8 @@ describe('the review', () => {
       args: [BigInt(PROJECT), TOKEN, 5n * CPN, ALICE, MINTED, '', '0x'],
     })
     expect(options.simulationBlockNumber).toBeUndefined()
+    // The stick is the account's that reviewed it, and the engine sends it only from that account.
+    expect(options.reviewedAccount).toBe(ALICE)
   })
 
   it('does not approve again for an allowance that already covers the amount', async () => {
@@ -555,6 +557,8 @@ describe('the review', () => {
     expect(mocks.tx.send).toHaveBeenCalledTimes(3)
     expect(mocks.tx.send.mock.calls[2][0]).toMatchObject({ address: TERMINAL, functionName: 'pay' })
     expect(mocks.tx.send.mock.calls[2][1].simulationBlockNumber).toBe(4_005n)
+    // Every step, the approvals included, is sent only from the account that reviewed the plan.
+    expect(mocks.tx.send.mock.calls.map(([, options]) => options.reviewedAccount)).toEqual([ALICE, ALICE, ALICE])
   })
 
   it('counts nothing for a send the engine did not take, and skips no step', async () => {
@@ -844,7 +848,7 @@ describe('the review', () => {
     expect(alerts()).toEqual([])
   })
 
-  it('drops the plan when the connected account is no longer the one it was made for', async () => {
+  it('sends a step for the account the plan was made for, whichever account is connected when it is pressed', async () => {
     await render()
     await review()
     expect(steps()).toEqual(['Approve 5 CPN', 'Stick'])
@@ -853,9 +857,11 @@ describe('the review', () => {
     await rerender()
     await click(confirmButton())
 
-    expect(mocks.tx.send).not.toHaveBeenCalled()
-    expect(dialog()).toBeNull()
-    expect(alerts()).toEqual(['Your connected account changed. Review again.'])
+    // The plan was made for ALICE: its balance, allowance and quote are hers. The engine is told whose it is, and it is
+    // the engine that refuses a send while another account is connected (test/transactions/use-safe-tx.test.ts).
+    expect(mocks.tx.send).toHaveBeenCalledTimes(1)
+    expect(mocks.tx.send.mock.calls[0][1].reviewedAccount).toBe(ALICE)
+    expect(alerts()).toEqual([])
   })
 
   it('plans again from the start after the dialog is closed, reading what the chain says now', async () => {
@@ -1044,6 +1050,8 @@ describe('sticking for someone else', () => {
       functionName: 'pay',
       args: [BigInt(PROJECT), TOKEN, 5n * CPN, FRIEND, MINTED, '', '0x'],
     })
+    // The sender is the account the review was made for (its trust check and its quote were that sender's), not the recipient.
+    expect(mocks.tx.send.mock.calls[0][1].reviewedAccount).toBe(ALICE)
   })
 
   it('needs no one\'s trust to stick for the sender itself', async () => {

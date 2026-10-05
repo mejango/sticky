@@ -11,6 +11,7 @@ import { act, Profiler, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { erc20Abi, getAddress, zeroAddress, type Address } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { REVIEWED_ACCOUNT_CHANGED } from '@/lib/contract-write'
 import { feelessAddressesAbi, stickyAutoStickAbi, stickyHookAbi, terminalAbi } from '@/lib/sticky-abis'
 import { unstickTxs } from '@/lib/sticky-builders'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
@@ -252,12 +253,14 @@ const rowsOf = () =>
       return pairs
     }, []),
   )
-/** What the wallet was asked to write, in order. */
-type Write = { functionName: string; args: unknown[]; address: Address }
+/** What the wallet was asked to write, in order, and the account it was simulated and sent as. */
+type Write = { functionName: string; args: unknown[]; address: Address; account: Address }
 const writes = () => mocks.writeContract.mock.calls.map(([request]) => request as Write)
 const called = () => writes().map(request => request.functionName)
 /** What the review was asked to show, in order. */
 const reviewed = () => mocks.requestReview.mock.calls.map(([request]) => request.functionName as string)
+/** The account each review was asked for, in order. */
+const reviewedFor = () => mocks.requestReview.mock.calls.map(([request]) => request.account as Address)
 
 /** Opens the review of `amount` and waits for the plan. */
 async function review(amount: string) {
@@ -306,6 +309,9 @@ describe('a full exit', () => {
 
     expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor', 'approve', 'cashOutTokensOf'])
     expect(reviewed()).toEqual(called())
+    // Each step is reviewed, simulated and sent as the holder the plan was made for.
+    expect(reviewedFor()).toEqual([HOLDER, HOLDER, HOLDER, HOLDER])
+    expect(writes().map(request => request.account)).toEqual([HOLDER, HOLDER, HOLDER, HOLDER])
     expect(writes().map(request => [request.address, request.args])).toEqual([
       [ADAPTER, [PROJECT, false, 1_000_000n, 86_400]],
       [HOOK, [PROJECT, ADAPTER, false]],
@@ -1010,6 +1016,59 @@ describe('the wallet', () => {
     await until(() => confirm() === null, 'the plan to go')
     expect(formText()).toContain('Connected account changed. Review the unstick again.')
     expect(mocks.writeContract).not.toHaveBeenCalled()
+  })
+})
+
+describe('an account switched after the review', () => {
+  const on = { enabled: true, trusted: true, allowance: 100n }
+  /** The wallet's account changes, and a click is handled before the page has rendered it. */
+  const switchWalletOnly = () => mocks.getAccount.mockImplementation(() => ({ address: OTHER, chainId: CHAIN }))
+
+  it('wallet-action:turn-off-auto-stick refuses a step that a click sends before the page shows the new account, before a review opens', async () => {
+    world(on)
+    await review('1')
+    switchWalletOnly()
+    await press('Turn off auto-stick', confirm()!)
+    await until(() => confirm()!.textContent!.includes(REVIEWED_ACCOUNT_CHANGED), 'the refusal')
+
+    expect(mocks.requestReview).not.toHaveBeenCalled()
+    expect(mocks.publicClient.simulateContract).not.toHaveBeenCalled()
+    expect(mocks.writeContract).not.toHaveBeenCalled()
+  })
+
+  it('wallet-action:unstick-sticky-tokens sends none of the later steps from an account switched to after an earlier one went through', async () => {
+    world(on)
+    await review('1')
+    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
+    mocks.requestReview.mockClear()
+
+    switchWalletOnly()
+    await press('Remove auto-stick permission', confirm()!)
+    await until(() => confirm()!.textContent!.includes(REVIEWED_ACCOUNT_CHANGED), 'the refusal')
+
+    expect(called()).toEqual(['setConfigFor'])
+    expect(mocks.requestReview).not.toHaveBeenCalled()
+    // What went through for the holder is still said.
+    expect(confirm()!.textContent).toContain('Went through: Turn off auto-stick.')
+  })
+
+  it('wallet-action:take-back-the-auto-stick-adapter-s-trust wallet-action:take-back-the-auto-stick-adapter-s-allowance refuses a step whose review was open while the wallet switched accounts, and drops the plan', async () => {
+    world(on)
+    await review('1')
+    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
+    const open = Promise.withResolvers<boolean>()
+    mocks.requestReview.mockReturnValueOnce(open.promise)
+    await press('Remove auto-stick permission', confirm()!)
+    await until(() => mocks.requestReview.mock.calls.length === 2, 'the review to open')
+
+    mocks.wallet = { address: OTHER, isCenterWallet: false }
+    mocks.getAccount.mockImplementation(() => ({ address: OTHER, chainId: CHAIN }))
+    await render()
+    await act(async () => open.resolve(true))
+    await until(() => confirm() === null, 'the plan to go')
+
+    expect(called()).toEqual(['setConfigFor'])
+    expect(formText()).toContain('Connected account changed. Review the unstick again.')
   })
 })
 

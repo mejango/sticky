@@ -395,15 +395,12 @@ export function UnstickFlow({
 
   async function sendNext() {
     if (!plan || sending || preparing) return
-    if (address?.toLowerCase() !== plan.holder.toLowerCase()) {
-      setPlan(null)
-      setError(accountChanged(landed, plan.steps))
-      return
-    }
     const [step] = plan.steps
     setError(null)
-    // The engine's send answers nothing while its lock is held, and a step it did not answer has not been taken.
-    const hash = await tx.send(step, { reverify: () => stillFits(info, plan, step) })
+    // Every step is sent as the holder the plan was made for, and the engine refuses it, before a review opens, while
+    // another account is connected. Its send answers nothing while its lock is held, and a step it did not answer has
+    // not been taken.
+    const hash = await tx.send(step, { reviewedAccount: plan.holder, reverify: () => stillFits(info, plan, step) })
     if (hash !== null) setAccepted({ step, holder: plan.holder })
   }
 

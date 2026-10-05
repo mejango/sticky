@@ -479,6 +479,14 @@ describe('the send', () => {
     expect(Object.isFrozen(request.args)).toBe(true)
   })
 
+  it('names the account that reviewed the transfer, which the engine sends it from and no other', async () => {
+    await render()
+    await review(BOB, '1')
+    await press(confirm(), 'Confirm & transfer')
+    const [, options] = tx().send.mock.calls[0] as [unknown, { reviewedAccount: Address }]
+    expect(options.reviewedAccount).toBe(ALICE)
+  })
+
   it('reads the balance again just before it asks the wallet, and stops if it has fallen below the amount', async () => {
     await render()
     await review(BOB, '1.5')
