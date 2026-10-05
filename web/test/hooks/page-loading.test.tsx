@@ -304,10 +304,44 @@ function browserOn({ react, dom, query }: Modules, world: FakeWorld) {
   }
 }
 
+type Browser = ReturnType<typeof browserOn>
+
 /**
- * Opens `page` against `world` and moves the clock a step at a time until every one of `milestones` holds, each a
- * question about the query client. A milestone's time is when the query cache first changed with it holding.
+ * Shows `page` in `browser` and moves the clock a step at a time until every one of `milestones` holds, each a question
+ * about the query client. A milestone's time is when the query cache first changed with it holding, in steps since the
+ * page was shown, and the requests counted are the ones the page began before the last of them.
  */
+async function measureIn(
+  browser: Browser,
+  page: ReactElement,
+  milestones: Record<string, (client: QueryClient) => boolean>,
+): Promise<Measured> {
+  const { client, traffic } = browser
+  const start = traffic.now()
+  const shown: Record<string, number> = {}
+  const unsubscribe = client.getQueryCache().subscribe(() => {
+    for (const [name, holds] of Object.entries(milestones)) {
+      if (shown[name] === undefined && holds(client)) shown[name] = traffic.now() - start
+    }
+  })
+  await browser.show(page)
+  const names = Object.keys(milestones)
+  for (let steps = 0; steps < 1_000 && names.some(name => shown[name] === undefined); steps += 1) await browser.step()
+  unsubscribe()
+  // viem gathers a moment's reads into one Multicall3 request a millisecond later, so a figure shows a few milliseconds
+  // past its step. A request that began as the last figure showed was not one it waited for.
+  const last = start + Math.max(...names.map(name => shown[name] ?? Infinity))
+  const began = (service: Request['service']) => traffic.of(service, last).filter(request => request.start >= start).length
+  return {
+    at: Object.fromEntries(names.map(name => [name, Math.round(shown[name] / STEP_MS)])),
+    center: began('center'),
+    bendystraw: began('bendystraw'),
+    peak: traffic.peak,
+    traffic,
+  }
+}
+
+/** Opens `page` against `world` in a browser of its own and measures it (`measureIn`). */
 async function measure(
   modules: Modules,
   world: FakeWorld,
@@ -315,29 +349,9 @@ async function measure(
   milestones: Record<string, (client: QueryClient) => boolean>,
 ): Promise<Measured> {
   const browser = browserOn(modules, world)
-  const { client, traffic } = browser
-  const start = Date.now()
-  const shown: Record<string, number> = {}
-  const unsubscribe = client.getQueryCache().subscribe(() => {
-    for (const [name, holds] of Object.entries(milestones)) {
-      if (shown[name] === undefined && holds(client)) shown[name] = Date.now() - start
-    }
-  })
-  await browser.show(page)
-  const names = Object.keys(milestones)
-  for (let steps = 0; steps < 1_000 && names.some(name => shown[name] === undefined); steps += 1) await browser.step()
-  unsubscribe()
+  const measured = await measureIn(browser, page, milestones)
   await browser.close()
-  // viem gathers a moment's reads into one Multicall3 request a millisecond later, so a figure shows a few milliseconds
-  // past its step. A request that began as the last figure showed was not one it waited for.
-  const last = Math.max(...names.map(name => shown[name] ?? Infinity))
-  return {
-    at: Object.fromEntries(names.map(name => [name, Math.round(shown[name] / STEP_MS)])),
-    center: traffic.of('center', last).length,
-    bendystraw: traffic.of('bendystraw', last).length,
-    peak: traffic.peak,
-    traffic,
-  }
+  return measured
 }
 
 /** What a measurement is held to: the times, the requests and the peak, and not the timeline itself. */
@@ -361,14 +375,19 @@ function projectPage({ react, project, overview, metadata }: Modules, chainId: n
   return react.createElement(Page)
 }
 
-const success = (client: QueryClient, key: readonly unknown[]) => client.getQueryState(key)?.status === 'success'
+/** Whether the query under `key` has an answer read since `since`, by the clock. */
+const readSince = (client: QueryClient, key: readonly unknown[], since: number) => {
+  const state = client.getQueryState(key)
+  return state?.status === 'success' && state.dataUpdatedAt >= since
+}
 
-function projectMilestones(chainId: number, projectId: number) {
+/** The project page's figures, each once a read since `since` has answered for it. */
+function projectMilestones(chainId: number, projectId: number, since = 0) {
   return {
-    header: (client: QueryClient) => success(client, ['sticky-project', chainId, projectId, 'info', 'v1']),
-    sticks: (client: QueryClient) => success(client, ['sticky-project', chainId, projectId, 'sticks', 'v1']),
-    latest: (client: QueryClient) => success(client, ['sticky-project', chainId, projectId, 'latest', 'v1']),
-    chart: (client: QueryClient) => success(client, ['sticky-project', chainId, projectId, 'flows']),
+    header: (client: QueryClient) => readSince(client, ['sticky-project', chainId, projectId, 'info', 'v1'], since),
+    sticks: (client: QueryClient) => readSince(client, ['sticky-project', chainId, projectId, 'sticks', 'v1'], since),
+    latest: (client: QueryClient) => readSince(client, ['sticky-project', chainId, projectId, 'latest', 'v1'], since),
+    chart: (client: QueryClient) => readSince(client, ['sticky-project', chainId, projectId, 'flows'], since),
   }
 }
 
@@ -460,6 +479,22 @@ describe('how the project page loads', () => {
       bendystraw: 8,
       peak: 2,
     })
+  })
+})
+
+describe('how the project page loads again', () => {
+  it('a minute later, when its figures have gone stale: the project, its history and its holders read again at once', async () => {
+    const modules = await load()
+    const browser = browserOn(modules, projectWorld({ bendystraw: true }))
+    await measureIn(browser, projectPage(modules, BASE_SEPOLIA, 42), projectMilestones(BASE_SEPOLIA, 42))
+    // Another page, and this one again a minute later.
+    await browser.show(modules.react.createElement('main'))
+    await modules.react.act(async () => void (await vi.advanceTimersByTimeAsync(60_000)))
+    const again = await measureIn(browser, projectPage(modules, BASE_SEPOLIA, 42), projectMilestones(BASE_SEPOLIA, 42, Date.now()))
+    await browser.close()
+    // The header's three requests share Center's two slots with the history's, the holders' and the logo's, so it is
+    // confirmed a step later than on a first visit; the holder figures come with it, and Latest a step after.
+    expect(summary(again)).toEqual({ at: { header: 4, sticks: 4, latest: 5, chart: 10 }, center: 12, bendystraw: 9, peak: 2 })
   })
 })
 
