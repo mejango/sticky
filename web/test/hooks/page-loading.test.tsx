@@ -26,6 +26,7 @@ const bendystraw = vi.hoisted(() => ({
   settings: vi.fn(),
   positions: vi.fn(),
   moves: vi.fn(),
+  fees: vi.fn(),
   projects: vi.fn(),
   createTx: vi.fn(),
 }))
@@ -35,6 +36,7 @@ vi.mock('@/lib/sticky-indexed', async importOriginal => ({
   indexedStickySettings: bendystraw.settings,
   indexedStickyPositions: bendystraw.positions,
   indexedStickyMoves: bendystraw.moves,
+  indexedStickyFees: bendystraw.fees,
   indexedStickyProjects: bendystraw.projects,
   indexedStickyCreateTx: bendystraw.createTx,
 }))
@@ -174,11 +176,11 @@ function project42(chainId = BASE_SEPOLIA) {
 /** A chain of the testnet world, Bendystraw indexed through `behind` blocks below its head. */
 function chainOf(
   chainId: number,
-  { projects, logs = [], events = [], settings = [], positions = [], moves = [] }: Partial<FakeIndex> &
+  { projects, logs = [], events = [], settings = [], positions = [], moves = [], fees = [] }: Partial<FakeIndex> &
     Pick<FakeChain, 'projects'> & { logs?: FakeChain['logs'] },
 ): FakeChain {
   const { head, behind } = HEADS[chainId]
-  return { head, asOf: head - behind, projects, logs, index: { events, settings, positions, moves } }
+  return { head, asOf: head - behind, projects, logs, index: { events, settings, positions, moves, fees } }
 }
 
 const coupon = (created: bigint, holders: NonNullable<FakeChain['projects'][string]['holders']> = {}) => ({
@@ -250,15 +252,16 @@ function accountWorld(): FakeWorld {
  * reader and head, JBTokens' address) is then the same for every test, however they are run. */
 async function load() {
   vi.resetModules()
-  const [react, dom, query, project, account, metadata] = await Promise.all([
+  const [react, dom, query, project, overview, account, metadata] = await Promise.all([
     import('react'),
     import('react-dom/client'),
     import('@tanstack/react-query'),
     import('@/hooks/useStickyProject'),
+    import('@/hooks/useStickyOverview'),
     import('@/hooks/useStickyAccount'),
     import('@/hooks/useProjectMetadata'),
   ])
-  return { react, dom, query, project, account, metadata }
+  return { react, dom, query, project, overview, account, metadata }
 }
 type Modules = Awaited<ReturnType<typeof load>>
 
@@ -285,6 +288,7 @@ async function measure(
   bendystraw.settings.mockImplementation(fakes.settings)
   bendystraw.positions.mockImplementation(fakes.positions)
   bendystraw.moves.mockImplementation(fakes.moves)
+  bendystraw.fees.mockImplementation(fakes.fees)
   bendystraw.projects.mockImplementation(fakes.projects)
   bendystraw.createTx.mockImplementation(fakes.createTx)
 
@@ -323,9 +327,9 @@ async function measure(
 /** What a measurement is held to: the times, the requests and the peak, and not the timeline itself. */
 const summary = ({ at, center, bendystraw, peak }: Measured) => ({ at, center, bendystraw, peak })
 
-/** The reads the project page makes for its header, its holder figures and Latest. The Overview's chart and chains
- * wait until those have answered, so they are left out: they hold up none of these figures. */
-function projectPage({ react, project, metadata }: Modules, chainId: number, projectId: number) {
+/** The reads the project page makes as it opens on the Overview: its header, its holder figures, Latest, the chart and
+ * the Chains card (which a project of no launch does not search for). */
+function projectPage({ react, project, overview, metadata }: Modules, chainId: number, projectId: number) {
   function Logo({ token }: { token: Address }) {
     metadata.useProjectMetadata(chainId, token)
     return null
@@ -334,6 +338,8 @@ function projectPage({ react, project, metadata }: Modules, chainId: number, pro
     const { info } = project.useStickyProject(chainId, projectId)
     project.useProjectSticks(chainId, projectId)
     project.useProjectLatest(chainId, projectId)
+    overview.useBackingSeries(chainId, projectId)
+    overview.useProjectSiblings(chainId, projectId)
     return info ? react.createElement(Logo, { token: info.stakedToken }) : null
   }
   return react.createElement(Page)
@@ -346,6 +352,7 @@ function projectMilestones(chainId: number, projectId: number) {
     header: (client: QueryClient) => success(client, ['sticky-project', chainId, projectId, 'info', 'v1']),
     sticks: (client: QueryClient) => success(client, ['sticky-project', chainId, projectId, 'sticks', 'v1']),
     latest: (client: QueryClient) => success(client, ['sticky-project', chainId, projectId, 'latest', 'v1']),
+    chart: (client: QueryClient) => success(client, ['sticky-project', chainId, projectId, 'flows']),
   }
 }
 
@@ -401,7 +408,7 @@ afterEach(() => {
 // requests that stood one after another before it, each waiting on another's answer or for its turn.
 
 describe('how the project page loads', () => {
-  it('with Bendystraw answering, as on the testnets: the header, Latest and then the holder figures', async () => {
+  it('with Bendystraw answering, as on the testnets: the header, Latest, the holder figures and then the chart', async () => {
     const modules = await load()
     const page = await measure(
       modules,
@@ -411,11 +418,18 @@ describe('how the project page loads', () => {
     )
     // The header is the project's head and its two Multicall3 rounds. The holder figures wait for the history and its
     // tail scan, then for Latest's amounts (the pinned block beside them), then for Bendystraw's positions and their
-    // tail scan: 7 steps after the header, the 10 Center requests and 5 relay calls staging counted.
-    expect(summary(page)).toEqual({ at: { header: 3, sticks: 10, latest: 7 }, center: 10, bendystraw: 5, peak: 2 })
+    // tail scan: 7 steps after the header, with the 10 Center requests and 5 relay calls staging counted for them. The
+    // chart waits for all of those, then reads the creating transaction and its receipt, Bendystraw's two histories and
+    // a tail scan for each: 15 Center requests and 10 relay calls in all, as a cold visit to basesep:42 makes.
+    expect(summary(page)).toEqual({
+      at: { header: 3, sticks: 10, latest: 7, chart: 17 },
+      center: 15,
+      bendystraw: 10,
+      peak: 2,
+    })
   })
 
-  it('with Bendystraw down, as on the mainnets today: every figure waits on a scan of the history', async () => {
+  it('with Bendystraw down: every figure waits on a scan of the history, and the chart on two scans of the terminal', async () => {
     const modules = await load()
     const page = await measure(
       modules,
@@ -423,7 +437,12 @@ describe('how the project page loads', () => {
       projectPage(modules, BASE_SEPOLIA, 42),
       projectMilestones(BASE_SEPOLIA, 42),
     )
-    expect(summary(page)).toEqual({ at: { header: 3, sticks: 50, latest: 49 }, center: 70, bendystraw: 4, peak: 2 })
+    expect(summary(page)).toEqual({
+      at: { header: 3, sticks: 50, latest: 49, chart: 73 },
+      center: 112,
+      bendystraw: 8,
+      peak: 2,
+    })
   })
 })
 

@@ -25,6 +25,7 @@ import {
 } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import type {
+  IndexedFee,
   IndexedMove,
   IndexedPosition,
   IndexedProjects,
@@ -32,6 +33,7 @@ import type {
   IndexedSetting,
   IndexedStickyEvent,
 } from '@/lib/sticky-indexed'
+import { deploySticky } from './lib/sticky-log-fixtures'
 
 // A page's reads against a fake Center at the HTTP boundary, as the suite's *-center tests fake it, and fake Bendystraw
 // readers, in which every request takes the same time and nothing else takes any. So when a figure shows, counted in
@@ -82,6 +84,7 @@ export type FakeIndex = {
   settings: IndexedSetting[]
   positions: IndexedPosition[]
   moves: IndexedMove[]
+  fees: IndexedFee[]
 }
 
 /** One fake chain: its head, its projects by ID, every log on it, and what Bendystraw has of it, as of `asOf`. A chain
@@ -99,6 +102,10 @@ export type FakeWorld = {
   /** Whether Bendystraw answers at all. */
   bendystraw: boolean
 }
+
+/** The transaction that created a project, which Bendystraw names and whose receipt shows the deployer launching it. */
+const creationTx = (chainId: number, projectId: bigint): Hex =>
+  pad(toHex((BigInt(chainId) << 64n) + projectId), { size: 32 })
 
 /** A block's time on every fake chain, in Unix seconds. */
 export const timeOf = (block: bigint) => 1_790_000_000 + Number(block % 10_000_000n)
@@ -291,6 +298,26 @@ function answerRpc(chainId: number, chain: FakeChain, method: string, params: un
     }
     case 'eth_getLogs':
       return chain.logs.filter(log => matches(log, params[0] as LogFilter)).map(onWire)
+    case 'eth_getTransactionReceipt': {
+      const [hash] = params as [Hex]
+      const projectId = Object.keys(chain.projects).map(BigInt).find(id => creationTx(chainId, id) === hash)
+      if (projectId === undefined) return null
+      const created = chain.projects[projectId.toString()].created
+      const launch = deploySticky(projectId, {
+        address: stickyDeployment(chainId)!.deployer,
+        blockNumber: created,
+        txHash: hash,
+        time: BigInt(timeOf(created)),
+      })
+      return {
+        blockHash: launch.blockHash,
+        blockNumber: numberToHex(created),
+        logs: [onWire(launch)],
+        status: '0x1',
+        transactionHash: hash,
+        transactionIndex: '0x0',
+      }
+    }
     case 'eth_call': {
       const [{ to, data }, tag] = params as [{ to: string; data: Hex }, unknown]
       const block = blockOf(tag)
@@ -358,7 +385,7 @@ const askedAbout =
 
 /** Bendystraw's readers for `world`, to stand in for `@/lib/sticky-indexed`'s: each answer takes one step and `traffic`
  * counts it, and a world whose Bendystraw is down has every read fail after its step. A read of moves is two requests
- * at once, pays and cash outs, as the real reader sends them. */
+ * at once, pays and cash outs, as the real reader sends them, and a read of fees is two, the fees and the additions. */
 export function fakeBendystraw(world: FakeWorld, traffic: Traffic) {
   async function answer<T>(what: string, chainId: number | null, signal: AbortSignal | undefined, give: () => T, requests = 1) {
     const sent = Array.from({ length: requests }, () => traffic.begin('bendystraw', what, chainId))
@@ -389,6 +416,8 @@ export function fakeBendystraw(world: FakeWorld, traffic: Traffic) {
         () => rowsOf(world, [chainId], index => index.moves.filter(move => projectIds.includes(move.projectId) && move.timestamp >= since)),
         2,
       ),
+    fees: (chainId: number, projectId: bigint, signal?: AbortSignal) =>
+      answer('fees', chainId, signal, () => rowsOf(world, [chainId], index => index.fees.filter(row => row.projectId === projectId)), 2),
     projects: (_network: string, signal?: AbortSignal): Promise<IndexedProjects> =>
       answer('projects', null, signal, () => {
         const { blocks } = rowsOf(world, Object.keys(world.chains).map(Number), () => [])
@@ -397,7 +426,9 @@ export function fakeBendystraw(world: FakeWorld, traffic: Traffic) {
         )
         return { blocks, projects }
       }),
-    createTx: (chainId: number, _projectId: bigint, signal?: AbortSignal): Promise<Hex | null> =>
-      answer('createTx', chainId, signal, () => null),
+    createTx: (chainId: number, projectId: bigint, signal?: AbortSignal): Promise<Hex | null> =>
+      answer('createTx', chainId, signal, () =>
+        world.chains[chainId]?.projects[projectId.toString()] ? creationTx(chainId, projectId) : null,
+      ),
   }
 }
