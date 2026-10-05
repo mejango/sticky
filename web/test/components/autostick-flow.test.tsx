@@ -401,6 +401,20 @@ describe('turning it on', () => {
     expect(calls().at(-1)).toEqual([ADAPTER, 'setConfigFor', [12n, true, 1_000_000n, 3 * DAY]])
   })
 
+  it("refuses a kept cooldown past the adapter's 30 days before review, with nothing sent", async () => {
+    // The adapter's other bounds are refused here too: a minimum above 2^128 - 1 (Limits, above), and a cooldown of 0,
+    // which a holder who never set one has, opens the form on a week (Dialog choices, above), so it is never sent.
+    fresh = off({ minimum: 1_000_000n, cooldown: 31 * DAY })
+    await render(fresh)
+    await press(card(), 'Turn on auto-stick')
+    expect(pressed(modal()!.querySelector('[data-choices="cooldown"]'))).toEqual(['31d 0h'])
+    await press(modal(), 'Turn on auto-stick')
+    expect(errorText()).toBe('Auto-stick cooldown must be between 1 and 30 days.')
+    expect(confirm()).toBeNull()
+    expect(mocks.tx.send).not.toHaveBeenCalled()
+    expect(console.warn).not.toHaveBeenCalled()
+  })
+
   it('closes its form with nothing sent', async () => {
     await render(off())
     await press(card(), 'Turn on auto-stick')
