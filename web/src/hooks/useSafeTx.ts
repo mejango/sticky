@@ -58,6 +58,13 @@ export type TxRequest = {
 }
 
 export type TxSendOptions = {
+  /**
+   * The account this request was built for: the one that reviewed it, and
+   * whose beneficiary, holder or recipient it names when it names one. Only
+   * that account may send it: while another is connected, nothing is reviewed
+   * or sent (see contract-write.ts).
+   */
+  reviewedAccount: Address
   reverify?: (request: TxRequest) => Promise<unknown>
   /** Persist an unknown-submission marker immediately before the wallet write. */
   beforeWrite?: () => unknown | Promise<unknown>
@@ -124,7 +131,7 @@ function friendlyTxError(e: unknown): string {
  * 2. Phases drive the caller's UI; `error` carries a friendly message.
  */
 export function useSafeTx(chainId: number) {
-  const { isConnected, address, isCenterWallet } = useWallet()
+  const { isConnected, isCenterWallet } = useWallet()
   const publicClient = usePublicClient({ chainId })
   const { writeContractAsync } = useWriteContract()
   const { switchChainAsync } = useSwitchChain()
@@ -252,7 +259,7 @@ export function useSafeTx(chainId: number) {
   const send = useCallback(
     async (
       request: TxRequest,
-      options?: TxSendOptions,
+      options: TxSendOptions,
     ) => {
       if (inFlightRef.current) return null
       if (isCenterWallet) {
@@ -280,17 +287,18 @@ export function useSafeTx(chainId: number) {
       // Read once: the review, the sent gas and the proposal tracking must all
       // agree on whether a Safe proposes this call.
       const viaSafe = isSafeConnection(wagmiConfig)
+      const account = options.reviewedAccount
       try {
         const txHash = await submitReviewedContractWrite({
           request,
-          expectedAccount: address,
+          expectedAccount: account,
           review: async reviewed => {
             // A review notice always opens the review, even where the caller
             // already rendered the payload — the notice exists precisely
             // because what was rendered is no longer what will be signed.
-            if (options?.reviewedInParent && !options?.reviewNotice) return
+            if (options.reviewedInParent && !options.reviewNotice) return
             const description = [
-              options?.reviewNotice,
+              options.reviewNotice,
               viaSafe ? SAFE_NONCE_GUIDANCE : null,
             ]
               .filter(Boolean)
@@ -298,7 +306,7 @@ export function useSafeTx(chainId: number) {
             const approved = await requestContractTransactionReview(
               {
                 ...reviewed,
-                account: address,
+                account,
                 // A Safe app signs the sent gas as safeTxGas; 0 makes a failed call revert.
                 ...(viaSafe ? { safeTxGas: 0n } : {}),
               },
@@ -319,10 +327,10 @@ export function useSafeTx(chainId: number) {
             })
           },
           currentAccount: () => getAccount(wagmiConfig).address,
-          reverify: options?.reverify,
-          beforeWrite: options?.beforeWrite,
-          onBeforeWriteAborted: options?.onBeforeWriteAborted,
-          onWriteRejected: options?.onWriteRejected,
+          reverify: options.reverify,
+          beforeWrite: options.beforeWrite,
+          onBeforeWriteAborted: options.onBeforeWriteAborted,
+          onWriteRejected: options.onWriteRejected,
           // Simulation is the safety gate: the exact reviewed call, args, and
           // value must succeed before a signature is requested. Only the
           // simulation result reaches the wallet writer.
@@ -333,8 +341,8 @@ export function useSafeTx(chainId: number) {
               functionName: reviewed.functionName,
               args: reviewed.args as unknown[],
               value: reviewed.value,
-              account: address,
-              ...(options?.simulationBlockNumber !== undefined
+              account,
+              ...(options.simulationBlockNumber !== undefined
                 ? { blockNumber: options.simulationBlockNumber }
                 : {}),
             }
@@ -351,7 +359,7 @@ export function useSafeTx(chainId: number) {
             // A WalletConnect peer read can land mid-flow and change the answer.
             if (isSafeConnection(wagmiConfig) !== viaSafe) {
               // Nothing reaches the wallet, so a marker written for this write is withdrawn.
-              if (options?.beforeWrite) await options.onBeforeWriteAborted?.()
+              if (options.beforeWrite) await options.onBeforeWriteAborted?.()
               throw new Error('Wallet connection changed. Review the transaction again.')
             }
             return writeContractAsync(simulated)
@@ -360,7 +368,7 @@ export function useSafeTx(chainId: number) {
         })
         setHash(txHash)
         if (viaSafe) setSafeProposalHash(txHash)
-        if (viaSafe && address) setSafeExecution({ safe: address, proposalHash: txHash })
+        if (viaSafe) setSafeExecution({ safe: account, proposalHash: txHash })
         setPhase('pending')
         return txHash
       } catch (e) {
@@ -374,7 +382,7 @@ export function useSafeTx(chainId: number) {
         return null
       }
     },
-    [isConnected, address, isCenterWallet, publicClient, switchChainAsync, writeContractAsync],
+    [isConnected, isCenterWallet, publicClient, switchChainAsync, writeContractAsync],
   )
 
   const reset = useCallback(() => {

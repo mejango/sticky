@@ -323,6 +323,14 @@ describe('trusting a sender: the send', () => {
     expect(Object.isFrozen(request.args)).toBe(true)
   })
 
+  it('names the account that reviewed the change, which the engine sends it from and no other', async () => {
+    await render()
+    await reviewTrust(SENDER)
+    await press(confirm(), 'Confirm & trust')
+    const [, options] = tx().send.mock.calls[0] as [unknown, { reviewedAccount: Address }]
+    expect(options.reviewedAccount).toBe(ALICE)
+  })
+
   it('sends what cast encoded for the same values, byte for byte', async () => {
     const sender = getAddress(`0x${'3'.repeat(40)}`)
     await render()
@@ -419,9 +427,13 @@ describe('untrusting a sender', () => {
 
     await press(confirm(), 'Confirm & untrust')
     expect(tx().send).toHaveBeenCalledOnce()
-    const [request] = tx().send.mock.calls[0] as [{ chainId: number; address: Address; functionName: string; args: unknown[] }]
+    const [request, options] = tx().send.mock.calls[0] as [
+      { chainId: number; address: Address; functionName: string; args: unknown[] },
+      { reviewedAccount: Address },
+    ]
     expect(request).toMatchObject({ chainId: CHAIN, address: HOOK, functionName: 'setTrustedSenderFor', args: [12n, SENDER, false] })
     expect(Object.isFrozen(request)).toBe(true)
+    expect(options.reviewedAccount).toBe(ALICE)
   })
 
   it('says the sender is not trusted when the hook says so, and sends nothing', async () => {

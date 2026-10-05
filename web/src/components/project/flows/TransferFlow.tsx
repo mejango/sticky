@@ -129,6 +129,7 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
     if (!plan || !current || sending) return
     const [, count] = plan.args as readonly [Address, bigint]
     await tx.send(plan, {
+      reviewedAccount: current.account,
       reverify: async () => {
         if ((await heldBy(info, current.account)) < count) throw new Error(BALANCE_CHANGED)
       },

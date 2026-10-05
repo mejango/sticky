@@ -29,7 +29,6 @@ const QUOTE_FRESH_MS = 10_000
 
 const MORE_THAN_HELD = 'That is more than you hold.'
 const INVALID_RECIPIENT = 'Enter a valid recipient address.'
-const ACCOUNT_CHANGED = 'Your connected account changed. Review again.'
 const REVIEW_UNREADABLE = 'Could not prepare a stick; its review says what could not be read.'
 const QUOTE_UNREADABLE = 'Could not quote a stick; the line under the amount says what could not be read.'
 const BALANCE_UNREADABLE = 'Could not check the balance before sending a step of a stick; the dialog says so.'
@@ -182,7 +181,6 @@ export function StickFlow({
 
   const sending = tx.busy || tx.phase === 'review'
   const complete = plan !== null && landed === plan.steps.length
-  const who = address?.toLowerCase() ?? null
   const shown = viewer?.toLowerCase() ?? null
   const error = failure && (failure.account === null || failure.account === shown) ? failure.message : null
   const quoteFailed = quote.isError && settledNow
@@ -262,12 +260,13 @@ export function StickFlow({
   async function confirm() {
     const at = progress.current.landed
     if (!plan || sending || at === plan.steps.length) return
-    if (who !== plan.account.toLowerCase()) {
-      close()
-      setFailure({ message: ACCOUNT_CHANGED, account: shown })
-      return
-    }
-    const hash = await tx.send(plan.steps[at], { simulationBlockNumber: confirmedAt.current, reverify: () => verify(plan) })
+    // The plan is the reviewing account's: its balance, its allowance, its trust check and its quote. Every step is sent
+    // as that account, and the engine refuses it, before a review opens, while another is connected.
+    const hash = await tx.send(plan.steps[at], {
+      reviewedAccount: plan.account,
+      simulationBlockNumber: confirmedAt.current,
+      reverify: () => verify(plan),
+    })
     // The engine answers null, and changes nothing, for a send it does not take: while it still holds its lock for the
     // step that has just confirmed, or after a cancelled review or a failure. Only a step it took is waited for.
     if (hash !== null) progress.current.accepted = at

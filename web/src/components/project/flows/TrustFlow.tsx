@@ -112,6 +112,7 @@ export function TrustFlow({
     if (!plan || !current || sending) return
     const [, target] = plan.args as readonly [bigint, Address, boolean]
     await tx.send(plan, {
+      reviewedAccount: current.account,
       reverify: async () => {
         if ((await trustedBy(chainId, projectId, plan.address, current.account, target)) === trusting) {
           throw new Error(trusting ? ALREADY_TRUSTED : NOT_TRUSTED)

@@ -3,8 +3,9 @@
 import { QueryClient, QueryClientProvider, notifyManager } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { getAddress, type Hex } from 'viem'
+import { getAddress, type Address, type Hex } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { REVIEWED_ACCOUNT_CHANGED } from '@/lib/contract-write'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import { TOKEN, stickyInfo } from '../home-fixtures'
 
@@ -96,8 +97,8 @@ beforeEach(() => {
   mocks.getAccount.mockImplementation(() => ({ address: ALICE, chainId: CHAIN }))
   mocks.requestReview.mockResolvedValue(true)
   mocks.switchChain.mockResolvedValue(undefined)
-  mocks.publicClient.simulateContract.mockImplementation(async (request: { address: string; functionName: string }) => ({
-    request: { address: request.address, functionName: request.functionName },
+  mocks.publicClient.simulateContract.mockImplementation(async (request: { address: string; functionName: string; account: string }) => ({
+    request: { address: request.address, functionName: request.functionName, account: request.account },
   }))
   mocks.publicClient.estimateContractGas.mockResolvedValue(50_000n)
   mocks.writeContract.mockReset()
@@ -154,6 +155,14 @@ const flowButton = (label: string) =>
 const stepStates = () => [...(dialog()?.querySelectorAll('ol li') ?? [])].map(item => item.getAttribute('data-state'))
 const title = () => dialog()?.querySelector('h2')?.textContent
 const writes = () => mocks.writeContract.mock.calls.map(([request]) => request.functionName)
+/** The account each write was simulated and sent as, in order. */
+const senders = () => mocks.writeContract.mock.calls.map(([request]) => request.account)
+/** The wallet switches to `account`, and the page renders it. */
+async function switchTo(account: Address) {
+  mocks.wallet = { ...mocks.wallet, address: account }
+  mocks.getAccount.mockImplementation(() => ({ address: account, chainId: CHAIN }))
+  await act(async () => root.render(tree()))
+}
 
 const typeInto = (label: string, value: string) => {
   const field = host.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!
@@ -308,24 +317,99 @@ describe('a stick for someone else on the real engine', () => {
     expect(writes()).toEqual(['pay'])
   })
 
-  // The plan is the reviewing account's: its trust check and its quote were for that sender. The engine checks the
-  // account it is handed, so the flow is what stops another account from sending the plan.
-  it('sends nothing when the wallet switches accounts between the review and the confirm', async () => {
+  // The plan is the reviewing account's: its trust check and its quote were for that sender. The flow hands the engine
+  // that account with every step, and the engine refuses, before it opens a review, to send it from any other.
+  it('wallet-action:stick-for-someone-else sends nothing when the wallet switches accounts between the review and the confirm, and the dialog says why', async () => {
     gift = true
     mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 5n * CPN })
     await openReview()
 
-    mocks.wallet = { ...mocks.wallet, address: BOB }
-    mocks.getAccount.mockImplementation(() => ({ address: BOB, chainId: CHAIN }))
-    await act(async () => root.render(tree()))
+    await switchTo(BOB)
     await act(async () => confirmButton()!.click())
     await pump()
 
-    expect(dialog()).toBeNull()
-    expect(host.textContent).toContain('Your connected account changed. Review again.')
+    expect(dialog()!.textContent).toContain(REVIEWED_ACCOUNT_CHANGED)
+    expect(confirmButton()!.textContent).toBe('Retry')
     expect(mocks.requestReview).not.toHaveBeenCalled()
     expect(mocks.publicClient.simulateContract).not.toHaveBeenCalled()
     expect(mocks.writeContract).not.toHaveBeenCalled()
+  })
+
+  it('wallet-action:stick-for-someone-else goes on once the account that reviewed the stick is connected again, as that account', async () => {
+    gift = true
+    mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 5n * CPN })
+    mocks.writeContract.mockResolvedValueOnce(STICK)
+    await openReview()
+    await switchTo(BOB)
+    await act(async () => confirmButton()!.click())
+    await until(() => confirmButton()?.textContent === 'Retry', 'the refusal')
+    expect(mocks.writeContract).not.toHaveBeenCalled()
+
+    await switchTo(ALICE)
+    await act(async () => confirmButton()!.click())
+    await until(() => mocks.writeContract.mock.calls.length === 1, 'the stick to be sent')
+    expect(senders()).toEqual([ALICE])
+    expect(writes()).toEqual(['pay'])
+  })
+})
+
+describe('a stick whose account changes after its review, on the real engine', () => {
+  it('wallet-action:approve-the-staked-token-for-a-stick wallet-action:stick sends the stick from no account but the one that approved, once it has landed', async () => {
+    mocks.writeContract.mockResolvedValueOnce(APPROVAL)
+    await openReview()
+    await act(async () => confirmButton()!.click())
+    await until(() => confirmButton()?.disabled, 'the approval to be sent')
+    await mined(APPROVAL, 4_001n)
+    await until(() => confirmButton()?.textContent === 'Confirm & stick', 'the approval to be counted')
+    mocks.requestReview.mockClear()
+
+    await switchTo(BOB)
+    await act(async () => confirmButton()!.click())
+    await pump()
+
+    // Only ALICE's approval reached the wallet, and the dialog is where it was.
+    expect(writes()).toEqual(['approve'])
+    expect(senders()).toEqual([ALICE])
+    expect(mocks.requestReview).not.toHaveBeenCalled()
+    expect(dialog()!.textContent).toContain(REVIEWED_ACCOUNT_CHANGED)
+    expect(stepStates()).toEqual(['complete', 'active'])
+  })
+
+  // The wallet's account changes, and a click is handled before the page has rendered it: the page still shows the
+  // account that reviewed the plan, and the wallet is already another's.
+  it.each([
+    ['a stick', false],
+    ['a stick for someone else', true],
+  ])('wallet-action:stick wallet-action:stick-for-someone-else refuses %s that a click sends before the page shows the new account, before the review opens', async (_, forSomeoneElse) => {
+    gift = forSomeoneElse
+    mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 5n * CPN })
+    await openReview()
+
+    mocks.getAccount.mockImplementation(() => ({ address: BOB, chainId: CHAIN }))
+    await act(async () => confirmButton()!.click())
+    await pump()
+
+    expect(dialog()!.textContent).toContain(REVIEWED_ACCOUNT_CHANGED)
+    expect(mocks.requestReview).not.toHaveBeenCalled()
+    expect(mocks.publicClient.simulateContract).not.toHaveBeenCalled()
+    expect(mocks.writeContract).not.toHaveBeenCalled()
+  })
+
+  it('wallet-action:stick refuses a stick whose review was open while the wallet switched accounts', async () => {
+    mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 5n * CPN })
+    const review = Promise.withResolvers<boolean>()
+    mocks.requestReview.mockReturnValueOnce(review.promise)
+    await openReview()
+    await act(async () => confirmButton()!.click())
+    await until(() => mocks.requestReview.mock.calls.length === 1, 'the review to open')
+
+    await switchTo(BOB)
+    await act(async () => review.resolve(true))
+    await pump()
+
+    expect(mocks.publicClient.simulateContract).not.toHaveBeenCalled()
+    expect(mocks.writeContract).not.toHaveBeenCalled()
+    expect(dialog()!.textContent).toContain(REVIEWED_ACCOUNT_CHANGED)
   })
 })
 
