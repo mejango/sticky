@@ -8,7 +8,8 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
   const ZERO = "0x" + "0".repeat(64);
-  const NATIVE = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+  // JBConstants.NATIVE_TOKEN, the token a terminal and a sucker name for ETH, lowercase like address().
+  const NATIVE = "0x000000000000000000000000000000000000eeee";
   const EMPTY_ROOT = "0x27ae5ba08d7291c96c8cbddcc148bf48a6d68c7974b94356f53754ef6171d757";
   const INSERT = "0xc92fa1150c24ee5470c272112539aab52450a5e05573e7ea7bdfb98829b89321";
   const CONTRACTS = Object.freeze({

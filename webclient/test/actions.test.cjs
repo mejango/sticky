@@ -6,6 +6,8 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 const Calldata = require('../calldata.js');
+// Calldata encoded by Foundry's `cast calldata`, an encoder other than the page's own.
+const FIXTURES = require('./calldata-fixtures.json');
 
 const source = fs.readFileSync(path.join(__dirname, '../app.js'), 'utf8');
 const address = (digit) => `0x${digit.repeat(40)}`;
@@ -18,7 +20,10 @@ const ADAPTER = address('6');
 const RECEIVER_FACTORY = address('7');
 const RECEIVER = address('8');
 const OTHER = address('9');
-const NATIVE = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+// JBConstants.NATIVE_TOKEN (0x...EEEe), the token StickyDistributor books ETH under, in the lowercase the page compares.
+const NATIVE = '0x000000000000000000000000000000000000eeee';
+// Relayr's marker for ETH. The distributor takes it for an ERC-20 like any other address.
+const ALL_E = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
 const FUND_TOPIC = '0x171d1972970e548ead487a3a60cfbdfffd130a21513e44dfcd8778965935ddf2';
 const uint = (value) => `0x${BigInt(value).toString(16).padStart(64, '0')}`;
 const words = (...values) => `0x${values.map((value) => uint(value).slice(2)).join('')}`;
@@ -34,6 +39,10 @@ function functionSource(name) {
   return source.slice(start, source.indexOf('\n}', start) + 2);
 }
 
+// The page's own declaration, run in the VM so the tests exercise the constant that ships.
+const nativeRewardToken = /^const NATIVE_REWARD_TOKEN = .*;$/m.exec(source)?.[0];
+assert.ok(nativeRewardToken, 'missing NATIVE_REWARD_TOKEN');
+
 const names = [
   'formatUnits', 'formatAmount', 'parseUnits', 'formatDuration', 'actionAddress', 'rewardTokenAddress', 'positiveAmount',
   'beginAction', 'reviewAction', 'actionCall', 'hasRewardsToVest', 'requireTokenBalance', 'tokenApprovalTxs',
@@ -46,7 +55,17 @@ const names = [
   'autoStickState', 'earnedRewardsOf', 'rewardPosition', 'rewardLines', 'roundSentence', 'dateLabel', 'dateTimeLabel',
 ];
 
-function fixture(overrides = {}) {
+// A page element with what the render functions touch, so a test can read back what was drawn.
+function element() {
+  const classes = new Set();
+  return {
+    value: '', textContent: '', innerHTML: '', className: '', children: [], close() {}, querySelector: () => null,
+    appendChild(child) { this.children.push(child); },
+    classList: { add: (name) => classes.add(name), remove: (name) => classes.delete(name), toggle: (name, on) => ((on ?? !classes.has(name)) ? classes.add(name) : classes.delete(name)), contains: (name) => classes.has(name) },
+  };
+}
+
+function fixture(overrides = {}, extraNames = []) {
   const info = { stakedToken: TOKEN, stToken: STICKY, symbol: 'ART', stSymbol: 'STICKYART', decimals: 6, reward: 1000n };
   const fields = new Map();
   const plans = [];
@@ -60,9 +79,10 @@ function fixture(overrides = {}) {
     QUOTE_SETTLE_MS: 0, setTimeout,
     window: {},
     $: (id) => {
-      if (!fields.has(id)) fields.set(id, { value: '', close() {}, classList: { add() {}, remove() {} } });
+      if (!fields.has(id)) fields.set(id, element());
       return fields.get(id);
     },
+    document: { createElement: () => element() },
     txAccount: () => HOLDER,
     account: () => HOLDER,
     distributor: () => DISTRIBUTOR,
@@ -74,6 +94,8 @@ function fixture(overrides = {}) {
     rewardTokens: {},
     view: async (to, selector, args) => {
       reads.push({ to, selector, args });
+      // Neither native marker is a contract, so a call to it returns nothing, as on a chain.
+      if ([NATIVE, ALL_E].includes(String(to).toLowerCase())) return '0x';
       if (selector === '0xdd62ed3e') return uint(0);
       if (selector === '0x70a08231') return uint(100_000_000);
       if (selector === '0x95d89b41') return `0x${context.encode(['string'], ['ART'])}`;
@@ -84,6 +106,7 @@ function fixture(overrides = {}) {
     rpc: async (method, params) => {
       if (method === 'eth_call') return params[0].data.startsWith('0x0aff0c31') ? mintQuote(777n) : uint(123456);
       if (method === 'eth_getBalance') return uint(10n ** 20n);
+      if (method === 'eth_getCode') return '0x6000';
       if (method === 'eth_getBlockByNumber') return { timestamp: uint(1000) };
       throw new Error(`unexpected RPC ${method}`);
     },
@@ -98,7 +121,7 @@ function fixture(overrides = {}) {
   const selectors = source.slice(selectorsStart, source.indexOf('\n};', selectorsStart) + 3);
   const codec = source.slice(source.indexOf('const strip ='), source.indexOf('// ------------------------------------------------------------- rpc plumbing'));
   const topics = source.slice(source.indexOf('const TOPIC ='), source.indexOf('\n};', source.indexOf('const TOPIC =')) + 3);
-  vm.runInContext(`${selectors}\n${topics}\n${codec}\nconst NATIVE_REWARD_TOKEN = '${NATIVE}';\nconst UNLIMITED = (1n << 256n) - 1n;\nconst MAX_TAX = 10000n;\nconst CRITERIA_BASE = 1000n;\nconst MAX_CRITERIA_WEEKS = 520n;\nconst stickQuoteSequences = { self: 0, gift: 0 };\nlet unstickQuoteSequence = 0;\nconst AS_STATUS = { READY: 0, DISABLED: 1, INVALID_PROJECT: 2, INSUFFICIENT_ALLOWANCE: 6, ZERO_ISSUANCE: 7 };\n${names.map(functionSource).join('\n')}`, context);
+  vm.runInContext(`${selectors}\n${topics}\n${codec}\n${nativeRewardToken}\nlet viewSequence = 0;\nconst UNLIMITED = (1n << 256n) - 1n;\nconst MAX_TAX = 10000n;\nconst CRITERIA_BASE = 1000n;\nconst MAX_CRITERIA_WEEKS = 520n;\nconst stickQuoteSequences = { self: 0, gift: 0 };\nlet unstickQuoteSequence = 0;\nconst AS_STATUS = { READY: 0, DISABLED: 1, INVALID_PROJECT: 2, INSUFFICIENT_ALLOWANCE: 6, ZERO_ISSUANCE: 7 };\n${[...names, ...extraNames].map(functionSource).join('\n')}`, context);
   context.readAutoStickState = context.autoStickState;
   context.autoStickState = async () => null;
   Object.assign(context, overrides);
@@ -423,6 +446,14 @@ test('zero-return cash outs disclose the burn without claiming any reclaim', asy
   assert.ok(plans[0].txs.at(-1).args.some(([label, value]) => label === 'EFFECT' && value.includes('no underlying')));
 });
 
+test('ETH is JB\'s native token, the address StickyDistributor books ETH under', () => {
+  const { context: c } = fixture();
+  assert.equal(vm.runInContext('NATIVE_REWARD_TOKEN', c), NATIVE);
+  for (const typed of ['ETH', 'eth', ' Eth ']) assert.equal(c.rewardTokenAddress(typed, TOKEN), NATIVE);
+  assert.equal(c.rewardTokenAddress('', TOKEN), TOKEN);
+  assert.equal(c.rewardTokenAddress(ALL_E, TOKEN), ALL_E, 'Relayr\'s marker is an address like any other');
+});
+
 test('native ETH reward funding attaches exact value and never approves a sentinel', async () => {
   const { context: c, plans } = fixture();
   c.$('r-token').value = 'ETH';
@@ -436,10 +467,74 @@ test('native ETH reward funding attaches exact value and never approves a sentin
   assert.equal(plans[0].txs[0].data.slice(0, 10), '0x77531866');
 });
 
+test('an ETH fund is StickyDistributor.fund under JB\'s native token, with the amount as the value', async () => {
+  const { context: c, plans } = fixture();
+  c.$('r-token').value = 'ETH';
+  c.$('r-amount').value = '1';
+  c.$('r-min-weeks').value = '4';
+  c.$('r-max-weeks').value = '8';
+  await c.fundRewards();
+  assert.equal(plans[0].txs.length, 1, 'ETH needs no approval');
+  const [tx] = plans[0].txs;
+  assert.equal(tx.to, DISTRIBUTOR);
+  assert.equal(tx.value, `0x${(10n ** 18n).toString(16)}`);
+  // fund(STICKY, JB's native token, 1 ETH, 4008), encoded by cast rather than by the page.
+  assert.equal(tx.data, FIXTURES.fund);
+  assert.deepEqual(Calldata.decode(tx.data).params.map((param) => param.value), [STICKY, NATIVE, 10n ** 18n, 4008n]);
+  assert.ok(shown(tx).some(([label, value]) => label === 'REWARD TOKEN' && value.includes('ETH')));
+  assert.ok(c.rewardTokens['12'].has(NATIVE), 'the pot is remembered under JB\'s native token until its logs are read');
+});
+
+test('an ETH fund checks the account\'s ETH balance, never an ERC-20 balance at the native address', async () => {
+  const { context: c, reads } = fixture();
+  const calls = [];
+  const baseRpc = c.rpc;
+  c.rpc = async (method, params) => { calls.push([method, params]); return baseRpc(method, params); };
+  c.$('r-token').value = 'ETH';
+  c.$('r-amount').value = '1';
+  await c.fundRewards();
+  assert.deepEqual(calls.filter(([method]) => method === 'eth_getBalance').map(([, params]) => [...params]), [[HOLDER, 'latest']]);
+  assert.ok(!reads.some((read) => read.selector === '0x70a08231'), 'no balanceOf read');
+  c.rpc = async (method, params) => (method === 'eth_getBalance' ? uint(10n ** 18n - 1n) : baseRpc(method, params));
+  await assert.rejects(c.fundRewards(), /insufficient ETH balance/);
+});
+
+test('JB\'s native token typed as an address funds ETH too, and an address of all e\'s is refused as a token with no decimals', async () => {
+  for (const typed of [NATIVE, '0x000000000000000000000000000000000000EEEe']) {
+    const { context: c, plans } = fixture();
+    c.$('r-token').value = typed;
+    c.$('r-amount').value = '1';
+    await c.fundRewards();
+    assert.equal(plans[0].txs.length, 1, `${typed} needs no approval`);
+    assert.equal(plans[0].txs[0].value, `0x${(10n ** 18n).toString(16)}`, typed);
+  }
+  const { context: c, plans } = fixture();
+  c.$('r-token').value = ALL_E;
+  c.$('r-amount').value = '1';
+  await assert.rejects(c.fundRewards(), /valid decimals/);
+  assert.equal(plans.length, 0, 'no ETH is sent to an address the distributor takes for an ERC-20');
+});
+
 test('reward token decimals fail closed instead of silently assuming 18', async () => {
   const { context: c } = fixture({ view: async () => '0x' });
   await assert.rejects(c.rewardTokenMeta(TOKEN), /valid decimals/);
   assert.equal((await c.rewardTokenMeta(NATIVE)).decimals, 18);
+});
+
+test('an ETH pot, booked under JB\'s native token, is ETH with 18 decimals and costs no chain read', async () => {
+  const { context: c, reads } = fixture();
+  for (const spelled of [NATIVE, '0x000000000000000000000000000000000000EEEe']) {
+    const meta = await c.rewardTokenMeta(spelled);
+    assert.equal(meta.symbol, 'ETH');
+    assert.equal(meta.decimals, 18);
+  }
+  assert.equal(reads.length, 0);
+});
+
+test('an address of all e\'s is read as the token it is, never as ETH', async () => {
+  const { context: c, reads } = fixture();
+  await assert.rejects(c.rewardTokenMeta(ALL_E), /valid decimals/);
+  assert.deepEqual(reads.map((read) => [read.to, read.selector]), [[ALL_E, '0x95d89b41'], [ALL_E, '0x313ce567']]);
 });
 
 test('normal reward collection is one transaction because the distributor already starts vesting', async () => {
@@ -452,6 +547,17 @@ test('normal reward collection is one transaction because the distributor alread
   assert.equal(arg(plans[0].txs[0].data, 1), 0n);
   assert.equal(arg(plans[0].txs[0].data, 4), BigInt(HOLDER));
   assert.ok(!plans[0].txs[0].args.some(([label]) => label === 'FORFEIT'));
+});
+
+test('collecting an ETH pot names JB\'s native token and shows the amount ready in ETH', async () => {
+  const { context: c, plans } = fixture();
+  const baseView = c.view;
+  c.view = async (to, selector, args) => selector === '0x5710be41' ? uint(5n * 10n ** 17n) : baseView(to, selector, args);
+  await c.claimReward(NATIVE);
+  const [tx] = plans[0].txs;
+  assert.equal(plans[0].title, 'Claim ETH rewards');
+  assert.deepEqual(Calldata.decode(tx.data).params.map((param) => param.value), [STICKY, 0n, [BigInt(HOLDER)], [NATIVE], HOLDER]);
+  assert.ok(shown(tx).some(([label, value]) => label === 'READY' && value === '0.5 ETH'));
 });
 
 test('vesting-only claims refuse a verified empty allocation', async () => {
@@ -710,6 +816,9 @@ test('reward rows come from Fund logs, one per group and token, with hand-checke
   assert.equal(groups.join(','), '0,4000');
   assert.equal(rows.map((row) => `${row.groupId}:${row.token}:${row.funded}`).join(' '),
     `4000:${OTHER.toLowerCase()}:11 0:${NATIVE}:2 0:${TOKEN.toLowerCase()}:0 4000:${TOKEN.toLowerCase()}:0`);
+  // The pot booked under JB's native token reads as ETH; the page asks every other token for its own symbol.
+  const metas = await Promise.all(rows.map((row) => c.rewardTokenMeta(row.token)));
+  assert.equal(metas.map((meta) => `${meta.symbol}/${meta.decimals}`).join(' '), 'ART/6 ETH/18 ART/6 ART/6');
 });
 
 test('auto-stick status, compounding, and vesting pass the groups holding underlying rewards', async () => {
@@ -757,6 +866,78 @@ test('receivers reject native ETH rather than falsely describing an ERC20 settle
   c.$('bridge-reward-token').value = 'ETH';
   await assert.rejects(c.settleArrivals(), /settle ERC-20/);
   assert.equal(plans.length, 0);
+});
+
+test('receivers refuse ETH before any chain read, typed as ETH or as JB\'s native token', async () => {
+  for (const typed of ['ETH', 'eth', NATIVE, '0x000000000000000000000000000000000000EEEe']) {
+    const { context: c, plans, reads } = fixture();
+    c.$('bridge-reward-token').value = typed;
+    await assert.rejects(c.settleArrivals(), /settle ERC-20/, typed);
+    assert.equal(plans.length, 0, typed);
+    assert.equal(reads.length, 0, `${typed} is refused before any read`);
+  }
+  // The reward address panel settles through the same path with its own token and group.
+  const { context: c, plans } = fixture();
+  await assert.rejects(c.settleArrivals({ groupId: 4000n, tokenValue: 'ETH', fromDialog: false }), /settle ERC-20/);
+  await assert.rejects(c.settleArrivals({ groupId: 4000n, tokenValue: NATIVE, fromDialog: false }), /settle ERC-20/);
+  assert.equal(plans.length, 0);
+});
+
+test('the reward address panel counts ERC-20 arrivals and refuses ETH', async () => {
+  const pending = async (typed) => {
+    const { context: c } = fixture({}, ['currentView', 'renderRewardAddress']);
+    c.ctx.loaded = true;
+    c.$('ra-token').value = typed;
+    await c.renderRewardAddress();
+    return c.$('ra-pending').textContent;
+  };
+  assert.equal(await pending(TOKEN), '100 ART waiting to settle');
+  for (const typed of ['ETH', NATIVE, '0x000000000000000000000000000000000000EEEe']) {
+    assert.equal(await pending(typed), 'Enter an ERC-20 token address', typed);
+  }
+});
+
+// The rewards page with one ETH pot in the distributor's Fund logs, the round clock and the holder's position fixed.
+async function rewardsPage({ bridgeToken = '' } = {}) {
+  const funding = (groupId, token, amount) => ({
+    address: DISTRIBUTOR, topics: [FUND_TOPIC, uint(BigInt(STICKY)), uint(groupId), uint(BigInt(token))], data: words(1, amount, BigInt(HOLDER)),
+  });
+  const schedule = {
+    roundDuration: 604_800n, vestingRounds: 4n, round: 3n, start: 1_700_000_000n,
+    startOf(round) { return this.start + this.roundDuration * BigInt(round); },
+    get endsAt() { return this.startOf(this.round + 1n); },
+  };
+  const { context: c } = fixture({
+    projectStartBlock: async () => 1,
+    getLogs: async () => [funding(0, NATIVE, 2n * 10n ** 18n)],
+    rewardSchedule: async () => schedule,
+    rewardPosition: async (_info, _holder, _group, token) => ({
+      collectable: token === NATIVE ? 5n * 10n ** 17n : 0n, vesting: 0n, earned: 0n, nextUnlockAt: null, unlockedAt: null,
+    }),
+    renderRecipeGroup() {}, renderRewardAddress: async () => {}, renderAutoStick: async () => {}, renderBridgeFunding: async () => {},
+    esc: String, tok: (_address, symbol) => symbol, guard: (fn) => fn, claimReward: async () => {}, claimAndStick: async () => {},
+  }, ['currentView', 'renderRewards']);
+  c.ctx.loaded = true;
+  c.$('bridge-reward-token').value = bridgeToken;
+  await c.renderRewards();
+  return { cards: c.$('rewards-list').children.map((card) => card.innerHTML), pending: c.$('receiver-pending').textContent };
+}
+
+test('an ETH pot funded under JB\'s native token is drawn as an ETH card with its amounts', async () => {
+  const { cards } = await rewardsPage();
+  assert.equal(cards.length, 2, 'the ETH pot and the staked token\'s row');
+  assert.match(cards[0], /<span class="reward-token">ETH<\/span>/);
+  assert.match(cards[0], /<dt>Claimable now<\/dt><dd>0\.5 ETH<\/dd>/);
+  assert.match(cards[0], /2 ETH in total/);
+  assert.match(cards[1], /<span class="reward-token">ART<\/span>/);
+});
+
+test('the rewards page asks a receiver for ERC-20 arrivals only', async () => {
+  assert.equal((await rewardsPage()).pending, '100 ART');
+  assert.equal((await rewardsPage({ bridgeToken: TOKEN })).pending, '100 ART');
+  for (const typed of ['ETH', NATIVE]) {
+    assert.equal((await rewardsPage({ bridgeToken: typed })).pending, 'Select a destination reward token to check arrivals', typed);
+  }
 });
 
 test('locked sticky tokens reject transfers before wallet authorization', async () => {

@@ -8,7 +8,8 @@ const FIXTURES = require('./calldata-fixtures.json');
 const A = '0x1111111111111111111111111111111111111111';
 const B = '0x2222222222222222222222222222222222222222';
 const C = '0x3333333333333333333333333333333333333333';
-const NATIVE = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+// JBConstants.NATIVE_TOKEN (0x...EEEe), the token StickyDistributor books ETH under; decoded addresses are lowercase.
+const NATIVE = '0x000000000000000000000000000000000000eeee';
 const M = '0x' + 'ab'.repeat(32);
 const BW = '0x' + '0'.repeat(24) + B.slice(2);
 const MAX = (1n << 256n) - 1n;

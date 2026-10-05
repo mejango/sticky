@@ -3,7 +3,9 @@ const assert = require('node:assert/strict');
 const Bridge = require('../bridge.js');
 const { keccak256 } = require('../relayr.js');
 const Calldata = require('../calldata.js');
-const { SEL, ZERO, NATIVE, word, CONTRACTS } = Bridge;
+const { SEL, ZERO, word, CONTRACTS } = Bridge;
+// JBConstants.NATIVE_TOKEN (0x...EEEe), the token a terminal and a sucker name for ETH. It is no contract.
+const NATIVE = '0x000000000000000000000000000000000000eeee';
 const A = n => '0x' + BigInt(n).toString(16).padStart(40, '0');
 const addressWord = a => a.slice(2).padStart(64, '0');
 const abi = (...values) => '0x' + values.map(v => typeof v === 'string' && /^0x/.test(v) ? v.slice(2).padStart(64, '0') : word(v)).join('');
@@ -37,7 +39,7 @@ function fixture(changes = {}) {
     calls.push({ url, method, params });
     const source = url === route.source.rpcUrl;
     if (method === 'eth_chainId') return source ? '0x' + state.sourceChain.toString(16) : '0x' + route.destination.chainId.toString(16);
-    if (method === 'eth_getCode') return state.emptyCode ? '0x' : '0x60006000';
+    if (method === 'eth_getCode') return (state.emptyCode || params[0].toLowerCase() === NATIVE) ? '0x' : '0x60006000';
     if (method === 'eth_getTransactionByHash') return {
       hash: sourceHash, blockHash, blockNumber: '0x64', from: owner, to: route.sourceSucker,
       chainId: '0x' + route.source.chainId.toString(16), value: '0x0', input: state.wrongInput ? '0x12345678' : prepareData, transactionIndex: '0x0',
@@ -137,6 +139,15 @@ test('discovery resolves different per-chain project IDs and destination project
   assert.equal(routes[0].destinationProjectId, '22');
   assert.equal(routes[0].rewardToken, route.rewardToken);
   assert.equal(routes[0].canPrepare, true);
+});
+
+test('a route backed in ETH names JB\'s native token, which has no code, and shows it as ETH with 18 decimals', async () => {
+  assert.equal(Bridge.NATIVE, NATIVE);
+  const { api, route } = fixture();
+  const [found] = await api.discover({ source: route.source, destination: route.destination, sourceToken: route.sourceToken });
+  assert.equal(found.backingToken, NATIVE);
+  assert.equal(found.backingMeta.symbol, 'ETH');
+  assert.equal(found.backingMeta.decimals, 18);
 });
 
 for (const [name, changes, pattern] of [
