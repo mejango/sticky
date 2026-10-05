@@ -330,6 +330,35 @@ describe('the browser\'s Center reader', () => {
     await expect(Promise.all([pinned, ...heads])).resolves.toEqual(['0x64', 100n, 100n])
   })
 
+  it('lets two page reads Center does not answer hold the tab\'s reads for 15 s at most, the try every reader waits', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    const sent: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string, init: RequestInit) => {
+        const { id, method } = JSON.parse(String(init.body)) as { id: number; method: string }
+        sent.push(`${input.slice(input.lastIndexOf('/') + 1)} ${method}`)
+        if (method !== 'eth_getLogs') return answered(id, numberToHex(100n))
+        // Center never answers the page's scans.
+        return new Promise<Response>((_, reject) => init.signal!.addEventListener('abort', () => reject(init.signal!.reason)))
+      }),
+    )
+    const { jbCenterPublicClient, jbCenterRpcTransport } = await import('@/lib/jbcenter-rpc')
+    const page = new AbortController()
+    const logs = { method: 'eth_getLogs', params: [{ fromBlock: '0x1', toBlock: '0x1f4' }] } as never
+    const scans = [8453, 10].map(chainId => jbCenterPublicClient(chainId, page.signal).request(logs).catch((error: unknown) => error))
+    // A write's review reads through the Center wallet's transport.
+    const review = jbCenterRpcTransport(8453)({ chain: base }).request({ method: 'eth_blockNumber' })
+    await vi.advanceTimersByTimeAsync(14_999)
+    expect(sent).toEqual(['8453 eth_getLogs', '10 eth_getLogs'])
+
+    await vi.advanceTimersByTimeAsync(1)
+    expect(sent[2]).toBe('8453 eth_blockNumber')
+    await expect(review).resolves.toBe('0x64')
+    page.abort(new Error('left the page'))
+    await Promise.all(scans)
+  })
+
   it('sends nothing at all while a Retry-After runs, its own retry of the refused request included', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
     const sent: { at: number; what: string }[] = []

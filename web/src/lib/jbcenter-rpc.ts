@@ -136,7 +136,10 @@ const pageReaders = new WeakMap<AbortSignal, Map<number, PublicClient>>()
  * (`test/page-signals.test.ts`); `freshHead` shares the head. A page's reader
  * reads its head afresh each time, sharing a request already under way: viem's
  * own `getBlockNumber` keeps every reader's last head for good, by the reader's
- * id, and a page's reader is made for each read of the page. */
+ * id, and a page's reader is made for each read of the page. A try waits 15 s,
+ * as every other reader of the tab's does: two of a page's reads hold both of
+ * Center's slots, a write's review and receipt reads included, for no longer.
+ * The slowest of the 3,261 requests measured against staging took 6.0 s. */
 export function jbCenterPublicClient(chainId: number, signal?: AbortSignal): PublicClient {
   let clients = publicClients
   if (signal) {
@@ -145,7 +148,7 @@ export function jbCenterPublicClient(chainId: number, signal?: AbortSignal): Pub
   }
   let client = clients.get(chainId)
   if (!client) {
-    const transport = jbCenterRpcTransport(chainId, 60_000)
+    const transport = jbCenterRpcTransport(chainId)
     client = createPublicClient({
       chain: SUPPORTED_CHAINS.find(chain => chain.id === chainId),
       transport: signal ? withSignal(transport, signal) : transport,
