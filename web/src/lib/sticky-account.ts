@@ -30,6 +30,7 @@ import {
   scanToHead,
   stickyHolderEvents,
   stickyProjectsOn,
+  tailOrNull,
   type StickyReadDeps,
 } from '@/lib/sticky-events'
 import { FEED_WINDOW, feedRows, terminalMoves, type FeedRow } from '@/lib/sticky-feed'
@@ -211,23 +212,42 @@ const live: ActivityReadDeps = {
   terminalMoves,
 }
 
+/** Bendystraw's listing of the account's positions on a chain: the block it is indexed through, and every Sticky project
+ * of the chain, for when the events past that block are more than a scan may read. */
+export type PositionListing = { through: bigint; everyProject: () => Promise<readonly bigint[]> }
+
 /** The projects the account's hook events show from just below `through`, the block a listing is indexed through, to the
- * head: what the listing does not have yet. */
+ * head: what the listing does not have yet. Null when those events are more than a scan may read (`tailOrNull`). */
 async function projectsPast(
   deps: PositionReadDeps,
   chainId: number,
   holder: Address,
   through: bigint,
   signal: AbortSignal | undefined,
-): Promise<bigint[]> {
+): Promise<bigint[] | null> {
   const deployment = deploymentOn(chainId)
   const who = holder.toLowerCase() as Address
   const filter = { address: deployment.hook, topics: [POSITION_TOPICS, null, pad(who)], fromBlock: scanFrom(through, deployment) }
-  const logs = await deps.scan(chainId, filter, { signal })
+  const logs = await tailOrNull(() => deps.scan(chainId, filter, { signal }), POSITIONS_UNAVAILABLE, { chainId })
+  if (logs === null) return null
   return logs
     .flatMap(log => decodeHookLog(log, chainId) ?? [])
     .filter(event => event.holder === who)
     .map(event => event.projectId)
+}
+
+/** The projects to ask StickyHook about for a listing: its own, and those the account's events past its block show, or
+ * every Sticky project of the chain, as without a listing, when those events are more than a scan may read. */
+async function listedOrEvery(
+  deps: PositionReadDeps,
+  chainId: number,
+  holder: Address,
+  projectIds: readonly bigint[],
+  { through, everyProject }: PositionListing,
+  signal: AbortSignal | undefined,
+): Promise<readonly bigint[]> {
+  const past = await projectsPast(deps, chainId, holder, through, signal)
+  return past === null ? everyProject() : [...projectIds, ...past]
 }
 
 const byProjectId = (a: { projectId: bigint }, b: { projectId: bigint }) =>
@@ -238,20 +258,22 @@ const byProjectId = (a: { projectId: bigint }, b: { projectId: bigint }) =>
  * the figures of the projects held are read together at one block, so that one whose token cannot be read is left out
  * and counted in `skipped` while the others still show. A project the account holds nothing in makes no position.
  *
- * `projectIds` that are Bendystraw's listing come with `through`, the block it is indexed through: the projects the
- * account's position events show from just below that block to the head are asked about too. A scan that fails rejects,
+ * `projectIds` that are Bendystraw's listing come with `listing`, the block it is indexed through and every Sticky
+ * project of the chain: the projects the account's position events show from just below that block to the head are
+ * asked about too, or, when those events are more than a scan may read (Bendystraw far behind the head, as when it
+ * replays its history), every project of the chain is, as without a listing. A scan that fails otherwise rejects,
  * since a list without them would be shorter than the chain's.
  */
 export async function accountPositions(
   chainId: number,
   holder: Address,
   projectIds: readonly bigint[],
-  options: PositionReadOptions & { through?: bigint } = {},
+  options: PositionReadOptions & { listing?: PositionListing } = {},
 ): Promise<AccountChain> {
-  const { signal, through, ...given } = options
+  const { signal, listing, ...given } = options
   const deps: PositionReadDeps = { ...live, ...given }
-  const past = through === undefined ? [] : await projectsPast(deps, chainId, holder, through, signal)
-  const held = (await holdingsIn(chainId, holder, [...new Set([...projectIds, ...past])], signal)).sort(byProjectId)
+  const asked = listing ? await listedOrEvery(deps, chainId, holder, projectIds, listing, signal) : projectIds
+  const held = (await holdingsIn(chainId, holder, [...new Set(asked)], signal)).sort(byProjectId)
   if (!held.length) return { chainId, positions: [], skipped: 0 }
 
   // Read strictly: a project whose accounting does not hold together is left out and counted, not shown with a wrong
