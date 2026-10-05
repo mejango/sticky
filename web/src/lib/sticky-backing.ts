@@ -22,6 +22,7 @@ import {
   orNull,
   scanFrom,
   scanToHead,
+  tailOrNull,
   type StickyEvent,
   type StickyReadDeps,
 } from '@/lib/sticky-events'
@@ -247,8 +248,11 @@ const live: FlowReadDeps = {
   keptScan: keptScanToHead,
 }
 
-const MOVES_UNAVAILABLE = 'Bendystraw could not list the pays and cash outs; scanning the terminal for them instead.'
-const FEES_UNAVAILABLE = 'Bendystraw could not list the fees and additions; scanning the terminal for them instead.'
+/** What the console hears when one of the two histories falls back to the terminal's whole history. */
+const UNAVAILABLE = {
+  moves: 'Bendystraw could not list the pays and cash outs; scanning the terminal for them instead.',
+  fees: 'Bendystraw could not list the fees and additions; scanning the terminal for them instead.',
+} as const
 
 /**
  * Every change to a project's balance on its terminal since `fromBlock` (its creation block), in the staked token's
@@ -256,11 +260,12 @@ const FEES_UNAVAILABLE = 'Bendystraw could not list the fees and additions; scan
  * balance, and each is read the same way:
  * - Bendystraw's list, with a scan of the terminal from just below the block it is indexed through, or from
  *   `fromBlock` when that is later, to the head.
- * - When Bendystraw cannot answer, or has no status for the chain, a scan of the terminal from `fromBlock` instead,
- *   kept in this browser without what payers write as long as they like (memos and metadata), so a return visit, and
- *   a read again after a send, scans only the blocks since. What Bendystraw answers for is not kept: its rows carry no
- *   block, so they cannot make a kept history, and a later read that falls back scans as a first visit does, or from
- *   what an earlier fallback kept.
+ * - When Bendystraw cannot answer, has no status for the chain, or is so far behind the head that the tail is longer
+ *   than a scan may read (as when it replays its history), a scan of the terminal from `fromBlock` instead, kept in
+ *   this browser without what payers write as long as they like (memos and metadata), so a return visit, and a read
+ *   again after a send, scans only the blocks since. What Bendystraw answers for is not kept: its rows carry no block,
+ *   so they cannot make a kept history, and a later read that falls back scans as a first visit does, or from what an
+ *   earlier fallback kept.
  * Bendystraw is asked for both lists at once, and the scans run one after the other. A null `fromBlock` is a creation
  * block that could not be found: a kept history is used whatever block it began at, and otherwise the scans start at
  * the deployer's block. A scan that fails, or a history longer than a scan may read, rejects, and the page charts the
@@ -281,8 +286,8 @@ export async function backingFlows(
   const about = { chainId, projectId }
 
   const [moves, fees] = await Promise.all([
-    orNull(() => deps.indexedMoves(chainId, [projectId], signal), signal, MOVES_UNAVAILABLE, about),
-    orNull(() => deps.indexedFees(chainId, projectId, signal), signal, FEES_UNAVAILABLE, about),
+    orNull(() => deps.indexedMoves(chainId, [projectId], signal), signal, UNAVAILABLE.moves, about),
+    orNull(() => deps.indexedFees(chainId, projectId, signal), signal, UNAVAILABLE.fees, about),
   ])
 
   /** One history's flows: Bendystraw's rows and the tail past their block, or the terminal's whole history, kept. */
@@ -290,12 +295,13 @@ export async function backingFlows(
     indexed: IndexedRows<Row> | null,
     flowOfRow: (row: Row) => Placed | null,
     topics: (Hex | Hex[] | null)[],
-    kept: 'moves' | 'fees',
+    kept: keyof typeof UNAVAILABLE,
   ): Promise<Placed[]> => {
     const asOf = indexed?.blocks.get(chainId)
     if (indexed && asOf !== undefined) {
       const filter = { address, topics, fromBlock: scanFrom(asOf, deployment, fromBlock) }
-      return withTail(chainId, projectId, indexed.rows, flowOfRow, await deps.scan(chainId, filter, { signal }))
+      const tail = await tailOrNull(() => deps.scan(chainId, filter, { signal }), UNAVAILABLE[kept], about)
+      if (tail !== null) return withTail(chainId, projectId, indexed.rows, flowOfRow, tail)
     }
     const key = terminalHistoryKey(chainId, address, projectId, kept)
     const logs = await deps.keptScan(chainId, key, { address, topics, fromBlock }, { signal, keep: withoutMemo })

@@ -43,6 +43,7 @@ import {
   projectCreationBlock,
   scanFrom,
   scanToHead,
+  tailOrNull,
   type StickyReadDeps,
 } from '@/lib/sticky-events'
 import { formatAmount, formatDuration } from '@/lib/sticky-format'
@@ -356,10 +357,11 @@ function potsOf(fundings: readonly Funding[]): FundedPot[] {
  * Every pot the distributor has been funded for a Sticky token: one for each group and token it was funded in, in the
  * order they were first funded, with everything sent to it and the block it was last funded in. Bendystraw lists the
  * fundings, and a scan of the distributor's Fund logs from just below the block it is indexed through (never below the
- * project's creation) adds the newer ones; a funding both have counts once. When Bendystraw cannot answer, or has no
- * status for the chain, the Fund logs are scanned from the project's creation block instead, and this browser keeps
- * what that scan read, so a later visit scans only newer blocks; what Bendystraw answers for is not kept. It rejects
- * when neither can finish: a list of pots is never quietly shorter.
+ * project's creation) adds the newer ones; a funding both have counts once. When Bendystraw cannot answer, has no
+ * status for the chain, or is so far behind the head that the tail is longer than a scan may read (as when it replays
+ * its history), the Fund logs are scanned from the project's creation block instead, and this browser keeps what that
+ * scan read, so a later visit scans only newer blocks; what Bendystraw answers for is not kept. It rejects when neither
+ * can finish: a list of pots is never quietly shorter.
  */
 export async function discoverFunding(
   chainId: number,
@@ -373,16 +375,19 @@ export async function discoverFunding(
   const { distributor } = deployment
   const hook = stToken.toLowerCase() as Address
   const topics = [FUND, pad(hook, { size: 32 })]
+  const about = { chainId, projectId }
   const [fromBlock, indexed] = await Promise.all([
     deps.creationBlock(chainId, projectId, { signal }),
-    orNull(() => deps.indexedFunding(chainId, hook, signal), signal, FUNDING_UNAVAILABLE, { chainId, projectId }),
+    orNull(() => deps.indexedFunding(chainId, hook, signal), signal, FUNDING_UNAVAILABLE, about),
   ])
   const asOf = indexed?.blocks.get(chainId)
   if (indexed && asOf !== undefined) {
     const filter = { address: distributor, topics, fromBlock: scanFrom(asOf, deployment, fromBlock) }
-    const tail = await deps.scan(chainId, filter, { signal })
-    const ours = indexed.rows.filter(row => row.chainId === chainId && row.hook === hook)
-    return potsOf([...ours, ...notIndexed(chainId, ours, tail).map(fundingOfLog)].sort(inChainOrder))
+    const tail = await tailOrNull(() => deps.scan(chainId, filter, { signal }), FUNDING_UNAVAILABLE, about)
+    if (tail !== null) {
+      const ours = indexed.rows.filter(row => row.chainId === chainId && row.hook === hook)
+      return potsOf([...ours, ...notIndexed(chainId, ours, tail).map(fundingOfLog)].sort(inChainOrder))
+    }
   }
   const key = `${chainId}:${distributor.toLowerCase()}:fund:${hook}`
   const logs = await deps.keptScan(chainId, key, { address: distributor, topics, fromBlock }, { signal })

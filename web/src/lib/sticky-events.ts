@@ -25,7 +25,15 @@ import {
   type Hex,
   type Log,
 } from 'viem'
-import { freshHead, keptLogs, projectHookLogs, scanLogs, untilAborted, type ScannedLog } from '@/lib/hook-logs'
+import {
+  freshHead,
+  HistoryTooLongError,
+  keptLogs,
+  projectHookLogs,
+  scanLogs,
+  untilAborted,
+  type ScannedLog,
+} from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { controllerAbi, projectsAbi, stickyDeployerAbi, stickyHookAbi } from '@/lib/sticky-abis'
 import { stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
@@ -282,6 +290,24 @@ export function notIndexed<Log extends { transactionHash: string; logIndex: numb
 ): Log[] {
   const known = new Set(rows.map(row => eventKey(chainId, row.txHash, row.logIndex)))
   return tail.filter(log => !known.has(eventKey(chainId, log.transactionHash, log.logIndex)))
+}
+
+/** A tail past the block Bendystraw is indexed through, as `read` scans it, or null when it is longer than a scan may
+ * read. An indexer that answers but is far behind the head, as one replaying its history is, cannot answer for the
+ * blocks since, so the caller reads what this browser kept instead, and the console hears why under `label`, as when
+ * Bendystraw cannot answer at all. Any other failure is the caller's. */
+export async function tailOrNull(
+  read: () => Promise<ScannedLog[]>,
+  label: string,
+  about: Record<string, unknown>,
+): Promise<ScannedLog[] | null> {
+  try {
+    return await read()
+  } catch (error) {
+    if (!(error instanceof HistoryTooLongError)) throw error
+    console.warn(label, about, error)
+    return null
+  }
 }
 
 /** Where a scan of a holder's events starts when Bendystraw cannot say where its index ends: the block the oldest of

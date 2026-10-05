@@ -34,10 +34,15 @@ import {
 // requests the page makes as well as what it makes of the answers.
 
 const creation = vi.hoisted(() => ({ block: vi.fn() }))
-vi.mock('@/lib/sticky-events', async importOriginal => ({
-  ...(await importOriginal<typeof import('@/lib/sticky-events')>()),
-  projectCreationBlock: creation.block,
-}))
+/** The scanner's HistoryTooLongError as the mocked sticky-events module sees it. vi.resetModules does not reload a
+ * mocked module, so the scanner it imported can be another instance than a later import gives, and an error of the
+ * other instance's class is not an instance of its. */
+const scanner = vi.hoisted(() => ({ TooLong: Error as unknown as typeof import('@/lib/hook-logs').HistoryTooLongError }))
+vi.mock('@/lib/sticky-events', async importOriginal => {
+  const original = await importOriginal<typeof import('@/lib/sticky-events')>()
+  scanner.TooLong = (await import('@/lib/hook-logs')).HistoryTooLongError
+  return { ...original, projectCreationBlock: creation.block }
+})
 // Bendystraw's airdrop funding. It cannot answer unless a test says so, so the Fund logs are scanned as before.
 const bendystraw = vi.hoisted(() => ({ funding: vi.fn() }))
 vi.mock('@/lib/sticky-indexed', async importOriginal => ({
@@ -510,6 +515,24 @@ describe('the funded pots, from Bendystraw first', () => {
       expect(await r.discoverFunding(CHAIN, STICKY, PROJECT, reads)).toEqual([fundedPot(0n, TOKEN, 3n, 1)])
       expect(reads.keptScan.mock.calls.map(([, key]) => key)).toEqual([KEY])
     })
+  })
+
+  it('scan the Fund logs as before when the tail past a stalled Bendystraw is too long to read, and say so', async () => {
+    const r = await load()
+    // An indexer that answers but is far behind the head, as one replaying its history is.
+    const tooLong = new scanner.TooLong('This history spans 600000 blocks, more than this RPC can scan in 1024 requests.')
+    const reads = fakeReads({ indexed: { rows: [fundRow(0n, OTHER, 99n, 1)], block: AS_OF }, logs: [fundLog(0n, TOKEN, 3n, 1)] })
+    reads.scan.mockRejectedValue(tooLong)
+
+    expect(await r.discoverFunding(CHAIN, STICKY, PROJECT, reads)).toEqual([fundedPot(0n, TOKEN, 3n, 1)])
+    expect(reads.keptScan.mock.calls.map(([chainId, key, filter]) => [chainId, key, filter])).toEqual([
+      [CHAIN, KEY, { address: DISTRIBUTOR, topics: [FUND, HOOK_TOPIC], fromBlock: HEAD - 900n }],
+    ])
+    expect(vi.mocked(console.warn).mock.calls).toEqual([[FUNDING_UNAVAILABLE, { chainId: CHAIN, projectId: PROJECT }, tooLong]])
+
+    // And it rejects, as before, when the kept scan is too long as well.
+    reads.keptScan.mockRejectedValue(tooLong)
+    await expect(r.discoverFunding(CHAIN, STICKY, PROJECT, reads)).rejects.toBe(tooLong)
   })
 
   it('never list fewer pots than were funded: a read that cannot finish rejects', async () => {

@@ -1,6 +1,6 @@
 import { zeroAddress, type Address, type Hex } from 'viem'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ScannedLog } from '@/lib/hook-logs'
+import { HistoryTooLongError, type ScannedLog } from '@/lib/hook-logs'
 import {
   decodeHookLog,
   fromIndexedEvent,
@@ -9,6 +9,7 @@ import {
   stickyEvents,
   stickyHolderEvents,
   stickyProjectsOn,
+  tailOrNull,
   type StickyEvent,
   type StickyReadDeps,
 } from '@/lib/sticky-events'
@@ -747,6 +748,46 @@ describe('notIndexed', () => {
   it('keeps the whole tail when there are no rows, and nothing of an empty one', () => {
     expect(notIndexed(CHAIN, [], tail)).toEqual(tail)
     expect(notIndexed(CHAIN, [{ txHash: tx(1), logIndex: 3 }], [])).toEqual([])
+  })
+})
+
+describe('tailOrNull', () => {
+  const LABEL = 'Bendystraw could not list them; scanning instead.'
+  const about = { chainId: CHAIN, projectId: 23n }
+  const tail = [raw([TOPIC.Staked], '0x')]
+
+  it('is the tail the scan read, empty included', async () => {
+    expect(await tailOrNull(async () => tail, LABEL, about)).toBe(tail)
+    expect(await tailOrNull(async () => [], LABEL, about)).toEqual([])
+    expect(console.warn).not.toHaveBeenCalled()
+  })
+
+  it('is null, and says why under the label, when the tail is longer than a scan may read', async () => {
+    const tooLong = new HistoryTooLongError('This history spans 600000 blocks, more than this RPC can scan in 1024 requests.')
+    expect(
+      await tailOrNull(
+        async () => {
+          throw tooLong
+        },
+        LABEL,
+        about,
+      ),
+    ).toBeNull()
+    expect(vi.mocked(console.warn).mock.calls).toEqual([[LABEL, about, tooLong]])
+  })
+
+  it('rejects with any other failure, the caller\'s to handle', async () => {
+    const failure = new Error('429')
+    await expect(
+      tailOrNull(
+        async () => {
+          throw failure
+        },
+        LABEL,
+        about,
+      ),
+    ).rejects.toBe(failure)
+    expect(console.warn).not.toHaveBeenCalled()
   })
 })
 

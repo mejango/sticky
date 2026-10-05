@@ -10,7 +10,7 @@ import {
   type Hex,
 } from 'viem'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ScannedLog } from '@/lib/hook-logs'
+import { HistoryTooLongError, type ScannedLog } from '@/lib/hook-logs'
 import { terminalEventsAbi } from '@/lib/sticky-abis'
 import {
   backingFlows,
@@ -619,6 +619,49 @@ describe('backingFlows', () => {
     it('and never charts them as nothing: a scan that fails too rejects', async () => {
       const deps = fakeDeps({ indexed: { rows: [], block: AS_OF }, fees: new Error('down'), keptFails: new Error('rpc down') })
       await expect(backingFlows(CHAIN, 42n, 9n, deps)).rejects.toThrow('rpc down')
+    })
+  })
+
+  describe('scans the terminal as before when the tail past a stalled Bendystraw is too long to read', () => {
+    // An indexer that answers but is far behind the head, as one replaying its history is: the tail would take more
+    // requests than a scan may send, and the scanner refuses it before the first.
+    const tooLong = new HistoryTooLongError('This history spans 600000 blocks, more than this RPC can scan in 1024 requests.')
+
+    it('for the fees and additions, kept as the fee history is, and says so as when Bendystraw cannot answer', async () => {
+      const deps = fakeDeps({
+        indexed: { rows: [], block: AS_OF },
+        fees: { rows: [indexedFee(9n * E6, false, { txHash: hash(9), logIndex: 0, timestamp: 90 })], block: AS_OF },
+        logs: [feeLog(1n * E6, false, { block: 3n, time: 30n })],
+      })
+      deps.scan.mockImplementationOnce(async () => []).mockImplementationOnce(async () => {
+        throw tooLong
+      })
+      expect(await backingFlows(CHAIN, 42n, 9n, deps)).toEqual([{ timestamp: 30, delta: -1n * E6 }])
+      expect(deps.kept).toEqual([{ key: FEES_KEY, filter: { address: TERMINAL, topics: FEE_TOPICS, fromBlock: 9n } }])
+      expect(deps.keptScan.mock.calls[0][3]).toEqual({ signal: undefined, keep: expect.any(Function) })
+      expect(vi.mocked(console.warn).mock.calls).toEqual([[FEES_UNAVAILABLE, { chainId: CHAIN, projectId: 42n }, tooLong]])
+    })
+
+    it('for the pays and cash outs too, which are read the same way', async () => {
+      const deps = fakeDeps({
+        indexed: { rows: [indexedPay(999n, 999n, { txHash: hash(9), logIndex: 0, timestamp: 90 })], block: AS_OF },
+        fees: { rows: [], block: AS_OF },
+        logs: [payLog(5n, 5n, { block: 2n, time: 20n })],
+      })
+      deps.scan.mockImplementationOnce(async () => {
+        throw tooLong
+      })
+      expect(await backingFlows(CHAIN, 42n, 9n, deps)).toEqual([{ timestamp: 20, delta: 5n }])
+      expect(deps.kept.map(({ key }) => key)).toEqual([MOVES_KEY])
+      expect(vi.mocked(console.warn).mock.calls).toEqual([[MOVES_UNAVAILABLE, { chainId: CHAIN, projectId: 42n }, tooLong]])
+    })
+
+    it('and rejects, as before, when the kept scan is too long as well', async () => {
+      const deps = fakeDeps({ indexed: { rows: [], block: AS_OF }, fees: { rows: [], block: AS_OF }, keptFails: tooLong })
+      deps.scan.mockImplementationOnce(async () => []).mockImplementationOnce(async () => {
+        throw tooLong
+      })
+      await expect(backingFlows(CHAIN, 42n, 9n, deps)).rejects.toBe(tooLong)
     })
   })
 

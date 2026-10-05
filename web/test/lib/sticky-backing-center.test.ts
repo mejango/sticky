@@ -335,4 +335,46 @@ describe("backingFlows, reading Bendystraw's pays and cash outs", () => {
     const asked = center.requests.filter(request => request.topics[0]?.includes(PROCESS_FEE))
     expect(asked.map(request => request.fromBlock)).toEqual([toHex(first - 64n + 1n)])
   })
+
+  describe('with Bendystraw replaying its history, far behind the head', () => {
+    // More blocks since the project's creation than a scan may read in 1,024 requests of 500.
+    const head = START + 600_000n
+    const KEPT_THROUGH = head - 200n
+    const replaying = () => {
+      bendystraw.moves.mockResolvedValue({ rows: [], blocks: new Map([[CHAIN, head - 10n]]) })
+      bendystraw.fees.mockResolvedValue({ rows: [], blocks: new Map([[CHAIN, START + 10n]]) })
+    }
+    const earlier = fee(1n, START + 5n)
+    const later = fee(2n, head - 50n)
+
+    it('resumes the fee history an earlier visit kept, instead of the tail past Bendystraw\'s block, and says so', async () => {
+      replaying()
+      localStorage.setItem(
+        FEES,
+        JSON.stringify({ at: 1, from: String(START), through: String(KEPT_THROUGH), all: [rpcLog(earlier)] }),
+      )
+      const center = node(head, [earlier, later])
+
+      expect(await backingFlows(CHAIN, 42n, START)).toEqual([
+        { timestamp: 7_000 + Number(START + 5n), delta: -1n },
+        { timestamp: 7_000 + Number(head - 50n), delta: -2n },
+      ])
+      // The 600,000-block tail is refused before a request; the kept history goes on from the block after its own.
+      expect(center.requests.map(({ topics, fromBlock, toBlock }) => [topics[0], fromBlock, toBlock])).toEqual([
+        [[PAY, CASH_OUT], toHex(head - 10n + 1n - 64n), toHex(head)],
+        [[PROCESS_FEE, ADD_TO_BALANCE], toHex(KEPT_THROUGH + 1n), toHex(head)],
+      ])
+      expect(vi.mocked(console.warn).mock.calls).toEqual([
+        [FEES_UNAVAILABLE, { chainId: CHAIN, projectId: 42n }, expect.objectContaining({ name: 'HistoryTooLongError' })],
+      ])
+    })
+
+    it('rejects, as before, when no kept history is near enough to resume', async () => {
+      replaying()
+      const center = node(head, [earlier, later])
+
+      await expect(backingFlows(CHAIN, 42n, START)).rejects.toMatchObject({ name: 'HistoryTooLongError' })
+      expect(center.requests.map(({ topics }) => topics[0])).toEqual([[PAY, CASH_OUT]])
+    })
+  })
 })
