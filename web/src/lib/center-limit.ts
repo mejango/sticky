@@ -85,15 +85,19 @@ export function inCenterSlot<T>(send: () => Promise<T>, { signal }: { signal?: A
   return slots.join(task, { signal })
 }
 
-/** `transport`, with each request it sends in one of Center's slots (`inCenterSlot`): every try, so viem's own retry
- * of a refused request waits out the Retry-After with the rest. A request made with a signal, as a log scan's are,
- * leaves the line when it aborts. */
+/** `send`, with each request it makes in one of Center's slots (`inCenterSlot`). A request made with a signal, as a
+ * page's reads are, leaves the line when it aborts, and goes on to `send` with it. */
+export function inCenterSlots<A>(
+  send: (args: A, options?: { signal?: AbortSignal }) => Promise<unknown>,
+): (args: A, options?: { signal?: AbortSignal }) => Promise<unknown> {
+  return (args, options) => inCenterSlot(() => send(args, options), { signal: options?.signal })
+}
+
+/** `transport`, with each request it sends in one of Center's slots (`inCenterSlots`): every try, so viem's own retry
+ * of a refused request waits out the Retry-After with the rest. */
 export function throughCenterSlots(transport: Transport): Transport {
   return parameters => {
     const { config, value } = transport(parameters)
-    const send = config.request as (args: unknown, options?: { signal?: AbortSignal }) => Promise<unknown>
-    const request = (args: unknown, options?: { signal?: AbortSignal }) =>
-      inCenterSlot(() => send(args, options), { signal: options?.signal })
-    return createTransport({ ...config, request: request as typeof config.request }, value)
+    return createTransport({ ...config, request: inCenterSlots(config.request) as typeof config.request }, value)
   }
 }

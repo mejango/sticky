@@ -200,6 +200,82 @@ describe('the browser\'s Center reader', () => {
     await expect(Promise.all(reads)).resolves.toEqual([100n, 100n, '0x64'])
   })
 
+  it('frees the slots of a page\'s requests the moment the page is left, so the next request goes at once', async () => {
+    const sent: string[] = []
+    const stopped: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string, init: RequestInit) => {
+        const { id, method } = JSON.parse(String(init.body)) as { id: number; method: string }
+        const what = `${input.slice(input.lastIndexOf('/') + 1)} ${method}`
+        sent.push(what)
+        if (method !== 'eth_getLogs') return answered(id, numberToHex(100n))
+        // Center holds a scan's answer until the request is stopped.
+        return new Promise<Response>((_, reject) =>
+          init.signal!.addEventListener('abort', () => {
+            stopped.push(what)
+            reject(init.signal!.reason)
+          }),
+        )
+      }),
+    )
+    const { jbCenterPublicClient } = await import('@/lib/jbcenter-rpc')
+    const page = new AbortController()
+    const logs = { method: 'eth_getLogs', params: [{ fromBlock: '0x1', toBlock: '0x1f4' }] } as never
+    const scans = [8453, 10].map(chainId =>
+      jbCenterPublicClient(chainId).request(logs, { signal: page.signal }).catch((error: unknown) => error),
+    )
+    const head = jbCenterPublicClient(1).getBlockNumber({ cacheTime: 0 })
+    await vi.waitFor(() => expect(sent).toHaveLength(2))
+    await ticks(20)
+    expect(sent).toEqual(['8453 eth_getLogs', '10 eth_getLogs'])
+
+    page.abort(new Error('left the page'))
+    await expect(head).resolves.toBe(100n)
+    expect(sent).toEqual(['8453 eth_getLogs', '10 eth_getLogs', '1 eth_blockNumber'])
+    expect(stopped).toEqual(['8453 eth_getLogs', '10 eth_getLogs'])
+    await Promise.all(scans)
+  })
+
+  it('lets go of a slot while a read waits out a node behind the head, and takes one again to ask once more', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    const answers: (() => void)[] = []
+    const sent: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string, init: RequestInit) => {
+        const { id, method } = JSON.parse(String(init.body)) as { id: number; method: string }
+        sent.push(`${input.slice(input.lastIndexOf('/') + 1)} ${method}`)
+        // The node that answers first has not imported the pinned block yet.
+        if (sent.length === 1) {
+          return new Response(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32001, message: 'RPC request failed' } }), {
+            headers: { 'content-type': 'application/json' },
+          })
+        }
+        await new Promise<void>(resolve => answers.push(resolve))
+        return answered(id, numberToHex(100n))
+      }),
+    )
+    const { jbCenterPublicClient } = await import('@/lib/jbcenter-rpc')
+    const pinned = jbCenterPublicClient(8453).request({ method: 'eth_call', params: [{ to: `0x${'a'.repeat(40)}`, data: '0x' }, '0x64'] } as never)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(sent).toEqual(['8453 eth_call'])
+
+    // While it waits to ask again, both slots are the other readers'.
+    const heads = [10, 1].map(chainId => jbCenterPublicClient(chainId).getBlockNumber({ cacheTime: 0 }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(sent).toEqual(['8453 eth_call', '10 eth_blockNumber', '1 eth_blockNumber'])
+
+    // Its next try waits for a slot like any other request.
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(sent).toHaveLength(3)
+    answers.shift()!()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(sent[3]).toBe('8453 eth_call')
+    while (answers.length) answers.shift()!()
+    await expect(Promise.all([pinned, ...heads])).resolves.toEqual(['0x64', 100n, 100n])
+  })
+
   it('sends nothing at all while a Retry-After runs, its own retry of the refused request included', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
     const sent: { at: number; what: string }[] = []
