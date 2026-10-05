@@ -8,7 +8,9 @@ import {
   refreshAfterAutoStick,
   refreshAfterCollect,
   refreshAfterFund,
+  refreshAfterReceiver,
   refreshAfterRewardStick,
+  refreshAfterSettle,
   refreshAfterStick,
   refreshAfterTransfer,
   refreshAfterTrust,
@@ -35,6 +37,8 @@ const KEYS: Record<string, QueryKey> = {
   flows: ['sticky-project', CHAIN, 23, 'flows'],
   siblings: ['sticky-project', CHAIN, 23, 'siblings', 'v1'],
   funding: ['sticky-project', CHAIN, 23, 'funding'],
+  receiver: ['sticky-project', CHAIN, 23, 'receiver', '4000'],
+  arrivals: ['sticky-project', CHAIN, 23, 'receiver', 'arrivals', '0x8', '0x2'],
   position: ['sticky-position', CHAIN, 23, HOLDER],
   tranches: ['sticky-tranches', CHAIN, 23, HOLDER.toLowerCase(), 0, '100'],
   rewards: ['sticky-rewards', CHAIN, 23, HOLDER, '0:0x1'],
@@ -120,10 +124,20 @@ const SCOPES: [string, (client: QueryClient) => void, string[]][] = [
     client => refreshAfterFund(client, CHAIN, 23, HOLDER),
     ['funding', 'position', 'rewards', 'auto-stick', "another's rewards", "another's auto-stick"],
   ],
+  [
+    'a reward address created: the reward addresses and what they hold',
+    client => refreshAfterReceiver(client, CHAIN, 23),
+    ['receiver', 'arrivals'],
+  ],
+  [
+    "a settle: the pots, every account's rewards and auto-stick in the project, and the reward addresses",
+    client => refreshAfterSettle(client, CHAIN, 23),
+    ['funding', 'receiver', 'arrivals', 'rewards', 'auto-stick', "another's rewards", "another's auto-stick"],
+  ],
 ]
 
 /** The refreshes after a send that adds a pot, which read the pots again. */
-const FUNDING = new Set<(typeof SCOPES)[number][1]>([SCOPES[SCOPES.length - 1][1]])
+const FUNDING = new Set(SCOPES.filter(([, , expected]) => expected.includes('funding')).map(([, refresh]) => refresh))
 
 let client: QueryClient
 beforeEach(() => {

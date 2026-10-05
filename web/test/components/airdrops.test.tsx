@@ -166,6 +166,28 @@ vi.mock('@/components/project/flows/AutoStickFlow', () => ({
   ),
 }))
 
+// The reward address has a test of its own (test/components/receiver-flow.test.tsx); here it is marked, and it can say
+// that a settle of the token at 0x77…77 went through.
+vi.mock('@/components/project/flows/ReceiverFlow', () => ({
+  ReceiverFlow: ({
+    chainId,
+    projectId,
+    info,
+    onSettled,
+  }: {
+    chainId: number
+    projectId: number
+    info: { stSymbol: string }
+    onSettled: (token: string) => void
+  }) => (
+    <div data-flow="receiver" data-chain={chainId} data-project={projectId} data-token={info.stSymbol}>
+      <button type="button" onClick={() => onSettled(`0x${'7'.repeat(40)}`)}>
+        Settled
+      </button>
+    </div>
+  ),
+}))
+
 import { AirdropsTab } from '@/components/project/AirdropsTab'
 import { AS_STATUS, type AutoStickState } from '@/lib/sticky-autostick'
 import { refreshAfterTrust } from '@/lib/sticky-refresh'
@@ -356,6 +378,22 @@ describe('sending airdrop rewards', () => {
     await settled()
     const rows = mocks.rewards.mock.calls.at(-1)![3].map((row: RewardPot) => `${row.groupId}:${row.token}`)
     expect(rows).toEqual([`4000:${TOKEN.toLowerCase()}`, `0:${TOKEN.toLowerCase()}`, `0:${OTHER}`, `4000:${OTHER}`])
+  })
+
+  it('holds the reward address of a group once this visit has read the project, and checks the token of a settle for rewards', async () => {
+    const read = Promise.withResolvers<ReturnType<typeof slopshop>>()
+    mocks.project.mockReturnValue(read.promise)
+    await renderTab()
+    expect(card().querySelector('[data-flow="receiver"]')).toBeNull()
+    await act(async () => read.resolve(slopshop()))
+    await settled()
+    const flow = card().querySelector<HTMLElement>('[data-flow="receiver"]')!
+    expect(flow.dataset).toMatchObject({ chain: String(CHAIN), project: '23', token: 'STICKYSLOPSHOP' })
+
+    await act(async () => buttonNamed(flow, 'Settled').click())
+    await settled()
+    const rows = mocks.rewards.mock.calls.at(-1)![3].map((row: RewardPot) => `${row.groupId}:${row.token}`)
+    expect(rows).toEqual([`0:${TOKEN.toLowerCase()}`, `0:0x${'7'.repeat(40)}`])
   })
 
   it('gives the split that funds airdrops from a Juicebox project\'s payouts: the distributor, the Sticky token and the group', async () => {

@@ -122,3 +122,17 @@ export function refreshAfterRewardStick(client: QueryClient, chainId: number, pr
     { queryKey: ACCOUNT_PAGES, predicate: query => accountOfKey(query.queryKey) === who },
   ])
 }
+
+/** A reward address created: the reward addresses, whether each is created and what it holds. */
+export function refreshAfterReceiver(client: QueryClient, chainId: number, projectId: number): void {
+  refreshOnSchedule(client, ofPage(chainId, projectId, ['receiver']))
+}
+
+/** A reward address's arrivals settled: an airdrop from the address, so the pots, what every account has in them and the
+ * auto-stick that reads their groups, and what the reward addresses hold. */
+export function refreshAfterSettle(client: QueryClient, chainId: number, projectId: number): void {
+  refreshOnSchedule(client, [
+    ...ofPage(chainId, projectId, ['funding', 'receiver']),
+    ...ofEveryone(chainId, projectId, ['sticky-rewards', 'sticky-autostick']),
+  ])
+}

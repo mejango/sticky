@@ -72,11 +72,13 @@ function inFilter(entry: ScannedLog, { address: wanted, topics, fromBlock, toBlo
   return entry.address.toLowerCase() === wanted.toLowerCase() && inRange && topicsMatch
 }
 
-/** The fake Center. `stock` says what a contract returns, `lose` makes it refuse requests, and `requests` lists every
- * request it got, with the calls a Multicall3 request carried. A read that names a sender is not batched, and is
+/** The fake Center. `stock` says what a contract returns, `deploy` gives an account code, `lose` makes it refuse
+ * requests, and `requests` lists every request it got, with the calls a Multicall3 request carried. A read that names a sender is not batched, and is
  * answered alone with that sender in the request. */
 export function rewardChain(logs: ScannedLog[] = []) {
   const table = new Map<string, Stocked>()
+  /** The code of the accounts that have any, by lowercase address. */
+  const codes = new Map<string, Hex>()
   const requests: Request[] = []
   let refuses: (reads: readonly Read[]) => boolean = () => false
   let blockNumberDown = false
@@ -104,6 +106,11 @@ export function rewardChain(logs: ScannedLog[] = []) {
           hash: pad(toHex(HEAD), { size: 32 }),
           transactions: [],
         })
+      }
+      if (method === 'eth_getCode') {
+        const [target] = params as [string, unknown]
+        requests.push({ method, block: params[1] })
+        return envelope(codes.get(target.toLowerCase()) ?? '0x')
       }
       if (method === 'eth_getLogs') {
         const filter = params[0] as Filter
@@ -164,6 +171,10 @@ export function rewardChain(logs: ScannedLog[] = []) {
   return {
     requests,
     stock,
+    /** Gives `target` code, so it reads as a contract that exists. */
+    deploy(target: Address, code: Hex = '0x6080') {
+      codes.set(target.toLowerCase(), code)
+    },
     /** Refuses, with a 429 as Center does when it is busy, any Multicall3 request whose calls `test` picks out. */
     lose(test: (reads: readonly Read[]) => boolean) {
       refuses = test

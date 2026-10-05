@@ -20,6 +20,7 @@ export type ProjectPart =
   | 'flows'
   | 'siblings'
   | 'funding'
+  | 'receiver'
 
 /** A part of a project's page: `['sticky-project', chainId, projectId, part, …]`. */
 export const projectKey = (chainId: number, projectId: number, part: ProjectPart) =>

@@ -19,8 +19,10 @@ import {
   claimAndStickTxs,
   collectTx,
   compoundTx,
+  createReceiverTx,
   fundTxs,
   repairTxs,
+  settleTx,
   stickTx,
   transferTx,
   trustTx,
@@ -471,6 +473,46 @@ describe('auto-stick', () => {
   })
 })
 
+describe('reward addresses', () => {
+  const factory = deployment.rewardReceiverFactory
+
+  it('wallet-action:create-a-reward-address creates the receiver of a Sticky token\'s group at the factory', () => {
+    const tx = createReceiverTx(CHAIN, { stToken: C, groupId: 4000n })
+    expect(tx).toMatchObject({
+      chainId: CHAIN,
+      address: factory,
+      abi: stickyRewardReceiverFactoryAbi,
+      functionName: 'deployReceiverFor',
+      args: [C, 4000n],
+      label: 'Create reward address',
+    })
+    expect(encoded(tx)).toBe(fixtures.deployReceiverFor)
+  })
+
+  it('wallet-action:settle-arrivals-into-airdrops settles the ERC-20 a reward address holds into its group\'s airdrops', () => {
+    const tx = settleTx(CHAIN, { stToken: C, groupId: 1004n, token: A })
+    expect(tx).toMatchObject({
+      address: factory,
+      abi: stickyRewardReceiverFactoryAbi,
+      functionName: 'settleFor',
+      args: [C, 1004n, A],
+      label: 'Settle arrivals',
+    })
+    expect(encoded(tx)).toBe(fixtures.settleFor)
+  })
+
+  it('receivers reject native ETH rather than falsely describing an ERC20 settlement', () => {
+    expect(() => settleTx(CHAIN, { stToken: C, groupId: 0n, token: NATIVE_TOKEN })).toThrow(
+      'reward receivers settle ERC-20 tokens. Fund ETH rewards directly',
+    )
+  })
+
+  it('refuses a group the factory does not accept', () => {
+    expect(() => createReceiverTx(CHAIN, { stToken: C, groupId: 4n })).toThrow('this stake-age window is not valid')
+    expect(() => settleTx(CHAIN, { stToken: C, groupId: 8004n, token: A })).toThrow('this stake-age window is not valid')
+  })
+})
+
 describe('transferTx', () => {
   it('wallet-action:transfer-sticky-tokens moves Sticky tokens, of 18 decimals, to the recipient', () => {
     const tx = transferTx(info, B, 1_000_000_000_000_000_001n)
@@ -512,6 +554,8 @@ describe('what a builder returns', () => {
       ...repairTxs(project, { projectGranter: false, personallyTrusted: false }),
       compoundTx(project, B, [0n]),
       beginVestingTx(project, B, [0n]),
+      createReceiverTx(CHAIN, { stToken: C, groupId: 0n }),
+      settleTx(CHAIN, { stToken: C, groupId: 0n, token: A }),
       ...claimAndStickTxs(project, { groupIds: [0n], collectable: 9n, allowance: 1n, canStick: false }),
       transferTx(project, B, 9n),
       trustTx(CHAIN, 12n, B, true),

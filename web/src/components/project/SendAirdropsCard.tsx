@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import type { Address } from 'viem'
 import { FundFlow } from '@/components/project/flows/FundFlow'
+import { ReceiverFlow } from '@/components/project/flows/ReceiverFlow'
 import { StakeAgeFields } from '@/components/project/StakeAgeFields'
 import { CopyAddress } from '@/components/ui/CopyAddress'
 import { Disclosure } from '@/components/ui/Disclosure'
@@ -69,8 +70,9 @@ function SplitRecipe({ chainId, stToken }: { chainId: number; stToken: Address }
 
 /**
  * Sending airdrop rewards to the project's Sticky token holders: everyone stuck, or only stakes held for a number of
- * weeks. Send opens the airdrop's form (`FundFlow`) once this visit has read the project, and a disclosure gives the
- * split that funds them from a Juicebox project's payouts. `onFunded` hears the token of an airdrop that went through.
+ * weeks. Send opens the airdrop's form (`FundFlow`) once this visit has read the project; one disclosure gives the split
+ * that funds them from a Juicebox project's payouts, and another a group's reward address (`ReceiverFlow`). `onFunded`
+ * hears the token of an airdrop or a settle that went through.
  */
 export function SendAirdropsCard({
   chainId,
@@ -93,6 +95,7 @@ export function SendAirdropsCard({
         Send
       </button>
       {info ? <SplitRecipe chainId={chainId} stToken={info.stToken} /> : null}
+      {info && verified ? <ReceiverFlow chainId={chainId} projectId={projectId} info={info} onSettled={onFunded} /> : null}
       {sending && info && verified ? (
         <FundFlow chainId={chainId} projectId={projectId} info={info} onClose={() => setSending(false)} onFunded={onFunded} />
       ) : null}

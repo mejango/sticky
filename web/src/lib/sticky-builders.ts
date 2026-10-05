@@ -10,7 +10,13 @@
 import type { JBChainId } from '@bananapus/nana-sdk-core'
 import { buildCashOutTx, buildPayTx } from '@bananapus/nana-sdk-core/v6'
 import { formatUnits, maxUint256, parseAbi, type Address } from 'viem'
-import { stickyAutoStickAbi, stickyDistributorAbi, stickyHookAbi, stickyTokenAbi } from '@/lib/sticky-abis'
+import {
+  stickyAutoStickAbi,
+  stickyDistributorAbi,
+  stickyHookAbi,
+  stickyRewardReceiverFactoryAbi,
+  stickyTokenAbi,
+} from '@/lib/sticky-abis'
 import { stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
 import type { AutoStickState } from '@/lib/sticky-autostick'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
@@ -420,5 +426,39 @@ export function beginVestingTx(info: AutoStickProject, holder: Address, groupIds
     functionName: 'beginVestingFor',
     args: [projectId, holder, Object.freeze([...groupIds])],
     label: 'Start unlocking',
+  })
+}
+
+/** A reward address created: the receiver for the holders of `stToken` in group `groupId`, deployed at the address the
+ * factory predicts for them (OLD createRewardAddress, app.js:4064). */
+export function createReceiverTx(chainId: number, { stToken, groupId }: { stToken: Address; groupId: bigint }): TxRequest {
+  if (!isValidGroupId(groupId)) throw new Error('this stake-age window is not valid')
+  return frozen({
+    chainId,
+    address: deploymentOn(chainId).rewardReceiverFactory,
+    abi: stickyRewardReceiverFactoryAbi,
+    functionName: 'deployReceiverFor',
+    args: [stToken, groupId],
+    label: 'Create reward address',
+  })
+}
+
+/** A reward address's arrivals of an ERC-20 settled: the receiver's whole balance of `token` funded as this round's
+ * rewards for the group (OLD settleArrivals, app.js:4591). ETH is funded directly, never through a receiver. */
+export function settleTx(
+  chainId: number,
+  { stToken, groupId, token }: { stToken: Address; groupId: bigint; token: Address },
+): TxRequest {
+  if (token.toLowerCase() === NATIVE_REWARD_TOKEN) {
+    throw new Error('reward receivers settle ERC-20 tokens. Fund ETH rewards directly')
+  }
+  if (!isValidGroupId(groupId)) throw new Error('this stake-age window is not valid')
+  return frozen({
+    chainId,
+    address: deploymentOn(chainId).rewardReceiverFactory,
+    abi: stickyRewardReceiverFactoryAbi,
+    functionName: 'settleFor',
+    args: [stToken, groupId, token],
+    label: 'Settle arrivals',
   })
 }
