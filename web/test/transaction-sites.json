@@ -1,6 +1,21 @@
 {
   "version": 1,
   "useSafeTx": {
+    "src/components/project/flows/ClaimFlow.tsx": {
+      "hooks": 1,
+      "sends": 1,
+      "sendSites": [
+        {
+          "id": "claim-steps",
+          "actions": [
+            "Collect rewards or start vesting",
+            "Approve the staked token for a claim and stick",
+            "Trust the auto-stick adapter",
+            "Claim and stick rewards"
+          ]
+        }
+      ]
+    },
     "src/components/project/flows/FundFlow.tsx": {
       "hooks": 1,
       "sends": 1,

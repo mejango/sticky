@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   REFRESH_AFTER_MS,
   refreshAfterAutoStickOff,
+  refreshAfterClaimAndStick,
+  refreshAfterCollect,
   refreshAfterFund,
   refreshAfterStick,
   refreshAfterTransfer,
@@ -102,6 +104,16 @@ const SCOPES: [string, (client: QueryClient) => void, string[]][] = [
     'a change of trust: the history, and every account\'s trusted senders and auto-stick in the project',
     client => refreshAfterTrust(client, CHAIN, 23),
     ['events', 'auto-stick', 'trusted', "another's auto-stick", "another's trusted"],
+  ],
+  [
+    "a collect: the holder's own rewards, auto-stick and stick, whose wallet it pays",
+    client => refreshAfterCollect(client, CHAIN, 23, HOLDER),
+    ['position', 'rewards', 'auto-stick'],
+  ],
+  [
+    "a claim and stick: the page, and the holder's own stick, tranches, rewards, auto-stick, trusted senders and account page",
+    client => refreshAfterClaimAndStick(client, CHAIN, 23, HOLDER),
+    [...PAGE, 'position', 'tranches', 'rewards', 'auto-stick', 'trusted', ...ACCOUNT],
   ],
   [
     "an airdrop: the pots, every account's rewards and auto-stick in the project, and what the funder holds",

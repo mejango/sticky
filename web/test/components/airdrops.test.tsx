@@ -108,6 +108,36 @@ vi.mock('@/components/project/flows/FundFlow', () => ({
   ),
 }))
 
+// A pot's actions have a test of their own (test/components/claim-flow.test.tsx); here each is marked with what the tab
+// gives it.
+vi.mock('@/components/project/flows/ClaimFlow', () => ({
+  ClaimFlow: ({
+    chainId,
+    projectId,
+    info,
+    card,
+    groups,
+    canStick,
+  }: {
+    chainId: number
+    projectId: number
+    info: { stSymbol: string }
+    card: { groupId: bigint; token: string }
+    groups: readonly bigint[]
+    canStick: boolean
+  }) => (
+    <div
+      data-flow="claim"
+      data-chain={chainId}
+      data-project={projectId}
+      data-token={info.stSymbol}
+      data-pot={`${card.groupId}:${card.token}`}
+      data-groups={groups.join(',')}
+      data-can-stick={String(canStick)}
+    />
+  ),
+}))
+
 import { AirdropsTab } from '@/components/project/AirdropsTab'
 import { AS_STATUS, type AutoStickState } from '@/lib/sticky-autostick'
 import { refreshAfterTrust } from '@/lib/sticky-refresh'
@@ -459,53 +489,41 @@ describe('the rewards', () => {
   })
 
   describe('offers', () => {
+    /** What each shown pot's actions are given: whether the adapter can stick for the viewer, and the pots' groups. */
     const offers = async (cards: RewardCard[], state: AutoStickState | null = autoStickOn()) => {
       mocks.rewards.mockResolvedValue(cards)
       if (state) mocks.autoStick.mockResolvedValue(state)
       await renderTab()
-      return pots().map(pot => buttonsOf(pot))
+      return pots().map(pot => pot.querySelector<HTMLElement>('[data-flow="claim"]')!.dataset)
     }
 
-    it('to collect what has unlocked, or to start what is earned vesting, and nothing when there is neither', async () => {
-      const other = (position: RewardCard['position']) => underlying({ groupId: 4000n, token: OTHER, position })
-      expect(
-        await offers([
-          other({ ...nothing, collectable: 5n }),
-          other({ ...nothing, earned: 5n }),
-          other({ ...nothing, vesting: 5n, nextUnlockAt: startOf(3n), unlockedAt: null }),
-        ]),
-      ).toEqual([['Collect'], ['Start vesting'], []])
+    it('each pot its own actions, with the project, its card and the groups of every pot', async () => {
+      mocks.funding.mockResolvedValue([fundedPot(4000n, OTHER, 5n)])
+      const [first, second] = await offers([underlying(), underlying({ groupId: 4000n, token: OTHER })])
+      expect(first).toMatchObject({ chain: String(CHAIN), project: '23', token: 'STICKYSLOPSHOP', pot: `0:${TOKEN.toLowerCase()}`, groups: '0,4000' })
+      expect(second).toMatchObject({ pot: `4000:${OTHER}`, groups: '0,4000' })
     })
 
-    it('to claim and stick the staked token\'s rewards when the adapter can stick for the holder, and to collect only', async () => {
-      expect(await offers([underlying()])).toEqual([['Claim & stick', 'Collect only']])
+    it('to claim and stick when the viewer trusts the adapter', async () => {
+      expect((await offers([underlying()]))[0].canStick).toBe('true')
     })
 
     it('to claim and stick when the project granted the adapter, even if the holder does not trust it', async () => {
-      expect(await offers([underlying()], autoStickOn({ projectGranter: true, personallyTrusted: false }))).toEqual([
-        ['Claim & stick', 'Collect only'],
-      ])
+      expect((await offers([underlying()], autoStickOn({ projectGranter: true, personallyTrusted: false })))[0].canStick).toBe('true')
     })
 
     it('only to collect when the adapter cannot resolve the project, whoever trusts it', async () => {
-      expect(await offers([underlying()], autoStickOn({ status: AS_STATUS.INVALID_PROJECT, projectGranter: true, personallyTrusted: true }))).toEqual([
-        ['Collect'],
-      ])
+      const state = autoStickOn({ status: AS_STATUS.INVALID_PROJECT, projectGranter: true, personallyTrusted: true })
+      expect((await offers([underlying()], state))[0].canStick).toBe('false')
     })
 
-    it('only to collect the staked token\'s rewards when the adapter cannot stick for the holder', async () => {
-      expect(await offers([underlying()], autoStickOn({ projectGranter: false, personallyTrusted: false }))).toEqual([['Collect']])
+    it('only to collect when the adapter cannot stick for the holder', async () => {
+      expect((await offers([underlying()], autoStickOn({ projectGranter: false, personallyTrusted: false })))[0].canStick).toBe('false')
     })
 
-    it('only to collect a token that is not the staked one, and to start vesting when only that is earned', async () => {
-      expect(
-        await offers([underlying({ token: OTHER, position: { ...nothing, collectable: 5n } }), underlying({ position: { ...nothing, earned: 3n } })]),
-      ).toEqual([['Collect'], ['Start vesting']])
-    })
-
-    it('with buttons that wait for the transaction engine', async () => {
-      await offers([underlying()])
-      expect([...rewards().querySelectorAll<HTMLButtonElement>('li button')].every(button => button.disabled)).toBe(true)
+    it('only to collect until the viewer\'s auto-stick has been read', async () => {
+      mocks.autoStick.mockReturnValue(new Promise(() => {}))
+      expect((await offers([underlying()], null))[0].canStick).toBe('false')
     })
   })
 })

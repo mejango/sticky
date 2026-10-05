@@ -42,7 +42,7 @@ export type ApprovalMode = 'exact' | 'covering'
  * What it takes to let `spender` pull `amount` of a token from a holder who has approved `allowance`: nothing when the
  * allowance is what is wanted, else an approval of exactly the amount. Some tokens change a nonzero allowance only by
  * way of zero, so one that is neither zero nor the amount is reset first. An amount of zero takes the allowance back,
- * with the reset alone.
+ * with the reset alone. `label` names the approval, where it says what the spender may do with it.
  */
 export function approveSteps(
   chainId: number,
@@ -50,14 +50,14 @@ export function approveSteps(
   spender: Address,
   allowance: bigint,
   amount: bigint,
-  { symbol, decimals, mode }: { symbol: string; decimals: number; mode: ApprovalMode },
+  { symbol, decimals, mode, label }: { symbol: string; decimals: number; mode: ApprovalMode; label?: string },
 ): TxRequest[] {
   if (mode === 'covering' ? allowance >= amount : allowance === amount) return []
   const reset = `Reset ${symbol} allowance`
   const pretty = amount === maxUint256 ? 'unlimited' : `${formatUnits(amount, decimals)} ${symbol}`
   return [
     ...(allowance > 0n && amount > 0n ? [approval(chainId, token, spender, 0n, reset)] : []),
-    approval(chainId, token, spender, amount, amount === 0n ? reset : `Approve ${pretty}`),
+    approval(chainId, token, spender, amount, amount === 0n ? reset : (label ?? `Approve ${pretty}`)),
   ]
 }
 
@@ -227,6 +227,72 @@ export function fundTxs(
       args: [stToken, token, amount, groupId],
       ...(native ? { value: amount } : {}),
       label: 'Fund stuck holders',
+    }),
+  ]
+}
+
+/**
+ * Collecting a holder's rewards in one pot: `collectVestedRewards` pays out what has unlocked and starts vesting what
+ * finished rounds earned, so one call does both, and with nothing unlocked it only starts vesting (OLD app.js:4130). The
+ * holder is their own token ID at the distributor, and the beneficiary.
+ */
+export function collectTx(
+  chainId: number,
+  {
+    stToken,
+    groupId,
+    holder,
+    token,
+    collectable,
+  }: { stToken: Address; groupId: bigint; holder: Address; token: Address; collectable: bigint },
+): TxRequest {
+  return frozen({
+    chainId,
+    address: deploymentOn(chainId).distributor,
+    abi: stickyDistributorAbi,
+    functionName: 'collectVestedRewards',
+    args: [stToken, groupId, Object.freeze([BigInt(holder)]), Object.freeze([token]), holder],
+    label: collectable > 0n ? 'Collect unlocked rewards' : 'Start unlocking eligible rewards',
+  })
+}
+
+/** Lets the auto-stick adapter stick for the holder who sends it, in a project. */
+const adapterTrustTx = (chainId: number, projectId: bigint, symbol: string) =>
+  trustTx(chainId, projectId, deploymentOn(chainId).autoStick, true, `Allow the auto-stick contract to stick ${symbol} for you`)
+
+/**
+ * Claim & stick: the holder's unlocked rewards in the staked token, `collectable` of them across `groupIds`, collected
+ * and stuck for them in one call to the auto-stick adapter (`stickRewardsFor`, OLD app.js:4549). The rewards pass
+ * through the holder's wallet, so the adapter is approved for the claim first (covering it), and it is trusted to stick
+ * for the holder unless it `canStick` already, because the holder trusts it or the project made it a granter.
+ */
+export function claimAndStickTxs(
+  info: Pick<StickyProjectInfo, 'chainId' | 'projectId' | 'stakedToken' | 'symbol' | 'decimals'>,
+  {
+    groupIds,
+    collectable,
+    allowance,
+    canStick,
+  }: { groupIds: readonly bigint[]; collectable: bigint; allowance: bigint; canStick: boolean },
+): TxRequest[] {
+  if (collectable <= 0n) throw new Error('nothing is claimable yet. Rewards unlock a round after you collect them')
+  const { chainId, projectId, stakedToken, symbol, decimals } = info
+  const { autoStick } = deploymentOn(chainId)
+  return [
+    ...approveSteps(chainId, stakedToken, autoStick, allowance, collectable, {
+      symbol,
+      decimals,
+      mode: 'covering',
+      label: `Allow the auto-stick contract to move this claim of ${formatUnits(collectable, decimals)} ${symbol}`,
+    }),
+    ...(canStick ? [] : [adapterTrustTx(chainId, projectId, symbol)]),
+    frozen({
+      chainId,
+      address: autoStick,
+      abi: stickyAutoStickAbi,
+      functionName: 'stickRewardsFor',
+      args: [projectId, Object.freeze([...groupIds])],
+      label: 'Claim & stick',
     }),
   ]
 }

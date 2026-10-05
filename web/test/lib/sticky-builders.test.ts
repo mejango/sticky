@@ -12,6 +12,8 @@ import { stickyDeployment } from '@/lib/sticky-addresses'
 import {
   approveSteps,
   autoStickOffTxs,
+  claimAndStickTxs,
+  collectTx,
   fundTxs,
   stickTx,
   transferTx,
@@ -270,6 +272,85 @@ describe('fundTxs', () => {
   })
 })
 
+describe('collectTx', () => {
+  it('wallet-action:collect-rewards-or-start-vesting normal reward collection is one transaction because the distributor already starts vesting', () => {
+    const tx = collectTx(CHAIN, { stToken: C, groupId: 4008n, holder: B, token: A, collectable: 1n })
+    expect(tx).toMatchObject({
+      chainId: CHAIN,
+      address: deployment.distributor,
+      abi: stickyDistributorAbi,
+      functionName: 'collectVestedRewards',
+      // The Sticky token, the group, the holder as the distributor's token ID, the reward token, and the holder again as
+      // the beneficiary.
+      args: [C, 4008n, [BigInt(B)], [A], B],
+      label: 'Collect unlocked rewards',
+    })
+    expect(Object.isFrozen(tx.args[2])).toBe(true)
+    expect(Object.isFrozen(tx.args[3])).toBe(true)
+  })
+
+  it('wallet-action:collect-rewards-or-start-vesting starts vesting with the same call when nothing has unlocked, and says so', () => {
+    const tx = collectTx(CHAIN, { stToken: C, groupId: 0n, holder: B, token: A, collectable: 0n })
+    expect(tx.functionName).toBe('collectVestedRewards')
+    expect(tx.label).toBe('Start unlocking eligible rewards')
+  })
+
+  it('encodes collectVestedRewards as cast did, the five-argument overload', () => {
+    expect(encoded(collectTx(CHAIN, { stToken: C, groupId: 0n, holder: B, token: A, collectable: 1n }))).toBe(
+      fixtures.collectVestedRewards,
+    )
+  })
+})
+
+describe('claimAndStickTxs', () => {
+  const adapter = deployment.autoStick
+  const claim = { groupIds: [4000n, 4008n], collectable: 500n, allowance: 0n, canStick: false }
+
+  it('wallet-action:approve-the-staked-token-for-a-claim-and-stick wallet-action:trust-the-auto-stick-adapter wallet-action:claim-and-stick-rewards claim-and-stick adds missing holder trust before the atomic claim', () => {
+    const txs = claimAndStickTxs(info, claim)
+    expect(calls(txs)).toEqual([
+      [A, 'approve', [adapter, 500n]],
+      [deployment.hook, 'setTrustedSenderFor', [12n, adapter, true]],
+      [adapter, 'stickRewardsFor', [12n, [4000n, 4008n]]],
+    ])
+    expect(txs.map(({ label }) => label)).toEqual([
+      'Allow the auto-stick contract to move this claim of 0.0005 ART',
+      'Allow the auto-stick contract to stick ART for you',
+      'Claim & stick',
+    ])
+    expect(txs[2]).toMatchObject({ abi: stickyAutoStickAbi })
+    expect(Object.isFrozen(txs[2].args[1])).toBe(true)
+  })
+
+  it('wallet-action:claim-and-stick-rewards asks for no trust when the adapter can stick already, and no approval when the allowance covers the claim', () => {
+    expect(calls(claimAndStickTxs(info, { ...claim, canStick: true, allowance: 500n }))).toEqual([
+      [adapter, 'stickRewardsFor', [12n, [4000n, 4008n]]],
+    ])
+    expect(calls(claimAndStickTxs(info, { ...claim, canStick: true, allowance: 10n ** 30n }))).toEqual([
+      [adapter, 'stickRewardsFor', [12n, [4000n, 4008n]]],
+    ])
+  })
+
+  it('wallet-action:approve-the-staked-token-for-a-claim-and-stick resets an allowance that falls short before approving the claim', () => {
+    expect(calls(claimAndStickTxs(info, { ...claim, canStick: true, allowance: 7n })).map(([, name, args]) => [name, args])).toEqual([
+      ['approve', [adapter, 0n]],
+      ['approve', [adapter, 500n]],
+      ['stickRewardsFor', [12n, [4000n, 4008n]]],
+    ])
+  })
+
+  it('refuses a claim of nothing', () => {
+    expect(() => claimAndStickTxs(info, { ...claim, collectable: 0n })).toThrow(
+      'nothing is claimable yet. Rewards unlock a round after you collect them',
+    )
+  })
+
+  it('encodes stickRewardsFor as cast did', () => {
+    const txs = claimAndStickTxs(info, { groupIds: [0n], collectable: 1n, allowance: 1n, canStick: true })
+    expect(encoded(txs.at(-1)!)).toBe(fixtures.stickRewardsFor)
+  })
+})
+
 describe('transferTx', () => {
   it('wallet-action:transfer-sticky-tokens moves Sticky tokens, of 18 decimals, to the recipient', () => {
     const tx = transferTx(info, B, 1_000_000_000_000_000_001n)
@@ -306,6 +387,8 @@ describe('what a builder returns', () => {
       ...unstickTxs(project, B, 9n, 1n),
       ...autoStickOffTxs(project, { minimum: 1n, cooldown: 86_400, personallyTrusted: true, allowance: 1n }),
       ...fundTxs(CHAIN, { stToken: C, token: A, amount: 9n, groupId: 0n, allowance: 1n, ...ART }),
+      collectTx(CHAIN, { stToken: C, groupId: 0n, holder: B, token: A, collectable: 1n }),
+      ...claimAndStickTxs(project, { groupIds: [0n], collectable: 9n, allowance: 1n, canStick: false }),
       transferTx(project, B, 9n),
       trustTx(CHAIN, 12n, B, true),
     ]

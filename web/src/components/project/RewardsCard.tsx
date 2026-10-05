@@ -2,11 +2,13 @@
 
 import { Fragment, useId, useState, type FormEvent } from 'react'
 import type { Address } from 'viem'
+import { ClaimFlow } from '@/components/project/flows/ClaimFlow'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { useAutoStick, useRewardPots, useRewards, useViewer } from '@/hooks/useStickyAirdrops'
 import { useStickyProject } from '@/hooks/useStickyProject'
 import { HistoryTooLongError } from '@/lib/hook-logs'
 import { AS_STATUS } from '@/lib/sticky-autostick'
+import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { groupLabel, rewardLines, roundSentence, type RewardCard } from '@/lib/sticky-rewards'
 
 /** A pot shows when something is in it or was sent to it. The staked token's under group 0 always does, so a holder can
@@ -22,20 +24,6 @@ function isShown({ groupId, token, funded, fundedThisRound, position }: RewardCa
   )
 }
 
-/** What a pot offers to do with its rewards. Collecting also starts finished rounds vesting. The staked token's
- * rewards can be stuck in one step when the adapter may stick for the holder. Nothing is sent from the page yet: the
- * buttons wait for the transaction engine. */
-function actionsOf({ position, token }: RewardCard, stakedToken: Address, canStick: boolean) {
-  if (token === stakedToken.toLowerCase() && canStick && position.collectable > 0n) {
-    return [
-      { label: 'Claim & stick', className: 'btn-primary' },
-      { label: 'Collect only', className: 'btn-secondary' },
-    ]
-  }
-  const label = position.collectable > 0n ? 'Collect' : position.earned > 0n ? 'Start vesting' : ''
-  return label ? [{ label, className: 'btn-secondary' }] : []
-}
-
 function RewardPlaceholder() {
   return (
     <div aria-busy="true" className="space-y-3">
@@ -49,8 +37,22 @@ function RewardPlaceholder() {
   )
 }
 
-function Reward({ card, stakedToken, canStick }: { card: RewardCard; stakedToken: Address; canStick: boolean }) {
-  const actions = actionsOf(card, stakedToken, canStick)
+/** One pot: its group, its token and its lines, and what the holder can do with it (`ClaimFlow`). */
+function Reward({
+  chainId,
+  projectId,
+  info,
+  card,
+  groups,
+  canStick,
+}: {
+  chainId: number
+  projectId: number
+  info: StickyProjectInfo
+  card: RewardCard
+  groups: readonly bigint[]
+  canStick: boolean
+}) {
   return (
     <li data-reward={`${card.groupId}:${card.token}`} className="min-w-0 rounded-md border border-line p-3">
       <div className="mb-1.5 flex flex-wrap items-baseline gap-x-2 gap-y-1">
@@ -67,15 +69,7 @@ function Reward({ card, stakedToken, canStick }: { card: RewardCard; stakedToken
           </Fragment>
         ))}
       </dl>
-      {actions.length ? (
-        <div className="mt-2.5 flex flex-wrap gap-2">
-          {actions.map(({ label, className }) => (
-            <button key={label} type="button" disabled className={`${className} px-3 py-1.5 text-sm`}>
-              {label}
-            </button>
-          ))}
-        </div>
-      ) : null}
+      <ClaimFlow chainId={chainId} projectId={projectId} info={info} card={card} groups={groups} canStick={canStick} />
     </li>
   )
 }
@@ -127,8 +121,8 @@ function CheckToken({ onCheck }: { onCheck: (token: Address) => void }) {
 /**
  * The viewer's rewards: for each pot the distributor was funded for, and the staked token's under every group, what is
  * claimable now, vesting, and earned in finished rounds and not vesting yet, and what was funded. A stake-age group
- * pays only stake still held, so those pots come with a warning. The cards are read again every 15 seconds. Nothing is
- * sent from here yet, so the buttons are closed.
+ * pays only stake still held, so those pots come with a warning. The cards are read again every 15 seconds. Each pot's
+ * actions, collecting, starting vesting and claiming and sticking, are its `ClaimFlow`'s.
  */
 export function RewardsCard({
   chainId,
@@ -144,7 +138,7 @@ export function RewardsCard({
 }) {
   const { info, failed, retry } = useStickyProject(chainId, projectId)
   const holder = useViewer()
-  const { funding, more, rows } = useRewardPots(chainId, projectId, checked)
+  const { funding, more, rows, groups } = useRewardPots(chainId, projectId, checked)
   const rewards = useRewards(chainId, projectId, holder, rows)
   const autoStick = useAutoStick(chainId, projectId, holder).data
   // Auto-stick fails closed: for a project the adapter cannot resolve, nothing is stuck through it.
@@ -195,7 +189,15 @@ export function RewardsCard({
           {shown.length ? (
             <ul className="m-0 grid list-none gap-2.5 p-0">
               {shown.map(card => (
-                <Reward key={`${card.groupId}:${card.token}`} card={card} stakedToken={info.stakedToken} canStick={canStick} />
+                <Reward
+                  key={`${card.groupId}:${card.token}`}
+                  chainId={chainId}
+                  projectId={projectId}
+                  info={info}
+                  card={card}
+                  groups={groups}
+                  canStick={canStick}
+                />
               ))}
             </ul>
           ) : (

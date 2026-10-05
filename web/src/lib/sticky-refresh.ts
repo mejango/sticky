@@ -103,3 +103,20 @@ export function refreshAfterFund(client: QueryClient, chainId: number, projectId
     ...ofHolder(chainId, projectId, funder, ['sticky-position']),
   ])
 }
+
+/** A collect of rewards: the holder's rewards and the auto-stick that reads them, and their stick, whose wallet a reward
+ * in the staked token is paid to. */
+export function refreshAfterCollect(client: QueryClient, chainId: number, projectId: number, holder: Address): void {
+  refreshOnSchedule(client, ofHolder(chainId, projectId, holder, ['sticky-position', 'sticky-rewards', 'sticky-autostick']))
+}
+
+/** A claim and stick: what an unstick changes, since it mints for the holder and collects their rewards, and who they
+ * trust, which its trust step can change. */
+export function refreshAfterClaimAndStick(client: QueryClient, chainId: number, projectId: number, holder: Address): void {
+  const who = holder.toLowerCase()
+  refreshOnSchedule(client, [
+    ...ofPage(chainId, projectId, PAGE),
+    ...ofHolder(chainId, projectId, holder, [...STAKE, 'sticky-autostick', 'sticky-trusted']),
+    { queryKey: ACCOUNT_PAGES, predicate: query => accountOfKey(query.queryKey) === who },
+  ])
+}
