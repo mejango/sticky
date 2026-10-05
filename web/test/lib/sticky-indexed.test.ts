@@ -10,15 +10,16 @@ import {
   indexedBlocks,
   indexedStickyCreateTx,
   indexedStickyEvents,
+  indexedStickyFees,
   indexedStickyMoves,
   indexedStickyPositions,
   indexedStickyProjects,
   indexedStickySettings,
 } from '@/lib/sticky-indexed'
 
-// Bendystraw is faked at its HTTP edge. The transport, the seven documents and the operation registry are the
-// real ones, so a document the registry lacks, or a variable its contract refuses, fails here as it would
-// against the relay.
+// Bendystraw is faked at its HTTP edge. The transport, the documents and the operation registry are the real
+// ones, so a document the registry lacks, or a variable its contract refuses, fails here as it would against
+// the relay.
 
 const TESTNET = 'https://testnet.bendystraw.xyz/graphql'
 const MAINNET = 'https://bendystraw.up.railway.app/graphql'
@@ -153,6 +154,31 @@ const cashOut = (projectId: number, extra: Variables = {}) => ({
   ...extra,
 })
 
+/** A fee the terminal processed for a project (ProcessFee), as processFeeEvents lists it. */
+const feeRow = (projectId: number, extra: Variables = {}) => ({
+  chainId: 84532,
+  projectId,
+  version: 6,
+  txHash: tx(3),
+  logIndex: 3,
+  timestamp: 40,
+  amount: '25',
+  wasHeld: false,
+  ...extra,
+})
+/** An addition to a project's balance (AddToBalance), as addToBalanceEvents lists it. */
+const additionRow = (projectId: number, extra: Variables = {}) => ({
+  chainId: 84532,
+  projectId,
+  version: 6,
+  txHash: tx(4),
+  logIndex: 4,
+  timestamp: 35,
+  amount: '70',
+  returnedFees: '5',
+  ...extra,
+})
+
 const eventRow = (type: string, extra: Variables = {}) => ({
   chainId: 84532,
   projectId: 37,
@@ -206,6 +232,7 @@ const readers: [string, (signal?: AbortSignal) => Promise<unknown>][] = [
   ['indexedStickyProjects', signal => indexedStickyProjects('testnet', signal)],
   ['indexedBlocks', signal => indexedBlocks('testnet', signal)],
   ['indexedStickyMoves', signal => indexedStickyMoves(84532, [37n], signal)],
+  ['indexedStickyFees', signal => indexedStickyFees(84532, 37n, signal)],
   ['indexedStickyCreateTx', signal => indexedStickyCreateTx(84532, 37n, signal)],
   ['indexedStickyEvents', signal => indexedStickyEvents({ chainId: 84532, projectId: 37n }, signal)],
   ['indexedStickyPositions', signal => indexedStickyPositions({ chainId: 84532, projectId: 37n }, signal)],
@@ -749,6 +776,162 @@ describe('sticks and unsticks', () => {
 
     await expect(indexedStickyMoves(84532, [0n])).rejects.toThrow(RangeError)
     await expect(indexedStickyMoves(84532, [2n ** 60n])).rejects.toThrow(RangeError)
+    expect(sent).toHaveLength(0)
+  })
+})
+
+describe('fees and additions to a balance', () => {
+  it('reads a project\'s processed fees and additions on one chain at version 6, drops rows of other projects, chains and versions, and orders them by time', async () => {
+    const sent = indexer({
+      // Bendystraw has ignored filters before: a row outside the request must not reach the chart.
+      StickyFees: () =>
+        listed('processFeeEvents', [
+          feeRow(37),
+          feeRow(99),
+          feeRow(37, { version: 5 }),
+          feeRow(37, { chainId: 10 }),
+          feeRow(37, { wasHeld: true, timestamp: 10, logIndex: 0, txHash: tx(9) }),
+        ]),
+      StickyAdditions: () => listed('addToBalanceEvents', [additionRow(37), additionRow(38)]),
+    })
+
+    const { rows, blocks } = await indexedStickyFees(84532, 37n)
+
+    expect(blocks).toEqual(new Map([[84532, 500n]]))
+    expect(sent.map(({ operation, variables }) => [operation, variables]).sort()).toEqual([
+      ['StickyAdditions', { where: { chainId: 84532, projectId: 37, version: 6 }, after: null }],
+      ['StickyFees', { where: { chainId: 84532, projectId: 37, version: 6 }, after: null }],
+    ])
+    expect(sent.every(({ url }) => url === TESTNET)).toBe(true)
+    expect(rows).toEqual([
+      { kind: 'fee', chainId: 84532, projectId: 37n, txHash: tx(9), logIndex: 0, timestamp: 10, amount: 25n, wasHeld: true },
+      { kind: 'addition', chainId: 84532, projectId: 37n, txHash: tx(4), logIndex: 4, timestamp: 35, amount: 70n, returnedFees: 5n },
+      { kind: 'fee', chainId: 84532, projectId: 37n, txHash: tx(3), logIndex: 3, timestamp: 40, amount: 25n, wasHeld: false },
+    ])
+  })
+
+  it('says the block they are as of: the older of the two lists\' blocks, each from its own answer', async () => {
+    indexer({
+      StickyFees: () => listed('processFeeEvents', [feeRow(37)], undefined, [['baseSepolia', 84532, 470]]),
+      StickyAdditions: () => listed('addToBalanceEvents', [additionRow(37)], undefined, [['baseSepolia', 84532, 500]]),
+    })
+    const { rows, blocks } = await indexedStickyFees(84532, 37n)
+    expect(blocks).toEqual(new Map([[84532, 470n]]))
+    expect(rows).toHaveLength(2)
+  })
+
+  it('leaves out the fees of a chain either answer has no status for, since nothing says what they are as of', async () => {
+    const elsewhere: [string, number, number][] = [['optimismSepolia', 11155420, 900]]
+    indexer({
+      StickyFees: () => listed('processFeeEvents', [feeRow(37)], undefined, elsewhere),
+      StickyAdditions: () => listed('addToBalanceEvents', [additionRow(37)]),
+    })
+    expect(await indexedStickyFees(84532, 37n)).toEqual({ rows: [], blocks: new Map() })
+
+    indexer({
+      StickyFees: () => listed('processFeeEvents', [feeRow(37)]),
+      StickyAdditions: () => listed('addToBalanceEvents', [additionRow(37)], undefined, elsewhere),
+    })
+    expect(await indexedStickyFees(84532, 37n)).toEqual({ rows: [], blocks: new Map() })
+  })
+
+  it('rejects an answer with no usable indexing status, never answering with fees and no block', async () => {
+    for (const meta of [null, { status: null }, { status: 'up' }, { status: [] }]) {
+      indexer({
+        StickyFees: () => ({ data: { _meta: META, processFeeEvents: page([feeRow(37)]) } }),
+        StickyAdditions: () => ({ data: { _meta: meta, addToBalanceEvents: page([]) } }),
+      })
+      await expect(indexedStickyFees(84532, 37n)).rejects.toThrow('no indexing status')
+    }
+  })
+
+  it('reads amounts past 2^53 exactly, as Bendystraw writes them', async () => {
+    indexer({
+      StickyFees: () => listed('processFeeEvents', [feeRow(37, { amount: '123456789012345678901' })]),
+      StickyAdditions: () =>
+        listed('addToBalanceEvents', [additionRow(37, { amount: '9007199254740993', returnedFees: '18014398509481985' })]),
+    })
+
+    expect((await indexedStickyFees(84532, 37n)).rows).toEqual([
+      expect.objectContaining({ kind: 'addition', amount: 9007199254740993n, returnedFees: 18014398509481985n }),
+      expect.objectContaining({ kind: 'fee', amount: 123456789012345678901n }),
+    ])
+  })
+
+  it('follows the cursors of both lists', async () => {
+    const sent = indexer({
+      StickyFees: ({ after }) =>
+        after === null
+          ? listed('processFeeEvents', [feeRow(37, { txHash: tx(1), timestamp: 1 })], 'f1')
+          : listed('processFeeEvents', [feeRow(37, { txHash: tx(5), timestamp: 50 })]),
+      StickyAdditions: ({ after }) =>
+        after === null
+          ? listed('addToBalanceEvents', [additionRow(37, { txHash: tx(2), timestamp: 2 })], 'a1')
+          : listed('addToBalanceEvents', [additionRow(37, { txHash: tx(6), timestamp: 60 })]),
+    })
+
+    const { rows } = await indexedStickyFees(84532, 37n)
+
+    expect(rows.map(({ txHash }) => txHash)).toEqual([tx(1), tx(2), tx(5), tx(6)])
+    const cursors = (operation: string) =>
+      sent.filter(request => request.operation === operation).map(({ variables }) => variables.after)
+    expect(cursors('StickyFees')).toEqual([null, 'f1'])
+    expect(cursors('StickyAdditions')).toEqual([null, 'a1'])
+  })
+
+  it('stops at 20 pages of either list with an error', async () => {
+    let next = 0
+    indexer({
+      StickyFees: () => listed('processFeeEvents', [feeRow(37)], `f${(next += 1)}`),
+      StickyAdditions: () => listed('addToBalanceEvents', []),
+    })
+    await expect(indexedStickyFees(84532, 37n)).rejects.toThrow('more processFeeEvents than one page load reads')
+
+    next = 0
+    indexer({
+      StickyFees: () => listed('processFeeEvents', []),
+      StickyAdditions: () => listed('addToBalanceEvents', [additionRow(37)], `a${(next += 1)}`),
+    })
+    await expect(indexedStickyFees(84532, 37n)).rejects.toThrow('more addToBalanceEvents than one page load reads')
+  })
+
+  it('rejects when either list fails, rather than answering with half of them', async () => {
+    indexer({
+      StickyFees: () => ({ errors: [{ message: 'timeout' }] }),
+      StickyAdditions: () => listed('addToBalanceEvents', [additionRow(37)]),
+    })
+    await expect(indexedStickyFees(84532, 37n)).rejects.toThrow('timeout')
+
+    indexer({
+      StickyFees: () => listed('processFeeEvents', [feeRow(37)]),
+      StickyAdditions: () => ({ errors: [{ message: 'Cannot query field "addToBalanceEvents" on type "Query".' }] }),
+    })
+    await expect(indexedStickyFees(84532, 37n)).rejects.toThrow('Cannot query field')
+  })
+
+  it.each([
+    ['a fee with no amount', 'fee', { amount: null }],
+    ['a fee with a fractional amount', 'fee', { amount: '1.5' }],
+    ['a fee that does not say whether it was held', 'fee', { wasHeld: 'no' }],
+    ['a fee with no transaction hash', 'fee', { txHash: '0x12' }],
+    ['a fee with no timestamp', 'fee', { timestamp: null }],
+    ['an addition with no amount', 'addition', { amount: '-1' }],
+    ['an addition with no returned fees', 'addition', { returnedFees: null }],
+    ['an addition with no log index', 'addition', { logIndex: '4' }],
+  ])('rejects the whole read for %s', async (_name, kind, extra) => {
+    indexer({
+      StickyFees: () => listed('processFeeEvents', kind === 'fee' ? [feeRow(37, extra)] : []),
+      StickyAdditions: () => listed('addToBalanceEvents', kind === 'addition' ? [additionRow(37, extra)] : []),
+    })
+
+    await expect(indexedStickyFees(84532, 37n)).rejects.toThrow(/Bendystraw returned an incomplete (fee|addition)/)
+  })
+
+  it('does not read a project ID that is not one', async () => {
+    const sent = indexer({})
+
+    await expect(indexedStickyFees(84532, 0n)).rejects.toThrow(RangeError)
+    await expect(indexedStickyFees(84532, 2n ** 60n)).rejects.toThrow(RangeError)
     expect(sent).toHaveLength(0)
   })
 })
@@ -1468,12 +1651,14 @@ describe('a caller\'s AbortSignal', () => {
 })
 
 describe('the documents', () => {
-  /** Every reader against an indexer that has an empty answer for each of the seven documents. */
+  /** Every reader against an indexer that has an empty answer for each of the nine documents. */
   async function readEverything() {
     const sent = indexer({
       StickyIndex: () => indexOf(TESTNET_CHAINS, []),
       StickyPays: () => ({ data: { _meta: META, payEvents: page([]) } }),
       StickyCashOuts: () => ({ data: { _meta: META, cashOutTokensEvents: page([]) } }),
+      StickyFees: () => listed('processFeeEvents', []),
+      StickyAdditions: () => listed('addToBalanceEvents', []),
       StickyCreate: () => ({ data: { projectCreateEvents: { items: [] } } }),
       StickyEvents: () => listed('stickyEvents', []),
       StickyPositions: () => listed('stickyPositions', []),
@@ -1483,19 +1668,22 @@ describe('the documents', () => {
     return sent
   }
 
-  it('are seven, each registered under the SHA-256 of its exact text', async () => {
+  it('are nine, each registered under the SHA-256 of its exact text', async () => {
     const sent = await readEverything()
 
     const documents = new Map(sent.map(({ operation, query }) => [operation, query]))
     expect([...documents.keys()].sort()).toEqual([
+      'StickyAdditions',
       'StickyCashOuts',
       'StickyCreate',
       'StickyEvents',
+      'StickyFees',
       'StickyIndex',
       'StickyPays',
       'StickyPositions',
       'StickySettings',
     ])
+    expect(Object.keys(registry)).toHaveLength(9)
     for (const query of documents.values()) {
       expect((registry as Record<string, string>)[createHash('sha256').update(query, 'utf8').digest('hex')]).toBe(query)
     }
@@ -1520,8 +1708,10 @@ describe('the documents', () => {
 
     const withStatus = sent.filter(({ query }) => query.includes('_meta { status }')).map(({ operation }) => operation)
     expect([...new Set(withStatus)].sort()).toEqual([
+      'StickyAdditions',
       'StickyCashOuts',
       'StickyEvents',
+      'StickyFees',
       'StickyIndex',
       'StickyPays',
       'StickyPositions',
@@ -1529,11 +1719,19 @@ describe('the documents', () => {
     ])
   })
 
+  it('select no memo or metadata of an addition, which anyone who adds to a balance writes as long as they like', async () => {
+    const sent = await readEverything()
+
+    const additions = sent.find(({ operation }) => operation === 'StickyAdditions')!.query
+    expect(additions).toContain('items { chainId projectId version txHash logIndex timestamp amount returnedFees }')
+    expect(additions).not.toMatch(/memo|metadata/)
+  })
+
   it('are read with the live cache policy', async () => {
     await readEverything()
 
     const revalidate = vi.mocked(fetch).mock.calls.map(([, init]) => (init as { next?: { revalidate?: number } }).next?.revalidate)
-    expect(revalidate).toHaveLength(8)
+    expect(revalidate).toHaveLength(10)
     expect(new Set(revalidate)).toEqual(new Set([15]))
   })
 
@@ -1543,6 +1741,8 @@ describe('the documents', () => {
       StickyIndex: () => indexOf(TESTNET_CHAINS, [project(84532, 37)]),
       StickyPays: () => ({ data: { _meta: META, payEvents: page([pay(37)]) } }),
       StickyCashOuts: () => ({ data: { _meta: META, cashOutTokensEvents: page([]) } }),
+      StickyFees: () => listed('processFeeEvents', [feeRow(37)]),
+      StickyAdditions: () => listed('addToBalanceEvents', [additionRow(37)]),
       StickyCreate: () => ({ data: { projectCreateEvents: { items: [{ txHash: tx(7), timestamp: 1 }] } } }),
       StickyEvents: () => listed('stickyEvents', [staked()]),
       StickyPositions: () => listed('stickyPositions', [positionRow()]),
@@ -1551,12 +1751,13 @@ describe('the documents', () => {
 
     await indexedStickyProjects('testnet')
     await indexedStickyMoves(84532, [37n])
+    await indexedStickyFees(84532, 37n)
     await indexedStickyCreateTx(84532, 37n)
     await indexedStickyEvents({ chainId: 84532, projectId: 37n })
     await indexedStickyPositions({ chainId: 84532, projectId: 37n })
     await indexedStickySettings(84532, 37n)
 
     expect(new Set(sent.map(({ url }) => url))).toEqual(new Set(['/api/bendystraw/testnet/query']))
-    expect(new Set(sent.map(({ operation }) => operation)).size).toBe(7)
+    expect(new Set(sent.map(({ operation }) => operation)).size).toBe(9)
   })
 })

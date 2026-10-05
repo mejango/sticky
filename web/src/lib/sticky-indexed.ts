@@ -1,8 +1,9 @@
 /**
- * Sticky's reads from Bendystraw, the Juicebox indexer: which projects exist, what was stuck and unstuck,
- * who holds what and the hook's settings. A reader answers or rejects. A timeout, an error, or a schema
- * Bendystraw does not have yet is never an empty list, so the caller can read the chain instead. What a page
- * shows as backing, supply, a quote or a minimum comes from the chain, never from here.
+ * Sticky's reads from Bendystraw, the Juicebox indexer: which projects exist, what was stuck and unstuck, the fees
+ * and additions that changed a project's balance, who holds what and the hook's settings. A reader answers or
+ * rejects. A timeout, an error, or a schema Bendystraw does not have yet is never an empty list, so the caller can
+ * read the chain instead. What a page shows as backing, supply, a quote or a minimum comes from the chain, never from
+ * here.
  *
  * Addresses come back in lowercase, as Bendystraw stores them.
  */
@@ -12,8 +13,8 @@ import { isAddress, type Address, type Hex } from 'viem'
 import { bendystraw } from '@/lib/bendystraw'
 import { stickyChainIds, stickyDeployment } from '@/lib/sticky-addresses'
 
-// An operation's ID is the SHA-256 of its exact text, so the four documents below keep their whitespace as
-// written. `npm run bendystraw:registry` registers all seven.
+// An operation's ID is the SHA-256 of its exact text, so every document below keeps its whitespace as written.
+// `npm run bendystraw:registry` registers each one.
 const INDEX_QUERY = `query StickyIndex($owners: [String!], $after: String) {
     _meta { status }
     projects(where: { owner_in: $owners }, limit: 1000, after: $after) {
@@ -32,6 +33,23 @@ const CASH_OUT_QUERY = `query StickyCashOuts($where: cashOutTokensEventFilter, $
     _meta { status }
     cashOutTokensEvents(where: $where, orderBy: "timestamp", orderDirection: "asc", limit: 1000, after: $after) {
       items { chainId projectId version txHash logIndex timestamp caller holder beneficiary cashOutCount reclaimAmount }
+      pageInfo { hasNextPage endCursor }
+    }
+  }`
+// The fees a terminal processed for a project (processFeeEvents, which peripheralist/bendystraw#38 adds) and the
+// additions to its balance: the rest of what a chart's balance history is made of. An addition's memo and metadata,
+// which anyone who adds to a balance may write as long as they like, are not selected.
+const FEE_QUERY = `query StickyFees($where: processFeeEventFilter, $after: String) {
+    _meta { status }
+    processFeeEvents(where: $where, orderBy: "timestamp", orderDirection: "asc", limit: 1000, after: $after) {
+      items { chainId projectId version txHash logIndex timestamp amount wasHeld }
+      pageInfo { hasNextPage endCursor }
+    }
+  }`
+const ADDITION_QUERY = `query StickyAdditions($where: addToBalanceEventFilter, $after: String) {
+    _meta { status }
+    addToBalanceEvents(where: $where, orderBy: "timestamp", orderDirection: "asc", limit: 1000, after: $after) {
+      items { chainId projectId version txHash logIndex timestamp amount returnedFees }
       pageInfo { hasNextPage endCursor }
     }
   }`
@@ -85,6 +103,12 @@ export type IndexedMove = Placed & { holder: Address; amount: bigint; tokens: bi
     | { kind: 'stick'; payer: Address }
     | { kind: 'unstick' }
   )
+
+/** A change to a project's balance that is neither a pay nor a cash out, in the token the terminal holds for it. A
+ * `fee` the terminal processed for the project took `amount` from the balance, unless `wasHeld`: a held fee left the
+ * balance when it was held. An `addition` added `amount` and the held fees it returned (`returnedFees`). */
+export type IndexedFee = Placed &
+  ({ kind: 'fee'; amount: bigint; wasHeld: boolean } | { kind: 'addition'; amount: bigint; returnedFees: bigint })
 
 /** One row of the hook's history. `count` is the shares that moved, `stakedBalance` the holder's balance
  * after, and `duration` the length of the streak that ended, in seconds. Transfers between holders are an
@@ -179,6 +203,23 @@ function cashOutOf(row: Row): IndexedMove | null {
   return at === null || holder === null || tokens === null || amount === null
     ? null
     : { ...at, kind: 'unstick', holder, amount, tokens }
+}
+
+function feeOf(row: Row): IndexedFee | null {
+  const at = placed(row)
+  const amount = big(row.amount)
+  return at === null || amount === null || typeof row.wasHeld !== 'boolean'
+    ? null
+    : { ...at, kind: 'fee', amount, wasHeld: row.wasHeld }
+}
+
+function additionOf(row: Row): IndexedFee | null {
+  const at = placed(row)
+  const amount = big(row.amount)
+  const returnedFees = big(row.returnedFees)
+  return at === null || amount === null || returnedFees === null
+    ? null
+    : { ...at, kind: 'addition', amount, returnedFees }
 }
 
 function eventOf(row: Row): IndexedStickyEvent | null {
@@ -510,6 +551,31 @@ export async function indexedStickyMoves(
       withBlocks(cashOuts.items, cashOuts.first, scope, cashOutOf, 'Sticky event'),
     )
     return { rows: rows.filter(move => move.timestamp >= from), blocks }
+  })
+}
+
+/**
+ * A project's processed fees and additions to its balance on one chain, oldest first, with the block the chain is
+ * indexed through: the older of the two lists' blocks, since each list comes in an answer of its own. A chain either
+ * answer has no status for is absent from `blocks`, and its rows are left out with it.
+ */
+export async function indexedStickyFees(
+  chainId: number,
+  projectId: bigint,
+  signal?: AbortSignal,
+): Promise<IndexedRows<IndexedFee>> {
+  const id = projectNumber(projectId)
+  const scope = { chains: new Set([chainId]), projects: new Set([id]) }
+  const variables = { where: { chainId, projectId: id, version: VERSION } }
+  return read(signal, async within => {
+    const [fees, additions] = await Promise.all([
+      allPages('processFeeEvents', FEE_QUERY, variables, { chainId }, within),
+      allPages('addToBalanceEvents', ADDITION_QUERY, variables, { chainId }, within),
+    ])
+    return bothAsOf(
+      withBlocks(fees.items, fees.first, scope, feeOf, 'fee'),
+      withBlocks(additions.items, additions.first, scope, additionOf, 'addition to a balance'),
+    )
   })
 }
 

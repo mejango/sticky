@@ -5,21 +5,26 @@ import { backingFlows } from '@/lib/sticky-backing'
 import type { IndexedMove } from '@/lib/sticky-indexed'
 import { CHAIN, HOLDER, deployment, raw, topic, words } from './sticky-log-fixtures'
 
-// backingFlows' own reads: Bendystraw's pays and cash outs (faked), and the terminal through Center's log scanner and
-// the history this browser keeps, which run for real here. Center is a fake client that answers from a list of logs.
+// backingFlows' own reads: Bendystraw's pays and cash outs and its fees and additions (faked), and the terminal through
+// Center's log scanner and the history this browser keeps, which run for real here. Center is a fake client that
+// answers from a list of logs.
 
 const center = vi.hoisted(() => ({ client: vi.fn() }))
 vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: center.client }))
-const bendystraw = vi.hoisted(() => ({ moves: vi.fn() }))
+const bendystraw = vi.hoisted(() => ({ moves: vi.fn(), fees: vi.fn() }))
 vi.mock('@/lib/sticky-indexed', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-indexed')>()),
   indexedStickyMoves: bendystraw.moves,
+  indexedStickyFees: bendystraw.fees,
 }))
+
+const FEES_UNAVAILABLE = 'Bendystraw could not list the fees and additions; scanning the terminal for them instead.'
 
 beforeEach(() => {
   localStorage.clear()
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   bendystraw.moves.mockRejectedValue(new Error('Bendystraw is down'))
+  bendystraw.fees.mockRejectedValue(new Error('Bendystraw is down'))
 })
 
 const TERMINAL = deployment.terminal
@@ -177,7 +182,38 @@ describe("backingFlows, reading Bendystraw's pays and cash outs", () => {
     raw([PROCESS_FEE, topic(42n), topic(HOLDER), topic(amount)], words(false, HOLDER, HOLDER), on(block))
   const FEES = `sticky.history.v1:${CHAIN}:${TERMINAL.toLowerCase()}:42:fees`
 
-  it('scans the terminal for pays and cash outs only past Bendystraw\'s block, and for fees over the project\'s life', async () => {
+  it('reads the fees from Bendystraw too, scans the terminal only past its blocks, and keeps no history', async () => {
+    bendystraw.moves.mockResolvedValue({ rows: [indexedPay(100n, tx(1), 50)], blocks: new Map([[CHAIN, AS_OF]]) })
+    bendystraw.fees.mockResolvedValue({
+      rows: [{ kind: 'fee', chainId: CHAIN, projectId: 42n, txHash: tx(2), logIndex: 0, timestamp: 60, amount: 1n, wasHeld: false }],
+      blocks: new Map([[CHAIN, AS_OF]]),
+    })
+    const head = AS_OF + 10n
+    const center = node(head, [
+      // Bendystraw has this pay and this fee, and the tails do not reach down to them: each is read once, from Bendystraw.
+      paid(100n, START + 5n, tx(1)),
+      fee(1n, START + 6n),
+      paid(3n, AS_OF + 2n),
+      fee(4n, AS_OF + 3n),
+    ])
+    expect(await backingFlows(CHAIN, 42n, START)).toEqual([
+      { timestamp: 50, delta: 100n },
+      { timestamp: 60, delta: -1n },
+      { timestamp: 7_000 + Number(AS_OF + 2n), delta: 3n },
+      { timestamp: 7_000 + Number(AS_OF + 3n), delta: -4n },
+    ])
+    expect(bendystraw.fees).toHaveBeenCalledWith(CHAIN, 42n, undefined)
+    const tail = { fromBlock: toHex(AS_OF + 1n - 64n), toBlock: toHex(head) }
+    expect(center.requests).toEqual([
+      { address: TERMINAL, topics: [[PAY, CASH_OUT], null, null, topic(42n)], ...tail },
+      { address: TERMINAL, topics: [[PROCESS_FEE, ADD_TO_BALANCE], topic(42n)], ...tail },
+    ])
+    // What Bendystraw answered for is not kept: a later fallback scans as a first visit does.
+    expect(localStorage).toHaveLength(0)
+    expect(console.warn).not.toHaveBeenCalled()
+  })
+
+  it('scans the terminal for pays and cash outs only past Bendystraw\'s block, and for fees over the project\'s life when Bendystraw cannot list them', async () => {
     bendystraw.moves.mockResolvedValue({ rows: [indexedPay(100n, tx(1), 50)], blocks: new Map([[CHAIN, AS_OF]]) })
     const head = AS_OF + 10n
     const center = node(head, [
@@ -206,7 +242,9 @@ describe("backingFlows, reading Bendystraw's pays and cash outs", () => {
         toBlock: toHex(head),
       },
     ])
-    expect(console.warn).not.toHaveBeenCalled()
+    expect(vi.mocked(console.warn).mock.calls).toEqual([
+      [FEES_UNAVAILABLE, { chainId: CHAIN, projectId: 42n }, new Error('Bendystraw is down')],
+    ])
   })
 
   it('a return visit scans the fees only past the block it kept them through', async () => {
