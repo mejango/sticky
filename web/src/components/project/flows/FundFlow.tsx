@@ -61,13 +61,8 @@ type Plan = {
 /** What `owner` holds of `token` and has let `spender` take of it, read now. ETH is sent with the call, and needs no
  * allowance. */
 async function fundsOf(chainId: number, token: Address, owner: Address, spender: Address, signal?: AbortSignal) {
-  if (token.toLowerCase() === NATIVE_REWARD_TOKEN) {
-    const balance = signal ? await readNativeBalance(chainId, owner, { signal }) : await readNativeBalance(chainId, owner)
-    return { balance, allowance: 0n }
-  }
-  return signal
-    ? readBalanceAndAllowance(chainId, { token, owner, spender }, { signal })
-    : readBalanceAndAllowance(chainId, { token, owner, spender })
+  if (token.toLowerCase() === NATIVE_REWARD_TOKEN) return { balance: await readNativeBalance(chainId, owner, { signal }), allowance: 0n }
+  return readBalanceAndAllowance(chainId, { token, owner, spender }, { signal })
 }
 
 /**

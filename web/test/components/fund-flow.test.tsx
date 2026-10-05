@@ -428,7 +428,7 @@ describe('the send', () => {
     const [request, { reverify }] = sent(0)
     mocks.funds.mockClear()
     await expect(reverify()).resolves.toBeUndefined()
-    expect(mocks.funds).toHaveBeenCalledWith(CHAIN, { token: ART, owner: ALICE, spender: DISTRIBUTOR })
+    expect(mocks.funds).toHaveBeenCalledWith(CHAIN, { token: ART, owner: ALICE, spender: DISTRIBUTOR }, { signal: undefined })
     mocks.funds.mockResolvedValue({ balance: 4n * E6, allowance: 0n })
     await expect(reverify()).rejects.toThrow('Your ART balance changed. Review the amount.')
     expect(request.functionName).toBe('approve')
@@ -439,7 +439,7 @@ describe('the send', () => {
     await press(confirm(), 'Confirm & send')
     const { reverify } = sent(0)[1]
     await expect(reverify()).resolves.toBeUndefined()
-    expect(mocks.native).toHaveBeenLastCalledWith(CHAIN, ALICE)
+    expect(mocks.native).toHaveBeenLastCalledWith(CHAIN, ALICE, { signal: undefined })
     const cause = new Error('429')
     mocks.native.mockRejectedValue(new Error('the balance could not be read.', { cause }))
     await expect(reverify()).rejects.toThrow('The balance could not be read.')
