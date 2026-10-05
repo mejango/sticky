@@ -12,7 +12,7 @@ const lines = new WeakMap<QueryClient, Line>()
 /**
  * `read`, once one of the READ_LANES of this client is free: reads start in the order they are asked for, and at most
  * that many are under way at once, however they end. A read cancelled while it waits leaves the line at once and never
- * starts. A read never waits on another query in its turn, or it could wait on itself.
+ * starts. A read never waits on another query in its turn, or it could wait on itself (`test/in-turn-waits.test.ts`).
  */
 export function inTurn<T>(client: QueryClient, signal: AbortSignal, read: () => Promise<T>): Promise<T> {
   let own = lines.get(client)
