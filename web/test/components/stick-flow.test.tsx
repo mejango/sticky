@@ -848,7 +848,7 @@ describe('the review', () => {
     expect(alerts()).toEqual([])
   })
 
-  it('sends a step for the account the plan was made for, whichever account is connected when it is pressed', async () => {
+  it('hands the engine the plan\'s account whichever account is shown', async () => {
     await render()
     await review()
     expect(steps()).toEqual(['Approve 5 CPN', 'Stick'])

@@ -1052,7 +1052,7 @@ describe('an account switched after the review', () => {
     expect(confirm()!.textContent).toContain('Went through: Turn off auto-stick.')
   })
 
-  it('wallet-action:take-back-the-auto-stick-adapter-s-trust wallet-action:take-back-the-auto-stick-adapter-s-allowance refuses a step whose review was open while the wallet switched accounts, and drops the plan', async () => {
+  it('wallet-action:take-back-the-auto-stick-adapter-s-trust refuses a step whose review was open while the wallet switched accounts, and drops the plan', async () => {
     world(on)
     await review('1')
     await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
