@@ -17,7 +17,7 @@ import { isLostRecipient, LOST_RECIPIENT, stickyDeployment } from '@/lib/sticky-
 import { readBalanceAndAllowance } from '@/lib/sticky-allowance'
 import { parseAmount } from '@/lib/sticky-amount'
 import { approveSteps, stickTx, type TxRequest } from '@/lib/sticky-builders'
-import { formatAmount } from '@/lib/sticky-format'
+import { asSentence, formatAmount } from '@/lib/sticky-format'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { assertCanStickFor, quoteStick, stickQuoteSentence } from '@/lib/sticky-quotes'
 import { refreshAfterStick } from '@/lib/sticky-refresh'
@@ -33,12 +33,6 @@ const INVALID_RECIPIENT = 'Enter a valid recipient address.'
 const REVIEW_UNREADABLE = 'Could not prepare a stick; its review says what could not be read.'
 const QUOTE_UNREADABLE = 'Could not quote a stick; the line under the amount says what could not be read.'
 const BALANCE_UNREADABLE = 'Could not check the balance before sending a step of a stick; the dialog says so.'
-
-/** The start of a sentence, which ends with a full stop unless it already ends in a mark. */
-const sentence = (message: string) => {
-  const text = message.charAt(0).toUpperCase() + message.slice(1)
-  return /[.!?]$/.test(text) ? text : `${text}.`
-}
 
 /** A read's failure as an error the holder is told of. The console is told why as well when the read failed to be made,
  * which its cause says: a refusal, like a holder who has not trusted the sender, has none. */
@@ -122,7 +116,7 @@ export function StickFlow({
       try {
         parsed = parseAmount(amountText, info.decimals)
       } catch (reason) {
-        amountError = sentence(reason instanceof Error ? reason.message : 'enter a valid amount')
+        amountError = asSentence(reason instanceof Error ? reason.message : 'enter a valid amount')
       }
     }
     if (!forSomeoneElse) return { amount: parsed, amountError, beneficiary: payer, recipientError: null }
@@ -158,7 +152,7 @@ export function StickFlow({
             try {
               await assertCanStickFor(chainId, staked.projectId, sender, beneficiary, { signal })
             } catch (reason) {
-              throw signal.aborted ? reason : new Error(sentence(told(QUOTE_UNREADABLE, about, reason).message))
+              throw signal.aborted ? reason : new Error(asSentence(told(QUOTE_UNREADABLE, about, reason).message))
             }
           }
           try {
@@ -233,7 +227,7 @@ export function StickFlow({
       setPlan({ info, terminal, account, beneficiary, amount: value, minted, steps })
     } catch (reason) {
       if (!signal.aborted) {
-        const message = sentence(told(REVIEW_UNREADABLE, { chainId, projectId }, reason).message)
+        const message = asSentence(told(REVIEW_UNREADABLE, { chainId, projectId }, reason).message)
         setFailure({ message, account: account.toLowerCase() })
       }
     } finally {
@@ -246,7 +240,7 @@ export function StickFlow({
   async function verify({ info: staked, terminal: spender, account: owner, amount: value }: Plan) {
     const { balance } = await readBalanceAndAllowance(chainId, { token: staked.stakedToken, owner, spender }).catch(reason => {
       const unreadable = told(BALANCE_UNREADABLE, { chainId, projectId }, reason)
-      throw new Error(sentence(unreadable.message), { cause: unreadable })
+      throw new Error(asSentence(unreadable.message), { cause: unreadable })
     })
     if (balance < value) throw new Error(`Your ${staked.symbol} balance changed. Review the amount.`)
   }

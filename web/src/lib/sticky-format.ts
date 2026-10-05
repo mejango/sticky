@@ -53,3 +53,10 @@ export function ago(timestamp: number): string {
 export function stickyLabel({ stSymbol, symbol }: { stSymbol: string; symbol: string }): string {
   return stSymbol || `Sticky ${symbol}`
 }
+
+/** A reason a flow gives, as a sentence: its first letter a capital, and a full stop unless it already ends in a mark.
+ * The reads and the builders give theirs in lowercase, to start a sentence or follow a prefix. */
+export function asSentence(message: string): string {
+  const text = message.charAt(0).toUpperCase() + message.slice(1)
+  return /[.!?]$/.test(text) ? text : `${text}.`
+}
