@@ -8,7 +8,7 @@ import type { Address } from 'viem'
 import { untilAborted } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { stickyHookAbi } from '@/lib/sticky-abis'
-import { stickyDeployment } from '@/lib/sticky-addresses'
+import { deploymentOn } from '@/lib/sticky-addresses'
 
 /** How many tranches a page holds. */
 export const TRANCHES_PER_PAGE = 50
@@ -40,8 +40,7 @@ export async function readTranchePage(
   block: bigint,
   { signal }: { signal?: AbortSignal } = {},
 ): Promise<TranchePage> {
-  const deployment = stickyDeployment(chainId)
-  if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
+  const deployment = deploymentOn(chainId)
   const { hook } = deployment
   const client = jbCenterPublicClient(chainId)
 

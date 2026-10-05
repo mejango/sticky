@@ -16,7 +16,7 @@ import type { BendystrawNetwork } from '@bananapus/nana-sdk-core'
 import type { Address } from 'viem'
 import { displayChainName } from '@/lib/chainDisplay'
 import type { ScannedLog } from '@/lib/hook-logs'
-import { stickyChainIds, stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
+import { deploymentOn, stickyChainIds, type StickyDeployment } from '@/lib/sticky-addresses'
 import {
   POSITION_TOPICS,
   PROJECTS_UNAVAILABLE,
@@ -282,8 +282,7 @@ async function fromScan(
 export async function homeChain(chainId: number, options: HomeReadOptions): Promise<HomeChain> {
   const { signal, index, latest, ...given } = options
   const deps: HomeReadDeps = { ...live, ...given }
-  const deployment = stickyDeployment(chainId)
-  if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
+  const deployment = deploymentOn(chainId)
 
   const { projects } = await deps.projectsOn(chainId, index, { signal })
   const ids = projects.map(project => project.projectId)

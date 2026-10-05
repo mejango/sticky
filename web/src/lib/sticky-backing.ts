@@ -15,7 +15,7 @@
 import { decodeEventLog, getAbiItem, pad, toEventSelector, toHex, type AbiEvent, type Hex } from 'viem'
 import type { ScannedLog } from '@/lib/hook-logs'
 import { terminalEventsAbi } from '@/lib/sticky-abis'
-import { stickyDeployment } from '@/lib/sticky-addresses'
+import { deploymentOn } from '@/lib/sticky-addresses'
 import {
   keptScanToHead,
   notIndexed,
@@ -279,8 +279,7 @@ export async function backingFlows(
 ): Promise<Flow[]> {
   const { signal, ...given } = options
   const deps: FlowReadDeps = { ...live, ...given }
-  const deployment = stickyDeployment(chainId)
-  if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
+  const deployment = deploymentOn(chainId)
   const address = deployment.terminal
   const project = pad(toHex(projectId))
   const about = { chainId, projectId }

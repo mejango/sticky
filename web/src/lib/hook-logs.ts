@@ -14,7 +14,7 @@ import {
 } from 'viem'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { stickyHookAbi } from '@/lib/sticky-abis'
-import { stickyDeployment } from '@/lib/sticky-addresses'
+import { deploymentOn } from '@/lib/sticky-addresses'
 
 /** A log that is in a block, so it has a block, a hash and an index. Center also sends the block's
  * timestamp with it, which viem keeps as `blockTimestamp`. */
@@ -478,8 +478,7 @@ export async function keptLogsOf(
   opts: { signal?: AbortSignal; keep?: (log: ScannedLog) => ScannedLog; trim?: boolean } = {},
 ): Promise<ScannedLog[]> {
   const { signal, keep = (log: ScannedLog) => log, trim = false } = opts
-  const deployment = stickyDeployment(chainId)
-  if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
+  const deployment = deploymentOn(chainId)
   throwIfAborted(signal)
   const client = jbCenterPublicClient(chainId)
   const start = fromBlock ?? deployment.fromBlock
@@ -525,8 +524,7 @@ export async function projectHookLogs(
   fromBlock: bigint | null,
   opts: { signal?: AbortSignal } = {},
 ): Promise<ScannedLog[]> {
-  const deployment = stickyDeployment(chainId)
-  if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
+  const deployment = deploymentOn(chainId)
   const key = `${chainId}:${deployment.hook.toLowerCase()}:${projectId}`
   const topics = [PROJECT_TOPICS, pad(toHex(projectId), { size: 32 })]
   return keptLogs(chainId, key, { address: deployment.hook, topics, fromBlock }, opts)

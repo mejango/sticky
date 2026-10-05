@@ -13,7 +13,7 @@ import { untilAborted } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { SUPPORTED_CHAINS, environmentForChainIds } from '@/lib/chains'
 import { controllerAbi } from '@/lib/sticky-abis'
-import { stickyChainIds, stickyDeployment } from '@/lib/sticky-addresses'
+import { deploymentOn, stickyChainIds } from '@/lib/sticky-addresses'
 import { orNull, scanToHead, stickyProjectsOn, type StickyReadDeps } from '@/lib/sticky-events'
 import { indexedStickyProjects, type IndexedProjects } from '@/lib/sticky-indexed'
 import { launchIdIn, readStickyProject, type StickyProjectInfo } from '@/lib/sticky-project'
@@ -236,8 +236,7 @@ const live: SiblingReadDeps = {
   scan: scanToHead,
   async launchIds(chainId, projectIds, { signal }) {
     if (!projectIds.length) return []
-    const deployment = stickyDeployment(chainId)
-    if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
+    const deployment = deploymentOn(chainId)
     const uris = await untilAborted(
       jbCenterPublicClient(chainId).multicall({
         contracts: projectIds.map(
