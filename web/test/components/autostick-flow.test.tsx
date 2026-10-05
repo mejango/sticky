@@ -62,6 +62,9 @@ const on = (extra: Partial<AutoStickState> = {}): AutoStickState =>
     ...extra,
   })
 
+/** What a state of auto-stick rests on: whether it is on, the holder's trust in the adapter, and their allowance. */
+const standing = ({ enabled, personallyTrusted, allowance }: AutoStickState) => ({ enabled, personallyTrusted, allowance })
+
 type Phase = 'idle' | 'review' | 'simulating' | 'signing' | 'pending' | 'success' | 'error'
 type EngineState = {
   phase: Phase
@@ -81,6 +84,7 @@ const mocks = vi.hoisted(() => ({
   requestSignIn: vi.fn(),
   tx: {} as EngineState,
   read: vi.fn(),
+  standing: vi.fn(),
   vestable: vi.fn(),
   quote: vi.fn(),
   schedule: vi.fn(),
@@ -94,6 +98,7 @@ vi.mock('@/hooks/useSafeTx', async importOriginal => ({
 vi.mock('@/lib/sticky-autostick', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-autostick')>()),
   readAutoStick: mocks.read,
+  readAutoStickStanding: mocks.standing,
   vestableRewardGroups: mocks.vestable,
 }))
 vi.mock('@/lib/sticky-quotes', async importOriginal => ({
@@ -153,6 +158,7 @@ beforeEach(() => {
   shown = off()
   fresh = off()
   mocks.read.mockReset().mockImplementation(async () => fresh)
+  mocks.standing.mockReset().mockImplementation(async () => standing(fresh))
   mocks.vestable.mockReset().mockResolvedValue([4008n])
   mocks.quote.mockReset().mockResolvedValue(490_000_000_000_000n)
   mocks.schedule.mockReset().mockResolvedValue({ roundDuration: 604_800n, vestingRounds: 4n, start: 1_790_295_566n, round: 2n })
@@ -231,7 +237,13 @@ const rowsOf = () =>
     }, []),
   )
 type Sent = { chainId: number; address: Address; abi: Abi; functionName: string; args: readonly unknown[] }
-const sent = (at: number) => mocks.tx.send.mock.calls[at] as [Sent, { reviewedAccount: Address; simulationBlockNumber?: bigint }]
+const sent = (at: number) =>
+  mocks.tx.send.mock.calls[at] as [
+    Sent,
+    { reviewedAccount: Address; simulationBlockNumber?: bigint; reverify?: (request: Sent) => Promise<unknown> },
+  ]
+/** The engine's check just before it sends step `at`. */
+const reverify = (at: number) => sent(at)[1].reverify!(sent(at)[0])
 const calls = () => mocks.tx.send.mock.calls.map(([request]) => [(request as Sent).address, (request as Sent).functionName, (request as Sent).args])
 async function confirmed(block: bigint) {
   mocks.tx.phase = 'success'
@@ -608,6 +620,63 @@ describe('leftover permissions', () => {
       ['sticky-autostick', CHAIN, PROJECT],
       ['sticky-trusted', CHAIN, PROJECT],
     ])
+  })
+})
+
+describe('a step, read again before it is sent', () => {
+  const CHANGED = 'Auto-stick changed since this review. Review it again.'
+
+  it('stops a turn-on reviewed while auto-stick was off once it was turned on elsewhere, and reads at the block of the step before', async () => {
+    await render(off())
+    await press(card(), 'Turn on auto-stick')
+    await press(modal(), 'Turn on auto-stick')
+    expect(steps()).toEqual([
+      'Allow the auto-stick contract to move eligible ART rewards',
+      'Allow the auto-stick contract to stick ART for you',
+      'Turn on auto-stick',
+    ])
+    await act(async () => primary().click())
+    await settled()
+    // Nothing has changed: the approval goes on.
+    await expect(reverify(0)).resolves.toBeUndefined()
+    expect(mocks.standing).toHaveBeenLastCalledWith(CHAIN, 12n, ALICE, { stakedToken: ART, block: undefined })
+    // Turned on in another tab, auto-stick would take the new allowance with settings this review never showed.
+    mocks.standing.mockResolvedValue({ ...standing(off()), enabled: true })
+    await expect(reverify(0)).rejects.toThrow(CHANGED)
+
+    // The approval confirms in block 10, and the trust step expects the allowance it set, read where it landed.
+    await confirmed(10n)
+    await act(async () => primary().click())
+    await settled()
+    mocks.standing.mockResolvedValue({ ...standing(off()), allowance: maxUint256 })
+    await expect(reverify(1)).resolves.toBeUndefined()
+    expect(mocks.standing).toHaveBeenLastCalledWith(CHAIN, 12n, ALICE, { stakedToken: ART, block: 10n })
+    mocks.standing.mockResolvedValue(standing(off()))
+    await expect(reverify(1)).rejects.toThrow(CHANGED)
+    expect(console.warn).not.toHaveBeenCalled()
+  })
+
+  it('stops a cleanup reviewed while auto-stick was off once it was turned back on', async () => {
+    const left = off({ personallyTrusted: true, allowance: 5_000_000n })
+    await render(left)
+    await press(card(), 'Remove leftover permissions')
+    await act(async () => primary().click())
+    await settled()
+    await expect(reverify(0)).resolves.toBeUndefined()
+    // Turned back on elsewhere, auto-stick still uses the trust and the allowance this would take away.
+    mocks.standing.mockResolvedValue({ ...standing(left), enabled: true })
+    await expect(reverify(0)).rejects.toThrow(CHANGED)
+  })
+
+  it('stops a step whose auto-stick cannot be read, says why, and tells the console', async () => {
+    await render(on())
+    await press(card(), 'Turn off auto-stick')
+    await act(async () => primary().click())
+    await settled()
+    const cause = new Error('429')
+    mocks.standing.mockRejectedValue(new Error("the holder's auto-stick settings could not be read.", { cause }))
+    await expect(reverify(0)).rejects.toThrow("The holder's auto-stick settings could not be read.")
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('auto-stick'), { chainId: CHAIN, projectId: PROJECT }, expect.objectContaining({ cause }))
   })
 })
 
