@@ -69,13 +69,18 @@ type Form = { mode: FormMode; minimum: string; cooldown: number; unlimited: bool
  * account's, and stands until the wallet changes. */
 type Failure = { message: string; account: string | null }
 
-/** A change of auto-stick under review: for whom, the steps that send it, what auto-stick rested on when the review read
- * it, and what the dialog says of it. */
+/** Whether auto-stick is on, and whether the holder trusts the adapter. */
+type Consent = Pick<AutoStickStanding, 'enabled' | 'personallyTrusted'>
+
+/** A change of auto-stick under review: for whom, the steps that send it, whether auto-stick was on and the adapter
+ * trusted when the review read it, the allowance its last step pulls through when the plan does not set it itself
+ * (`needs`), and what the dialog says of it. */
 type Plan = {
   action: Action
   account: Address
   steps: readonly TxRequest[]
-  from: AutoStickStanding
+  from: Consent
+  needs: bigint | null
   rows: TxConfirmRow[]
   title: string
   doneTitle: string
@@ -124,8 +129,7 @@ async function planAutoStick(
   const choice = action === 'enable' || action === 'settings' ? choiceOf(form!, info) : null
   const state = await readAutoStick(chainId, projectId, account, { info, groups, signal })
   if (state.status === AS_STATUS.INVALID_PROJECT) throw new Refusal('Auto-stick is unavailable for this project.')
-  const { enabled, personallyTrusted, allowance } = state
-  const base = { action, account, from: { enabled, personallyTrusted, allowance } }
+  const base = { action, account, from: { enabled: state.enabled, personallyTrusted: state.personallyTrusted }, needs: null }
   const when = (chosen: AutoStickChoice) => [
     { label: 'Auto-stick when', value: `at least ${formatUnits(chosen.minimum, decimals)} ${symbol} is ready` },
     { label: 'At most', value: `once every ${formatDuration(chosen.cooldown)}` },
@@ -134,6 +138,7 @@ async function planAutoStick(
     case 'enable':
       return {
         ...base,
+        needs: choice!.cap,
         steps: autoStickOnTxs(info, state, choice!),
         rows: [
           ...when(choice!),
@@ -175,6 +180,7 @@ async function planAutoStick(
       const minted = await quoteStick(chainId, projectId, stakedToken, state.collectable, autoStick, account, { signal })
       return {
         ...base,
+        needs: state.collectable,
         steps: [compoundTx(info, account, state.groupIds)],
         rows: [
           { label: 'Stick', value: `${formatUnits(state.collectable, decimals)} ${symbol} of unlocked rewards`, strong: true },
@@ -214,18 +220,16 @@ async function planAutoStick(
   }
 }
 
-/** What auto-stick rests on once `steps` have gone through from `from`: each turns it on or off, trusts the adapter or
- * stops trusting it, or sets its allowance; a stick or a start of unlocking changes none of them. */
-function standingAfter(from: AutoStickStanding, steps: readonly TxRequest[]): AutoStickStanding {
-  return steps.reduce<AutoStickStanding>(
-    (standing, { functionName, args }) =>
+/** Whether auto-stick is on and the adapter trusted once `steps` have gone through from `from`: a `setConfigFor` turns it
+ * on or off and a `setTrustedSenderFor` trusts the adapter or stops; nothing else changes either. */
+function consentAfter(from: Consent, steps: readonly TxRequest[]): Consent {
+  return steps.reduce<Consent>(
+    (consent, { functionName, args }) =>
       functionName === 'setConfigFor'
-        ? { ...standing, enabled: args[1] as boolean }
+        ? { ...consent, enabled: args[1] as boolean }
         : functionName === 'setTrustedSenderFor'
-          ? { ...standing, personallyTrusted: args[2] as boolean }
-          : functionName === 'approve'
-            ? { ...standing, allowance: args[1] as bigint }
-            : standing,
+          ? { ...consent, personallyTrusted: args[2] as boolean }
+          : consent,
     from,
   )
 }
@@ -380,10 +384,12 @@ export function AutoStickFlow({
   }
 
   /**
-   * Auto-stick read again just before a step is sent, at the block the step is simulated at: whether it is on, and the
-   * trust and allowance it rests on, must be what the review read with the steps before this one gone through. One
-   * changed elsewhere, like an auto-stick turned on in another tab while this review turns it on, stops the step; one
-   * that cannot be read stops it too, and the console is told why.
+   * Auto-stick read again just before a step is sent, at the block the step is simulated at. Whether it is on and the
+   * adapter trusted must be what the review read with the steps before this one gone through, so one turned on in
+   * another tab while this review turns it on stops the step. The allowance is held only where the last step pulls
+   * through one the plan did not set (a stick of ready rewards, or a turn-on that approves nothing), and then to at least
+   * what it needs: a token may store less than the plan approved, and a keeper's stick spends from it. A standing that
+   * cannot be read stops the step too, and the console is told why.
    */
   async function verify(reviewed: Plan, step: TxRequest, block: bigint | undefined) {
     let now: AutoStickStanding
@@ -393,8 +399,14 @@ export function AutoStickFlow({
       console.warn(STANDING_UNREADABLE, { chainId, projectId }, reason)
       throw new Error(asSentence(reason instanceof Error ? reason.message : String(reason)), { cause: reason })
     }
-    const expected = standingAfter(reviewed.from, reviewed.steps.slice(0, reviewed.steps.indexOf(step)))
-    if (now.enabled !== expected.enabled || now.personallyTrusted !== expected.personallyTrusted || now.allowance !== expected.allowance) {
+    const before = reviewed.steps.slice(0, reviewed.steps.indexOf(step))
+    const expected = consentAfter(reviewed.from, before)
+    const pulls = step === reviewed.steps.at(-1) && reviewed.needs !== null && !before.some(each => each.functionName === 'approve')
+    if (
+      now.enabled !== expected.enabled ||
+      now.personallyTrusted !== expected.personallyTrusted ||
+      (pulls && now.allowance < reviewed.needs!)
+    ) {
       throw new Error(CHANGED)
     }
   }
