@@ -287,9 +287,14 @@ describe('fundTxs', () => {
     expect(() => fundTxs(CHAIN, { ...ART_POT, amount: 0n })).toThrow('enter an amount greater than zero')
   })
 
-  it('encodes fund as cast did, the four-argument overload', () => {
-    const tx = fundTxs(CHAIN, { ...ART_POT, stToken: C, token: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', amount: 10n ** 18n, allowance: 10n ** 18n })
-    expect(encoded(tx.at(-1)!)).toBe(fixtures.fund)
+  it("encodes fund as cast did, the four-argument overload: ETH under JB's native token with its value, and an ERC-20", () => {
+    const [eth, ...more] = fundTxs(CHAIN, { ...ART_POT, stToken: C, token: NATIVE_TOKEN, amount: 10n ** 18n, symbol: 'ETH', decimals: 18 })
+    expect(more).toEqual([])
+    expect(encoded(eth)).toBe(fixtures.fund)
+    expect(eth.value).toBe(10n ** 18n)
+    const erc20 = fundTxs(CHAIN, { ...ART_POT, stToken: C, token: A, amount: 10n ** 18n, allowance: 10n ** 18n }).at(-1)!
+    expect(encoded(erc20)).toBe(fixtures.fundErc20)
+    expect(erc20.value).toBeUndefined()
   })
 })
 
