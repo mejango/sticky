@@ -390,6 +390,10 @@ describe('the review', () => {
   it.each([
     ['a word', 'usdc', 'Enter a valid reward token address or ETH.'],
     ['the zero address', `0x${'0'.repeat(40)}`, 'Enter a valid reward token address or ETH.'],
+    // Strict, as viem is: an address all in lowercase or with its checksum right, and none in capitals or with a wrong
+    // checksum, which the old client took.
+    ['an address in capitals', `0x${USDC.slice(2).toUpperCase()}`, 'Enter a valid reward token address or ETH.'],
+    ['an address with a wrong checksum', `${USDC.slice(0, -1)}${USDC.at(-1) === 'B' ? 'b' : 'B'}`, 'Enter a valid reward token address or ETH.'],
   ])('refuses %s for a token before it reads anything', async (_name, token, message) => {
     await review({ token })
     expect(errorText()).toBe(message)
