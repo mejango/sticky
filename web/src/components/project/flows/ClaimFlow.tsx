@@ -31,7 +31,7 @@ const NOTHING_TO_CLAIM = 'There are no rewards to unlock or collect yet.'
 const COLLECT_EFFECT =
   "Collects unlocked rewards and starts vesting finished rounds. This round's rewards stay locked until it ends."
 const FORFEIT = 'Stake-age rewards pay only stake you still hold. Unstick before claiming and they stay in the pot.'
-const RATE = 'Current backing price at execution. The amount can change before confirmation.'
+const RATE = 'Current backing price at execution, which can change before confirmation.'
 const STANDING = "the auto-stick contract's standing with you"
 
 /** What a review refused or could not read, and the account it was for (lowercase); a refusal of the wallet itself is no

@@ -257,9 +257,7 @@ export function ReceiverFlow({
     <>
       <Disclosure summary="Reward address for fee payouts and transfers" className="mt-2.5 text-[13px]" onToggle={setOpened}>
         <div className="mt-2.5 space-y-3">
-          <p className="text-muted">
-            Tokens sent here become airdrops once anyone settles them. Use it as a launchpad&apos;s fee recipient.
-          </p>
+          <p className="text-muted">Tokens sent here become airdrops once anyone settles them.</p>
           <StakeAgeFields minWeeks={minWeeks} maxWeeks={maxWeeks} onMinWeeks={setMinWeeks} onMaxWeeks={setMaxWeeks} />
           {receiver.isError ? (
             <p role="alert" className="text-err">
@@ -280,7 +278,7 @@ export function ReceiverFlow({
               </dd>
               <dt className={ROW_LABEL}>Status</dt>
               <dd className={ROW_VALUE}>
-                {receiver.data.created ? 'Created' : 'Not created yet. Tokens sent here are safe and settle later.'}
+                {receiver.data.created ? 'Created' : 'Not created yet'}
               </dd>
             </dl>
           ) : opened && groupId !== null ? (

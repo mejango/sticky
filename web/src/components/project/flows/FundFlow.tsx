@@ -3,7 +3,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useId, useRef, useState } from 'react'
 import { formatUnits, type Address } from 'viem'
-import { Refusal } from '@/components/project/flows/refusal'
+import { Refusal, refusalOf } from '@/components/project/flows/refusal'
 import { parseRewardToken } from '@/components/project/flows/reward-token'
 import { reviewGate } from '@/components/project/flows/review-gate'
 import { FIELD_INPUT, FIELD_LABEL, StakeAgeFields } from '@/components/project/StakeAgeFields'
@@ -205,9 +205,9 @@ export function FundFlow({
       if (!signal.aborted) setPlan(next)
     } catch (reason) {
       if (signal.aborted) return
-      if (!(reason instanceof Refusal)) console.warn(PREPARE_UNREADABLE, { chainId, projectId }, reason)
-      const message = asSentence(reason instanceof Error ? reason.message : String(reason))
-      setFailure({ message, account: account.toLowerCase() })
+      const told = refusalOf(reason)
+      if (!(told instanceof Refusal)) console.warn(PREPARE_UNREADABLE, { chainId, projectId }, told)
+      setFailure({ message: asSentence(told instanceof Error ? told.message : String(told)), account: account.toLowerCase() })
     } finally {
       if (!signal.aborted) setPreparing(false)
     }

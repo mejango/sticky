@@ -423,7 +423,7 @@ describe('claiming and sticking', () => {
     expect(rowsOf()).toMatchObject({
       Claim: '0.000000000000000001 ART',
       'Estimated Sticky tokens': '0.000000000000000777 STICKYART',
-      Rate: 'Current backing price at execution. The amount can change before confirmation.',
+      Rate: 'Current backing price at execution, which can change before confirmation.',
     })
   })
 

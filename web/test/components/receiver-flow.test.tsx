@@ -211,7 +211,7 @@ describe('the reward address', () => {
     expect(panel().querySelector('summary')?.textContent).toBe('Reward address for fee payouts and transfers')
     expect(mocks.receiver).not.toHaveBeenCalled()
     await open()
-    expect(panel().textContent).toContain("Tokens sent here become airdrops once anyone settles them. Use it as a launchpad's fee recipient.")
+    expect(panel().textContent).toContain('Tokens sent here become airdrops once anyone settles them.')
     expect(mocks.receiver).toHaveBeenCalledWith(CHAIN, INFO.stToken, 0n, expect.objectContaining({ signal: expect.any(AbortSignal) }))
   })
 
@@ -219,7 +219,7 @@ describe('the reward address', () => {
     await open()
     expect(shown()).toEqual({
       'Reward address': `${RECEIVER}Copy`,
-      Status: 'Not created yet. Tokens sent here are safe and settle later.',
+      Status: 'Not created yet',
     })
     expect(buttonIn(panel(), 'Create onchain')).toBeDefined()
     expect(panel().querySelector('button[aria-label="Copy reward address"]')).not.toBeNull()
