@@ -117,12 +117,22 @@ function autoStickOffTx(
  */
 export function autoStickOffTxs(
   info: Pick<StickyProjectInfo, 'chainId' | 'projectId' | 'stakedToken' | 'symbol'>,
-  { minimum, cooldown, personallyTrusted, allowance }: AutoStickSettings,
+  settings: AutoStickSettings,
 ): TxRequest[] {
-  const { chainId, projectId, stakedToken, symbol } = info
+  return [autoStickOffTx(info, settings), ...autoStickLeftoverTxs(info, settings)]
+}
+
+/**
+ * What a holder gave the adapter, taken back: its trust, when the holder gave it, and its allowance, when any is left.
+ * It is the rest of a teardown once the adapter is off, which an auto-stick that was turned off without it still needs,
+ * as after a full exit that a reload cut short.
+ */
+export function autoStickLeftoverTxs(
+  { chainId, projectId, stakedToken, symbol }: Pick<StickyProjectInfo, 'chainId' | 'projectId' | 'stakedToken' | 'symbol'>,
+  { personallyTrusted, allowance }: Pick<AutoStickState, 'personallyTrusted' | 'allowance'>,
+): TxRequest[] {
   const { autoStick } = deploymentOn(chainId)
   return [
-    autoStickOffTx(info, { minimum, cooldown }),
     ...(personallyTrusted
       ? [trustTx(chainId, projectId, autoStick, false, `Stop the auto-stick contract from sticking ${symbol} for you`)]
       : []),

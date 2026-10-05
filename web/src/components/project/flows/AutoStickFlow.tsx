@@ -15,8 +15,9 @@ import { useStepPresses } from '@/hooks/useStepPresses'
 import { useWallet } from '@/hooks/useWallet'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import { parseAmount } from '@/lib/sticky-amount'
-import { AS_STATUS, readAutoStick, vestableRewardGroups, type AutoStickState } from '@/lib/sticky-autostick'
+import { AS_STATUS, hasLeftovers, readAutoStick, vestableRewardGroups, type AutoStickState } from '@/lib/sticky-autostick'
 import {
+  autoStickLeftoverTxs,
   autoStickOffTxs,
   autoStickOnTxs,
   autoStickSettingsTx,
@@ -47,8 +48,8 @@ const COOLDOWNS = [
 const WEEK = 604_800
 
 /** What a press of the card asks for: the form to turn it on (or renew its allowance) or change its settings, or a
- * review of one of the others. */
-type Action = 'enable' | 'settings' | 'off' | 'repair' | 'now' | 'vest'
+ * review of one of the others. `cleanup` takes back what an auto-stick that is off still has of the holder's. */
+type Action = 'enable' | 'settings' | 'off' | 'repair' | 'now' | 'vest' | 'cleanup'
 type FormMode = 'enable' | 'settings'
 
 /** What the form holds: the minimum as typed, the cooldown, and the allowance, unlimited or a cap as typed. */
@@ -176,6 +177,20 @@ async function planAutoStick(
         doneTitle: 'Rewards auto-stuck',
       }
     }
+    case 'cleanup': {
+      if (state.enabled) throw new Refusal('Auto-stick is on. Turn it off instead.')
+      const steps = autoStickLeftoverTxs(info, state)
+      if (!steps.length) throw new Refusal('Auto-stick has no permissions left to remove.')
+      const kept = [state.personallyTrusted ? 'stick for you' : '', state.allowance > 0n ? `move your ${symbol}` : '']
+      return {
+        action,
+        account,
+        steps,
+        rows: [{ label: 'Effect', value: `The auto-stick contract can no longer ${kept.filter(Boolean).join(' or ')}.` }, on],
+        title: 'Remove auto-stick permissions',
+        doneTitle: 'Permissions removed',
+      }
+    }
     case 'vest': {
       if (!state.enabled) throw new Refusal('Turn on auto-stick before starting automatic reward unlocking.')
       const groupIds = await vestableRewardGroups(chainId, info, account, groups, { signal })
@@ -194,7 +209,7 @@ async function planAutoStick(
 
 /** What the button that sends a step says: approvals and trust that a teardown takes back say so. */
 function actionOf(step: TxRequest | undefined, action: Action): string {
-  const takesBack = action === 'off'
+  const takesBack = action === 'off' || action === 'cleanup'
   switch (step?.functionName) {
     case 'setConfigFor':
       return step.args[1] === false ? 'Confirm & turn off' : action === 'settings' ? 'Confirm & save' : 'Confirm & turn on'
@@ -391,6 +406,7 @@ export function AutoStickFlow({
     ...(enabled && status === AS_STATUS.NOT_TRUSTED ? [{ label: 'Repair permission', press: () => void startReview('repair') }] : []),
     ...(enabled && status === AS_STATUS.INSUFFICIENT_ALLOWANCE ? [{ label: 'Renew allowance', press: () => openForm('enable') }] : []),
     ...(enabled ? [{ label: 'Settings', press: () => openForm('settings') }] : []),
+    ...(hasLeftovers(state) ? [{ label: 'Remove leftover permissions', press: () => void startReview('cleanup') }] : []),
   ]
 
   const review =

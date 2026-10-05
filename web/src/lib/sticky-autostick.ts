@@ -184,6 +184,14 @@ export async function readAutoStick(
   }
 }
 
+/** Whether an auto-stick that is off still has the holder's trust or an allowance of theirs, which nothing uses: a full
+ * exit that a reload cut short turns the adapter off and leaves them. */
+export const hasLeftovers = ({
+  enabled,
+  personallyTrusted,
+  allowance,
+}: Pick<AutoStickState, 'enabled' | 'personallyTrusted' | 'allowance'>) => !enabled && (personallyTrusted || allowance > 0n)
+
 /** The line under the settings that says what holds auto-stick back, or nothing when nothing does. */
 export function asStatusLine(
   { status, nextCompoundAt, collectable, minimum }: Pick<AutoStickState, 'status' | 'nextCompoundAt' | 'collectable' | 'minimum'>,

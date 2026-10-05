@@ -543,6 +543,74 @@ describe('the other actions', () => {
   })
 })
 
+describe('leftover permissions', () => {
+  it('are offered for removal when auto-stick is off but the adapter is still trusted or still has an allowance', async () => {
+    await render(off({ personallyTrusted: true }))
+    expect(buttonsOf(card())).toEqual(['Turn on auto-stick', 'Remove leftover permissions'])
+    await render(off({ allowance: 1n }))
+    expect(buttonsOf(card())).toEqual(['Turn on auto-stick', 'Remove leftover permissions'])
+    // Nothing left, or auto-stick on: nothing to offer.
+    await render(off({ projectGranter: true }))
+    expect(buttonsOf(card())).toEqual(['Turn on auto-stick'])
+    await render(on())
+    expect(buttonsOf(card())).not.toContain('Remove leftover permissions')
+  })
+
+  it('wallet-action:take-back-the-auto-stick-adapter-s-trust wallet-action:take-back-the-auto-stick-adapter-s-allowance are removed with the disable calls, less turning off an adapter that is off', async () => {
+    await render(off({ minimum: 1_000_000n, cooldown: WEEK, personallyTrusted: true, allowance: 100n }))
+    await press(card(), 'Remove leftover permissions')
+    expect(mocks.read).toHaveBeenCalledWith(CHAIN, 12n, ALICE, expect.objectContaining({ info: INFO, groups: [0n, 4000n, 4008n] }))
+    expect(steps()).toEqual(['Stop the auto-stick contract from sticking ART for you', "Remove the auto-stick contract's ART allowance"])
+    expect(rowsOf().Effect).toBe('The auto-stick contract can no longer stick for you or move your ART.')
+    expect(primary().textContent).toBe('Confirm & remove permission')
+    await sendAll()
+    expect(calls()).toEqual([
+      [HOOK, 'setTrustedSenderFor', [12n, ADAPTER, false]],
+      [ART, 'approve', [ADAPTER, 0n]],
+    ])
+    expect(sent(1)[1].reviewedAccount).toBe(ALICE)
+    expect(confirm()!.textContent).toContain('Permissions removed')
+  })
+
+  it('say what is taken back when only one of them is left', async () => {
+    await render(off({ allowance: 5n }))
+    await press(card(), 'Remove leftover permissions')
+    expect(steps()).toEqual(["Remove the auto-stick contract's ART allowance"])
+    expect(rowsOf().Effect).toBe('The auto-stick contract can no longer move your ART.')
+    expect(primary().textContent).toBe('Confirm & remove allowance')
+
+    await act(async () => root.unmount())
+    root = createRoot(host)
+    await render(off({ personallyTrusted: true }))
+    await press(card(), 'Remove leftover permissions')
+    expect(rowsOf().Effect).toBe('The auto-stick contract can no longer stick for you.')
+  })
+
+  it('are refused when the chain says auto-stick is on again, or has nothing left', async () => {
+    fresh = on()
+    await render(off({ personallyTrusted: true }), { same: false })
+    await press(card(), 'Remove leftover permissions')
+    expect(errorText()).toBe('Auto-stick is on. Turn it off instead.')
+
+    fresh = off()
+    await rerender()
+    await press(card(), 'Remove leftover permissions')
+    expect(errorText()).toBe('Auto-stick has no permissions left to remove.')
+    expect(confirm()).toBeNull()
+  })
+
+  it('read auto-stick again once they are removed', async () => {
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+    await render(off({ personallyTrusted: true }))
+    await press(card(), 'Remove leftover permissions')
+    await sendAll()
+    expect(invalidate.mock.calls.map(([filters]) => filters!.queryKey as QueryKey)).toEqual([
+      ['sticky-autostick', CHAIN, PROJECT],
+      ['sticky-trusted', CHAIN, PROJECT],
+    ])
+  })
+})
+
 describe('a wallet that cannot send', () => {
   it('is refused, for Signa, when a review starts, and "Connect a wallet" opens the external wallets', async () => {
     mocks.wallet = { ...mocks.wallet, isCenterWallet: true }

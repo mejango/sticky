@@ -5,7 +5,7 @@ import { AutoStickFlow } from '@/components/project/flows/AutoStickFlow'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { useAutoStick, useRewardPots, useViewer } from '@/hooks/useStickyAirdrops'
 import { useStickyProject } from '@/hooks/useStickyProject'
-import { AS_STATUS, asStatusLine } from '@/lib/sticky-autostick'
+import { AS_STATUS, asStatusLine, hasLeftovers } from '@/lib/sticky-autostick'
 import { ago, formatAmount, formatDuration, stickyLabel } from '@/lib/sticky-format'
 
 const INVALID_PROJECT = 'Auto-stick is misconfigured for this Sticky project; the Airdrops tab leaves its card out.'
@@ -71,6 +71,7 @@ export function AutoStickCard({ chainId, projectId }: { chainId: number; project
         {state.enabled && state.lastCompoundedAt ? (
           <span className="block text-[13px] text-muted">Last auto-stick: {ago(state.lastCompoundedAt)}</span>
         ) : null}
+        {hasLeftovers(state) ? <div className="text-[13px]">The auto-stick contract still has your permission.</div> : null}
         {line ? <div className="text-[13px]">{line}</div> : null}
       </div>
       <AutoStickFlow chainId={chainId} projectId={projectId} info={info} state={state} groups={groups} />

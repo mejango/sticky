@@ -948,12 +948,26 @@ describe('auto-stick', () => {
   const actions = () => autoStick()!.querySelector<HTMLElement>('[data-flow="autostick"]')!.dataset
 
   it('says it is off, and offers to turn it on', async () => {
-    mocks.autoStick.mockResolvedValue(autoStickOn({ enabled: false, status: AS_STATUS.DISABLED, minimum: 0n, cooldown: 0 }))
+    mocks.autoStick.mockResolvedValue(
+      autoStickOn({ enabled: false, status: AS_STATUS.DISABLED, minimum: 0n, cooldown: 0, personallyTrusted: false, allowance: 0n }),
+    )
     await renderTab()
     expect(autoStick()!.querySelector('h2')?.textContent).toBe('Auto-stick SLOPSHOP rewards')
     expect(autoStick()!.textContent).toContain('Stick your SLOPSHOP rewards into STICKYSLOPSHOP as they unlock.')
     expect(state()).toBe('OffUnlocked SLOPSHOP rewards stay claimable until you collect them.')
     expect(actions()).toMatchObject({ chain: String(CHAIN), project: '23', token: 'STICKYSLOPSHOP', enabled: 'false' })
+  })
+
+  it('says when the adapter still has permissions that auto-stick, which is off, no longer uses', async () => {
+    mocks.autoStick.mockResolvedValue(autoStickOn({ enabled: false, status: AS_STATUS.DISABLED, personallyTrusted: true, allowance: 0n }))
+    await renderTab()
+    expect(state()).toBe(
+      'OffUnlocked SLOPSHOP rewards stay claimable until you collect them.The auto-stick contract still has your permission.',
+    )
+    mocks.autoStick.mockResolvedValue(autoStickOn({ enabled: false, status: AS_STATUS.DISABLED, personallyTrusted: false, allowance: 0n }))
+    await act(async () => void (await client.invalidateQueries()))
+    await settled()
+    expect(state()).toBe('OffUnlocked SLOPSHOP rewards stay claimable until you collect them.')
   })
 
   it('says what it does while on, when it last did it, and what holds it back', async () => {

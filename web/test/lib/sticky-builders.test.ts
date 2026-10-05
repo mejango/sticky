@@ -11,6 +11,7 @@ import {
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import {
   approveSteps,
+  autoStickLeftoverTxs,
   autoStickOffTxs,
   autoStickOnTxs,
   autoStickSettingsTx,
@@ -226,6 +227,19 @@ describe('unstickTxs', () => {
 
   it('has the same teardown for turning auto-stick off on its own', () => {
     expect(calls(autoStickOffTxs(info, on))).toEqual(calls(unstickTxs(info, B, balance, 1n, { state: on, balance })).slice(0, 3))
+  })
+
+  it('wallet-action:take-back-the-auto-stick-adapter-s-trust wallet-action:take-back-the-auto-stick-adapter-s-allowance takes back what a holder left the adapter once it is off: its trust, its allowance, or both, and nothing to turn off', () => {
+    const left = (personallyTrusted: boolean, allowance: bigint) => calls(autoStickLeftoverTxs(info, { personallyTrusted, allowance }))
+    expect(left(true, 100n)).toEqual([
+      [deployment.hook, 'setTrustedSenderFor', [12n, adapter, false]],
+      [A, 'approve', [adapter, 0n]],
+    ])
+    expect(left(true, 0n)).toEqual([[deployment.hook, 'setTrustedSenderFor', [12n, adapter, false]]])
+    expect(left(false, 1n)).toEqual([[A, 'approve', [adapter, 0n]]])
+    expect(left(false, 0n)).toEqual([])
+    // What a teardown takes back after turning the adapter off.
+    expect(calls(autoStickOffTxs(info, on)).slice(1)).toEqual(left(true, 100n))
   })
 })
 

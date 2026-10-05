@@ -387,3 +387,15 @@ describe('trustedSenders', () => {
     await expect(trustedSenders([trust(SENDER, true)], reads)).rejects.toMatchObject({ functionName: 'aggregate3' })
   })
 })
+
+describe('hasLeftovers', () => {
+  it('says an auto-stick that is off still has what the holder gave it: their trust or an allowance, and nothing else', async () => {
+    const { hasLeftovers } = await load()
+    const off = { enabled: false, personallyTrusted: false, allowance: 0n }
+    expect(hasLeftovers(off)).toBe(false)
+    expect(hasLeftovers({ ...off, personallyTrusted: true })).toBe(true)
+    expect(hasLeftovers({ ...off, allowance: 1n })).toBe(true)
+    // While it is on, they are in use.
+    expect(hasLeftovers({ enabled: true, personallyTrusted: true, allowance: 1n })).toBe(false)
+  })
+})
