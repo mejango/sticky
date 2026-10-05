@@ -213,6 +213,27 @@ describe("backingFlows, reading Bendystraw's pays and cash outs", () => {
     expect(console.warn).not.toHaveBeenCalled()
   })
 
+  it('keeps the pays and cash outs it scans when Bendystraw cannot list them, and no history of the fees it answers for', async () => {
+    const MOVES = `sticky.history.v1:${CHAIN}:${TERMINAL.toLowerCase()}:42:moves`
+    bendystraw.fees.mockResolvedValue({
+      rows: [{ kind: 'fee', chainId: CHAIN, projectId: 42n, txHash: tx(2), logIndex: 0, timestamp: 60, amount: 1n, wasHeld: false }],
+      blocks: new Map([[CHAIN, AS_OF]]),
+    })
+    // Past the depth a reorg can replace, so the pays' history is kept through 64 blocks below it.
+    const head = AS_OF + 100n
+    const center = node(head, [paid(100n, START + 5n), fee(4n, AS_OF + 3n)])
+    expect(await backingFlows(CHAIN, 42n, START)).toEqual([
+      { timestamp: 60, delta: -1n },
+      { timestamp: 7_000 + Number(START + 5n), delta: 100n },
+      { timestamp: 7_000 + Number(AS_OF + 3n), delta: -4n },
+    ])
+    expect(center.requests.map(({ topics, fromBlock, toBlock }) => [topics[0], fromBlock, toBlock])).toEqual([
+      [[PAY, CASH_OUT], toHex(START), toHex(head)],
+      [[PROCESS_FEE, ADD_TO_BALANCE], toHex(AS_OF + 1n - 64n), toHex(head)],
+    ])
+    expect(Object.keys(localStorage)).toEqual([MOVES])
+  })
+
   it('scans the terminal for pays and cash outs only past Bendystraw\'s block, and for fees over the project\'s life when Bendystraw cannot list them', async () => {
     bendystraw.moves.mockResolvedValue({ rows: [indexedPay(100n, tx(1), 50)], blocks: new Map([[CHAIN, AS_OF]]) })
     const head = AS_OF + 10n

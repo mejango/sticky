@@ -463,6 +463,39 @@ describe('backingFlows', () => {
     expect(console.warn).not.toHaveBeenCalled()
   })
 
+  it('mixes its sources: the pays and cash outs from the kept scan when Bendystraw cannot list them, and the fees and additions from Bendystraw and their tail', async () => {
+    const deps = fakeDeps({
+      fees: {
+        rows: [
+          indexedAddition(5n * E6, 2n * E6, { txHash: hash(2), logIndex: 0, timestamp: 20 }),
+          indexedFee(1n * E6, false, { txHash: hash(5), logIndex: 4, timestamp: 50 }),
+        ],
+        block: AS_OF,
+      },
+      logs: [
+        payLog(100n * E6, 100n * E18, { block: 1n, time: 10n }),
+        cashOutLog(40n * E18, 39n * E6, { block: 3n, logIndex: 5, time: 30n }),
+        // Bendystraw has this fee, and the tail reads it again.
+        feeLog(1n * E6, false, { block: AS_OF - 10n, logIndex: 4, time: 50n, txHash: hash(5) }),
+        // Past Bendystraw's block: only the tail has it.
+        feeLog(2n * E6, false, { block: AS_OF + 5n, time: 60n }),
+      ],
+    })
+    expect(await backingFlows(CHAIN, 42n, 9n, deps)).toEqual([
+      { timestamp: 10, delta: 100n * E6 },
+      { timestamp: 20, delta: 7n * E6 },
+      { timestamp: 30, delta: -39n * E6 },
+      { timestamp: 50, delta: -1n * E6 },
+      { timestamp: 60, delta: -2n * E6 },
+    ])
+    // The pays and cash outs are kept as before; the fees, which Bendystraw answered for, are not.
+    expect(deps.kept).toEqual([{ key: MOVES_KEY, filter: { address: TERMINAL, topics: MOVE_TOPICS, fromBlock: 9n } }])
+    expect(deps.scans).toEqual([{ address: TERMINAL, topics: FEE_TOPICS, fromBlock: AS_OF + 1n - 64n }])
+    expect(vi.mocked(console.warn).mock.calls).toEqual([
+      [MOVES_UNAVAILABLE, { chainId: CHAIN, projectId: 42n }, new Error('Bendystraw is down')],
+    ])
+  })
+
   it('draws the same flows from Bendystraw\'s fees and additions as from the terminal\'s logs of them', async () => {
     // One history, written once as the terminal's logs and once as Bendystraw's rows of the same events: an unheld fee,
     // a held fee (its amount left the balance when it was held), an addition that returned held fees, and an addition
