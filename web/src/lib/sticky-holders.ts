@@ -14,7 +14,7 @@
  */
 
 import { erc20Abi, pad, toHex, type Address } from 'viem'
-import { untilAborted } from '@/lib/hook-logs'
+import { inChainOrder, untilAborted } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { stickyHookAbi } from '@/lib/sticky-abis'
 import { stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
@@ -156,12 +156,6 @@ export function positionRows(
     longestCompleted: position.longestCompletedStreak,
   }))
   return applyAll(known, tail).map(position => rowAt(position, now))
-}
-
-/** By block, then log: the chain's order. Events from a scan always have a block. */
-function inChainOrder(a: StickyEvent, b: StickyEvent): number {
-  const [x, y] = [a.blockNumber ?? 0n, b.blockNumber ?? 0n]
-  return x === y ? a.logIndex - b.logIndex : x < y ? -1 : 1
 }
 
 /** The rows with shares staked, most shares first, then by address. */
