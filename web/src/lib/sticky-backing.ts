@@ -18,6 +18,7 @@ import type { ScannedLog } from '@/lib/hook-logs'
 import { terminalEventsAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import {
+  eventKey,
   keptScanToHead,
   orNull,
   scanFrom,
@@ -208,24 +209,23 @@ function flowOfMove(move: IndexedMove): Placed | null {
   return delta === 0n ? null : { timestamp: move.timestamp, logIndex: move.logIndex, delta }
 }
 
-/** One event's identity in either source: its transaction and its place in the transaction's receipt. */
-const identity = (txHash: Hex, logIndex: number) => `${txHash.toLowerCase()}:${logIndex}`
+/** Where one of Bendystraw's rows happened. */
+type IndexedPlace = { chainId: number; projectId: bigint; txHash: Hex; logIndex: number }
 
-/** Bendystraw's pays and cash outs, and those of the terminal's logs (from a scan that reads again the blocks just
- * below the one Bendystraw is indexed through) that Bendystraw does not have. An event both have counts once. */
-function mergedMoves(
+/** The flows of Bendystraw's `rows` of the project, and of those of the terminal's `tail` logs (from a scan that reads
+ * again the blocks just below the one Bendystraw is indexed through) that Bendystraw does not have. An event both have
+ * counts once. */
+function withTail<Row extends IndexedPlace>(
   chainId: number,
   projectId: bigint,
-  indexed: readonly IndexedMove[],
+  rows: readonly Row[],
+  flowOfRow: (row: Row) => Placed | null,
   tail: readonly ScannedLog[],
 ): Placed[] {
-  const ours = indexed.filter(move => move.chainId === chainId && move.projectId === projectId)
-  const known = new Set(ours.map(move => identity(move.txHash, move.logIndex)))
-  const newer = tail.filter(log => !known.has(identity(log.transactionHash, log.logIndex)))
-  return [
-    ...ours.flatMap(move => flowOfMove(move) ?? []),
-    ...newer.flatMap(log => flowOf(chainId, projectId, log) ?? []),
-  ]
+  const ours = rows.filter(row => row.chainId === chainId && row.projectId === projectId)
+  const known = new Set(ours.map(row => eventKey(chainId, row.txHash, row.logIndex)))
+  const newer = tail.filter(log => !known.has(eventKey(chainId, log.transactionHash, log.logIndex)))
+  return [...ours.flatMap(row => flowOfRow(row) ?? []), ...newer.flatMap(log => flowOf(chainId, projectId, log) ?? [])]
 }
 
 const live: FlowReadDeps = { indexedMoves: indexedStickyMoves, scan: scanToHead, keptScan: keptScanToHead }
@@ -264,11 +264,8 @@ export async function backingFlows(
   const asOf = indexed?.blocks.get(chainId)
   let moves: Placed[]
   if (indexed && asOf !== undefined) {
-    // No move is older than the project, so the tail starts at its creation when Bendystraw is indexed only through
-    // an earlier block: an indexer that stalled before the launch costs no scan of the stall.
-    const past = scanFrom(asOf, deployment)
-    const filter = { address, topics: moveTopics, fromBlock: fromBlock !== null && fromBlock > past ? fromBlock : past }
-    moves = mergedMoves(chainId, projectId, indexed.rows, await deps.scan(chainId, filter, { signal }))
+    const filter = { address, topics: moveTopics, fromBlock: scanFrom(asOf, deployment, fromBlock) }
+    moves = withTail(chainId, projectId, indexed.rows, flowOfMove, await deps.scan(chainId, filter, { signal }))
   } else {
     const key = terminalHistoryKey(chainId, address, projectId, 'moves')
     const logs = await deps.keptScan(chainId, key, { address, topics: moveTopics, fromBlock }, { signal, keep: withoutMemo })

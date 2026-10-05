@@ -259,11 +259,19 @@ const decodeAll = (chainId: number, logs: ScannedLog[]) => logs.flatMap(log => d
 const byTime = (a: StickyEvent, b: StickyEvent) => a.timestamp - b.timestamp || a.logIndex - b.logIndex
 
 /** Where a scan past a block Bendystraw is indexed through starts: `OVERLAP` blocks below the block after it, and
- * never before the deployer's block (webclient/app.js:616). */
-export function scanFrom(asOf: bigint, { fromBlock }: StickyDeployment): bigint {
+ * never before the deployer's block (webclient/app.js:616), nor before `created`, the block a project was created in
+ * when the scan is of one project's history and that block is known: an indexer that stalled before the launch costs
+ * no scan of the stall. */
+export function scanFrom(asOf: bigint, { fromBlock }: StickyDeployment, created: bigint | null = null): bigint {
   const start = asOf + 1n - OVERLAP
-  return start > fromBlock ? start : fromBlock
+  const floor = created !== null && created > fromBlock ? created : fromBlock
+  return start > floor ? start : floor
 }
+
+/** One event's identity, whichever source it came from: its chain, its transaction, and its place in the transaction's
+ * receipt. Bendystraw writes a hash in lowercase, and a node may not. */
+export const eventKey = (chainId: number, txHash: string, logIndex: number) =>
+  `${chainId}:${txHash.toLowerCase()}:${logIndex}`
 
 /** Where a scan of a holder's events starts when Bendystraw cannot say where its index ends: the block the oldest of
  * their `projects` was created in (project IDs rise with creation), and never below the deployer's block. With no
@@ -285,7 +293,7 @@ async function holderStart(
 function once(events: StickyEvent[]): StickyEvent[] {
   const seen = new Set<string>()
   return events.filter(({ chainId, txHash, logIndex }) => {
-    const key = `${chainId}:${txHash.toLowerCase()}:${logIndex}`
+    const key = eventKey(chainId, txHash, logIndex)
     if (seen.has(key)) return false
     seen.add(key)
     return true

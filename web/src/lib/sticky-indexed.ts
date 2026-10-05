@@ -403,6 +403,18 @@ function withBlocks<T>(
   return { rows: order ? rows.sort(order) : rows, blocks }
 }
 
+/** The rows of two lists that answer one question, oldest first, with the block each chain is indexed through: the
+ * older of the two lists' blocks, since each list comes in an answer of its own. A chain either answer has no status
+ * for is absent from `blocks`, and its rows are left out with it. */
+function bothAsOf<T extends Placed>(one: IndexedRows<T>, other: IndexedRows<T>): IndexedRows<T> {
+  const blocks = new Map<number, bigint>()
+  for (const [chain, block] of one.blocks) {
+    const theirs = other.blocks.get(chain)
+    if (theirs !== undefined) blocks.set(chain, block < theirs ? block : theirs)
+  }
+  return { rows: [...one.rows, ...other.rows].filter(row => blocks.has(row.chainId)).sort(byTime), blocks }
+}
+
 /** The chains of a network that Sticky is deployed on, with each one's deployer. */
 function deployersOn(network: BendystrawNetwork): Map<number, string> {
   const deployers = new Map<number, string>()
@@ -493,17 +505,11 @@ export async function indexedStickyMoves(
       allPages('payEvents', PAY_QUERY, variables, { chainId }, within),
       allPages('cashOutTokensEvents', CASH_OUT_QUERY, variables, { chainId }, within),
     ])
-    const paid = withBlocks(pays.items, pays.first, scope, payOf, 'Sticky event')
-    const cashedOut = withBlocks(cashOuts.items, cashOuts.first, scope, cashOutOf, 'Sticky event')
-    const blocks = new Map<number, bigint>()
-    for (const [chain, block] of paid.blocks) {
-      const other = cashedOut.blocks.get(chain)
-      if (other !== undefined) blocks.set(chain, block < other ? block : other)
-    }
-    const rows = [...paid.rows, ...cashedOut.rows]
-      .filter(move => blocks.has(move.chainId) && move.timestamp >= from)
-      .sort(byTime)
-    return { rows, blocks }
+    const { rows, blocks } = bothAsOf(
+      withBlocks(pays.items, pays.first, scope, payOf, 'Sticky event'),
+      withBlocks(cashOuts.items, cashOuts.first, scope, cashOutOf, 'Sticky event'),
+    )
+    return { rows: rows.filter(move => move.timestamp >= from), blocks }
   })
 }
 
