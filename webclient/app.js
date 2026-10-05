@@ -3596,7 +3596,9 @@ const autoStickAdapterOn = (chainId) => StickyRuntime.deployment(window.STICKY_C
 const autoStickAdapter = () => autoStickAdapterOn(ctx.chainId);
 const rewardTokens = {}; // projectId -> Set of reward token addresses
 
-const NATIVE_REWARD_TOKEN = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+// JBConstants.NATIVE_TOKEN, the token StickyDistributor books ETH under, lowercase like every address compared to it.
+// Relayr's all-e marker is another address, which the distributor takes for an ERC-20.
+const NATIVE_REWARD_TOKEN = "0x000000000000000000000000000000000000eeee";
 
 // A review row bound to a calldata argument. The confirm dialog shows the decoded value and blocks a mismatch.
 const bind = (param, expect, fmt) => StickyCalldata.arg(param, expect, fmt);
