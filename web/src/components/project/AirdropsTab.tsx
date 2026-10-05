@@ -16,7 +16,7 @@ import { ShowingPanel } from '@/hooks/useShowing'
  */
 export function AirdropsTab({ chainId, projectId }: { chainId: number; projectId: number }) {
   // The tokens looked for rewards in by hand, in lowercase: those checked in the rewards card, and the token of each
-  // airdrop sent from this tab, whose pot then shows where the funding logs cannot be read, as in the old client.
+  // airdrop sent from this tab, whose pot then shows where the funded pots cannot be listed, as in the old client.
   const [checked, setChecked] = useState<Address[]>([])
   const check = useCallback((token: Address) => setChecked(list => (list.includes(token) ? list : [...list, token])), [])
   return (
