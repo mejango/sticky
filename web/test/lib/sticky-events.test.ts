@@ -1069,6 +1069,39 @@ describe('projectCreationBlock', () => {
     ])
   })
 
+  it('looks once for reads that ask at once, and gives each of them the block', async () => {
+    const receipt = Promise.withResolvers<{ blockNumber: bigint; logs: ScannedLog[] }>()
+    const deps = chain({ tx: TX })
+    deps.receipt.mockImplementation(() => receipt.promise)
+    const other = chain({ tx: TX })
+    const asked = [projectCreationBlock(CHAIN, 63n, deps), projectCreationBlock(CHAIN, 63n, other)]
+    receipt.resolve({ blockNumber: deployment.fromBlock + 9n, logs: [deploySticky(63n)] })
+    expect(await Promise.all(asked)).toEqual([deployment.fromBlock + 9n, deployment.fromBlock + 9n])
+    expect([deps.indexedCreateTx, deps.receipt].map(read => read.mock.calls.length)).toEqual([1, 1])
+    expect(other.indexedCreateTx).not.toHaveBeenCalled()
+  })
+
+  it('looks again for a read still there when the read that began the lookup leaves', async () => {
+    const left = new AbortController()
+    const reason = new Error('left the page')
+    const leaving = chain({ tx: TX })
+    // The receipt of the read that leaves answers only when it is cancelled, as a request in flight on a page left does.
+    leaving.receipt.mockImplementation(
+      () => new Promise((_resolve, reject) => left.signal.addEventListener('abort', () => reject(reason))),
+    )
+    const staying = chain({ tx: TX, receipt: { blockNumber: deployment.fromBlock + 8n, logs: [deploySticky(64n)] } })
+    const asked = [
+      projectCreationBlock(CHAIN, 64n, { ...leaving, signal: left.signal }),
+      projectCreationBlock(CHAIN, 64n, staying),
+    ]
+    await vi.waitFor(() => expect(leaving.receipt).toHaveBeenCalled())
+    left.abort(reason)
+    await expect(asked[0]).rejects.toBe(reason)
+    expect(await asked[1]).toBe(deployment.fromBlock + 8n)
+    expect(staying.indexedCreateTx).toHaveBeenCalledTimes(1)
+    expect(console.warn).not.toHaveBeenCalled()
+  })
+
   it('stops when the caller cancels, rather than search', async () => {
     const controller = new AbortController()
     const reason = new Error('left the page')

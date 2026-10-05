@@ -442,6 +442,8 @@ export async function stickyHolderEvents(
 
 /** Each project's creation block this session has found, by `${chainId}:${projectId}`. */
 const creationBlocks = new Map<string, bigint>()
+/** The lookups under way, by the same key: reads that ask at once share one. */
+const lookingUp = new Map<string, Promise<bigint | null>>()
 
 /** The project a log launched, when it is this deployer's DeploySticky, and otherwise null. */
 function launchedIn(log: ReceiptLog, deployer: Address): bigint | null {
@@ -493,7 +495,8 @@ async function createdByCount(
  * The block a project was created in, where a scan of its history starts: the tightest start keeps a scan within
  * its request budget. Bendystraw names the creating transaction, and its receipt must show this chain's deployer
  * launching this project. Otherwise JBProjects.count() is searched at past blocks. The block is kept for the
- * session. When neither answers it is null, and not kept, so the next call tries again.
+ * session. When neither answers it is null, and not kept, so the next call tries again. Reads that ask while a lookup
+ * is under way share it, and when the read that began it leaves, one still there looks again.
  */
 export async function projectCreationBlock(
   chainId: number,
@@ -507,13 +510,30 @@ export async function projectCreationBlock(
   const key = `${chainId}:${projectId}`
   const known = creationBlocks.get(key)
   if (known !== undefined) return known
+  // A lookup under way rejects only when the read that began it has left; a read still here then looks itself.
+  const under = lookingUp.get(key)
+  if (under) {
+    try {
+      return await untilAborted(under, signal)
+    } catch (error) {
+      if (signal?.aborted) throw error
+    }
+  }
 
   const about = { chainId, projectId }
-  const found =
-    (await orNull(() => createdByIndex(deps, deployment, projectId, signal), signal, CREATION_NOT_INDEXED, about)) ??
-    (await orNull(() => createdByCount(deps, deployment, projectId, signal), signal, CREATION_NOT_ON_CHAIN, about))
-  if (found !== null) creationBlocks.set(key, found)
-  return found
+  const lookup = (async () => {
+    const found =
+      (await orNull(() => createdByIndex(deps, deployment, projectId, signal), signal, CREATION_NOT_INDEXED, about)) ??
+      (await orNull(() => createdByCount(deps, deployment, projectId, signal), signal, CREATION_NOT_ON_CHAIN, about))
+    if (found !== null) creationBlocks.set(key, found)
+    return found
+  })()
+  lookingUp.set(key, lookup)
+  try {
+    return await lookup
+  } finally {
+    if (lookingUp.get(key) === lookup) lookingUp.delete(key)
+  }
 }
 
 /**
