@@ -43,7 +43,8 @@ const PROJECT_VERSION = 'v1'
 const POSITION_REFRESH_MS = 15_000
 
 const PROJECT_UNREADABLE = 'Could not read a Sticky project; its page offers to try again.'
-const HISTORY_UNREADABLE = "Could not read a Sticky project's history; Latest and its holder figures cannot show."
+const HISTORY_UNREADABLE =
+  "Could not read a Sticky project's history; Latest and the chart cannot show, and the holders show only from Bendystraw's positions."
 const HOLDERS_UNREADABLE = "Could not read a Sticky project's holders."
 const STICKS_UNREADABLE = "Could not count a Sticky project's holders; the header shows – for their figures."
 const LATEST_UNREADABLE = "Could not read a Sticky project's Latest list; it offers to try again."

@@ -477,6 +477,21 @@ describe('the tabs', () => {
   })
 })
 
+describe('a history that cannot be read', () => {
+  it('leaves the holder figures to Bendystraw\'s positions, and tells the console what it keeps from showing', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const failure = new Error('429')
+    mocks.events.mockRejectedValueOnce(failure)
+    await renderPage('base:23')
+    expect(value('Sticks')).toBe('2')
+    expect(warn).toHaveBeenCalledWith(
+      "Could not read a Sticky project's history; Latest and the chart cannot show, and the holders show only from Bendystraw's positions.",
+      { chainId: 8453, projectId: 23 },
+      failure,
+    )
+  })
+})
+
 describe('the reads behind the page', () => {
   it('read the project\'s history once, for Latest and for the holders', async () => {
     await renderPage('base:23')
