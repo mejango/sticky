@@ -419,6 +419,18 @@ describe('readAutoStickStanding', () => {
     expect(failed).toMatchObject({ message: "the holder's auto-stick settings could not be read." })
     expect((failed as Error).cause).toBeInstanceOf(Error)
   })
+
+  it('names a request that got no answer in one line, and keeps viem\'s error as the cause', async () => {
+    const chain = rewardChain()
+    chain.stock(ADAPTER, stickyAutoStickAbi, 'configOf', [1n, 86_400, 0, true])
+    chain.stock(HOOK, stickyHookAbi, 'isTrustedSenderOf', true)
+    chain.stock(STAKED, erc20Abi, 'allowance', 7n)
+    chain.lose(() => true)
+    const { readAutoStickStanding } = await load()
+    const lost = await readAutoStickStanding(CHAIN, PROJECT, HOLDER, { stakedToken: STAKED }).catch((error: Error) => error)
+    expect(lost).toMatchObject({ message: 'your auto-stick could not be read.' })
+    expect((lost as Error).cause).toBeInstanceOf(Error)
+  })
 })
 
 describe('hasLeftovers', () => {

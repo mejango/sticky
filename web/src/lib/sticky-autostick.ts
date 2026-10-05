@@ -8,6 +8,7 @@
  */
 
 import { erc20Abi, type Address, type ContractFunctionParameters } from 'viem'
+import { asked } from '@/lib/hook-logs'
 import { stickyAutoStickAbi, stickyDistributorAbi, stickyHookAbi } from '@/lib/sticky-abis'
 import { deploymentOn } from '@/lib/sticky-addresses'
 import type { StickyEvent } from '@/lib/sticky-events'
@@ -193,14 +194,19 @@ export async function readAutoStickStanding(
   { stakedToken, block, signal }: Cancel & { stakedToken: Address; block?: bigint },
 ): Promise<AutoStickStanding> {
   const { autoStick, hook } = deploymentOn(chainId)
-  const [configOf, trustedOf, allowanceOf] = await readAt(
-    chainId,
-    [
-      { address: autoStick, abi: stickyAutoStickAbi, functionName: 'configOf', args: [projectId, holder] },
-      { address: hook, abi: stickyHookAbi, functionName: 'isTrustedSenderOf', args: [projectId, holder, autoStick] },
-      { address: stakedToken, abi: erc20Abi, functionName: 'allowance', args: [holder, autoStick] },
-    ],
-    block,
+  const [configOf, trustedOf, allowanceOf] = await asked(
+    'your auto-stick',
+    () =>
+      readAt(
+        chainId,
+        [
+          { address: autoStick, abi: stickyAutoStickAbi, functionName: 'configOf', args: [projectId, holder] },
+          { address: hook, abi: stickyHookAbi, functionName: 'isTrustedSenderOf', args: [projectId, holder, autoStick] },
+          { address: stakedToken, abi: erc20Abi, functionName: 'allowance', args: [holder, autoStick] },
+        ],
+        block,
+        signal,
+      ),
     signal,
   )
   const [, , , enabled] = need(configOf as Answer<readonly [bigint, number, number, boolean]>, "the holder's auto-stick settings")
