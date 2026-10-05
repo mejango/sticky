@@ -23,6 +23,7 @@ import { stickyHookAbi } from '@/lib/sticky-abis'
 import { stickyChainIds, stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
 import {
   POSITION_TOPICS,
+  PROJECTS_UNAVAILABLE,
   decodeHookLog,
   orNull,
   scanFrom,
@@ -100,7 +101,6 @@ export type ActivityReadOptions = Cancel &
   }
 
 const POSITIONS_UNAVAILABLE = "Bendystraw could not list the account's Sticky positions; reading every Sticky project instead."
-const PROJECTS_UNAVAILABLE = 'Bendystraw could not list the Sticky projects; scanning each chain instead.'
 
 /** How many projects one request asks StickyHook about: three calls each, about as many calls as a request of the
  * project reads carries. */

@@ -140,6 +140,8 @@ const OVERLAP = 64n
 
 // What the console says when a read gives up on one source and uses another, the same each time.
 const INDEX_UNAVAILABLE = 'Bendystraw could not answer; reading the chain instead.'
+/** What the console hears when Bendystraw cannot list the Sticky projects, and each chain's deployer is scanned. */
+export const PROJECTS_UNAVAILABLE = 'Bendystraw could not list the Sticky projects; scanning each chain instead.'
 const CREATION_NOT_INDEXED = "Could not find a Sticky project's creation from Bendystraw."
 const CREATION_NOT_ON_CHAIN = "Could not find a Sticky project's creation block on the chain."
 

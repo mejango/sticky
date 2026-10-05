@@ -19,6 +19,7 @@ import type { ScannedLog } from '@/lib/hook-logs'
 import { stickyChainIds, stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
 import {
   POSITION_TOPICS,
+  PROJECTS_UNAVAILABLE,
   decodeHookLog,
   fromIndexedEvent,
   merged,
@@ -102,7 +103,6 @@ export type HomeReadOptions = Cancel & {
   latest: IndexedRows<IndexedStickyEvent> | null
 } & Partial<HomeReadDeps>
 
-const INDEX_UNAVAILABLE = 'Bendystraw could not list the Sticky projects; scanning each chain instead.'
 const LATEST_UNAVAILABLE = 'Bendystraw could not list the newest Sticky events; Latest shows its pays and cash outs.'
 const MOVES_UNAVAILABLE = "Bendystraw could not list a chain's sticks and unsticks; scanning the chain instead."
 const TAIL_UNAVAILABLE = "Could not read a chain's newest blocks; Latest shows Bendystraw's pays and cash outs."
@@ -118,7 +118,7 @@ export function homeIndex(
   network: BendystrawNetwork,
   { signal, indexedProjects = indexedStickyProjects }: Cancel & { indexedProjects?: typeof indexedStickyProjects } = {},
 ): Promise<IndexedProjects | null> {
-  return orNull(() => indexedProjects(network, signal), signal, INDEX_UNAVAILABLE, { network })
+  return orNull(() => indexedProjects(network, signal), signal, PROJECTS_UNAVAILABLE, { network })
 }
 
 /** Bendystraw's newest FEED_WINDOW hook events of a network's Sticky chains, or null when it cannot answer. */
