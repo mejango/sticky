@@ -520,6 +520,22 @@ describe('backingFlows', () => {
     ])
   })
 
+  it('leaves out a tail\'s events of nothing, and another project\'s that a node sent anyway', async () => {
+    const deps = fakeDeps({
+      indexed: { rows: [], block: AS_OF },
+      fees: { rows: [], block: AS_OF },
+      logs: [
+        payLog(0n, 0n, { block: AS_OF + 1n }),
+        payLog(5n, 5n, { block: AS_OF + 2n, project: 43n }),
+        feeLog(9n, true, { block: AS_OF + 3n }),
+        addLog(0n, 0n, { block: AS_OF + 4n }),
+        feeLog(1n, false, { block: AS_OF + 5n, project: 43n }),
+        payLog(3n, 3n, { block: AS_OF + 6n }),
+      ],
+    })
+    expect(await backingFlows(CHAIN, 42n, 9n, deps)).toEqual([{ timestamp: Number(AS_OF + 6n), delta: 3n }])
+  })
+
   it('leaves out Bendystraw\'s fees and additions of another project', async () => {
     const deps = fakeDeps({
       indexed: { rows: [], block: AS_OF },
