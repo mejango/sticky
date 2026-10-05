@@ -1,6 +1,6 @@
 import { zeroAddress, type Address, type Hex, type PublicClient } from 'viem'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ScannedLog } from '@/lib/hook-logs'
+import { HistoryTooLongError, type ScannedLog } from '@/lib/hook-logs'
 import { decodeHookLog, type StickyEvent, type StickyEventsResult } from '@/lib/sticky-events'
 import {
   holderRows,
@@ -628,6 +628,27 @@ describe('stickyHolders', () => {
       const deps = fakeDeps({ positions: new Error('down'), events: new Error('This history spans 9000000 blocks') })
       await expect(stickyHolders(CHAIN, 23n, deps)).rejects.toThrow('This history spans 9000000 blocks')
     })
+  })
+
+  it('builds the rows from the project\'s events, as when Bendystraw cannot answer, when the tail is too long to scan', async () => {
+    // Bendystraw answers, but is far behind the head, as when it replays its history.
+    const tooLong = new HistoryTooLongError('This history spans 600000 blocks, more than this RPC can scan in 1024 requests.')
+    const deps = fakeDeps({
+      positions: { block: AS_OF, rows: [position(HOLDER_A, 5n, NOW - 10, 0)] },
+      tail: tooLong,
+      events: {
+        events: [{ ...stick(HOLDER_B, 2n, 2n, NOW - 10), chainId: CHAIN, projectId: 23n }],
+        source: 'scanned',
+        degraded: 'not-indexed',
+      },
+    })
+    const result = await stickyHolders(CHAIN, 23n, { ...deps, now: NOW })
+    expect(result).toMatchObject({ source: 'scanned', degraded: 'not-indexed' })
+    expect(result.rows.map(row => row.holder)).toEqual([HOLDER_B])
+    expect(deps.events).toHaveBeenCalledWith(CHAIN, 23n, { signal: undefined })
+    expect(vi.mocked(console.warn).mock.calls).toEqual([
+      ["Bendystraw could not list the holders; building them from the project's events.", { chainId: CHAIN, projectId: 23n }, tooLong],
+    ])
   })
 
   it('rejects when the tail scan fails, instead of returning positions it could not bring up to date', async () => {

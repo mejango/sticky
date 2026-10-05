@@ -5,11 +5,12 @@
  * maxWeeks 0 means no upper bound. A pot is one group's rewards in one token. What a holder has in a pot is claimable
  * now, vesting (collected, and unlocking a round at a time), or earned in finished rounds and not vesting yet.
  *
- * Every amount is read from the distributor, never added up from logs: the Fund logs only say which pots exist. All
- * of a refresh's reads are made at one pinned block and together, a request for each step (and one more for every 250
- * calls) and not for each pot. A reward token is any contract, so its symbol and decimals are read apart from the
- * distributor's own answers, where a token that keeps a request from being answered leaves out only itself, and what
- * is read of a token is kept, so a refresh does not read it again.
+ * Every amount a holder has is read from the distributor, never added up from fundings: Bendystraw's fundings, and the
+ * distributor's Fund logs when it cannot answer, say which pots exist and what was sent to each. All of a refresh's
+ * reads are made at one pinned block and together, a request for each step (and one more for every 250 calls) and not
+ * for each pot. A reward token is any contract, so its symbol and decimals are read apart from the distributor's own
+ * answers, where a token that keeps a request from being answered leaves out only itself, and what is read of a token
+ * is kept, so a refresh does not read it again.
  *
  * Funding is permissionless: anyone can fund any group with any token. So the pots looked at are capped
  * (`MAX_FUNDED_POTS`), and what a refresh costs does not grow with what a project's enemies fund it with.
@@ -31,13 +32,23 @@ import {
   type ContractFunctionParameters,
   type Hex,
 } from 'viem'
-import { untilAborted } from '@/lib/hook-logs'
+import { inChainOrder, untilAborted, type ScannedLog } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { stickyDistributorAbi, stickyHookAbi, stickyTokenAbi } from '@/lib/sticky-abis'
 import { stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
-import { keptScanToHead, projectCreationBlock } from '@/lib/sticky-events'
+import {
+  keptScanToHead,
+  notIndexed,
+  orNull,
+  projectCreationBlock,
+  scanFrom,
+  scanToHead,
+  tailOrNull,
+  type StickyReadDeps,
+} from '@/lib/sticky-events'
 import { formatAmount, formatDuration } from '@/lib/sticky-format'
 import { pinnedBlock } from '@/lib/sticky-holders'
+import { indexedStickyFunding } from '@/lib/sticky-indexed'
 import { answered, capped, type Answer } from '@/lib/sticky-project'
 
 type Cancel = { signal?: AbortSignal }
@@ -150,7 +161,7 @@ export type TokenMeta = { symbol: string; decimals: number }
 /** One group's rewards in one token, and everything ever sent to it (0 for a pot only checked by hand). */
 export type RewardPot = { groupId: bigint; token: Address; funded: bigint }
 
-/** A pot the Fund logs show, and the block it was last funded in. */
+/** A pot that was funded, and the block it was last funded in. */
 export type FundedPot = RewardPot & { fundedAt: bigint }
 
 /** A pot as a holder sees it, and the schedule its dates are on. */
@@ -292,49 +303,105 @@ export async function readRewardSchedule(
 
 // ---- the pots
 
-/** Every pot the distributor has been funded for a Sticky token: one for each group and token in its Fund logs, in the
- * order they were first funded, with everything sent to it and the block it was last funded in. The scan starts at the
- * project's creation block, and this browser keeps what it has read, so a later visit scans only newer blocks. It
- * rejects when the scan cannot finish: a list of pots is never quietly shorter. */
-export async function discoverFunding(
-  chainId: number,
-  stToken: Address,
-  projectId: bigint,
-  { signal }: Cancel = {},
-): Promise<FundedPot[]> {
-  const { distributor } = deploymentOn(chainId)
-  const fromBlock = await projectCreationBlock(chainId, projectId, { signal })
-  const hook = stToken.toLowerCase() as Address
-  const logs = await keptScanToHead(
-    chainId,
-    `${chainId}:${distributor.toLowerCase()}:fund:${hook}`,
-    { address: distributor, topics: [FUND, pad(hook, { size: 32 })], fromBlock },
-    { signal },
-  )
+/** Every read `discoverFunding` makes, so a test can stand in for Bendystraw and Center. */
+export type FundingReadDeps = {
+  /** Bendystraw's fundings of a Sticky token, with the block they are as of. */
+  indexedFunding: typeof indexedStickyFunding
+  /** The distributor's logs that match a filter, from its block through the head. */
+  scan: StickyReadDeps['scan']
+  /** The same, with the history kept in this browser under a key, so a return visit scans only the blocks since. */
+  keptScan: typeof keptScanToHead
+  /** The block a project was created in, or null when it cannot be found. */
+  creationBlock: typeof projectCreationBlock
+}
+
+/** A caller's signal, which every read gets, and in tests the reads to use instead of the real ones. */
+export type FundingReadOptions = Cancel & Partial<FundingReadDeps>
+
+const liveFunding: FundingReadDeps = {
+  indexedFunding: indexedStickyFunding,
+  scan: scanToHead,
+  keptScan: keptScanToHead,
+  creationBlock: projectCreationBlock,
+}
+
+const FUNDING_UNAVAILABLE = 'Bendystraw could not list the airdrops funded; scanning the distributor for them instead.'
+
+/** One funding, from either source: the pot it went to, what it sent, and where it is in the chain. */
+type Funding = { groupId: bigint; token: Address; amount: bigint; blockNumber: bigint; logIndex: number }
+
+function fundingOfLog(log: ScannedLog): Funding {
+  const { args } = decodeEventLog({
+    abi: stickyDistributorAbi,
+    eventName: 'Fund',
+    topics: log.topics as [Hex, ...Hex[]],
+    data: log.data,
+  })
+  const { groupId, amount } = args
+  return { groupId, token: args.token.toLowerCase() as Address, amount, blockNumber: log.blockNumber, logIndex: log.logIndex }
+}
+
+/** The pots fundings in the order of the chain make: one for each group and token, in the order they were first
+ * funded, with everything sent to it and the block it was last funded in. */
+function potsOf(fundings: readonly Funding[]): FundedPot[] {
   const pots = new Map<string, FundedPot>()
-  for (const log of logs) {
-    const { args } = decodeEventLog({
-      abi: stickyDistributorAbi,
-      eventName: 'Fund',
-      topics: log.topics as [Hex, ...Hex[]],
-      data: log.data,
-    })
-    const token = args.token.toLowerCase() as Address
-    const id = `${args.groupId}:${token}`
-    const pot = pots.get(id) ?? { groupId: args.groupId, token, funded: 0n, fundedAt: 0n }
-    pots.set(id, { ...pot, funded: pot.funded + args.amount, fundedAt: log.blockNumber })
+  for (const { groupId, token, amount, blockNumber } of fundings) {
+    const id = `${groupId}:${token}`
+    const pot = pots.get(id) ?? { groupId, token, funded: 0n, fundedAt: 0n }
+    pots.set(id, { ...pot, funded: pot.funded + amount, fundedAt: blockNumber })
   }
   return [...pots.values()]
 }
 
-/** How many of the pots the Fund logs show are looked at. Anyone can fund any group with any token, so a project can
- * be given as many pots as an enemy cares to pay for, and the newest are the ones that matter to a holder. */
+/**
+ * Every pot the distributor has been funded for a Sticky token: one for each group and token it was funded in, in the
+ * order they were first funded, with everything sent to it and the block it was last funded in. Bendystraw lists the
+ * fundings, and a scan of the distributor's Fund logs from just below the block it is indexed through (never below the
+ * project's creation) adds the newer ones; a funding both have counts once. When Bendystraw cannot answer, has no
+ * status for the chain, or is so far behind the head that the tail is longer than a scan may read (as when it replays
+ * its history), the Fund logs are scanned from the project's creation block instead, and this browser keeps what that
+ * scan read, so a later visit scans only newer blocks; what Bendystraw answers for is not kept. It rejects when neither
+ * can finish: a list of pots is never quietly shorter.
+ */
+export async function discoverFunding(
+  chainId: number,
+  stToken: Address,
+  projectId: bigint,
+  options: FundingReadOptions = {},
+): Promise<FundedPot[]> {
+  const { signal, ...given } = options
+  const deps: FundingReadDeps = { ...liveFunding, ...given }
+  const deployment = deploymentOn(chainId)
+  const { distributor } = deployment
+  const hook = stToken.toLowerCase() as Address
+  const topics = [FUND, pad(hook, { size: 32 })]
+  const about = { chainId, projectId }
+  const [fromBlock, indexed] = await Promise.all([
+    deps.creationBlock(chainId, projectId, { signal }),
+    orNull(() => deps.indexedFunding(chainId, hook, signal), signal, FUNDING_UNAVAILABLE, about),
+  ])
+  const asOf = indexed?.blocks.get(chainId)
+  if (indexed && asOf !== undefined) {
+    const filter = { address: distributor, topics, fromBlock: scanFrom(asOf, deployment, fromBlock) }
+    const tail = await tailOrNull(() => deps.scan(chainId, filter, { signal }), FUNDING_UNAVAILABLE, about)
+    if (tail !== null) {
+      const ours = indexed.rows.filter(row => row.chainId === chainId && row.hook === hook)
+      return potsOf([...ours, ...notIndexed(chainId, ours, tail).map(fundingOfLog)].sort(inChainOrder))
+    }
+  }
+  const key = `${chainId}:${distributor.toLowerCase()}:fund:${hook}`
+  const logs = await deps.keptScan(chainId, key, { address: distributor, topics, fromBlock }, { signal })
+  return potsOf(logs.map(fundingOfLog))
+}
+
+/** How many of the funded pots are looked at. Anyone can fund any group with any token, so a project can be given as
+ * many pots as an enemy cares to pay for, and the newest are the ones that matter to a holder. */
 export const MAX_FUNDED_POTS = 12
 
 /**
  * The pots to look at: the newest `limit` funded ones (by when each was last funded, shown in the order they were first
  * funded), and the staked token and any token checked by hand under group 0 and the group of each of those, so a holder
- * can always look for rewards where the funding logs could not be read. `groups` are those, in order, and `more` is
+ * can always look for rewards where the funded pots could not be listed. `groups` are those, in order, and `more` is
  * how many funded pots are left out.
  */
 export function rewardRows(

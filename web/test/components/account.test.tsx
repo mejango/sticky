@@ -3,7 +3,7 @@ import { act, type AnchorHTMLAttributes, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { getAddress, type Address } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ScannedLog } from '@/lib/hook-logs'
+import { HistoryTooLongError, type ScannedLog } from '@/lib/hook-logs'
 import type { StickyEvent } from '@/lib/sticky-events'
 import type { IndexedProjects } from '@/lib/sticky-indexed'
 import {
@@ -489,6 +489,28 @@ describe('the account\'s positions, past the block Bendystraw is indexed through
     world[10] = { '4': { staked: 0n, longest: 3_600 }, '6': { staked: E18 }, '7': { staked: E18 } }
     await renderPositions()
     expect(hrefs()).toEqual(['/op:4', '/op:6'])
+  })
+
+  it('reads every Sticky project of a chain, as without a listing, when its position events are too many to scan', async () => {
+    // Bendystraw lists the account's positions, but is far behind the head on Optimism, as when it replays its history.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mocks.positions.mockResolvedValue(listing([positionRow(10, 4n)], MAINNET, THROUGH))
+    const tooLong = new HistoryTooLongError('This history spans 600000 blocks, more than this RPC can scan in 1024 requests.')
+    tails[10] = tooLong
+    mocks.projectsOn.mockImplementation(async (chainId: number) => ({
+      projects: chainId === 10 ? [4n, 8n].map(projectId => ({ chainId, projectId })) : [],
+      source: 'indexed',
+      degraded: null,
+    }))
+    world[10] = { '4': { staked: E18 }, '8': { staked: 2n * E18, symbol: 'LATE' } }
+    await renderPositions()
+
+    expect(hrefs()).toEqual(['/op:4', '/op:8'])
+    expect(note()).toBe('')
+    expect(mocks.projectsOn.mock.calls.map(([chainId]) => chainId)).toEqual([10])
+    expect(warn.mock.calls).toEqual([
+      ["Bendystraw could not list the account's Sticky positions; reading every Sticky project instead.", { chainId: 10 }, tooLong],
+    ])
   })
 
   it('counts a chain whose position events cannot be read, warns why, and never shows its listing as the whole', async () => {

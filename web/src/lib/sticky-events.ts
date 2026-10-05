@@ -2,8 +2,9 @@
  * Sticky's history, from the hook: sticks and unsticks, streaks that start and end, and a project's settings
  * (its granters, holders' trusted senders, and backing excluded from holders' claims). Bendystraw answers first,
  * and the chain's own logs complete its answer from just below the block it is indexed through to the head. When
- * Bendystraw fails, or does not index a chain, the chain's logs are the whole answer and the result says so in
- * `degraded`. A history is never shorter for either: a read that can get neither rejects.
+ * Bendystraw fails, does not index a chain, or is so far behind the head that the blocks since are more than a scan
+ * may read (`tailOrNull`), the chain's logs are the whole answer and the result says so in `degraded`. A history is
+ * never shorter for either: a read that can get neither rejects.
  *
  * Also here, because a scan depends on them: the block a project was created in, where a scan of its history
  * starts, and the Sticky projects a chain has past what Bendystraw lists.
@@ -25,7 +26,15 @@ import {
   type Hex,
   type Log,
 } from 'viem'
-import { freshHead, keptLogs, projectHookLogs, scanLogs, untilAborted, type ScannedLog } from '@/lib/hook-logs'
+import {
+  freshHead,
+  HistoryTooLongError,
+  keptLogs,
+  projectHookLogs,
+  scanLogs,
+  untilAborted,
+  type ScannedLog,
+} from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { controllerAbi, projectsAbi, stickyDeployerAbi, stickyHookAbi } from '@/lib/sticky-abis'
 import { stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
@@ -132,6 +141,8 @@ const OVERLAP = 64n
 
 // What the console says when a read gives up on one source and uses another, the same each time.
 const INDEX_UNAVAILABLE = 'Bendystraw could not answer; reading the chain instead.'
+/** What the console hears when Bendystraw cannot list the Sticky projects, and each chain's deployer is scanned. */
+export const PROJECTS_UNAVAILABLE = 'Bendystraw could not list the Sticky projects; scanning each chain instead.'
 const CREATION_NOT_INDEXED = "Could not find a Sticky project's creation from Bendystraw."
 const CREATION_NOT_ON_CHAIN = "Could not find a Sticky project's creation block on the chain."
 
@@ -259,10 +270,46 @@ const decodeAll = (chainId: number, logs: ScannedLog[]) => logs.flatMap(log => d
 const byTime = (a: StickyEvent, b: StickyEvent) => a.timestamp - b.timestamp || a.logIndex - b.logIndex
 
 /** Where a scan past a block Bendystraw is indexed through starts: `OVERLAP` blocks below the block after it, and
- * never before the deployer's block (webclient/app.js:616). */
-export function scanFrom(asOf: bigint, { fromBlock }: StickyDeployment): bigint {
+ * never before the deployer's block (webclient/app.js:616), nor before `created`, the block a project was created in
+ * when the scan is of one project's history and that block is known: an indexer that stalled before the launch costs
+ * no scan of the stall. */
+export function scanFrom(asOf: bigint, { fromBlock }: StickyDeployment, created: bigint | null = null): bigint {
   const start = asOf + 1n - OVERLAP
-  return start > fromBlock ? start : fromBlock
+  const floor = created !== null && created > fromBlock ? created : fromBlock
+  return start > floor ? start : floor
+}
+
+/** One event's identity, whichever source it came from: its chain, its transaction, and its place in the transaction's
+ * receipt. Bendystraw writes a hash in lowercase, and a node may not. */
+const eventKey = (chainId: number, txHash: string, logIndex: number) => `${chainId}:${txHash.toLowerCase()}:${logIndex}`
+
+/** The logs of a chain's `tail` that none of Bendystraw's `rows` records. A tail reads again the blocks just below the
+ * one Bendystraw is indexed through, so an event both have is Bendystraw's row, counted once. */
+export function notIndexed<Log extends { transactionHash: string; logIndex: number }>(
+  chainId: number,
+  rows: readonly { txHash: string; logIndex: number }[],
+  tail: readonly Log[],
+): Log[] {
+  const known = new Set(rows.map(row => eventKey(chainId, row.txHash, row.logIndex)))
+  return tail.filter(log => !known.has(eventKey(chainId, log.transactionHash, log.logIndex)))
+}
+
+/** A tail past the block Bendystraw is indexed through, as `read` scans it, or null when it is longer than a scan may
+ * read. An indexer that answers but is far behind the head, as one replaying its history is, cannot answer for the
+ * blocks since, so the caller reads what this browser kept instead, and the console hears why under `label`, as when
+ * Bendystraw cannot answer at all. Any other failure is the caller's. */
+export async function tailOrNull(
+  read: () => Promise<ScannedLog[]>,
+  label: string,
+  about: Record<string, unknown>,
+): Promise<ScannedLog[] | null> {
+  try {
+    return await read()
+  } catch (error) {
+    if (!(error instanceof HistoryTooLongError)) throw error
+    console.warn(label, about, error)
+    return null
+  }
 }
 
 /** Where a scan of a holder's events starts when Bendystraw cannot say where its index ends: the block the oldest of
@@ -285,7 +332,7 @@ async function holderStart(
 function once(events: StickyEvent[]): StickyEvent[] {
   const seen = new Set<string>()
   return events.filter(({ chainId, txHash, logIndex }) => {
-    const key = `${chainId}:${txHash.toLowerCase()}:${logIndex}`
+    const key = eventKey(chainId, txHash, logIndex)
     if (seen.has(key)) return false
     seen.add(key)
     return true
@@ -323,8 +370,9 @@ export async function orNull<T>(
  * Every event of a project's hook history, through the chain's head: its sticks, unsticks and streaks from
  * Bendystraw's stickyEvents, and its granters, trusted senders and exclusions from its stickySettingEvents. One
  * scan of the hook, from just below the older of the two answers' blocks, adds what either answer did not have.
- * When either read fails, or has no status for the chain, the hook's whole history is scanned from the project's
- * creation block instead, or through the history this browser kept when that block cannot be found.
+ * When either read fails, has no status for the chain, or is too far behind for that scan, the hook's whole history
+ * is scanned from the project's creation block instead, or through the history this browser kept when that block
+ * cannot be found.
  */
 export async function stickyEvents(
   chainId: number,
@@ -345,12 +393,15 @@ export async function stickyEvents(
   const eventsBlock = events?.blocks.get(chainId)
   const settingsBlock = settings?.blocks.get(chainId)
   if (events && settings && eventsBlock !== undefined && settingsBlock !== undefined) {
-    const indexed = [...events.rows.map(fromIndexedEvent), ...settings.rows.map(fromIndexedSetting)].filter(ours)
     const [older, newer] = eventsBlock < settingsBlock ? [eventsBlock, settingsBlock] : [settingsBlock, eventsBlock]
     const topics = [PROJECT_TOPICS, pad(toHex(projectId))]
     const fromBlock = scanFrom(older, deployment)
-    const logs = await deps.scan(chainId, { address: deployment.hook, topics, fromBlock }, { signal })
-    return { events: merged(indexed, decodeAll(chainId, logs).filter(ours), newer), source: 'indexed', degraded: null }
+    const read = () => deps.scan(chainId, { address: deployment.hook, topics, fromBlock }, { signal })
+    const logs = await tailOrNull(read, INDEX_UNAVAILABLE, about)
+    if (logs !== null) {
+      const indexed = [...events.rows.map(fromIndexedEvent), ...settings.rows.map(fromIndexedSetting)].filter(ours)
+      return { events: merged(indexed, decodeAll(chainId, logs).filter(ours), newer), source: 'indexed', degraded: null }
+    }
   }
 
   const degraded = events && settings ? 'not-indexed' : 'indexer-error'
@@ -361,10 +412,10 @@ export async function stickyEvents(
 
 /**
  * One holder's sticks, unsticks and streaks in every Sticky project of a chain, through the chain's head. Bendystraw
- * answers and a scan of the hook, from just below its block, adds what it did not have. When it fails, or has no
- * status for the chain, the hook is scanned from the block the oldest of `projects` was created in, or with none from
- * the deployer's block: no Sticky project is older. `projects` are the ones Bendystraw lists positions of the holder
- * in: an event in a project it does not list is newer than the listing.
+ * answers and a scan of the hook, from just below its block, adds what it did not have. When it fails, has no status
+ * for the chain, or is too far behind for that scan, the hook is scanned from the block the oldest of `projects` was
+ * created in, or with none from the deployer's block: no Sticky project is older. `projects` are the ones Bendystraw
+ * lists positions of the holder in: an event in a project it does not list is newer than the listing.
  */
 export async function stickyHolderEvents(
   chainId: number,
@@ -381,18 +432,18 @@ export async function stickyHolderEvents(
   const read = () => deps.indexedEvents({ chainId, holder: who }, signal)
   const index = await orNull(read, signal, INDEX_UNAVAILABLE, { chainId })
   const block = index?.blocks.get(chainId)
-  const fromBlock =
-    block === undefined
-      ? await holderStart(deps, chainId, deployment, projects, { ...given, signal })
-      : scanFrom(block, deployment)
   const topics = [POSITION_TOPICS, null, pad(who)]
-  const logs = await deps.scan(chainId, { address: deployment.hook, topics, fromBlock }, { signal })
-  const scanned = decodeAll(chainId, logs).filter(theirs)
-  if (!index || block === undefined) {
-    return { events: once(scanned), source: 'scanned', degraded: index ? 'not-indexed' : 'indexer-error' }
+  const scan = (fromBlock: bigint) => deps.scan(chainId, { address: deployment.hook, topics, fromBlock }, { signal })
+  if (index && block !== undefined) {
+    const logs = await tailOrNull(() => scan(scanFrom(block, deployment)), INDEX_UNAVAILABLE, { chainId })
+    if (logs !== null) {
+      const indexed = index.rows.map(fromIndexedEvent).filter(theirs)
+      return { events: merged(indexed, decodeAll(chainId, logs).filter(theirs), block), source: 'indexed', degraded: null }
+    }
   }
-  const indexed = index.rows.map(fromIndexedEvent).filter(theirs)
-  return { events: merged(indexed, scanned, block), source: 'indexed', degraded: null }
+  const logs = await scan(await holderStart(deps, chainId, deployment, projects, { ...given, signal }))
+  const degraded = index ? 'not-indexed' : 'indexer-error'
+  return { events: once(decodeAll(chainId, logs).filter(theirs)), source: 'scanned', degraded }
 }
 
 /** Each project's creation block this session has found, by `${chainId}:${projectId}`. */
@@ -474,8 +525,8 @@ export async function projectCreationBlock(
 /**
  * Every Sticky project of a chain: the ones `index` lists, and the ones the deployer's DeploySticky logs show from
  * just below the block it is indexed through. `index` is what `indexedStickyProjects` gave for the chain's network,
- * or null when it failed; with no index for the chain, the deployer's whole history is scanned. A launch the scan
- * finds is kept as its project's creation block.
+ * or null when it failed; with no index for the chain, or one too far behind for that scan, the deployer's whole
+ * history is scanned. A launch the scan finds is kept as its project's creation block.
  */
 export async function stickyProjectsOn(
   chainId: number,
@@ -486,9 +537,11 @@ export async function stickyProjectsOn(
   const deps: StickyReadDeps = { ...live, ...given }
   const deployment = deploymentOn(chainId)
   const { deployer } = deployment
+  const scan = (fromBlock: bigint) => deps.scan(chainId, { address: deployer, topics: [DEPLOY_STICKY], fromBlock }, { signal })
   const block = index?.blocks.get(chainId)
-  const fromBlock = block === undefined ? deployment.fromBlock : scanFrom(block, deployment)
-  const logs = await deps.scan(chainId, { address: deployer, topics: [DEPLOY_STICKY], fromBlock }, { signal })
+  const tail =
+    block === undefined ? null : await tailOrNull(() => scan(scanFrom(block, deployment)), PROJECTS_UNAVAILABLE, { chainId })
+  const logs = tail ?? (await scan(deployment.fromBlock))
 
   const listed = (index?.projects ?? []).filter(project => project.chainId === chainId)
   const ids = new Set(listed.map(project => project.projectId))
@@ -500,8 +553,8 @@ export async function stickyProjectsOn(
   }
   return {
     projects: [...ids].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).map(projectId => ({ chainId, projectId })),
-    source: block === undefined ? 'scanned' : 'indexed',
-    degraded: block !== undefined ? null : index ? 'not-indexed' : 'indexer-error',
+    source: tail === null ? 'scanned' : 'indexed',
+    degraded: tail !== null ? null : index ? 'not-indexed' : 'indexer-error',
   }
 }
 

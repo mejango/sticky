@@ -1,5 +1,6 @@
 import type { PublicClient } from 'viem'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { HistoryTooLongError } from '@/lib/hook-logs'
 import {
   accountActivity,
   accountChains,
@@ -303,6 +304,11 @@ describe('accountPositions, past the block the listing is indexed through', () =
   const opened = (projectId: bigint, blockNumber = THROUGH + 3n) =>
     staked(HOLDER, HOLDER, E18, E18, { project: projectId, blockNumber })
   const tail = (logs: ReturnType<typeof opened>[] = []) => vi.fn<PositionReadDeps['scan']>(async () => logs)
+  /** Bendystraw's listing, indexed through `through`, whose list of every Sticky project of the chain is not asked for
+   * unless a test says so. */
+  const listedThrough = (through: bigint, everyProject = vi.fn(async (): Promise<bigint[]> => {
+    throw new Error('every project was not to be asked for')
+  })) => ({ through, everyProject })
 
   it('asks for the account\'s position events from just below that block, and asks about the projects they show too', async () => {
     const multicall = fakeHook({ '5': [E18, 0n, 0n], '9': [2n * E18, 0n, 0n] })
@@ -311,7 +317,7 @@ describe('accountPositions, past the block the listing is indexed through', () =
     const chain = await accountPositions(CHAIN, HOLDER, [5n], {
       readProjects: figures(),
       scan,
-      through: THROUGH,
+      listing: listedThrough(THROUGH),
       signal: controller.signal,
     })
 
@@ -331,14 +337,14 @@ describe('accountPositions, past the block the listing is indexed through', () =
   it('reads the events before it asks the hook about any balance', async () => {
     const multicall = fakeHook({ '9': [E18, 0n, 0n] })
     const scan = tail([opened(9n)])
-    await accountPositions(CHAIN, HOLDER, [], { readProjects: figures(), scan, through: THROUGH })
+    await accountPositions(CHAIN, HOLDER, [], { readProjects: figures(), scan, listing: listedThrough(THROUGH) })
     expect(scan.mock.invocationCallOrder[0]).toBeLessThan(multicall.mock.invocationCallOrder[0])
   })
 
   it('never starts from below the deployer\'s block', async () => {
     fakeHook()
     const scan = tail()
-    await accountPositions(CHAIN, HOLDER, [], { readProjects: figures(), scan, through: deployment.fromBlock - 5_000n })
+    await accountPositions(CHAIN, HOLDER, [], { readProjects: figures(), scan, listing: listedThrough(deployment.fromBlock - 5_000n) })
     expect(scan.mock.calls[0][1].fromBlock).toBe(deployment.fromBlock)
     expect(scan.mock.calls[0][1].fromBlock).toBe(scanFrom(deployment.fromBlock - 5_000n, deployment))
   })
@@ -348,7 +354,7 @@ describe('accountPositions, past the block the listing is indexed through', () =
     const chain = await accountPositions(CHAIN, HOLDER, [5n], {
       readProjects: figures(),
       scan: tail([opened(5n), opened(5n, THROUGH + 4n)]),
-      through: THROUGH,
+      listing: listedThrough(THROUGH),
     })
     expect(chain.positions).toHaveLength(1)
     expect(multicall.mock.calls[0][0].contracts).toHaveLength(3)
@@ -359,7 +365,7 @@ describe('accountPositions, past the block the listing is indexed through', () =
     const at = { blockNumber: THROUGH + 3n }
     await accountPositions(CHAIN, HOLDER, [], {
       readProjects: figures(),
-      through: THROUGH,
+      listing: listedThrough(THROUGH),
       scan: tail([
         opened(11n),
         unstaked(HOLDER, E18, 0n, { project: 12n, ...at }),
@@ -382,6 +388,32 @@ describe('accountPositions, past the block the listing is indexed through', () =
     expect(chain.positions.map(position => position.info.projectId)).toEqual([5n])
   })
 
+  it('asks about every Sticky project of the chain, as without a listing, when the events past its block are too many to scan', async () => {
+    // Bendystraw lists the account's positions, but is far behind the head, as when it replays its history.
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const multicall = fakeHook({ '5': [E18, 0n, 0n], '6': [2n * E18, 0n, 0n] })
+    const tooLong = new HistoryTooLongError('This history spans 600000 blocks, more than this RPC can scan in 1024 requests.')
+    const scan = vi.fn<PositionReadDeps['scan']>(async () => {
+      throw tooLong
+    })
+    const everyProject = vi.fn(async () => [5n, 6n, 7n])
+    const chain = await accountPositions(CHAIN, HOLDER, [5n], {
+      readProjects: figures(),
+      scan,
+      listing: listedThrough(THROUGH, everyProject),
+    })
+
+    expect(everyProject).toHaveBeenCalledOnce()
+    expect(multicall.mock.calls[0][0].contracts.map(({ args: [projectId] }) => projectId)).toEqual([5n, 5n, 5n, 6n, 6n, 6n, 7n, 7n, 7n])
+    expect(chain.positions.map(position => [position.info.projectId, position.staked])).toEqual([
+      [5n, E18],
+      [6n, 2n * E18],
+    ])
+    expect(warning.mock.calls).toEqual([
+      ["Bendystraw could not list the account's Sticky positions; reading every Sticky project instead.", { chainId: CHAIN }, tooLong],
+    ])
+  })
+
   it('rejects when the events cannot be read, and asks the hook for nothing: a shorter list is not the chain\'s', async () => {
     const multicall = fakeHook({ '5': [E18, 0n, 0n] })
     const failure = new Error('This history spans 600000 blocks, more than this RPC can scan in 1024 requests.')
@@ -389,7 +421,7 @@ describe('accountPositions, past the block the listing is indexed through', () =
       throw failure
     })
     await expect(
-      accountPositions(CHAIN, HOLDER, [5n], { readProjects: figures(), scan, through: THROUGH }),
+      accountPositions(CHAIN, HOLDER, [5n], { readProjects: figures(), scan, listing: listedThrough(THROUGH) }),
     ).rejects.toBe(failure)
     expect(multicall).not.toHaveBeenCalled()
   })
@@ -398,7 +430,7 @@ describe('accountPositions, past the block the listing is indexed through', () =
     fakeHook()
     const { blockTimestamp: _time, ...withoutTime } = opened(9n)
     await expect(
-      accountPositions(CHAIN, HOLDER, [], { readProjects: figures(), scan: tail([withoutTime]), through: THROUGH }),
+      accountPositions(CHAIN, HOLDER, [], { readProjects: figures(), scan: tail([withoutTime]), listing: listedThrough(THROUGH) }),
     ).rejects.toThrow("came without its block's time")
   })
 })

@@ -1,0 +1,242 @@
+{
+ "recordedAt": "2026-10-05T15:22:20.582Z",
+ "source": {
+  "bendystraw": "https://testnet.bendystraw.xyz/graphql",
+  "center": "https://dev.juicebox.center/v1/rpc/84532"
+ },
+ "chainId": 84532,
+ "projects": [
+  {
+   "projectId": 37,
+   "stickyToken": "0xee528a64f4afe524ba220c7cf0ea0c0278d0f232",
+   "creationBlock": "47305674"
+  },
+  {
+   "projectId": 42,
+   "stickyToken": "0xb4591bfc2cf3507228af5e34763c2f379179529c",
+   "creationBlock": "47390508"
+  }
+ ],
+ "scannedFrom": "47305674",
+ "through": "47722614",
+ "answers": {
+  "0xee528a64f4afe524ba220c7cf0ea0c0278d0f232": {
+   "variables": {
+    "where": {
+     "chainId": 84532,
+     "hook": "0xee528a64f4afe524ba220c7cf0ea0c0278d0f232",
+     "version": 6
+    },
+    "after": null
+   },
+   "data": {
+    "stickyFundEvents": {
+     "items": [
+      {
+       "chainId": 84532,
+       "version": 6,
+       "txHash": "0x4669382a02caac9c04b75d4f9072605334c50671f8f590a967d54e91c2522a38",
+       "logIndex": 159,
+       "blockNumber": "47306068",
+       "hook": "0xee528a64f4afe524ba220c7cf0ea0c0278d0f232",
+       "groupId": "0",
+       "token": "0x8b122b7dd707f83b639a578bc0c81e75c55d34bd",
+       "amount": "1000000000000000000"
+      },
+      {
+       "chainId": 84532,
+       "version": 6,
+       "txHash": "0x0a6de5b6cf3cb7f589d7b9585d11c62f367998fed14fc77e9bb3c26f8d5b5d37",
+       "logIndex": 1,
+       "blockNumber": "47306083",
+       "hook": "0xee528a64f4afe524ba220c7cf0ea0c0278d0f232",
+       "groupId": "1000",
+       "token": "0x8b122b7dd707f83b639a578bc0c81e75c55d34bd",
+       "amount": "500000000000000000"
+      }
+     ],
+     "pageInfo": {
+      "hasNextPage": false,
+      "endCursor": "eyJqc29uIjp7InRpbWVzdGFtcCI6MTc5MDM4MDQ1NCwiaWQiOiJhZGQwZmU5Mi1hZjY3LTQ4NzMtYTY0MS1kNGUwNTZmYzMxNzIifX0="
+     }
+    },
+    "_meta": {
+     "status": {
+      "ethereumSepolia": {
+       "id": 11155111,
+       "block": {
+        "number": 11849618,
+        "timestamp": 1791213516
+       }
+      },
+      "optimismSepolia": {
+       "id": 11155420,
+       "block": {
+        "number": 49705487,
+        "timestamp": 1791213514
+       }
+      },
+      "arbitrumSepolia": {
+       "id": 421614,
+       "block": {
+        "number": 316059835,
+        "timestamp": 1791213516
+       }
+      },
+      "baseSepolia": {
+       "id": 84532,
+       "block": {
+        "number": 47722614,
+        "timestamp": 1791213516
+       }
+      }
+     }
+    }
+   }
+  },
+  "0xb4591bfc2cf3507228af5e34763c2f379179529c": {
+   "variables": {
+    "where": {
+     "chainId": 84532,
+     "hook": "0xb4591bfc2cf3507228af5e34763c2f379179529c",
+     "version": 6
+    },
+    "after": null
+   },
+   "data": {
+    "_meta": {
+     "status": {
+      "ethereumSepolia": {
+       "id": 11155111,
+       "block": {
+        "number": 11849618,
+        "timestamp": 1791213516
+       }
+      },
+      "optimismSepolia": {
+       "id": 11155420,
+       "block": {
+        "number": 49705488,
+        "timestamp": 1791213516
+       }
+      },
+      "arbitrumSepolia": {
+       "id": 421614,
+       "block": {
+        "number": 316059835,
+        "timestamp": 1791213516
+       }
+      },
+      "baseSepolia": {
+       "id": 84532,
+       "block": {
+        "number": 47722614,
+        "timestamp": 1791213516
+       }
+      }
+     }
+    },
+    "stickyFundEvents": {
+     "items": [
+      {
+       "chainId": 84532,
+       "version": 6,
+       "txHash": "0xd293910f1b2fb47aa513927161982b07c923320dcebf60fe5efaabd011cad2f4",
+       "logIndex": 44,
+       "blockNumber": "47390706",
+       "hook": "0xb4591bfc2cf3507228af5e34763c2f379179529c",
+       "groupId": "0",
+       "token": "0x1d9fbfedcf7b644edbaf6dcfa72a365ecad3a42e",
+       "amount": "100000000000000000000"
+      },
+      {
+       "chainId": 84532,
+       "version": 6,
+       "txHash": "0x4a1ac3bab3dc731eac5570b849b79bf2128f92a4e2a5f0106c1b286ba41f7a66",
+       "logIndex": 81,
+       "blockNumber": "47390712",
+       "hook": "0xb4591bfc2cf3507228af5e34763c2f379179529c",
+       "groupId": "0",
+       "token": "0x1d9fbfedcf7b644edbaf6dcfa72a365ecad3a42e",
+       "amount": "10000000000000000000"
+      }
+     ],
+     "pageInfo": {
+      "hasNextPage": false,
+      "endCursor": "eyJqc29uIjp7InRpbWVzdGFtcCI6MTc5MDU0OTcxMiwiaWQiOiJlM2U4YWE0Yy1lMmZkLTQwYmYtOWFlMy04YWZjZWZkMDhiZTcifX0="
+     }
+    }
+   }
+  }
+ },
+ "logs": [
+  {
+   "address": "0xc62b3fed668cd8a3879ba34890a67c48a52b1bb8",
+   "topics": [
+    "0x171d1972970e548ead487a3a60cfbdfffd130a21513e44dfcd8778965935ddf2",
+    "0x000000000000000000000000ee528a64f4afe524ba220c7cf0ea0c0278d0f232",
+    "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "0x0000000000000000000000008b122b7dd707f83b639a578bc0c81e75c55d34bd"
+   ],
+   "data": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000de0b6b3a7640000000000000000000000000000042f619eed558723252593db0375fc34306f203a",
+   "blockHash": "0xaa1b462bcdf328d50728aebc151a239be15cad4ffaa00fa5c844a9ab71a414fe",
+   "blockNumber": "0x2d1d554",
+   "blockTimestamp": "0x6ab70988",
+   "transactionHash": "0x4669382a02caac9c04b75d4f9072605334c50671f8f590a967d54e91c2522a38",
+   "transactionIndex": "0xb",
+   "logIndex": "0x9f",
+   "removed": false
+  },
+  {
+   "address": "0xc62b3fed668cd8a3879ba34890a67c48a52b1bb8",
+   "topics": [
+    "0x171d1972970e548ead487a3a60cfbdfffd130a21513e44dfcd8778965935ddf2",
+    "0x000000000000000000000000ee528a64f4afe524ba220c7cf0ea0c0278d0f232",
+    "0x00000000000000000000000000000000000000000000000000000000000003e8",
+    "0x0000000000000000000000008b122b7dd707f83b639a578bc0c81e75c55d34bd"
+   ],
+   "data": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006f05b59d3b20000000000000000000000000000042f619eed558723252593db0375fc34306f203a",
+   "blockHash": "0x9741652a493e13a0508209e5283bbc445a0642050e56aa705fcd1cb4b282e1fd",
+   "blockNumber": "0x2d1d563",
+   "blockTimestamp": "0x6ab709a6",
+   "transactionHash": "0x0a6de5b6cf3cb7f589d7b9585d11c62f367998fed14fc77e9bb3c26f8d5b5d37",
+   "transactionIndex": "0x2",
+   "logIndex": "0x1",
+   "removed": false
+  },
+  {
+   "address": "0xc62b3fed668cd8a3879ba34890a67c48a52b1bb8",
+   "topics": [
+    "0x171d1972970e548ead487a3a60cfbdfffd130a21513e44dfcd8778965935ddf2",
+    "0x000000000000000000000000b4591bfc2cf3507228af5e34763c2f379179529c",
+    "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "0x0000000000000000000000001d9fbfedcf7b644edbaf6dcfa72a365ecad3a42e"
+   ],
+   "data": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000056bc75e2d63100000000000000000000000000000042f619eed558723252593db0375fc34306f203a",
+   "blockHash": "0x7b200bb21fe6539864ffc7a6a64d8806687ac08d940041934c78d1170fc49c91",
+   "blockNumber": "0x2d31ff2",
+   "blockTimestamp": "0x6ab99ec4",
+   "transactionHash": "0xd293910f1b2fb47aa513927161982b07c923320dcebf60fe5efaabd011cad2f4",
+   "transactionIndex": "0xc",
+   "logIndex": "0x2c",
+   "removed": false
+  },
+  {
+   "address": "0xc62b3fed668cd8a3879ba34890a67c48a52b1bb8",
+   "topics": [
+    "0x171d1972970e548ead487a3a60cfbdfffd130a21513e44dfcd8778965935ddf2",
+    "0x000000000000000000000000b4591bfc2cf3507228af5e34763c2f379179529c",
+    "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "0x0000000000000000000000001d9fbfedcf7b644edbaf6dcfa72a365ecad3a42e"
+   ],
+   "data": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008ac7230489e80000000000000000000000000000b4dca01b57993ff71e60d30b88ea1b9f8d346670",
+   "blockHash": "0xead99cb9dbc398593d1caf771d4337aa5e690bb07a5ecf3c970dac4cb67a928f",
+   "blockNumber": "0x2d31ff8",
+   "blockTimestamp": "0x6ab99ed0",
+   "transactionHash": "0x4a1ac3bab3dc731eac5570b849b79bf2128f92a4e2a5f0106c1b286ba41f7a66",
+   "transactionIndex": "0x10",
+   "logIndex": "0x51",
+   "removed": false
+  }
+ ]
+}

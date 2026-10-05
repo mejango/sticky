@@ -1,13 +1,16 @@
 import { zeroAddress, type Address, type Hex } from 'viem'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ScannedLog } from '@/lib/hook-logs'
+import { HistoryTooLongError, type ScannedLog } from '@/lib/hook-logs'
 import {
+  PROJECTS_UNAVAILABLE,
   decodeHookLog,
   fromIndexedEvent,
+  notIndexed,
   projectCreationBlock,
   stickyEvents,
   stickyHolderEvents,
   stickyProjectsOn,
+  tailOrNull,
   type StickyEvent,
   type StickyReadDeps,
 } from '@/lib/sticky-events'
@@ -47,6 +50,12 @@ import {
 beforeEach(() => {
   vi.spyOn(console, 'warn').mockImplementation(() => {})
 })
+
+/** What the console hears when Bendystraw cannot answer a read of the hook's history. */
+const INDEX_UNAVAILABLE = 'Bendystraw could not answer; reading the chain instead.'
+/** The scanner's refusal of a tail past Bendystraw's block when Bendystraw is far behind the head, as when it replays
+ * its history. */
+const TOO_LONG = new HistoryTooLongError('This history spans 600000 blocks, more than this RPC can scan in 1024 requests.')
 
 // ev(txHash, logIndex, timestamp) is an indexed event (no block number);
 // log(txHash, logIndex, blockNumber) is a raw hook log from the scanner.
@@ -414,6 +423,20 @@ describe('stickyEvents', () => {
     expect(hashes((await stickyEvents(CHAIN, 23n, deps)).events)).toEqual([`0x${'a'.repeat(64)}`])
   })
 
+  it('reads the project\'s history as when Bendystraw is not indexed, when the tail past its block is too long to scan', async () => {
+    // Bendystraw answers, but is far behind the head, as when it replays its history.
+    const deps = fakeDeps({
+      indexed: { block: CREATED + 100n, events: [ev('0xa', 1, 90)] },
+      tail: TOO_LONG,
+      full: [log('0xb', 1, CREATED + 5n)],
+    })
+    const result = await stickyEvents(CHAIN, 23n, deps)
+    expect(result).toMatchObject({ source: 'scanned', degraded: 'not-indexed' })
+    expect(hashes(result.events)).toEqual(['0xb'])
+    expect(deps.scans).toEqual([{ fromBlock: CREATED + 101n - 64n }, { fromBlock: CREATED }])
+    expect(vi.mocked(console.warn).mock.calls).toEqual([[INDEX_UNAVAILABLE, { chainId: CHAIN, projectId: 23n }, TOO_LONG]])
+  })
+
   it('rejects when the scan past Bendystraw\'s block fails, rather than end the history at that block', async () => {
     const deps = fakeDeps({ indexed: { block: 100n, events: [ev('0xa', 1, 90)] }, tail: new Error('429') })
     await expect(stickyEvents(CHAIN, 23n, deps)).rejects.toThrow('429')
@@ -605,6 +628,25 @@ describe('stickyHolderEvents', () => {
     await expect(stickyHolderEvents(CHAIN, HOLDER, deps)).rejects.toThrow('over budget')
   })
 
+  it('scans as when Bendystraw is not indexed, when the tail past its block is too long to scan, and says so', async () => {
+    const deps = fakeDeps({
+      indexed: { block: CREATED + 700n, events: [row.staked(HOLDER, HOLDER, 1n, 1n, { txHash: '0x1', logIndex: 0, timestamp: 10 })] },
+      tail: [streakStarted(HOLDER, { txHash: '0x2', blockNumber: deployment.fromBlock + 9n })],
+    })
+    deps.scan.mockRejectedValueOnce(TOO_LONG)
+    const result = await stickyHolderEvents(CHAIN, HOLDER, deps)
+    expect(result).toMatchObject({ source: 'scanned', degraded: 'not-indexed' })
+    expect(hashes(result.events)).toEqual(['0x2'])
+    expect(deps.scan.mock.calls.map(([, filter]) => filter.fromBlock)).toEqual([CREATED + 701n - 64n, deployment.fromBlock])
+    expect(vi.mocked(console.warn).mock.calls).toEqual([[INDEX_UNAVAILABLE, { chainId: CHAIN }, TOO_LONG]])
+  })
+
+  it('rejects when the tail past Bendystraw\'s block fails otherwise, rather than end the history at that block', async () => {
+    const deps = fakeDeps({ indexed: { block: CREATED + 700n }, tail: new Error('429') })
+    await expect(stickyHolderEvents(CHAIN, HOLDER, deps)).rejects.toThrow('429')
+    expect(deps.scan).toHaveBeenCalledTimes(1)
+  })
+
   it('tells the console why it scanned the chain', async () => {
     const down = new Error('down')
     await stickyHolderEvents(CHAIN, HOLDER, fakeDeps({ indexed: down }))
@@ -723,6 +765,69 @@ describe('where a scan past Bendystraw\'s block starts', () => {
     })
     const listed = { blocks: new Map([[CHAIN, block]]), projects: [{ chainId: CHAIN, projectId: 80n }] }
     expect((await stickyProjectsOn(CHAIN, listed, deployer)).projects.map(entry => entry.projectId)).toEqual([80n, 81n])
+  })
+})
+
+describe('notIndexed', () => {
+  const tx = (n: number) => `0x${n.toString(16).padStart(64, '0')}`
+  const tail = [
+    raw([TOPIC.Staked], '0x', { txHash: tx(1), logIndex: 3 }),
+    raw([TOPIC.Staked], '0x', { txHash: tx(1), logIndex: 4 }),
+    raw([TOPIC.Staked], '0x', { txHash: tx(2), logIndex: 0 }),
+  ]
+
+  it('keeps the tail\'s logs no row records, an event of the same transaction at another place included', () => {
+    expect(notIndexed(CHAIN, [{ txHash: tx(1), logIndex: 3 }], tail)).toEqual([tail[1], tail[2]])
+  })
+
+  it('knows a row whatever the letter case of its hash, as Bendystraw and a node may write it', () => {
+    const shouting = tx(2).toUpperCase().replace('0X', '0x')
+    expect(notIndexed(CHAIN, [{ txHash: shouting, logIndex: 0 }], tail)).toEqual([tail[0], tail[1]])
+  })
+
+  it('keeps the whole tail when there are no rows, and nothing of an empty one', () => {
+    expect(notIndexed(CHAIN, [], tail)).toEqual(tail)
+    expect(notIndexed(CHAIN, [{ txHash: tx(1), logIndex: 3 }], [])).toEqual([])
+  })
+})
+
+describe('tailOrNull', () => {
+  const LABEL = 'Bendystraw could not list them; scanning instead.'
+  const about = { chainId: CHAIN, projectId: 23n }
+  const tail = [raw([TOPIC.Staked], '0x')]
+
+  it('is the tail the scan read, empty included', async () => {
+    expect(await tailOrNull(async () => tail, LABEL, about)).toBe(tail)
+    expect(await tailOrNull(async () => [], LABEL, about)).toEqual([])
+    expect(console.warn).not.toHaveBeenCalled()
+  })
+
+  it('is null, and says why under the label, when the tail is longer than a scan may read', async () => {
+    const tooLong = new HistoryTooLongError('This history spans 600000 blocks, more than this RPC can scan in 1024 requests.')
+    expect(
+      await tailOrNull(
+        async () => {
+          throw tooLong
+        },
+        LABEL,
+        about,
+      ),
+    ).toBeNull()
+    expect(vi.mocked(console.warn).mock.calls).toEqual([[LABEL, about, tooLong]])
+  })
+
+  it('rejects with any other failure, the caller\'s to handle', async () => {
+    const failure = new Error('429')
+    await expect(
+      tailOrNull(
+        async () => {
+          throw failure
+        },
+        LABEL,
+        about,
+      ),
+    ).rejects.toBe(failure)
+    expect(console.warn).not.toHaveBeenCalled()
   })
 })
 
@@ -1051,6 +1156,18 @@ describe('stickyProjectsOn', () => {
 
   it('rejects when the scan fails, rather than list only what the index had', async () => {
     await expect(stickyProjectsOn(CHAIN, index(INDEXED, [CHAIN, 70n]), scanning(new Error('429')))).rejects.toThrow('429')
+  })
+
+  it('scans the chain from the deployer\'s block, as when the index has no status for it, when the tail is too long to scan', async () => {
+    const deps = scanning([deploySticky(81n, { blockNumber: deployment.fromBlock + 3n })])
+    deps.scan.mockRejectedValueOnce(TOO_LONG)
+    expect(await stickyProjectsOn(CHAIN, index(INDEXED, [CHAIN, 80n]), deps)).toEqual({
+      projects: [80n, 81n].map(projectId => ({ chainId: CHAIN, projectId })),
+      source: 'scanned',
+      degraded: 'not-indexed',
+    })
+    expect(deps.scan.mock.calls.map(([, filter]) => filter.fromBlock)).toEqual([INDEXED + 1n - 64n, deployment.fromBlock])
+    expect(vi.mocked(console.warn).mock.calls).toEqual([[PROJECTS_UNAVAILABLE, { chainId: CHAIN }, TOO_LONG]])
   })
 
   it('hands the caller\'s signal to the scan', async () => {

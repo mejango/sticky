@@ -5,21 +5,26 @@ import { backingFlows } from '@/lib/sticky-backing'
 import type { IndexedMove } from '@/lib/sticky-indexed'
 import { CHAIN, HOLDER, deployment, raw, topic, words } from './sticky-log-fixtures'
 
-// backingFlows' own reads: Bendystraw's pays and cash outs (faked), and the terminal through Center's log scanner and
-// the history this browser keeps, which run for real here. Center is a fake client that answers from a list of logs.
+// backingFlows' own reads: Bendystraw's pays and cash outs and its fees and additions (faked), and the terminal through
+// Center's log scanner and the history this browser keeps, which run for real here. Center is a fake client that
+// answers from a list of logs.
 
 const center = vi.hoisted(() => ({ client: vi.fn() }))
 vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: center.client }))
-const bendystraw = vi.hoisted(() => ({ moves: vi.fn() }))
+const bendystraw = vi.hoisted(() => ({ moves: vi.fn(), fees: vi.fn() }))
 vi.mock('@/lib/sticky-indexed', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-indexed')>()),
   indexedStickyMoves: bendystraw.moves,
+  indexedStickyFees: bendystraw.fees,
 }))
+
+const FEES_UNAVAILABLE = 'Bendystraw could not list the fees and additions; scanning the terminal for them instead.'
 
 beforeEach(() => {
   localStorage.clear()
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   bendystraw.moves.mockRejectedValue(new Error('Bendystraw is down'))
+  bendystraw.fees.mockRejectedValue(new Error('Bendystraw is down'))
 })
 
 const TERMINAL = deployment.terminal
@@ -177,7 +182,60 @@ describe("backingFlows, reading Bendystraw's pays and cash outs", () => {
     raw([PROCESS_FEE, topic(42n), topic(HOLDER), topic(amount)], words(false, HOLDER, HOLDER), on(block))
   const FEES = `sticky.history.v1:${CHAIN}:${TERMINAL.toLowerCase()}:42:fees`
 
-  it('scans the terminal for pays and cash outs only past Bendystraw\'s block, and for fees over the project\'s life', async () => {
+  it('reads the fees from Bendystraw too, scans the terminal only past its blocks, and keeps no history', async () => {
+    bendystraw.moves.mockResolvedValue({ rows: [indexedPay(100n, tx(1), 50)], blocks: new Map([[CHAIN, AS_OF]]) })
+    bendystraw.fees.mockResolvedValue({
+      rows: [{ kind: 'fee', chainId: CHAIN, projectId: 42n, txHash: tx(2), logIndex: 0, timestamp: 60, amount: 1n, wasHeld: false }],
+      blocks: new Map([[CHAIN, AS_OF]]),
+    })
+    const head = AS_OF + 10n
+    const center = node(head, [
+      // Bendystraw has this pay and this fee, and the tails do not reach down to them: each is read once, from
+      // Bendystraw.
+      paid(100n, START + 5n, tx(1)),
+      fee(1n, START + 6n),
+      paid(3n, AS_OF + 2n),
+      fee(4n, AS_OF + 3n),
+    ])
+    expect(await backingFlows(CHAIN, 42n, START)).toEqual([
+      { timestamp: 50, delta: 100n },
+      { timestamp: 60, delta: -1n },
+      { timestamp: 7_000 + Number(AS_OF + 2n), delta: 3n },
+      { timestamp: 7_000 + Number(AS_OF + 3n), delta: -4n },
+    ])
+    expect(bendystraw.fees).toHaveBeenCalledWith(CHAIN, 42n, undefined)
+    const tail = { fromBlock: toHex(AS_OF + 1n - 64n), toBlock: toHex(head) }
+    expect(center.requests).toEqual([
+      { address: TERMINAL, topics: [[PAY, CASH_OUT], null, null, topic(42n)], ...tail },
+      { address: TERMINAL, topics: [[PROCESS_FEE, ADD_TO_BALANCE], topic(42n)], ...tail },
+    ])
+    // What Bendystraw answered for is not kept: a later fallback scans as a first visit does.
+    expect(localStorage).toHaveLength(0)
+    expect(console.warn).not.toHaveBeenCalled()
+  })
+
+  it('keeps the pays and cash outs it scans when Bendystraw cannot list them, and no history of the fees it answers for', async () => {
+    const MOVES = `sticky.history.v1:${CHAIN}:${TERMINAL.toLowerCase()}:42:moves`
+    bendystraw.fees.mockResolvedValue({
+      rows: [{ kind: 'fee', chainId: CHAIN, projectId: 42n, txHash: tx(2), logIndex: 0, timestamp: 60, amount: 1n, wasHeld: false }],
+      blocks: new Map([[CHAIN, AS_OF]]),
+    })
+    // Past the depth a reorg can replace, so the pays' history is kept through 64 blocks below it.
+    const head = AS_OF + 100n
+    const center = node(head, [paid(100n, START + 5n), fee(4n, AS_OF + 3n)])
+    expect(await backingFlows(CHAIN, 42n, START)).toEqual([
+      { timestamp: 60, delta: -1n },
+      { timestamp: 7_000 + Number(START + 5n), delta: 100n },
+      { timestamp: 7_000 + Number(AS_OF + 3n), delta: -4n },
+    ])
+    expect(center.requests.map(({ topics, fromBlock, toBlock }) => [topics[0], fromBlock, toBlock])).toEqual([
+      [[PAY, CASH_OUT], toHex(START), toHex(head)],
+      [[PROCESS_FEE, ADD_TO_BALANCE], toHex(AS_OF + 1n - 64n), toHex(head)],
+    ])
+    expect(Object.keys(localStorage)).toEqual([MOVES])
+  })
+
+  it('scans the terminal for pays and cash outs only past Bendystraw\'s block, and for fees over the project\'s life when Bendystraw cannot list them', async () => {
     bendystraw.moves.mockResolvedValue({ rows: [indexedPay(100n, tx(1), 50)], blocks: new Map([[CHAIN, AS_OF]]) })
     const head = AS_OF + 10n
     const center = node(head, [
@@ -206,7 +264,9 @@ describe("backingFlows, reading Bendystraw's pays and cash outs", () => {
         toBlock: toHex(head),
       },
     ])
-    expect(console.warn).not.toHaveBeenCalled()
+    expect(vi.mocked(console.warn).mock.calls).toEqual([
+      [FEES_UNAVAILABLE, { chainId: CHAIN, projectId: 42n }, new Error('Bendystraw is down')],
+    ])
   })
 
   it('a return visit scans the fees only past the block it kept them through', async () => {
@@ -275,5 +335,47 @@ describe("backingFlows, reading Bendystraw's pays and cash outs", () => {
     expect(await backingFlows(CHAIN, 42n, START)).toEqual(flows)
     const asked = center.requests.filter(request => request.topics[0]?.includes(PROCESS_FEE))
     expect(asked.map(request => request.fromBlock)).toEqual([toHex(first - 64n + 1n)])
+  })
+
+  describe('with Bendystraw replaying its history, far behind the head', () => {
+    // More blocks since the project's creation than a scan may read in 1,024 requests of 500.
+    const head = START + 600_000n
+    const KEPT_THROUGH = head - 200n
+    const replaying = () => {
+      bendystraw.moves.mockResolvedValue({ rows: [], blocks: new Map([[CHAIN, head - 10n]]) })
+      bendystraw.fees.mockResolvedValue({ rows: [], blocks: new Map([[CHAIN, START + 10n]]) })
+    }
+    const earlier = fee(1n, START + 5n)
+    const later = fee(2n, head - 50n)
+
+    it('resumes the fee history an earlier visit kept, instead of the tail past Bendystraw\'s block, and says so', async () => {
+      replaying()
+      localStorage.setItem(
+        FEES,
+        JSON.stringify({ at: 1, from: String(START), through: String(KEPT_THROUGH), all: [rpcLog(earlier)] }),
+      )
+      const center = node(head, [earlier, later])
+
+      expect(await backingFlows(CHAIN, 42n, START)).toEqual([
+        { timestamp: 7_000 + Number(START + 5n), delta: -1n },
+        { timestamp: 7_000 + Number(head - 50n), delta: -2n },
+      ])
+      // The 600,000-block tail is refused before a request; the kept history goes on from the block after its own.
+      expect(center.requests.map(({ topics, fromBlock, toBlock }) => [topics[0], fromBlock, toBlock])).toEqual([
+        [[PAY, CASH_OUT], toHex(head - 10n + 1n - 64n), toHex(head)],
+        [[PROCESS_FEE, ADD_TO_BALANCE], toHex(KEPT_THROUGH + 1n), toHex(head)],
+      ])
+      expect(vi.mocked(console.warn).mock.calls).toEqual([
+        [FEES_UNAVAILABLE, { chainId: CHAIN, projectId: 42n }, expect.objectContaining({ name: 'HistoryTooLongError' })],
+      ])
+    })
+
+    it('rejects when no kept history is near enough to resume', async () => {
+      replaying()
+      const center = node(head, [earlier, later])
+
+      await expect(backingFlows(CHAIN, 42n, START)).rejects.toMatchObject({ name: 'HistoryTooLongError' })
+      expect(center.requests.map(({ topics }) => topics[0])).toEqual([[PAY, CASH_OUT]])
+    })
   })
 })

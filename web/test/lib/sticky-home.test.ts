@@ -1,6 +1,6 @@
 import { getAddress, type Address, type Hex } from 'viem'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ScannedLog } from '@/lib/hook-logs'
+import { HistoryTooLongError, type ScannedLog } from '@/lib/hook-logs'
 import { stickyChainIds } from '@/lib/sticky-addresses'
 import type { StickyEvent, StickyProjectsResult } from '@/lib/sticky-events'
 import { FEED_WINDOW, type FeedRow } from '@/lib/sticky-feed'
@@ -259,7 +259,27 @@ describe('homeChain, with Bendystraw', () => {
     })
     const chain = await homeChain(CHAIN, { index: indexedOn(100n), latest, ...deps(given) })
     expect(lines(chain.activity)).toEqual([{ kind: 'stuck', holder: HOLDER }])
-    expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/Latest/), { chainId: CHAIN }, failure)
+    expect(vi.mocked(console.warn).mock.calls).toEqual([
+      ["Could not read a chain's newest blocks; Latest shows Bendystraw's pays and cash outs.", { chainId: CHAIN }, failure],
+    ])
+  })
+
+  it('builds Latest from the pays and cash outs, as when Bendystraw has no newest events, when the tail is too long to scan', async () => {
+    // Bendystraw answers, but is far behind the head, as when it replays its history.
+    const rows = [pay(HOLDER, HOLDER, 1n, 1n, { tx: 'e2', timestamp: 100 })]
+    const latest = { rows: [stakedRow(HOLDER, HOLDER, 1n, 1n, { tx: 'e2', timestamp: 100 })], blocks: new Map([[CHAIN, 50n]]) }
+    const tooLong = new HistoryTooLongError('This history spans 600000 blocks, more than this RPC can scan in 1024 requests.')
+    const given = fakes([23n], {
+      indexedMoves: vi.fn(async () => moves(rows)),
+      scan: vi.fn(async () => {
+        throw tooLong
+      }),
+    })
+    const chain = await homeChain(CHAIN, { index: indexedOn(100n), latest, ...deps(given) })
+    expect(lines(chain.activity)).toEqual([{ kind: 'stuck', holder: HOLDER }])
+    expect(vi.mocked(console.warn).mock.calls).toEqual([
+      ['Bendystraw could not list the newest Sticky events; Latest shows its pays and cash outs.', { chainId: CHAIN }, tooLong],
+    ])
   })
 
   it('builds Latest from the pays and cash outs when Bendystraw has no newest events for the chain', async () => {

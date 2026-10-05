@@ -9,9 +9,9 @@ import { terminalEventsAbi } from '@/lib/sticky-abis'
 
 /**
  * The key each of a project's terminal histories is kept under: its `fees`, the fees and additions to its balance over
- * its life, and its `moves`, its pays and cash outs over its life, which its chart reads (the moves when Bendystraw
- * cannot answer); and its `feed`, its pays and cash outs from the oldest event its Latest list shows, where that list
- * finds what each stick took in and each unstick paid out. Each is one filter's history.
+ * its life, and its `moves`, its pays and cash outs over its life, which its chart reads when Bendystraw cannot answer
+ * for them; and its `feed`, its pays and cash outs from the oldest event its Latest list shows, where that list finds
+ * what each stick took in and each unstick paid out. Each is one filter's history.
  */
 export function terminalHistoryKey(
   chainId: number,

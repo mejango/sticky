@@ -201,6 +201,15 @@ const toRpc = (log: ScannedLog) => ({
 
 const isRemoved = (raw: unknown) => typeof raw === 'object' && raw !== null && (raw as { removed?: unknown }).removed === true
 
+/** Where an event is in the chain. An event Bendystraw's hook history lists has no block, and counts as block 0. */
+type InChain = { blockNumber: bigint | null; logIndex: number }
+
+/** The chain's order: by block, then by place in the block. */
+export function inChainOrder(a: InChain, b: InChain): number {
+  const [x, y] = [a.blockNumber ?? 0n, b.blockNumber ?? 0n]
+  return x === y ? a.logIndex - b.logIndex : x < y ? -1 : 1
+}
+
 /** In block order, then log order, once each: a node may repeat a log or order a range as it likes. */
 function tidy(found: ScannedLog[]): ScannedLog[] {
   const seen = new Set<string>()
@@ -211,7 +220,7 @@ function tidy(found: ScannedLog[]): ScannedLog[] {
       seen.add(key)
       return true
     })
-    .sort((a, b) => (a.blockNumber === b.blockNumber ? a.logIndex - b.logIndex : a.blockNumber < b.blockNumber ? -1 : 1))
+    .sort(inChainOrder)
 }
 
 /** A history that takes more requests than a scan may send even when none of them fails: trying again cannot help,

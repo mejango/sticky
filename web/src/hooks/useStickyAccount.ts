@@ -89,8 +89,9 @@ export type AccountPositionsRead = {
  * The positions an account holds on the chains of a network, read one chain after another and drawn as each arrives.
  * Bendystraw lists them, once for the network, and each chain reads them again from StickyHook, adding the projects
  * the account's position events show past the block the listing is indexed through; when Bendystraw cannot list a
- * chain's, every Sticky project of the chain is asked. Every 15 s, until the tab is hidden, they are read again. A
- * chain whose read fails is named in `failedChains`, and the console hears why; the others still show.
+ * chain's, or those events are more than a scan may read, every Sticky project of the chain is asked. Every 15 s,
+ * until the tab is hidden, they are read again. A chain whose read fails is named in `failedChains`, and the console
+ * hears why; the others still show.
  */
 export function useAccountPositions(network: BendystrawNetwork, address: Address): AccountPositionsRead {
   const client = useQueryClient()
@@ -105,8 +106,12 @@ export function useAccountPositions(network: BendystrawNetwork, address: Address
           try {
             const index = await indexOf(client, network, holder, signal)
             const listed = listedPositions(index, chainId)
-            if (listed) return await accountPositions(chainId, holder, listed.projects, { signal, through: listed.through })
-            return await accountPositions(chainId, holder, await deployedOf(client, network, chainId, index, signal), { signal })
+            const everyProject = () => deployedOf(client, network, chainId, index, signal)
+            if (listed) {
+              const listing = { through: listed.through, everyProject }
+              return await accountPositions(chainId, holder, listed.projects, { signal, listing })
+            }
+            return await accountPositions(chainId, holder, await everyProject(), { signal })
           } catch (error) {
             if (!signal.aborted) console.warn(POSITIONS_UNREADABLE, { network, chainId }, error)
             throw error
