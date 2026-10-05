@@ -201,18 +201,9 @@ async function liveSchema(endpoint) {
   return buildClientSchema(envelope.data)
 }
 
-const MAINNET_ENDPOINT = 'https://bendystraw.up.railway.app/graphql'
-const TESTNET_ENDPOINT = 'https://testnet.bendystraw.xyz/graphql'
-const ENDPOINTS = [MAINNET_ENDPOINT, TESTNET_ENDPOINT]
-
-// The Sticky tables of peripheralist/bendystraw#36, which StickyEvents, StickyPositions and StickySettings query.
-const STICKY_TABLES = [
-  'stickyEvents',
-  'stickyEventFilter',
-  'stickyPositions',
-  'stickyPositionFilter',
-  'stickySettingEvents',
-  'stickySettingEventFilter',
+const ENDPOINTS = [
+  'https://bendystraw.up.railway.app/graphql',
+  'https://testnet.bendystraw.xyz/graphql',
 ]
 
 // Documents that query fields an indexer deploy adds. They run behind a
@@ -222,11 +213,7 @@ const STICKY_TABLES = [
 // names the ONE endpoint still missing the field and the PR that adds it; every
 // other endpoint is validated against the field. The check FAILS once the named
 // endpoint serves it, so the list cannot quietly rot after the feature lands.
-const PENDING_SCHEMA_FIELDS = STICKY_TABLES.map(field => ({
-  endpoint: MAINNET_ENDPOINT,
-  field,
-  reason: 'peripheralist/bendystraw#36, Sticky events, positions and settings',
-}))
+const PENDING_SCHEMA_FIELDS = []
 
 if (offline) {
   console.log(`Registry is current for ${documents.size} Bendystraw documents (schema validation skipped).`)
