@@ -1,7 +1,8 @@
 'use client'
 
-import { useEffect, useState } from 'react'
 import type { Address } from 'viem'
+import { CopyAddress } from '@/components/ui/CopyAddress'
+import { Disclosure } from '@/components/ui/Disclosure'
 import { Revalidating } from '@/components/ui/Revalidating'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { useStickyEvents, useStickyProject } from '@/hooks/useStickyProject'
@@ -10,11 +11,6 @@ import type { StickyEvent } from '@/lib/sticky-events'
 import { formatAmount } from '@/lib/sticky-format'
 
 const pct = (basisPoints: bigint) => `${Number(basisPoints) / 100}%`
-
-/** How long a copy button says what became of the copy. */
-const COPY_NOTICE_MS = 1_500
-
-const COPY_REFUSED = 'Could not copy an address to the clipboard.'
 
 /** How many holders the hook lists as granters: a launch's trusted senders, who can stick for any holder. The
  * auto-stick adapter is its own pre-approval, so it is not one. */
@@ -44,46 +40,6 @@ function Row({ label, text, title = text }: { label: string; text: string; title
 }
 
 /**
- * A copy button for an address: it says "Copied!" for a moment, or "Could not copy" when the browser refuses. The button
- * is named for what it copies, which hides its text from a screen reader, so what became of the copy is also said in a
- * live region beside it, which is always there for the announcement to be made in.
- */
-function CopyAddress({ label, address }: { label: string; address: string }) {
-  const [notice, setNotice] = useState<'copied' | 'refused' | null>(null)
-  useEffect(() => {
-    if (notice === null) return
-    const timer = setTimeout(() => setNotice(null), COPY_NOTICE_MS)
-    return () => clearTimeout(timer)
-  }, [notice])
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(address)
-      setNotice('copied')
-    } catch (error) {
-      console.warn(COPY_REFUSED, error)
-      setNotice('refused')
-    }
-  }
-
-  return (
-    <>
-      <button
-        type="button"
-        aria-label={`Copy ${label} address`}
-        onClick={() => void copy()}
-        className={`btn-link ml-2 min-h-0 align-baseline text-xs font-medium decoration-amber ${notice === 'refused' ? 'text-err' : ''}`}
-      >
-        {notice === 'copied' ? 'Copied!' : notice === 'refused' ? 'Could not copy' : 'Copy'}
-      </button>
-      <span role="status" aria-atomic="true" className="sr-only">
-        {notice === 'copied' ? 'Address copied.' : notice === 'refused' ? 'Could not copy the address.' : ''}
-      </span>
-    </>
-  )
-}
-
-/**
  * A contract's name and its full address, which may break anywhere, with its copy button. The name holds a token's
  * symbol, which can run to 256 characters, so it is cut where the column ends, and its tooltip says all of it. The
  * column is as wide as its widest name, so a name that is only cut by the width of the card would be as wide as the
@@ -102,10 +58,6 @@ function Contract({ label, address }: { label: string; address: string }) {
     </>
   )
 }
-
-/** The disclosure's title, with its own marker: closed points right, and open points down. */
-const SUMMARY =
-  "w-max max-w-full list-none text-accent before:inline-block before:w-[1.1em] before:content-['▸'] group-open:before:content-['▾'] [&::-webkit-details-marker]:hidden"
 
 const LIST =
   'm-0 grid grid-cols-[max-content_minmax(0,1fr)] text-sm max-[560px]:grid-cols-[minmax(0,1fr)] [&>dd:last-of-type]:border-b-0 [&>dt:last-of-type]:border-b-0'
@@ -164,8 +116,7 @@ export function DetailsCard({ chainId, projectId }: { chainId: number; projectId
             <Row label="Stickiness bonus" text={pct(info.cashOutTaxRate)} />
             <Row label="Transfers" text={info.soulbound ? 'Off' : 'On'} />
           </dl>
-          <details className="group mt-2.5 text-[13px]">
-            <summary className={SUMMARY}>Rules and contracts</summary>
+          <Disclosure summary="Rules and contracts" className="mt-2.5 text-[13px]">
             <ul className="mb-3.5 mt-3 list-disc pl-[18px] text-sm text-ink">
               <li className="my-1">
                 {info.cashOutTaxRate > 0n
@@ -194,7 +145,7 @@ export function DetailsCard({ chainId, projectId }: { chainId: number; projectId
               <Contract label={`${info.symbol} token`} address={info.stakedToken} />
               {deployment ? <Contract label="Stick accounting" address={deployment.hook} /> : null}
             </dl>
-          </details>
+          </Disclosure>
         </Revalidating>
       )}
     </section>
