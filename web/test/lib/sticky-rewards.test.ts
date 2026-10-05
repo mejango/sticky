@@ -815,14 +815,36 @@ describe('the reward tokens', () => {
     chain.stock(STAKED, erc20Abi, 'symbol', 'BIG')
     chain.stock(STAKED, erc20Abi, 'decimals', returning(numberToHex(256, { size: 32 })))
     const r = await load()
-    // A flow that sends a token reads it alone, and refuses one without valid decimals.
-    await expect(r.rewardTokenMeta(CHAIN, TOKEN)).rejects.toThrow("the reward token's decimals could not be read.")
-    await expect(r.rewardTokenMeta(CHAIN, STAKED)).rejects.toThrow()
+    // A flow that sends a token reads it alone, and refuses one without valid decimals: an address whose decimals()
+    // reverts is no token, which is the chain's answer, so the refusal carries no cause.
+    const refused = await r.rewardTokenMeta(CHAIN, TOKEN).catch((error: Error) => error)
+    expect(refused).toMatchObject({ message: 'that address is not a token' })
+    expect((refused as Error).cause).toBeUndefined()
+    await expect(r.rewardTokenMeta(CHAIN, STAKED)).rejects.toThrow('the reward token returned 256 as its decimals')
     // The native token is ETH, and nothing is asked of it.
     const asked = chain.requests.length
     expect(await r.rewardTokenMeta(CHAIN, NATIVE as Address)).toEqual({ symbol: 'ETH', decimals: 18 })
     expect(await r.rewardTokenMeta(CHAIN, getAddress(NATIVE))).toEqual({ symbol: 'ETH', decimals: 18 })
     expect(chain.requests).toHaveLength(asked)
+  })
+
+  it('refuse an account that is not a contract as no token, and keep the cause of a request that got no answer', async () => {
+    const chain = rewardChain()
+    const ACCOUNT = address('5')
+    // An account without code answers every call with nothing, which viem reports as a failed call.
+    chain.stock(ACCOUNT, erc20Abi, 'symbol', returning('0x'))
+    chain.stock(ACCOUNT, erc20Abi, 'decimals', returning('0x'))
+    chain.stock(TOKEN, erc20Abi, 'symbol', 'TKN')
+    chain.stock(TOKEN, erc20Abi, 'decimals', 6)
+    const r = await load()
+    const refused = await r.rewardTokenMeta(CHAIN, ACCOUNT).catch((error: Error) => error)
+    expect(refused).toMatchObject({ message: 'that address is not a token' })
+    expect((refused as Error).cause).toBeUndefined()
+
+    chain.lose(reads => reads.some(read => read.target.toLowerCase() === TOKEN.toLowerCase()))
+    const lost = await r.rewardTokenMeta(CHAIN, TOKEN).catch((error: Error) => error)
+    expect(lost).toMatchObject({ message: 'the reward token could not be read.' })
+    expect((lost as Error).cause).toBeInstanceOf(Error)
   })
 
   it('read one token for a flow that sends it, its symbol and decimals, and name one without a symbol by its short address', async () => {

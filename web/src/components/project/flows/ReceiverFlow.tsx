@@ -25,7 +25,7 @@ import { projectKey } from '@/lib/sticky-keys'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { readArrivals, readReceiver } from '@/lib/sticky-receivers'
 import { refreshAfterReceiver, refreshAfterSettle } from '@/lib/sticky-refresh'
-import { groupIdFromWeeks, groupLabel, groupNote, NATIVE_REWARD_TOKEN, rewardTokenMeta } from '@/lib/sticky-rewards'
+import { groupIdFromWeeks, groupLabel, groupNote, NATIVE_REWARD_TOKEN, rewardTokenMeta, type TokenMeta } from '@/lib/sticky-rewards'
 import { chainName } from '@/lib/urn'
 import { useViewAs } from '@/lib/viewAs'
 
@@ -47,6 +47,25 @@ type Plan = {
   token: Address | null
   steps: readonly TxRequest[]
   rows: TxConfirmRow[]
+}
+
+/** What a reward address holds of `token`, for the panel, with the token's symbol and decimals; or, for an address that
+ * is no token, the line that says so, which is the chain's answer and so not told to the console. */
+async function arrivalsOf(
+  chainId: number,
+  receiver: Address,
+  token: Address,
+  signal: AbortSignal,
+): Promise<{ refused: string } | { meta: TokenMeta; amount: bigint }> {
+  let meta: TokenMeta
+  try {
+    meta = await rewardTokenMeta(chainId, token, { signal })
+  } catch (reason) {
+    const told = refusalOf(reason)
+    if (signal.aborted || !(told instanceof Refusal)) throw reason
+    return { refused: asSentence(told.message) }
+  }
+  return { meta, amount: await readArrivals(chainId, receiver, token, { signal }) }
 }
 
 /** The group the weeks name, or the reason they name none, as a refusal. */
@@ -169,11 +188,7 @@ export function ReceiverFlow({
   const at = receiver.data?.address
   const arrivals = useQuery({
     queryKey: [...projectKey(chainId, projectId, 'receiver'), 'arrivals', at ?? '', erc20 ?? ''],
-    queryFn: ({ signal }) =>
-      warned(ARRIVALS_UNREADABLE, { chainId, projectId }, signal, async () => ({
-        amount: await readArrivals(chainId, at!, erc20!, { signal }),
-        meta: await rewardTokenMeta(chainId, erc20!, { signal }),
-      })),
+    queryFn: ({ signal }) => warned(ARRIVALS_UNREADABLE, { chainId, projectId }, signal, () => arrivalsOf(chainId, at!, erc20!, signal)),
     enabled: opened && at !== undefined && erc20 !== null,
     staleTime: FRESH_MS,
     retry: false,
@@ -247,7 +262,9 @@ export function ReceiverFlow({
     token === null || erc20 === null
       ? NOT_ERC20
       : held
-        ? `${formatAmount(held.amount, held.meta.decimals)} ${held.meta.symbol} waiting to settle`
+        ? 'refused' in held
+          ? held.refused
+          : `${formatAmount(held.amount, held.meta.decimals)} ${held.meta.symbol} waiting to settle`
         : arrivals.isError
           ? 'Could not read what it holds.'
           : null

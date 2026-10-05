@@ -4,13 +4,14 @@ import { NATIVE_TOKEN } from '@bananapus/nana-sdk-core'
 import { QueryClient, QueryClientProvider, notifyManager, type QueryKey } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { getAddress, type Abi, type Address, type Hex } from 'viem'
+import { erc20Abi, getAddress, type Abi, type Address, type Hex } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stickyRewardReceiverFactoryAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 import { EXTERNAL_WALLET_REQUIRED, WalletAuthContext } from '@/providers/WalletAuthContext'
 import { stickyInfo } from '../home-fixtures'
+import { returning, rewardChain } from '../lib/sticky-reward-fixtures'
 
 // The reward address of a group of a project's holders: where it is, whether it is created, what it holds to settle,
 // and creating it and settling what it holds into airdrops. The reads and the engine are mocks: the builders, the reads
@@ -371,6 +372,27 @@ describe('settling it', () => {
     expect(arrivals()).toBe('Enter an ERC-20 token address')
     await press(panel(), 'Settle into airdrops')
     expect(errorText()).toBe('Enter an ERC-20 token address.')
+  })
+
+  it('says in one line that an address is not a token, in the panel and when settling, and tells the console nothing', async () => {
+    // The tokens are read as the app reads them, through the real reader against a fake Center: an account answers its
+    // calls with nothing, and viem reports each as a failed call that carries its cause.
+    const { rewardTokenMeta } = await vi.importActual<typeof import('@/lib/sticky-rewards')>('@/lib/sticky-rewards')
+    mocks.meta.mockImplementation(rewardTokenMeta)
+    const chain = rewardChain()
+    chain.stock(ART, erc20Abi, 'symbol', 'ART')
+    chain.stock(ART, erc20Abi, 'decimals', 6)
+    chain.stock(CAROL, erc20Abi, 'symbol', returning('0x'))
+    chain.stock(CAROL, erc20Abi, 'decimals', returning('0x'))
+    await open()
+    expect(arrivals()).toBe('1.5 ART waiting to settle')
+    await type('Token to settle', CAROL)
+    expect(arrivals()).toBe('That address is not a token.')
+    expect(mocks.arrivals).not.toHaveBeenCalledWith(CHAIN, RECEIVER, CAROL, expect.anything())
+    await press(panel(), 'Settle into airdrops')
+    expect(errorText()).toBe('That address is not a token.')
+    expect(confirm()).toBeNull()
+    expect(console.warn).not.toHaveBeenCalled()
   })
 })
 

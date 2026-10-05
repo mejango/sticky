@@ -33,7 +33,7 @@ import {
   type ContractFunctionParameters,
   type Hex,
 } from 'viem'
-import { inChainOrder, untilAborted, type ScannedLog } from '@/lib/hook-logs'
+import { asked, inChainOrder, untilAborted, type ScannedLog } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { stickyDistributorAbi, stickyHookAbi, stickyTokenAbi } from '@/lib/sticky-abis'
 import { deploymentOn } from '@/lib/sticky-addresses'
@@ -534,12 +534,21 @@ async function readTokenMetas(
   return metas
 }
 
-/** A reward token's symbol and decimals, for a flow that sends it: ETH with 18 for JB's native token, which nothing is
- * asked of, and otherwise what the token answers. A token that gives no valid decimals is refused, and never taken to
- * have 18. */
+/** What a flow says of an address whose `decimals()` fails. */
+const NOT_A_TOKEN = 'that address is not a token'
+
+/**
+ * A reward token's symbol and decimals, for a flow that sends it: ETH with 18 for JB's native token, which nothing is
+ * asked of, and otherwise what the token answers. An address whose `decimals()` fails is no token, and since that is
+ * the chain's answer, it is refused with no cause; one that gives invalid decimals is refused too, and never taken to
+ * have 18. A request that gets no answer rejects, naming what could not be read and keeping the cause.
+ */
 export async function rewardTokenMeta(chainId: number, token: Address, { signal }: Cancel = {}): Promise<TokenMeta> {
   if (token.toLowerCase() === NATIVE_REWARD_TOKEN) return { symbol: 'ETH', decimals: 18 }
-  return tokenMetaOf(token, await readAt(chainId, tokenCalls(token), undefined, signal))
+  const answers = await asked('the reward token', () => readAt(chainId, tokenCalls(token), undefined, signal), signal)
+  // `readAt` throws a request that got no answer, so a call that failed here is the address's own answer.
+  if (answers[1].status === 'failure') throw new Error(NOT_A_TOKEN)
+  return tokenMetaOf(token, answers)
 }
 
 // ---- what a holder has earned

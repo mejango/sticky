@@ -4,13 +4,14 @@ import { NATIVE_TOKEN } from '@bananapus/nana-sdk-core'
 import { QueryClient, QueryClientProvider, notifyManager, type QueryKey } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { getAddress, type Abi, type Address, type Hex } from 'viem'
+import { erc20Abi, getAddress, type Abi, type Address, type Hex } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stickyDistributorAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 import { EXTERNAL_WALLET_REQUIRED, WalletAuthContext } from '@/providers/WalletAuthContext'
 import { stickyInfo } from '../home-fixtures'
+import { returning, rewardChain } from '../lib/sticky-reward-fixtures'
 
 // Sending an airdrop: the form, the review that reads the token, the distributor and the wallet again, and the steps it
 // sends one press at a time. The reads and the engine are mocks: the builder, the reads and the engine have tests of
@@ -362,12 +363,28 @@ describe('the review', () => {
     expect(steps()).toEqual(['Reset ART allowance', 'Approve 5 ART', 'Fund stuck holders'])
   })
 
-  it('reward token decimals fail closed instead of silently assuming 18', async () => {
-    mocks.meta.mockRejectedValue(new Error("the reward token's decimals could not be read."))
-    await review({ token: USDC })
-    expect(errorText()).toBe("The reward token's decimals could not be read.")
+  it('reward token decimals fail closed instead of silently assuming 18: an address that is not a token is refused in one line, and the console is told nothing', async () => {
+    // The token is read as the app reads it, through the real reader against a fake Center: an account answers its
+    // calls with nothing, and viem reports each as a failed call that carries its cause.
+    const { rewardTokenMeta } = await vi.importActual<typeof import('@/lib/sticky-rewards')>('@/lib/sticky-rewards')
+    mocks.meta.mockImplementation(rewardTokenMeta)
+    const chain = rewardChain()
+    chain.stock(CAROL, erc20Abi, 'symbol', returning('0x'))
+    chain.stock(CAROL, erc20Abi, 'decimals', returning('0x'))
+    await review({ token: CAROL })
+    expect(errorText()).toBe('That address is not a token.')
+    expect(console.warn).not.toHaveBeenCalled()
     expect(confirm()).toBeNull()
     expect(mocks.funds).not.toHaveBeenCalled()
+  })
+
+  it('says when the token could not be read, tells the console why, and opens no review', async () => {
+    const cause = new Error('429')
+    mocks.meta.mockRejectedValue(new Error('the reward token could not be read.', { cause }))
+    await review({ token: USDC })
+    expect(errorText()).toBe('The reward token could not be read.')
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('airdrop'), { chainId: CHAIN, projectId: PROJECT }, expect.objectContaining({ cause }))
+    expect(confirm()).toBeNull()
   })
 
   it.each([
