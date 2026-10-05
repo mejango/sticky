@@ -36,7 +36,7 @@ import {
 import { inChainOrder, untilAborted, type ScannedLog } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { stickyDistributorAbi, stickyHookAbi, stickyTokenAbi } from '@/lib/sticky-abis'
-import { stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
+import { deploymentOn } from '@/lib/sticky-addresses'
 import {
   keptScanToHead,
   notIndexed,
@@ -254,12 +254,6 @@ const REWARD_TOKEN_UNREADABLE = 'Could not read a reward token; leaving its rewa
 const FUND = toEventSelector(getAbiItem({ abi: stickyDistributorAbi, name: 'Fund' }) as AbiEvent)
 
 const shortAddress = (value: string) => `${value.slice(0, 6)}…${value.slice(-4)}`
-
-function deploymentOn(chainId: number): StickyDeployment {
-  const deployment = stickyDeployment(chainId)
-  if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
-  return deployment
-}
 
 /** What one call answered, or why the read cannot go on. */
 export function need<T>(answer: Answer<T>, what: string): T {

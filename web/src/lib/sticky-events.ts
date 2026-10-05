@@ -37,7 +37,7 @@ import {
 } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { controllerAbi, projectsAbi, stickyDeployerAbi, stickyHookAbi } from '@/lib/sticky-abis'
-import { stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
+import { deploymentOn, stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
 import {
   indexedStickyCreateTx,
   indexedStickyEvents,
@@ -148,12 +148,6 @@ const CREATION_NOT_ON_CHAIN = "Could not find a Sticky project's creation block 
 
 const lower = <T extends string>(value: T) => value.toLowerCase() as T
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
-
-function deploymentOn(chainId: number): StickyDeployment {
-  const deployment = stickyDeployment(chainId)
-  if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
-  return deployment
-}
 
 function checkProjectId(projectId: bigint): void {
   if (projectId < 1n || projectId > BigInt(Number.MAX_SAFE_INTEGER)) {

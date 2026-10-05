@@ -9,7 +9,7 @@
 
 import type { Address, ContractFunctionParameters } from 'viem'
 import { stickyAutoStickAbi, stickyDistributorAbi, stickyHookAbi } from '@/lib/sticky-abis'
-import { stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
+import { deploymentOn } from '@/lib/sticky-addresses'
 import type { StickyEvent } from '@/lib/sticky-events'
 import { formatAmount, formatDuration } from '@/lib/sticky-format'
 import { pinnedBlock } from '@/lib/sticky-holders'
@@ -60,12 +60,6 @@ export type AutoStickState = {
 
 const GROUP_UNREADABLE = 'Could not read what a reward group has to collect; counting it as nothing.'
 const VESTING_UNREADABLE = 'Could not tell whether rewards can start unlocking; the card leaves out Start unlocking.'
-
-function deploymentOn(chainId: number): StickyDeployment {
-  const deployment = stickyDeployment(chainId)
-  if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
-  return deployment
-}
 
 /**
  * The reward groups a holder's staked-token rewards sit in: those of `groups` with something collectable, and what they

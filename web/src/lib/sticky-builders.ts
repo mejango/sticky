@@ -17,19 +17,13 @@ import {
   stickyRewardReceiverFactoryAbi,
   stickyTokenAbi,
 } from '@/lib/sticky-abis'
-import { stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
+import { deploymentOn } from '@/lib/sticky-addresses'
 import type { AutoStickState } from '@/lib/sticky-autostick'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { isValidGroupId, NATIVE_REWARD_TOKEN, type TokenMeta } from '@/lib/sticky-rewards'
 import type { TxRequest } from '@/hooks/useSafeTx'
 
 export type { TxRequest }
-
-function deploymentOn(chainId: number): StickyDeployment {
-  const deployment = stickyDeployment(chainId)
-  if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
-  return deployment
-}
 
 /** The request as it stands, frozen with its arguments. */
 const frozen = (request: TxRequest): TxRequest => Object.freeze({ ...request, args: Object.freeze([...request.args]) })

@@ -6,20 +6,18 @@ import { FundFlow } from '@/components/project/flows/FundFlow'
 import { ReceiverFlow } from '@/components/project/flows/ReceiverFlow'
 import { StakeAgeFields } from '@/components/project/StakeAgeFields'
 import { CopyAddress } from '@/components/ui/CopyAddress'
+import { DETAIL_LABEL, DETAIL_LIST, DETAIL_VALUE } from '@/components/ui/detail-list'
 import { Disclosure } from '@/components/ui/Disclosure'
 import { useStickyProject } from '@/hooks/useStickyProject'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import { groupLabel, groupNote } from '@/lib/sticky-rewards'
 
-const ROW_LABEL = 'whitespace-nowrap border-b border-line py-2 pr-4 text-muted max-[560px]:border-b-0 max-[560px]:pb-0 max-[560px]:text-xs'
-const ROW_VALUE = 'm-0 min-w-0 border-b border-line py-2 max-[560px]:pt-0.5'
-
 /** One of the split's values, with a copy button when it is an address. */
 function SplitValue({ label, address, text }: { label: string; address?: string; text?: string }) {
   return (
     <>
-      <dt className={ROW_LABEL}>{label}</dt>
-      <dd className={ROW_VALUE}>
+      <dt className={DETAIL_LABEL}>{label}</dt>
+      <dd className={DETAIL_VALUE}>
         {address ? (
           <>
             <span className="break-all font-mono text-xs leading-[1.4]">{address}</span>
@@ -54,7 +52,7 @@ function SplitRecipe({ chainId, stToken }: { chainId: number; stToken: Address }
         <StakeAgeFields minWeeks={minWeeks} maxWeeks={maxWeeks} onMinWeeks={setMinWeeks} onMaxWeeks={setMaxWeeks} />
         <dl
           data-split-recipe
-          className="m-0 grid grid-cols-[max-content_minmax(0,1fr)] text-sm max-[560px]:grid-cols-[minmax(0,1fr)] [&>dd:last-of-type]:border-b-0 [&>dt:last-of-type]:border-b-0"
+          className={DETAIL_LIST}
         >
           <SplitValue label="Split hook" address={distributor} />
           <SplitValue label="Beneficiary" address={stToken} />

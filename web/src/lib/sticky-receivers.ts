@@ -9,7 +9,7 @@ import { erc20Abi, isAddressEqual, type Address } from 'viem'
 import { asked } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { stickyRewardReceiverFactoryAbi } from '@/lib/sticky-abis'
-import { stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
+import { deploymentOn } from '@/lib/sticky-addresses'
 import type { Answer } from '@/lib/sticky-project'
 import { need, readAt } from '@/lib/sticky-rewards'
 
@@ -17,12 +17,6 @@ type Cancel = { signal?: AbortSignal }
 
 /** Where a group's reward address is, and whether it has been created. */
 export type RewardReceiver = { address: Address; created: boolean }
-
-function deploymentOn(chainId: number): StickyDeployment {
-  const deployment = stickyDeployment(chainId)
-  if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
-  return deployment
-}
 
 /**
  * The reward address of the holders of `stToken` in group `groupId` (OLD renderRewardAddress, app.js:4040): where the

@@ -2,6 +2,7 @@
 
 import type { Address } from 'viem'
 import { CopyAddress } from '@/components/ui/CopyAddress'
+import { DETAIL_LABEL, DETAIL_LIST } from '@/components/ui/detail-list'
 import { Disclosure } from '@/components/ui/Disclosure'
 import { Revalidating } from '@/components/ui/Revalidating'
 import { Skeleton } from '@/components/ui/Skeleton'
@@ -20,15 +21,11 @@ function trustedSenders(events: readonly StickyEvent[], adapter: Address | undef
   return granters.size
 }
 
-/** A label's style: beside its value, or above it on a phone. */
-const LABEL =
-  'whitespace-nowrap border-b border-line py-2 pr-4 text-muted max-[560px]:border-b-0 max-[560px]:pb-0 max-[560px]:text-xs'
-
 /** One label and its value. The value never wraps mid-word, so a long one is cut, and its tooltip says all of it. */
 function Row({ label, text, title = text }: { label: string; text: string; title?: string }) {
   return (
     <>
-      <dt className={LABEL}>{label}</dt>
+      <dt className={DETAIL_LABEL}>{label}</dt>
       <dd
         title={title}
         className="m-0 overflow-hidden text-ellipsis whitespace-nowrap border-b border-line py-2 text-right max-[560px]:pt-0.5 max-[560px]:text-left"
@@ -48,7 +45,7 @@ function Row({ label, text, title = text }: { label: string; text: string; title
 function Contract({ label, address }: { label: string; address: string }) {
   return (
     <>
-      <dt title={label} className={`${LABEL} min-w-0 max-w-[16rem] truncate max-[560px]:max-w-full`}>
+      <dt title={label} className={`${DETAIL_LABEL} min-w-0 max-w-[16rem] truncate max-[560px]:max-w-full`}>
         {label}
       </dt>
       <dd className="m-0 whitespace-normal border-b border-line py-2 text-left max-[560px]:pt-0.5">
@@ -58,9 +55,6 @@ function Contract({ label, address }: { label: string; address: string }) {
     </>
   )
 }
-
-const LIST =
-  'm-0 grid grid-cols-[max-content_minmax(0,1fr)] text-sm max-[560px]:grid-cols-[minmax(0,1fr)] [&>dd:last-of-type]:border-b-0 [&>dt:last-of-type]:border-b-0'
 
 /**
  * The Details card: one short label and value per row, then the rules and contracts behind a disclosure. The backing
@@ -95,7 +89,7 @@ export function DetailsCard({ chainId, projectId }: { chainId: number; projectId
         )
       ) : (
         <Revalidating as="div" pending={!verified}>
-          <dl className={LIST}>
+          <dl className={DETAIL_LIST}>
             <Row label="Token" text={`${info.stName} (${info.stSymbol})`} />
             <Row label="Sticks" text={`${info.name} (${info.symbol})`} />
             <Row label="Supply" text={`${formatAmount(info.totalSupply, 18)} ${info.stSymbol}`} />
@@ -140,7 +134,7 @@ export function DetailsCard({ chainId, projectId }: { chainId: number; projectId
                 </li>
               ) : null}
             </ul>
-            <dl className={LIST}>
+            <dl className={DETAIL_LIST}>
               <Contract label={`${info.stSymbol} token`} address={info.stToken} />
               <Contract label={`${info.symbol} token`} address={info.stakedToken} />
               {deployment ? <Contract label="Stick accounting" address={deployment.hook} /> : null}

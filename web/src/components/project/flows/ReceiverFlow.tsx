@@ -8,6 +8,7 @@ import { reviewGate } from '@/components/project/flows/review-gate'
 import { parseRewardToken } from '@/components/project/flows/reward-token'
 import { FIELD_INPUT, FIELD_LABEL, StakeAgeFields } from '@/components/project/StakeAgeFields'
 import { CopyAddress } from '@/components/ui/CopyAddress'
+import { DETAIL_LABEL, DETAIL_LIST, DETAIL_VALUE } from '@/components/ui/detail-list'
 import { Disclosure } from '@/components/ui/Disclosure'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { TxConfirmDialog, type TxConfirmRow } from '@/components/ui/TxConfirmDialog'
@@ -33,8 +34,6 @@ const ARRIVALS_UNREADABLE = 'Could not read what a reward address holds to settl
 const PREPARE_UNREADABLE = 'Could not prepare a reward address step; the panel says what could not be read.'
 const REFUSES = 'The reward receiver factory would refuse this'
 const NOT_ERC20 = 'Enter an ERC-20 token address'
-const ROW_LABEL = 'whitespace-nowrap border-b border-line py-2 pr-4 text-muted max-[560px]:border-b-0 max-[560px]:pb-0 max-[560px]:text-xs'
-const ROW_VALUE = 'm-0 min-w-0 border-b border-line py-2 max-[560px]:pt-0.5'
 
 /** What a review refused or could not read, and the account it was for (lowercase); a refusal of the wallet itself is no
  * account's, and stands until the wallet changes. */
@@ -269,15 +268,15 @@ export function ReceiverFlow({
           ) : receiver.data ? (
             <dl
               data-receiver
-              className="m-0 grid grid-cols-[max-content_minmax(0,1fr)] text-sm max-[560px]:grid-cols-[minmax(0,1fr)] [&>dd:last-of-type]:border-b-0 [&>dt:last-of-type]:border-b-0"
+              className={DETAIL_LIST}
             >
-              <dt className={ROW_LABEL}>Reward address</dt>
-              <dd className={ROW_VALUE}>
+              <dt className={DETAIL_LABEL}>Reward address</dt>
+              <dd className={DETAIL_VALUE}>
                 <span className="break-all font-mono text-xs leading-[1.4]">{receiver.data.address}</span>
                 <CopyAddress label="reward" address={receiver.data.address} />
               </dd>
-              <dt className={ROW_LABEL}>Status</dt>
-              <dd className={ROW_VALUE}>
+              <dt className={DETAIL_LABEL}>Status</dt>
+              <dd className={DETAIL_VALUE}>
                 {receiver.data.created ? 'Created' : 'Not created yet'}
               </dd>
             </dl>

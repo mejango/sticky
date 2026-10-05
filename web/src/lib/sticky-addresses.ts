@@ -47,6 +47,14 @@ export function stickyDeployment(chainId: number): StickyDeployment | null {
   return { chainId, ...addresses, fromBlock: BigInt(fromBlock) }
 }
 
+/** The deployment record of `chainId`, for a read or a call that needs one: it throws on a chain Sticky is not deployed
+ * on. */
+export function deploymentOn(chainId: number): StickyDeployment {
+  const deployment = stickyDeployment(chainId)
+  if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
+  return deployment
+}
+
 /** Every address in the deployment record of `chainId`, whatever field holds it; none for a chain without Sticky. */
 export function stickyContracts(chainId: number): Address[] {
   const deployment = stickyDeployment(chainId)

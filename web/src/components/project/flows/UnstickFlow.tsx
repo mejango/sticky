@@ -16,7 +16,7 @@ import { useWallet } from '@/hooks/useWallet'
 import { preflight } from '@/lib/preflight'
 import { warned } from '@/lib/query-reads'
 import { stickyAutoStickAbi, stickyHookAbi } from '@/lib/sticky-abis'
-import { stickyDeployment } from '@/lib/sticky-addresses'
+import { deploymentOn } from '@/lib/sticky-addresses'
 import { parseShares, SHARE_DECIMALS } from '@/lib/sticky-amount'
 import { unstickTxs } from '@/lib/sticky-builders'
 import type { Answer, StickyProjectInfo } from '@/lib/sticky-project'
@@ -88,12 +88,6 @@ type Plan = {
 
 /** A reason that starts a sentence. */
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
-
-function deploymentOn(chainId: number) {
-  const deployment = stickyDeployment(chainId)
-  if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
-  return deployment
-}
 
 /** What a holder has of a project's Sticky tokens, read from the chain now. */
 async function heldBy(

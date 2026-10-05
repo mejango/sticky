@@ -20,7 +20,7 @@ import { chainsForEnvironment } from '@/lib/chains'
 import { untilAborted } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { stickyHookAbi } from '@/lib/sticky-abis'
-import { stickyChainIds, stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
+import { deploymentOn, stickyChainIds } from '@/lib/sticky-addresses'
 import {
   POSITION_TOPICS,
   PROJECTS_UNAVAILABLE,
@@ -106,12 +106,6 @@ const POSITIONS_UNAVAILABLE = "Bendystraw could not list the account's Sticky po
 /** How many projects one request asks StickyHook about: three calls each, about as many calls as a request of the
  * project reads carries. */
 const HOLDINGS_PER_REQUEST = 80
-
-function deploymentOn(chainId: number): StickyDeployment {
-  const deployment = stickyDeployment(chainId)
-  if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
-  return deployment
-}
 
 /** The Sticky chains of a network, in the site's order of chains: Ethereum, Optimism, Base and Arbitrum. */
 export function accountChains(network: BendystrawNetwork): number[] {

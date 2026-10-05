@@ -17,7 +17,7 @@ import { erc20Abi, pad, toHex, type Address } from 'viem'
 import { inChainOrder, untilAborted } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { stickyHookAbi } from '@/lib/sticky-abis'
-import { stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
+import { deploymentOn } from '@/lib/sticky-addresses'
 import {
   decodeHookLog,
   orNull,
@@ -84,12 +84,6 @@ const POSITIONS_UNAVAILABLE = 'Bendystraw could not list the holders; building t
 
 const unixNow = () => Math.floor(Date.now() / 1000)
 const lower = <T extends string>(value: T) => value.toLowerCase() as T
-
-function deploymentOn(chainId: number): StickyDeployment {
-  const deployment = stickyDeployment(chainId)
-  if (!deployment) throw new Error(`Sticky is not deployed on chain ${chainId}.`)
-  return deployment
-}
 
 /** The position after `event`. A stick or unstick sets the balance to the one it carries, a streak's start sets the
  * start, and its end clears it and keeps the longer of the record and its length. Other kinds change nothing. */
