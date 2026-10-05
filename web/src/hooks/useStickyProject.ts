@@ -8,7 +8,7 @@ import { inTurn } from '@/lib/in-turn'
 import { PERSIST } from '@/lib/query-persist'
 import { FRESH_MS, warned } from '@/lib/query-reads'
 import { stickyDeployment } from '@/lib/sticky-addresses'
-import { stickyEvents, type StickyEventKind, type StickyEventsResult } from '@/lib/sticky-events'
+import { scanToHead, stickyEvents, type StickyEventKind, type StickyEventsResult } from '@/lib/sticky-events'
 import { FEED_WINDOW, feedRows, terminalMoves, type FeedRow } from '@/lib/sticky-feed'
 import {
   pinnedBlock,
@@ -29,9 +29,9 @@ import { readStickyProject, type StickyProjectInfo } from '@/lib/sticky-project'
  *
  * Nothing of a project's history is read before the project itself has been, in this visit or an earlier one: a URN or
  * a handle that names no Sticky project costs one read, never a scan. A hook that reads the history or the holders also
- * observes them, so a page that closes cancels their scans, and the scans take their turn with every other page's
- * (`inTurn`): Center has one rate limit. A read that scans is not tried again on its own, since a scan is dozens of
- * requests; the page offers a retry.
+ * observes them, so a page that closes cancels their scans, and the scans take their turn with every other page's, two
+ * at a time (`inTurn`): Center has one rate limit. A read that scans is not tried again on its own, since a scan is
+ * dozens of requests; the page offers a retry.
  */
 
 /** The version of what the browser keeps of a project's page, in each kept key. Change it whenever
@@ -94,14 +94,18 @@ const holdersOptions = (client: QueryClient, chainId: number, projectId: number)
     queryKey: projectKey(chainId, projectId, 'holders'),
     queryFn: ({ signal }) =>
       warned(HOLDERS_UNREADABLE, { chainId, projectId }, signal, async () => {
-        // The history is read first: the holders fall back on it when Bendystraw's positions cannot answer, and its
-        // scan comes before theirs.
-        const history = await untilAborted(client.fetchQuery(eventsOptions(client, chainId, projectId)), signal)
-        const pin = await pinnedBlock(chainId, { signal })
-        const found = await inTurn(client, signal, () =>
-          stickyHolders(chainId, BigInt(projectId), { signal, now: pin.timestamp, events: async () => history }),
-        )
-        return { ...found, now: pin.timestamp }
+        // Bendystraw's positions and the pinned block are read beside the history, not after it. The history is the
+        // holders' only when the positions cannot answer, and then it is the page's one read of it, waited for out of
+        // turn; the positions' tail scan takes its turn.
+        const now = pinnedBlock(chainId, { signal }).then(({ timestamp }) => timestamp)
+        const holders = stickyHolders(chainId, BigInt(projectId), {
+          signal,
+          now,
+          scan: (on, filter, opts) => inTurn(client, signal, () => scanToHead(on, filter, opts)),
+          events: () => untilAborted(client.fetchQuery(eventsOptions(client, chainId, projectId)), signal),
+        })
+        const [timestamp, found] = await Promise.all([now, holders])
+        return { ...found, now: timestamp }
       }),
     staleTime: FRESH_MS,
     retry: false,
@@ -168,7 +172,8 @@ export function useStickyEvents(chainId: number, projectId: number) {
 }
 
 /** The holders of a project with shares staked, most shares first, and the block time their streaks are measured at.
- * Their read waits on the history's, which is observed here too, so that a page that closes cancels both. */
+ * Their read runs beside the history's, which it falls back on when Bendystraw's positions cannot answer; the history is
+ * observed here too, so that a page that closes cancels both. */
 export function useStickyHolders(chainId: number, projectId: number) {
   const known = useKnown(chainId, projectId)
   useStickyEvents(chainId, projectId)

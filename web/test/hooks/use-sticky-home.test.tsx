@@ -79,17 +79,18 @@ afterEach(async () => {
 })
 
 describe('useStickyHome', () => {
-  it('reads the chains one after another, with the network\'s project list and newest events read once for all', async () => {
+  it('reads two chains at a time, in order, with the network\'s project list and newest events read once for all', async () => {
     const reads = new Map(MAINNET.map(chainId => [chainId, Promise.withResolvers<HomeChain>()]))
     mocks.chain.mockImplementation((chainId: number) => reads.get(chainId)!.promise)
     await render()
     await settle()
-    expect(mocks.chain.mock.calls.map(([chainId]) => chainId)).toEqual([1])
+    expect(mocks.chain.mock.calls.map(([chainId]) => chainId)).toEqual([1, 10])
 
+    // As each chain answers, the next in order takes its place.
     for (const [at, chainId] of MAINNET.entries()) {
       await act(async () => reads.get(chainId)!.resolve(chainResult(chainId)))
       await settle()
-      expect(mocks.chain.mock.calls.map(([id]) => id)).toEqual(MAINNET.slice(0, Math.min(at + 2, MAINNET.length)))
+      expect(mocks.chain.mock.calls.map(([id]) => id)).toEqual(MAINNET.slice(0, Math.min(at + 3, MAINNET.length)))
     }
     expect(mocks.index).toHaveBeenCalledTimes(1)
     expect(mocks.index).toHaveBeenCalledWith('mainnet', { signal: expect.any(AbortSignal) })

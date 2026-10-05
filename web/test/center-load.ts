@@ -110,8 +110,15 @@ const creationTx = (chainId: number, projectId: bigint): Hex =>
 /** A block's time on every fake chain, in Unix seconds. */
 export const timeOf = (block: bigint) => 1_790_000_000 + Number(block % 10_000_000n)
 
-/** One request: which service, what it asked, and when it began and ended, in ms since the page opened. */
-export type Request = { service: 'center' | 'bendystraw'; what: string; chainId: number | null; start: number; end?: number }
+/** One request: which service, what it asked and with what, and when it began and ended, in ms since the page opened. */
+export type Request = {
+  service: 'center' | 'bendystraw'
+  what: string
+  chainId: number | null
+  params?: unknown[]
+  start: number
+  end?: number
+}
 
 /** The traffic of a page: every request in order, and the most of Center's that were in flight at once. */
 export class Traffic {
@@ -120,8 +127,8 @@ export class Traffic {
   private open = 0
   private readonly origin = Date.now()
 
-  begin(service: Request['service'], what: string, chainId: number | null): Request {
-    const request: Request = { service, what, chainId, start: Date.now() - this.origin }
+  begin(service: Request['service'], what: string, chainId: number | null, params?: unknown[]): Request {
+    const request: Request = { service, what, chainId, params, start: Date.now() - this.origin }
     this.requests.push(request)
     if (service === 'center') {
       this.open += 1
@@ -133,6 +140,11 @@ export class Traffic {
   end(request: Request): void {
     request.end = Date.now() - this.origin
     if (request.service === 'center') this.open -= 1
+  }
+
+  /** The time now, in ms since the page opened. */
+  now(): number {
+    return Date.now() - this.origin
   }
 
   /** The requests of `service` that began before `ms`. */
@@ -350,7 +362,7 @@ export function serveCenter(world: FakeWorld, traffic: Traffic): void {
       const chain = world.chains[chainId]
       if (!chain) throw new Error(`The fake Center has no chain ${chainId}.`)
       const { id, method, params = [] } = JSON.parse(String(init?.body)) as { id: number; method: string; params?: unknown[] }
-      const request = traffic.begin('center', method, chainId)
+      const request = traffic.begin('center', method, chainId, params)
       try {
         await step(init?.signal)
         const result = answerRpc(chainId, chain, method, params)

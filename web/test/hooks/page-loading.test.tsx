@@ -13,6 +13,7 @@ import {
   type FakeChain,
   type FakeIndex,
   type FakeWorld,
+  type Request,
 } from '../center-load'
 import { granterSet, staked, streakEnded, streakStarted, trustSet, unstaked } from '../lib/sticky-log-fixtures'
 
@@ -269,17 +270,9 @@ type Modules = Awaited<ReturnType<typeof load>>
  * Center's, Bendystraw's, and the most of Center's in flight at once. */
 type Measured = { at: Record<string, number>; center: number; bendystraw: number; peak: number; traffic: Traffic }
 
-/**
- * Opens `page` against `world` and moves the clock a step at a time until every one of `milestones` holds, each a
- * question about the query client. A milestone's time is when the query cache first changed with it holding.
- */
-async function measure(
-  modules: Modules,
-  world: FakeWorld,
-  page: ReactElement,
-  milestones: Record<string, (client: QueryClient) => boolean>,
-): Promise<Measured> {
-  const { react, dom, query } = modules
+/** A browser on `world`: one query client with Providers' defaults, as the site has across its pages, the fake Center
+ * and Bendystraw counting into `traffic`, and a root to render pages into. */
+function browserOn({ react, dom, query }: Modules, world: FakeWorld) {
   query.notifyManager.setScheduler(callback => queueMicrotask(callback))
   const traffic = new Traffic()
   serveCenter(world, traffic)
@@ -292,10 +285,37 @@ async function measure(
   bendystraw.projects.mockImplementation(fakes.projects)
   bendystraw.createTx.mockImplementation(fakes.createTx)
 
-  // Providers' defaults.
   const client = new query.QueryClient({
     defaultOptions: { queries: { staleTime: 30_000, gcTime: 10 * 60_000, retry: 1, refetchOnWindowFocus: false } },
   })
+  const root = dom.createRoot(document.createElement('div'))
+  return {
+    client,
+    traffic,
+    /** Shows `page`, in place of the page shown before, as a navigation does. */
+    show: (page: ReactElement) =>
+      react.act(async () => root.render(react.createElement(query.QueryClientProvider, { client }, page))),
+    /** Moves the clock one step. */
+    step: () => react.act(async () => void (await vi.advanceTimersByTimeAsync(STEP_MS))),
+    close: async () => {
+      await react.act(async () => root.unmount())
+      client.clear()
+    },
+  }
+}
+
+/**
+ * Opens `page` against `world` and moves the clock a step at a time until every one of `milestones` holds, each a
+ * question about the query client. A milestone's time is when the query cache first changed with it holding.
+ */
+async function measure(
+  modules: Modules,
+  world: FakeWorld,
+  page: ReactElement,
+  milestones: Record<string, (client: QueryClient) => boolean>,
+): Promise<Measured> {
+  const browser = browserOn(modules, world)
+  const { client, traffic } = browser
   const start = Date.now()
   const shown: Record<string, number> = {}
   const unsubscribe = client.getQueryCache().subscribe(() => {
@@ -303,15 +323,11 @@ async function measure(
       if (shown[name] === undefined && holds(client)) shown[name] = Date.now() - start
     }
   })
-  const root = dom.createRoot(document.createElement('div'))
-  await react.act(async () => root.render(react.createElement(query.QueryClientProvider, { client }, page)))
+  await browser.show(page)
   const names = Object.keys(milestones)
-  for (let steps = 0; steps < 1_000 && names.some(name => shown[name] === undefined); steps += 1) {
-    await react.act(async () => void (await vi.advanceTimersByTimeAsync(STEP_MS)))
-  }
-  await react.act(async () => root.unmount())
+  for (let steps = 0; steps < 1_000 && names.some(name => shown[name] === undefined); steps += 1) await browser.step()
   unsubscribe()
-  client.clear()
+  await browser.close()
   // viem gathers a moment's reads into one Multicall3 request a millisecond later, so a figure shows a few milliseconds
   // past its step. A request that began as the last figure showed was not one it waited for.
   const last = Math.max(...names.map(name => shown[name] ?? Infinity))
@@ -408,7 +424,7 @@ afterEach(() => {
 // requests that stood one after another before it, each waiting on another's answer or for its turn.
 
 describe('how the project page loads', () => {
-  it('with Bendystraw answering, as on the testnets: the header, Latest, the holder figures and then the chart', async () => {
+  it('with Bendystraw answering, as on the testnets: the holder figures 3 steps after the header, then Latest and the chart', async () => {
     const modules = await load()
     const page = await measure(
       modules,
@@ -416,20 +432,19 @@ describe('how the project page loads', () => {
       projectPage(modules, BASE_SEPOLIA, 42),
       projectMilestones(BASE_SEPOLIA, 42),
     )
-    // The header is the project's head and its two Multicall3 rounds. The holder figures wait for the history and its
-    // tail scan, then for Latest's amounts (the pinned block beside them), then for Bendystraw's positions and their
-    // tail scan: 7 steps after the header, with the 10 Center requests and 5 relay calls staging counted for them. The
-    // chart waits for all of those, then reads the creating transaction and its receipt, Bendystraw's two histories and
-    // a tail scan for each: 15 Center requests and 10 relay calls in all, as a cold visit to basesep:42 makes.
+    // The header is the project's head and its two Multicall3 rounds. Then the history and the holders are read side by
+    // side: Bendystraw's events and settings beside its positions and the pinned block, then one head for both tail
+    // scans, then the two scans. Latest's amounts follow the history. The chart waits for the holder figures and Latest,
+    // then reads the creating transaction and its receipt, Bendystraw's two histories and a tail scan for each.
     expect(summary(page)).toEqual({
-      at: { header: 3, sticks: 10, latest: 7, chart: 17 },
-      center: 15,
+      at: { header: 3, sticks: 6, latest: 7, chart: 14 },
+      center: 14,
       bendystraw: 10,
       peak: 2,
     })
   })
 
-  it('with Bendystraw down: every figure waits on a scan of the history, and the chart on two scans of the terminal', async () => {
+  it('with Bendystraw down: the holder figures as soon as the history is scanned, and the chart after two scans of the terminal', async () => {
     const modules = await load()
     const page = await measure(
       modules,
@@ -437,8 +452,10 @@ describe('how the project page loads', () => {
       projectPage(modules, BASE_SEPOLIA, 42),
       projectMilestones(BASE_SEPOLIA, 42),
     )
+    // The holders fall back on the history, and do not wait behind Latest's scan of the terminal for a turn. The
+    // chart's two scans of the terminal keep both of Center's slots busy.
     expect(summary(page)).toEqual({
-      at: { header: 3, sticks: 50, latest: 49, chart: 73 },
+      at: { header: 3, sticks: 38, latest: 49, chart: 72 },
       center: 112,
       bendystraw: 8,
       peak: 2,
@@ -447,14 +464,46 @@ describe('how the project page loads', () => {
 })
 
 describe('how the account page loads', () => {
-  it('with Bendystraw answering, as on the testnets: one chain after another, the positions first', async () => {
+  it('with Bendystraw answering, as on the testnets: two chains at a time, the positions first', async () => {
     const modules = await load()
     const page = await measure(modules, accountWorld(), accountPage(modules, A), accountMilestones(A, 3, 7))
+    // Center's two slots are busy nearly throughout, so 34 requests take at least 17 steps. The activity begins while
+    // the index the positions read is fresh, and reads it from there.
     expect(summary(page)).toEqual({
-      at: { firstPosition: 9, allPositions: 17, firstActivity: 27, allActivity: 38 },
+      at: { firstPosition: 7, allPositions: 10, firstActivity: 17, allActivity: 20 },
       center: 34,
-      bendystraw: 10,
+      bendystraw: 9,
       peak: 2,
     })
+  })
+})
+
+describe('leaving a page', () => {
+  it('lets the next page read at once: what the page left had waiting is never sent, and two in flight at most', async () => {
+    const modules = await load()
+    // Bendystraw has stalled 10,000 blocks behind, so the history's tail and the holders' are long scans that run side
+    // by side, and each has requests waiting for a slot. #43 is another project of the chain.
+    const world = projectWorld({ bendystraw: true })
+    const chain = world.chains[BASE_SEPOLIA]
+    chain.asOf = chain.head - 10_000n
+    chain.projects['43'] = coupon(BASE_HEAD - 3_000n)
+    const browser = browserOn(modules, world)
+    await browser.show(projectPage(modules, BASE_SEPOLIA, 42))
+    for (let steps = 0; steps < 10; steps += 1) await browser.step()
+    const of42 = (request: Request) =>
+      request.what === 'eth_getLogs' && JSON.stringify(request.params).includes(pad(toHex(42n)).slice(2))
+    expect(browser.traffic.of('center').filter(of42).length).toBeGreaterThan(4)
+
+    const left = browser.traffic.now()
+    await browser.show(projectPage(modules, BASE_SEPOLIA, 43))
+    for (let steps = 0; steps < 20; steps += 1) await browser.step()
+    await browser.close()
+
+    const since = browser.traffic.of('center').filter(request => request.start >= left)
+    // The page left sends none of its scans' requests once it is left; the requests already in flight are answered.
+    expect(since.filter(of42)).toEqual([])
+    // The next page's first request goes out within a step: it waits for no more than what was in flight.
+    expect(since[0].start - left).toBeLessThanOrEqual(STEP_MS)
+    expect(browser.traffic.peak).toBe(2)
   })
 })

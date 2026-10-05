@@ -13,7 +13,7 @@ import {
   OTHER,
   chainsOf,
   fakeCenter,
-  oneAfterAnother,
+  mostChainsAtOnce,
   positionRow,
   stick,
   type Call,
@@ -263,7 +263,7 @@ describe('the account\'s positions', () => {
     expect(mocks.positions).toHaveBeenCalledWith({ holder: HOLDER, chainIds: TESTNET }, expect.any(AbortSignal))
   })
 
-  it('reads each listed position\'s balance on its own chain, one chain after another, and asks no chain for one it lists none in', async () => {
+  it('reads each listed position\'s balance on its own chain, two chains at a time, and asks no chain for one it lists none in', async () => {
     mocks.positions.mockResolvedValue(
       listing([positionRow(1, 5n), positionRow(10, 4n), positionRow(8453, 23n), positionRow(8453, 24n)]),
     )
@@ -272,41 +272,42 @@ describe('the account\'s positions', () => {
     world[8453] = { '23': { staked: E18 }, '24': { staked: E18 } }
     await renderPositions()
 
-    // Chain 1's requests all end before chain 10's begin, and so on. Arbitrum lists nothing, so its balances are not read.
+    // Ethereum and Optimism are read side by side, and Base begins only once one of them has ended. Arbitrum lists
+    // nothing, so its balances are not read.
     expect(chainsOf(calls)).toEqual(MAINNET)
-    expect(oneAfterAnother(calls)).toBe(true)
+    expect(mostChainsAtOnce(calls)).toBe(2)
     const first = (chainId: number) => calls.findIndex(call => call.chainId === chainId)
     const last = (chainId: number) => calls.findLastIndex(call => call.chainId === chainId)
-    expect(last(1)).toBeLessThan(first(10))
-    expect(last(10)).toBeLessThan(first(8453))
-    expect(last(8453)).toBeLessThan(first(42161))
+    expect(first(10)).toBeLessThan(last(1))
+    expect(first(8453)).toBeGreaterThan(Math.min(last(1), last(10)))
     expect(balanceReads(8453)).toHaveLength(1)
     expect(balanceReads(42161)).toHaveLength(0)
     expect(cards().map(card => card.getAttribute('href'))).toEqual(['/eth:5', '/op:4', '/base:23', '/base:24'])
   })
 
-  it('does not start another chain while one is still being read', async () => {
-    mocks.positions.mockResolvedValue(listing([positionRow(1, 5n), positionRow(10, 4n)]))
+  it('does not start a third chain while two are still being read', async () => {
+    mocks.positions.mockResolvedValue(listing([positionRow(1, 5n), positionRow(10, 4n), positionRow(8453, 23n)]))
     world[1] = { '5': { staked: E18 } }
     world[10] = { '4': { staked: E18 } }
+    world[8453] = { '23': { staked: E18 } }
     const slow = Promise.withResolvers<void>()
     const center = fakeCenter(world, calls)
     mocks.client.mockImplementation((chainId: number) => {
       const chain = center(chainId)
-      if (chainId !== 1) return chain
+      if (chainId !== 1 && chainId !== 10) return chain
       const multicall = chain.multicall.bind(chain)
       return { ...chain, multicall: async (parameters: never) => (await slow.promise, multicall(parameters)) }
     })
     await renderPositions()
-    // Chain 1 has read the account's position events, and its balances are stuck: no other chain has begun.
-    expect(chainsOf(calls)).toEqual([1])
+    // Ethereum and Optimism have read the account's position events, and their balances are stuck: Base has not begun.
+    expect(chainsOf(calls)).toEqual([1, 10])
     expect(cards()).toHaveLength(0)
 
     await act(async () => slow.resolve())
     await settle()
     expect(chainsOf(calls)).toEqual(MAINNET)
-    expect(oneAfterAnother(calls)).toBe(true)
-    expect(cards()).toHaveLength(2)
+    expect(mostChainsAtOnce(calls)).toBe(2)
+    expect(cards()).toHaveLength(3)
   })
 
   it('takes the balance from the chain, not from what Bendystraw last saw', async () => {
@@ -453,7 +454,7 @@ describe('the account\'s positions, past the block Bendystraw is indexed through
     expect(host.textContent).not.toContain('No positions yet')
   })
 
-  it('reads the account\'s position events on each chain from just below the block, one chain after another', async () => {
+  it('reads the account\'s position events on each chain from just below the block, two chains at a time', async () => {
     mocks.positions.mockResolvedValue(listing([], MAINNET, THROUGH))
     await renderPositions()
 
@@ -467,7 +468,7 @@ describe('the account\'s positions, past the block Bendystraw is indexed through
     // Just below the block: 64 blocks, and never before the deployer's block (Arbitrum's is later than this one).
     expect(mocks.scan.mock.calls[0][1].fromBlock).toBe(THROUGH + 1n - 64n)
     expect(mocks.scan.mock.calls[3][1].fromBlock).toBe(stickyDeployment(42161)!.fromBlock)
-    expect(oneAfterAnother(calls)).toBe(true)
+    expect(mostChainsAtOnce(calls)).toBe(2)
   })
 
   it('counts a position once when the listing and the position events both have it', async () => {
@@ -563,7 +564,7 @@ describe('the account\'s positions, past the block Bendystraw is indexed through
 })
 
 describe('the account\'s positions, when Bendystraw cannot list them', () => {
-  it('reads every deployed project on each chain, one chain after another, and shows those the account holds', async () => {
+  it('reads every deployed project on each chain, two chains at a time, and shows those the account holds', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const down = new Error('Cannot query field "stickyPositions"')
     mocks.positions.mockRejectedValue(down)
@@ -579,11 +580,12 @@ describe('the account\'s positions, when Bendystraw cannot list them', () => {
     world[42161] = { '5': {}, '6': {}, '7': { staked: E18, start: NOW - 60 } }
     await renderPositions()
 
-    // Each chain's deployed projects are asked in the order of the chains, and every one of them is read.
+    // Each chain's deployed projects are asked in the order of the chains, two chains at a time, and every one of them
+    // is read.
     expect(mocks.projectsOn.mock.calls.map(([chainId]) => chainId)).toEqual(MAINNET)
     for (const [, index] of mocks.projectsOn.mock.calls) expect(index).toBeNull()
     expect(chainsOf(calls)).toEqual(MAINNET)
-    expect(oneAfterAnother(calls)).toBe(true)
+    expect(mostChainsAtOnce(calls)).toBe(2)
     expect(cards().map(card => card.getAttribute('href'))).toEqual(['/eth:5', '/base:6', '/arb:7'])
     expect(note()).toBe('')
     // Every project was asked about, so there is no listing whose block the position events would follow.
@@ -798,7 +800,7 @@ describe('the account\'s positions, as they are read again', () => {
     expect(balanceReads(8453)).toHaveLength(2)
   })
 
-  it('keeps the chains in turn as it reads them again, and does not read a chain again while its read is under way', async () => {
+  it('keeps to two chains at a time as it reads them again, and does not read a chain again while its read is under way', async () => {
     mocks.positions.mockResolvedValue(listing([positionRow(1, 5n), positionRow(10, 4n)]))
     world[1] = { '5': { staked: E18 } }
     world[10] = { '4': { staked: E18 } }
@@ -806,10 +808,11 @@ describe('the account\'s positions, as they are read again', () => {
     await later(0)
     await later(15_000)
     expect(chainsOf(calls)).toEqual(MAINNET)
-    expect(oneAfterAnother(calls)).toBe(true)
+    expect(mostChainsAtOnce(calls)).toBe(2)
     expect(balanceReads(1)).toHaveLength(2)
 
-    // Chain 1's next read does not end: the ticks that follow start nothing, on chain 1 or on chain 10 behind it.
+    // The next reads of chains 1 and 10 do not end: the ticks that follow start nothing, on them or on the chains
+    // behind them.
     const stuck = Promise.withResolvers<void>()
     const center = fakeCenter(world, calls)
     const started: number[] = []
@@ -820,11 +823,13 @@ describe('the account\'s positions, as they are read again', () => {
     })
     await later(15_000)
     await later(60_000)
-    expect(started).toEqual([1])
+    expect(started).toEqual([1, 10])
 
+    // Once they go on, each reads its project's figures (two rounds) and ends.
     await act(async () => stuck.resolve())
     await later(0)
-    expect(started.slice(0, 2)).toEqual([1, 1])
+    expect(started.filter(chainId => chainId === 1)).toHaveLength(3)
+    expect(started.filter(chainId => chainId === 10)).toHaveLength(3)
   })
 })
 
@@ -1024,7 +1029,7 @@ describe('the account\'s activity', () => {
 })
 
 describe('the account page as a whole', () => {
-  it('reads the positions of every chain before the activity of any, one request after another, and keeps nothing in the browser', async () => {
+  it('starts the positions of every chain before the activity of any, two chains at a time, and keeps nothing in the browser', async () => {
     mocks.positions.mockResolvedValue(listing([positionRow(1, 5n), positionRow(8453, 23n)]))
     world[1] = { '5': { staked: E18 } }
     world[8453] = { '23': { staked: E18 }, '24': {} }
@@ -1041,11 +1046,12 @@ describe('the account page as a whole', () => {
       </>,
     )
 
-    expect(oneAfterAnother(calls)).toBe(true)
-    const lastBalance = calls.findLastIndex(call => call.what.includes('stakedBalanceOf'))
+    expect(mostChainsAtOnce(calls)).toBe(2)
+    // A chain's positions begin with the scan of the account's position events, and its activity with its events.
+    const lastPositionsBegun = calls.findLastIndex(call => call.what === 'scan' && call.phase === 'start')
     const firstEvents = calls.findIndex(call => call.what === 'events')
-    expect(lastBalance).toBeGreaterThan(-1)
-    expect(firstEvents).toBeGreaterThan(lastBalance)
+    expect(calls.filter(call => call.what === 'scan' && call.phase === 'start')).toHaveLength(4)
+    expect(firstEvents).toBeGreaterThan(lastPositionsBegun)
     expect(cards()).toHaveLength(2)
     expect(feed().filter(item => !item.querySelector('a[data-position]'))).toHaveLength(2)
     // Every query is about the account, and none is kept.

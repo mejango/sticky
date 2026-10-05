@@ -483,30 +483,35 @@ describe('the reads behind the page', () => {
     expect(mocks.events).toHaveBeenCalledTimes(1)
     expect(mocks.events).toHaveBeenCalledWith(8453, 23n, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     const [chainId, projectId, options] = mocks.holders.mock.calls[0]
-    expect([chainId, projectId, options.now]).toEqual([8453, 23n, NOW])
+    // The holders are measured at the pinned block's time, which is read beside Bendystraw's positions.
+    expect([chainId, projectId, await options.now]).toEqual([8453, 23n, NOW])
     // When Bendystraw's positions cannot answer, the holders are built from the history the page read.
     expect(await options.events(8453, 23n, {})).toBe(history)
   })
 
-  it('run their scans one after another', async () => {
+  it('read the holders beside the history, and Latest once the history is in: never more than two at once', async () => {
+    const order: string[] = []
     let running = 0
     let most = 0
-    const scan = <T,>(answer: T) => async () => {
+    const scan = <T,>(name: string, answer: T) => async () => {
+      order.push(name)
       running += 1
       most = Math.max(most, running)
       await new Promise(resolve => setTimeout(resolve, 100))
       running -= 1
       return answer
     }
-    mocks.events.mockImplementation(scan(history))
-    mocks.holders.mockImplementation(scan(holders))
-    mocks.moves.mockImplementation(scan(paid))
+    mocks.events.mockImplementation(scan('history', history))
+    mocks.holders.mockImplementation(scan('holders', holders))
+    mocks.moves.mockImplementation(scan('moves', paid))
     await renderPage('base:23')
     await settle(1_000)
     expect(mocks.events).toHaveBeenCalledTimes(1)
     expect(mocks.holders).toHaveBeenCalledTimes(1)
     expect(mocks.moves).toHaveBeenCalledTimes(1)
-    expect(most).toBe(1)
+    // The holders do not wait for the history: Bendystraw's positions answer for them.
+    expect(order).toEqual(['history', 'holders', 'moves'])
+    expect(most).toBe(2)
     expect(value('Sticks')).toBe('2')
     expect(amounts()).toEqual(['1,010 SLOPSHOP'])
   })

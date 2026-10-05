@@ -70,9 +70,9 @@ export type HolderReadDeps = {
 /** A caller's signal and clock, and the reads to use instead of the default ones: a page can pass the events it has
  * read, and a test all three. */
 export type HolderReadOptions = Cancel & {
-  /** The time streaks are measured at, in Unix seconds: the page's pinned block's, so every age on it agrees. The
-   * clock's by default. */
-  now?: number
+  /** The time streaks are measured at, in Unix seconds: the page's pinned block's, so every age on it agrees, or the
+   * read that gives it, which runs beside Bendystraw's positions. The clock's by default. */
+  now?: number | Promise<number>
 } & Partial<HolderReadDeps>
 
 /** A holder's position as StickyHook keeps it, without the time: what `stakedBalanceOf`, `streakStartOf` and the
@@ -172,21 +172,22 @@ const live: HolderReadDeps = {
  * below that block to the head corrects them. When the positions read fails, has no status for the chain, or is so far
  * behind the head that the blocks since are more than a scan may read (`tailOrNull`), the rows are built from the
  * project's events instead, and `source` and `degraded` are those of the events. A read that can get neither rejects:
- * a list of holders is never quietly shorter.
+ * a list of holders is never quietly shorter. A `now` still being read is read beside the positions, and its failure
+ * is the read's.
  */
 export async function stickyHolders(
   chainId: number,
   projectId: bigint,
   options: HolderReadOptions = {},
 ): Promise<StickyHoldersResult> {
-  const { signal, now = unixNow(), ...given } = options
+  const { signal, now: clock = unixNow(), ...given } = options
   const deps: HolderReadDeps = { ...live, ...given }
   const deployment = deploymentOn(chainId)
   const ours = (event: StickyEvent) => event.chainId === chainId && event.projectId === projectId
 
   const about = { chainId, projectId }
   const read = () => deps.indexedPositions({ chainId, projectId }, signal)
-  const positions = await orNull(read, signal, POSITIONS_UNAVAILABLE, about)
+  const [positions, now] = await Promise.all([orNull(read, signal, POSITIONS_UNAVAILABLE, about), clock])
   const asOf = positions?.blocks.get(chainId)
   if (positions && asOf !== undefined) {
     const topics = [POSITION_TOPICS, pad(toHex(projectId))]
