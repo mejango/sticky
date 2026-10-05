@@ -3,6 +3,7 @@ import {
   type JBCenterRpcProvider,
 } from '@bananapus/nana-sdk-core/jbcenter'
 import { createPublicClient, custom, http, type PublicClient, type Transport } from 'viem'
+import { throughCenterSlots } from '@/lib/center-limit'
 import { SUPPORTED_CHAINS } from '@/lib/chains'
 import { jbCenterAppOrigin, jbCenterBaseUrl } from '@/lib/jbcenter-config'
 
@@ -63,6 +64,13 @@ const serverFetch: typeof fetch = (input, init) => {
 
 const browserFetch: typeof fetch = (input, init) => window.fetch(input, init)
 
+/** In the browser, every request to Center, from every chain's reader of the
+ * tab (the page's, wagmi's, the fee check's and the Center wallet's), waits for
+ * one of Center's slots (`center-limit.ts`), so the reads of a page can run side
+ * by side within its one rate limit. */
+const inBrowserSlots = (transport: Transport): Transport =>
+  typeof window === 'undefined' ? transport : throughCenterSlots(transport)
+
 export function jbCenterRpcTransport(
   chainId: number,
   timeoutMs = 15_000,
@@ -72,17 +80,19 @@ export function jbCenterRpcTransport(
     const origin =
       process.env.NEXT_PUBLIC_BROWSER_FIXTURE_ORIGIN ??
       'http://127.0.0.1:4399'
-    return network ? http(`${origin}/rpc/${network}`) : http()
+    return inBrowserSlots(network ? http(`${origin}/rpc/${network}`) : http())
   }
-  return custom(
-    retryWhileBehindHead(
-      createJBCenterRpcProvider(chainId, {
-        baseUrl: jbCenterBaseUrl(),
-        fetch: typeof window === 'undefined' ? serverFetch : browserFetch,
-        timeoutMs,
-      }),
+  return inBrowserSlots(
+    custom(
+      retryWhileBehindHead(
+        createJBCenterRpcProvider(chainId, {
+          baseUrl: jbCenterBaseUrl(),
+          fetch: typeof window === 'undefined' ? serverFetch : browserFetch,
+          timeoutMs,
+        }),
+      ),
+      { retryCount: 1 },
     ),
-    { retryCount: 1 },
   )
 }
 
