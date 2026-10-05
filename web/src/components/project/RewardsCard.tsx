@@ -80,7 +80,7 @@ function Reward({ card, stakedToken, canStick }: { card: RewardCard; stakedToken
   )
 }
 
-/** A token to look for rewards in, for a holder who cannot find them in the funding logs. */
+/** A token to look for rewards in, for a holder who cannot find them among the funded pots. */
 function CheckToken({ onCheck }: { onCheck: (token: Address) => void }) {
   const id = useId()
   const [value, setValue] = useState('')

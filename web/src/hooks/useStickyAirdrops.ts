@@ -17,10 +17,11 @@ import { useViewAs } from '@/lib/viewAs'
  * A Sticky project's Airdrops tab: which pots the distributor was funded for, the viewer's standing in them, their
  * auto-stick, and who they trust to stick for them. The keys start with the chain and project, so a page for another
  * project never shows this one's answers. The browser keeps none of these queries: what belongs to the viewer is an
- * account's, and the pots' scan keeps its own history (`keptScanToHead`). Every read waits for this visit's read of the
- * project: a copy of it that the browser kept from an earlier visit names the tokens, and nothing is read on its word.
- * What belongs to the viewer is read again every 15 seconds and when the browser tab is shown again. While the panel is
- * hidden it is not read at all (`useShowing`), and it is read at once when the panel is shown again.
+ * account's, and when the pots are scanned for, the scan keeps its own history (`discoverFunding`). Every read waits
+ * for this visit's read of the project: a copy of it that the browser kept from an earlier visit names the tokens, and
+ * nothing is read on its word. What belongs to the viewer is read again every 15 seconds and when the browser tab is
+ * shown again. While the panel is hidden it is not read at all (`useShowing`), and it is read at once when the panel is
+ * shown again.
  */
 
 const FUNDING_UNREADABLE = "Could not list a Sticky project's airdrops; the Airdrops tab shows only the staked token's."
@@ -35,8 +36,9 @@ export function useViewer(): Address | null {
   return viewAs ?? address ?? null
 }
 
-/** Every pot a project's Sticky token has been funded for, from the distributor's Fund logs (`discoverFunding`), read
- * once for the whole tab. It is tried once: a scan that cannot finish fails the same way again. */
+/** Every pot a project's Sticky token has been funded for, from Bendystraw's fundings, or the distributor's Fund logs
+ * when it cannot answer (`discoverFunding`), read once for the whole tab. It is tried once: a scan that cannot finish
+ * fails the same way again. */
 export function useRewardFunding(chainId: number, projectId: number) {
   const client = useQueryClient()
   const { info, verified } = useStickyProject(chainId, projectId)

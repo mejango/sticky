@@ -3,9 +3,13 @@
 // Dates in reward copy are local; pin the zone so the expected dates hold on every machine.
 process.env.TZ = 'UTC'
 
-import { erc20Abi, erc20Abi_bytes32, getAbiItem, getAddress, numberToHex, pad, stringToHex, toEventSelector, type Address } from 'viem'
+import { BendystrawTimeoutError } from '@bananapus/nana-sdk-core'
+import { erc20Abi, erc20Abi_bytes32, getAbiItem, getAddress, numberToHex, pad, stringToHex, toEventSelector, type Address, type Hex } from 'viem'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { ScannedLog } from '@/lib/hook-logs'
 import { stickyDistributorAbi, stickyHookAbi, stickyTokenAbi } from '@/lib/sticky-abis'
+import type { IndexedFunding } from '@/lib/sticky-indexed'
+import type { FundingReadDeps } from '@/lib/sticky-rewards'
 import { raw, topic, words } from './sticky-log-fixtures'
 import {
   CHAIN,
@@ -33,6 +37,12 @@ const creation = vi.hoisted(() => ({ block: vi.fn() }))
 vi.mock('@/lib/sticky-events', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-events')>()),
   projectCreationBlock: creation.block,
+}))
+// Bendystraw's airdrop funding. It cannot answer unless a test says so, so the Fund logs are scanned as before.
+const bendystraw = vi.hoisted(() => ({ funding: vi.fn() }))
+vi.mock('@/lib/sticky-indexed', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/lib/sticky-indexed')>()),
+  indexedStickyFunding: bendystraw.funding,
 }))
 
 // The Center reader is made once per chain, and viem caches the block number for a moment, so each test loads its own copy.
@@ -90,6 +100,7 @@ const fundedPot = (groupId: bigint, token: Address | string, amount: bigint, at:
 
 beforeEach(() => {
   creation.block.mockReset().mockResolvedValue(HEAD - 900n)
+  bendystraw.funding.mockReset().mockRejectedValue(new Error('Bendystraw is down'))
   vi.spyOn(console, 'warn').mockImplementation(() => {})
 })
 
@@ -346,6 +357,202 @@ describe('the Fund logs', () => {
       expect(three.more).toBe(2)
       expect(three.groups).toHaveLength(4)
     })
+  })
+})
+
+describe('the funded pots, from Bendystraw first', () => {
+  const FUND = '0x171d1972970e548ead487a3a60cfbdfffd130a21513e44dfcd8778965935ddf2'
+  const FUNDING_UNAVAILABLE = 'Bendystraw could not list the airdrops funded; scanning the distributor for them instead.'
+  const HOOK_TOPIC = pad(STICKY.toLowerCase() as Address, { size: 32 })
+  const KEY = `${CHAIN}:${DISTRIBUTOR.toLowerCase()}:fund:${STICKY.toLowerCase()}`
+  /** Where Bendystraw is indexed through in these tests. */
+  const AS_OF = HEAD - 100n
+  /** The `at` of AS_OF, in the window of fundedPot. */
+  const OF = Number(AS_OF - (HEAD - 500n))
+  const blockAt = (at: number) => HEAD - 500n + BigInt(at)
+
+  /** A Fund log, as the distributor emits it, `at` blocks into the window fundedPot counts from. */
+  const fundLog = (groupId: bigint, token: string, amount: bigint, at: number): ScannedLog =>
+    raw([FUND, topic(STICKY), topic(groupId), topic(token)], words(1n, amount, HOLDER), {
+      address: DISTRIBUTOR,
+      blockNumber: blockAt(at),
+    })
+  /** The same funding, as Bendystraw lists it: the same transaction and log. */
+  const fundRow = (groupId: bigint, token: string, amount: bigint, at: number): IndexedFunding => ({
+    chainId: CHAIN,
+    txHash: pad(numberToHex(blockAt(at) * 1_000n), { size: 32 }) as Hex,
+    logIndex: 0,
+    blockNumber: blockAt(at),
+    hook: STICKY.toLowerCase() as Address,
+    groupId,
+    token: token.toLowerCase() as Address,
+    amount,
+  })
+
+  type Indexed = { rows: IndexedFunding[]; block?: bigint } | Error
+  /** Fakes of the reads: Bendystraw's answer (an error by default), the distributor's logs, which each scan answers
+   * from its block on, and the project's creation block. */
+  function fakeReads({
+    indexed = new Error('Bendystraw is down') as Indexed,
+    logs = [] as ScannedLog[],
+    created = (HEAD - 900n) as bigint | null,
+  } = {}) {
+    return {
+      indexedFunding: vi.fn<FundingReadDeps['indexedFunding']>(async () => {
+        if (indexed instanceof Error) throw indexed
+        return { rows: indexed.rows, blocks: new Map(indexed.block === undefined ? [] : [[CHAIN, indexed.block]]) }
+      }),
+      scan: vi.fn<FundingReadDeps['scan']>(async (_chainId, filter) => logs.filter(log => log.blockNumber >= filter.fromBlock)),
+      keptScan: vi.fn<FundingReadDeps['keptScan']>(async (_chainId, _key, filter) =>
+        logs.filter(log => filter.fromBlock === null || log.blockNumber >= filter.fromBlock),
+      ),
+      creationBlock: vi.fn<FundingReadDeps['creationBlock']>(async () => created),
+    }
+  }
+
+  it('come from Bendystraw\'s fundings of the Sticky token: one per group and token, the first funded first, with its total and the block it was last funded in', async () => {
+    const reads = fakeReads({
+      indexed: { rows: [fundRow(4000n, OTHER, 5n, 1), fundRow(0n, NATIVE, 2n, 2), fundRow(4000n, OTHER, 6n, 3)], block: AS_OF },
+    })
+    const r = await load()
+
+    expect(await r.discoverFunding(CHAIN, STICKY, PROJECT, reads)).toEqual([
+      fundedPot(4000n, OTHER, 11n, 3),
+      fundedPot(0n, NATIVE, 2n, 2),
+    ])
+    expect(reads.indexedFunding).toHaveBeenCalledWith(CHAIN, STICKY.toLowerCase(), undefined)
+    // One scan past Bendystraw's block, and none of the project's life: nothing is kept either.
+    expect(reads.scan.mock.calls.map(([chainId, filter]) => [chainId, filter])).toEqual([
+      [CHAIN, { address: DISTRIBUTOR, topics: [FUND, HOOK_TOPIC], fromBlock: AS_OF + 1n - 64n }],
+    ])
+    expect(reads.keptScan).not.toHaveBeenCalled()
+    expect(console.warn).not.toHaveBeenCalled()
+  })
+
+  it('are the pots the Fund logs give for the same fundings', async () => {
+    const funded: [bigint, string, bigint, number][] = [
+      [4000n, OTHER, 5n, 1],
+      [0n, NATIVE, 2n, 2],
+      [4000n, OTHER, 6n, 3],
+      [0n, TOKEN, 9n, 4],
+      [0n, NATIVE, 1n, 5],
+    ]
+    const r = await load()
+
+    const scanned = await r.discoverFunding(CHAIN, STICKY, PROJECT, fakeReads({ logs: funded.map(each => fundLog(...each)) }))
+    const indexed = await r.discoverFunding(
+      CHAIN,
+      STICKY,
+      PROJECT,
+      fakeReads({ indexed: { rows: funded.map(each => fundRow(...each)), block: AS_OF } }),
+    )
+
+    expect(indexed).toEqual(scanned)
+    expect(indexed).toEqual([fundedPot(4000n, OTHER, 11n, 3), fundedPot(0n, NATIVE, 3n, 5), fundedPot(0n, TOKEN, 9n, 4)])
+  })
+
+  it('count once a funding both Bendystraw and the tail have, and put one only the tail has in its place in the chain', async () => {
+    // Bendystraw's status says AS_OF, but its rows stop short of it: the funding ten blocks below is on the chain only,
+    // and its pot was funded before the one five blocks below, which both have.
+    const reads = fakeReads({
+      indexed: { rows: [fundRow(0n, NATIVE, 2n, 2), fundRow(4000n, OTHER, 5n, OF - 5)], block: AS_OF },
+      logs: [fundLog(4000n, OTHER, 5n, OF - 5), fundLog(0n, TOKEN, 3n, OF - 10), fundLog(0n, NATIVE, 4n, OF + 5)],
+    })
+    const r = await load()
+
+    expect(await r.discoverFunding(CHAIN, STICKY, PROJECT, reads)).toEqual([
+      fundedPot(0n, NATIVE, 6n, OF + 5),
+      fundedPot(0n, TOKEN, 3n, OF - 10),
+      fundedPot(4000n, OTHER, 5n, OF - 5),
+    ])
+  })
+
+  it('start the tail 64 blocks below the block after Bendystraw\'s, never below the project\'s creation or the deployer\'s block', async () => {
+    const r = await load()
+    const past = AS_OF + 1n - 64n
+    const starts: [bigint | null, bigint][] = [
+      [AS_OF + 5_000n, AS_OF + 5_000n],
+      [past + 1n, past + 1n],
+      [past - 1n, past],
+      [null, past],
+    ]
+    for (const [created, from] of starts) {
+      const reads = fakeReads({ indexed: { rows: [], block: AS_OF }, created })
+      await r.discoverFunding(CHAIN, STICKY, PROJECT, reads)
+      expect(reads.scan.mock.calls.map(([, filter]) => filter.fromBlock)).toEqual([from])
+    }
+    // An indexer stalled before the deployer's block: no Sticky token was funded before it.
+    const stalled = fakeReads({ indexed: { rows: [], block: 1n }, created: null })
+    await r.discoverFunding(CHAIN, STICKY, PROJECT, stalled)
+    expect(stalled.scan.mock.calls.map(([, filter]) => filter.fromBlock)).toEqual([deployment.fromBlock])
+  })
+
+  describe('scan the Fund logs as before, kept in this browser, when Bendystraw cannot answer', () => {
+    it.each([
+      ['an error', new Error('database is down')],
+      ['the 8 s timeout', new BendystrawTimeoutError(8_000)],
+    ])('on %s, from the project\'s creation, and say so', async (_name, failure) => {
+      const reads = fakeReads({ indexed: failure, logs: [fundLog(0n, TOKEN, 3n, 1)] })
+      const r = await load()
+
+      expect(await r.discoverFunding(CHAIN, STICKY, PROJECT, reads)).toEqual([fundedPot(0n, TOKEN, 3n, 1)])
+      expect(reads.keptScan.mock.calls.map(([chainId, key, filter]) => [chainId, key, filter])).toEqual([
+        [CHAIN, KEY, { address: DISTRIBUTOR, topics: [FUND, HOOK_TOPIC], fromBlock: HEAD - 900n }],
+      ])
+      expect(reads.scan).not.toHaveBeenCalled()
+      expect(vi.mocked(console.warn).mock.calls).toEqual([[FUNDING_UNAVAILABLE, { chainId: CHAIN, projectId: PROJECT }, failure]])
+    })
+
+    it('for a chain Bendystraw has no status for, whatever rows it sent', async () => {
+      const reads = fakeReads({ indexed: { rows: [fundRow(0n, OTHER, 99n, 1)] }, logs: [fundLog(0n, TOKEN, 3n, 1)] })
+      const r = await load()
+
+      expect(await r.discoverFunding(CHAIN, STICKY, PROJECT, reads)).toEqual([fundedPot(0n, TOKEN, 3n, 1)])
+      expect(reads.keptScan.mock.calls.map(([, key]) => key)).toEqual([KEY])
+    })
+  })
+
+  it('never list fewer pots than were funded: a read that cannot finish rejects', async () => {
+    const r = await load()
+    const scanFails = fakeReads()
+    scanFails.keptScan.mockRejectedValue(new Error('rpc down'))
+    await expect(r.discoverFunding(CHAIN, STICKY, PROJECT, scanFails)).rejects.toThrow('rpc down')
+
+    const tailFails = fakeReads({ indexed: { rows: [fundRow(0n, TOKEN, 3n, 1)], block: AS_OF } })
+    tailFails.scan.mockRejectedValue(new Error('429'))
+    await expect(r.discoverFunding(CHAIN, STICKY, PROJECT, tailFails)).rejects.toThrow('429')
+  })
+
+  it('leave out a funding of another Sticky token, or of another chain, that a reader passed on', async () => {
+    const reads = fakeReads({
+      indexed: {
+        rows: [
+          fundRow(0n, TOKEN, 3n, 1),
+          { ...fundRow(0n, OTHER, 5n, 2), hook: address('7').toLowerCase() as Address },
+          { ...fundRow(0n, OTHER, 5n, 3), chainId: 10 },
+        ],
+        block: AS_OF,
+      },
+    })
+    const r = await load()
+
+    expect(await r.discoverFunding(CHAIN, STICKY, PROJECT, reads)).toEqual([fundedPot(0n, TOKEN, 3n, 1)])
+  })
+
+  it('ask Bendystraw while the creation block is read, and hand every read the caller\'s signal', async () => {
+    const { signal } = new AbortController()
+    const reads = fakeReads({ indexed: { rows: [], block: AS_OF } })
+    let release: (block: bigint) => void = () => {}
+    reads.creationBlock.mockImplementationOnce(() => new Promise(resolve => (release = resolve)))
+    const r = await load()
+
+    const pots = r.discoverFunding(CHAIN, STICKY, PROJECT, { ...reads, signal })
+    await vi.waitFor(() => expect(reads.indexedFunding).toHaveBeenCalledWith(CHAIN, STICKY.toLowerCase(), signal))
+    release(HEAD - 900n)
+
+    expect(await pots).toEqual([])
+    expect(reads.creationBlock).toHaveBeenCalledWith(CHAIN, PROJECT, { signal })
+    expect(reads.scan.mock.calls.map(([, , opts]) => opts)).toEqual([{ signal }])
   })
 })
 

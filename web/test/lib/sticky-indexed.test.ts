@@ -3,6 +3,7 @@
 import { createHash } from 'node:crypto'
 import { getEventListeners } from 'node:events'
 import { BendystrawTimeoutError } from '@bananapus/nana-sdk-core'
+import type { Address } from 'viem'
 import { describe, expect, it, vi } from 'vitest'
 import registry from '@/lib/bendystraw-operation-registry.json'
 import { stickyDeployment } from '@/lib/sticky-addresses'
@@ -11,6 +12,7 @@ import {
   indexedStickyCreateTx,
   indexedStickyEvents,
   indexedStickyFees,
+  indexedStickyFunding,
   indexedStickyMoves,
   indexedStickyPositions,
   indexedStickyProjects,
@@ -179,6 +181,24 @@ const additionRow = (projectId: number, extra: Variables = {}) => ({
   ...extra,
 })
 
+/** A Sticky token, as a page has it from the chain (checksummed), and as Bendystraw stores it. */
+const STICKY_TOKEN = '0xEe528A64F4AfE524Ba220C7cF0EA0C0278d0F232'
+const STICKY_HOOK = STICKY_TOKEN.toLowerCase()
+const REWARD_TOKEN = `0x${'d'.repeat(40)}`
+/** A funding of a Sticky token's holders' rewards (the distributor's Fund), as stickyFundEvents lists it. */
+const fundRow = (extra: Variables = {}) => ({
+  chainId: 84532,
+  version: 6,
+  txHash: tx(5),
+  logIndex: 5,
+  blockNumber: '400',
+  hook: STICKY_HOOK,
+  groupId: '0',
+  token: REWARD_TOKEN,
+  amount: '1000',
+  ...extra,
+})
+
 const eventRow = (type: string, extra: Variables = {}) => ({
   chainId: 84532,
   projectId: 37,
@@ -233,18 +253,20 @@ const readers: [string, (signal?: AbortSignal) => Promise<unknown>][] = [
   ['indexedBlocks', signal => indexedBlocks('testnet', signal)],
   ['indexedStickyMoves', signal => indexedStickyMoves(84532, [37n], signal)],
   ['indexedStickyFees', signal => indexedStickyFees(84532, 37n, signal)],
+  ['indexedStickyFunding', signal => indexedStickyFunding(84532, STICKY_TOKEN, signal)],
   ['indexedStickyCreateTx', signal => indexedStickyCreateTx(84532, 37n, signal)],
   ['indexedStickyEvents', signal => indexedStickyEvents({ chainId: 84532, projectId: 37n }, signal)],
   ['indexedStickyPositions', signal => indexedStickyPositions({ chainId: 84532, projectId: 37n }, signal)],
   ['indexedStickySettings', signal => indexedStickySettings(84532, 37n, signal)],
 ]
 
-/** The three readers of the tables peripheralist/bendystraw#36 adds, with the document each runs and the
- * root field it queries. */
+/** The readers of the Sticky tables peripheralist/bendystraw#36 and #38 add that read one document, with the
+ * document each runs and the root field it queries. */
 const newReaders: [string, string, string, () => Promise<unknown>][] = [
   ['indexedStickyEvents', 'StickyEvents', 'stickyEvents', () => indexedStickyEvents({ chainId: 84532, projectId: 37n })],
   ['indexedStickyPositions', 'StickyPositions', 'stickyPositions', () => indexedStickyPositions({ chainId: 84532, projectId: 37n })],
   ['indexedStickySettings', 'StickySettings', 'stickySettingEvents', () => indexedStickySettings(84532, 37n)],
+  ['indexedStickyFunding', 'StickyFunding', 'stickyFundEvents', () => indexedStickyFunding(84532, STICKY_TOKEN)],
 ]
 
 describe('the network index: projects and indexed blocks', () => {
@@ -936,6 +958,101 @@ describe('fees and additions to a balance', () => {
   })
 })
 
+describe('airdrop funding', () => {
+  it('reads the fundings of one Sticky token on one chain at version 6, in the order of the chain, and drops rows of other tokens, chains and versions', async () => {
+    const sent = indexer({
+      // Bendystraw has ignored filters before: a funding of another token must not become one of this token's pots.
+      StickyFunding: () =>
+        listed('stickyFundEvents', [
+          fundRow({ blockNumber: '410', logIndex: 2, txHash: tx(6) }),
+          fundRow({ hook: `0x${'9'.repeat(40)}` }),
+          fundRow({ chainId: 10 }),
+          fundRow({ version: 5 }),
+          fundRow({ groupId: '4002', token: REWARD_TOKEN.toUpperCase().replace('0X', '0x') }),
+          fundRow({ blockNumber: '410', logIndex: 1, txHash: tx(7), amount: '7' }),
+        ]),
+    })
+
+    const { rows, blocks } = await indexedStickyFunding(84532, STICKY_TOKEN as Address)
+
+    expect(blocks).toEqual(new Map([[84532, 500n]]))
+    expect(sent.map(({ operation, variables }) => [operation, variables])).toEqual([
+      ['StickyFunding', { where: { chainId: 84532, hook: STICKY_HOOK, version: 6 }, after: null }],
+    ])
+    expect(sent[0].url).toBe(TESTNET)
+    const at = { chainId: 84532, hook: STICKY_HOOK, token: REWARD_TOKEN }
+    expect(rows).toEqual([
+      { ...at, txHash: tx(5), logIndex: 5, blockNumber: 400n, groupId: 4002n, amount: 1000n },
+      { ...at, txHash: tx(7), logIndex: 1, blockNumber: 410n, groupId: 0n, amount: 7n },
+      { ...at, txHash: tx(6), logIndex: 2, blockNumber: 410n, groupId: 0n, amount: 1000n },
+    ])
+  })
+
+  it('has no block, and no fundings, for a chain the index has no status for', async () => {
+    indexer({ StickyFunding: () => listed('stickyFundEvents', [fundRow()], undefined, [['optimismSepolia', 11155420, 900]]) })
+
+    expect(await indexedStickyFunding(84532, STICKY_TOKEN as Address)).toEqual({ rows: [], blocks: new Map() })
+  })
+
+  it('reads group IDs and amounts past 2^53 exactly', async () => {
+    indexer({
+      StickyFunding: () =>
+        listed('stickyFundEvents', [fundRow({ groupId: '520000', amount: '123456789012345678901234567890', blockNumber: '9007199254740993' })]),
+    })
+
+    expect((await indexedStickyFunding(84532, STICKY_TOKEN as Address)).rows).toEqual([
+      expect.objectContaining({ groupId: 520_000n, amount: 123456789012345678901234567890n, blockNumber: 9007199254740993n }),
+    ])
+  })
+
+  it('follows the cursor, and takes the block from the first page', async () => {
+    const sent = indexer({
+      StickyFunding: ({ after }) =>
+        after === null
+          ? listed('stickyFundEvents', [fundRow({ txHash: tx(1), blockNumber: '1' })], 'f1', [['baseSepolia', 84532, 450]])
+          : listed('stickyFundEvents', [fundRow({ txHash: tx(2), blockNumber: '2' })], undefined, [['baseSepolia', 84532, 460]]),
+    })
+
+    const { rows, blocks } = await indexedStickyFunding(84532, STICKY_TOKEN as Address)
+
+    expect(rows.map(({ txHash }) => txHash)).toEqual([tx(1), tx(2)])
+    expect(blocks).toEqual(new Map([[84532, 450n]]))
+    expect(sent.map(({ variables }) => variables.after)).toEqual([null, 'f1'])
+  })
+
+  it('stops at 20 pages with an error', async () => {
+    let next = 0
+    indexer({ StickyFunding: () => listed('stickyFundEvents', [fundRow()], `f${(next += 1)}`) })
+
+    await expect(indexedStickyFunding(84532, STICKY_TOKEN as Address)).rejects.toThrow(
+      'more stickyFundEvents than one page load reads',
+    )
+  })
+
+  it.each([
+    ['no block number', { blockNumber: null }],
+    ['a block number that is not a whole number', { blockNumber: '4.5' }],
+    ['no group', { groupId: null }],
+    ['a reward token that is not an address', { token: 'ETH' }],
+    ['a fractional amount', { amount: '0.5' }],
+    ['no transaction hash', { txHash: null }],
+    ['no log index', { logIndex: -1 }],
+  ])('rejects the whole read for a funding with %s', async (_name, extra) => {
+    indexer({ StickyFunding: () => listed('stickyFundEvents', [fundRow(extra)]) })
+
+    await expect(indexedStickyFunding(84532, STICKY_TOKEN as Address)).rejects.toThrow(
+      'Bendystraw returned an incomplete Sticky airdrop.',
+    )
+  })
+
+  it('refuses a Sticky token that is not an address, and asks nothing', async () => {
+    const sent = indexer({})
+
+    await expect(indexedStickyFunding(84532, 'sticky' as Address)).rejects.toThrow(TypeError)
+    expect(sent).toHaveLength(0)
+  })
+})
+
 describe('a project\'s creating transaction', () => {
   it('is the hash of the one creation Bendystraw has, asked for at version 6', async () => {
     const sent = indexer({
@@ -1403,15 +1520,15 @@ describe('an indexer that does not have the Sticky tables yet', () => {
 
   it('rejects through the same-origin relay, which answers a schema error with a 502, whichever reader asked', async () => {
     vi.stubGlobal('window', {})
-    // A 502 is retried twice, after 250 ms and 750 ms, before the transport gives up. The three reads wait
-    // together, in real time: the browser transport hashes each document with the platform's own crypto.
+    // A 502 is retried twice, after 250 ms and 750 ms, before the transport gives up. The reads wait together, in
+    // real time: the browser transport hashes each document with the platform's own crypto.
     const fetcher = vi.fn(async () => reply({ error: 'Bendystraw unavailable' }, 502))
     vi.stubGlobal('fetch', fetcher)
 
     const outcomes = await Promise.all(newReaders.map(([, , , read]) => failure(read())))
 
     for (const outcome of outcomes) expect(outcome).toMatchObject({ message: 'Bendystraw request failed (502)' })
-    expect(fetcher).toHaveBeenCalledTimes(9)
+    expect(fetcher).toHaveBeenCalledTimes(3 * newReaders.length)
   })
 
   it.each(newReaders)('%s rejects when the answer has no list, however the error was worded', async (_name, operation, _field, read) => {
@@ -1651,7 +1768,7 @@ describe('a caller\'s AbortSignal', () => {
 })
 
 describe('the documents', () => {
-  /** Every reader against an indexer that has an empty answer for each of the nine documents. */
+  /** Every reader against an indexer that has an empty answer for each of the ten documents. */
   async function readEverything() {
     const sent = indexer({
       StickyIndex: () => indexOf(TESTNET_CHAINS, []),
@@ -1659,6 +1776,7 @@ describe('the documents', () => {
       StickyCashOuts: () => ({ data: { _meta: META, cashOutTokensEvents: page([]) } }),
       StickyFees: () => listed('processFeeEvents', []),
       StickyAdditions: () => listed('addToBalanceEvents', []),
+      StickyFunding: () => listed('stickyFundEvents', []),
       StickyCreate: () => ({ data: { projectCreateEvents: { items: [] } } }),
       StickyEvents: () => listed('stickyEvents', []),
       StickyPositions: () => listed('stickyPositions', []),
@@ -1668,7 +1786,7 @@ describe('the documents', () => {
     return sent
   }
 
-  it('are nine, each registered under the SHA-256 of its exact text', async () => {
+  it('are ten, each registered under the SHA-256 of its exact text', async () => {
     const sent = await readEverything()
 
     const documents = new Map(sent.map(({ operation, query }) => [operation, query]))
@@ -1678,12 +1796,13 @@ describe('the documents', () => {
       'StickyCreate',
       'StickyEvents',
       'StickyFees',
+      'StickyFunding',
       'StickyIndex',
       'StickyPays',
       'StickyPositions',
       'StickySettings',
     ])
-    expect(Object.keys(registry)).toHaveLength(9)
+    expect(Object.keys(registry)).toHaveLength(10)
     for (const query of documents.values()) {
       expect((registry as Record<string, string>)[createHash('sha256').update(query, 'utf8').digest('hex')]).toBe(query)
     }
@@ -1712,6 +1831,7 @@ describe('the documents', () => {
       'StickyCashOuts',
       'StickyEvents',
       'StickyFees',
+      'StickyFunding',
       'StickyIndex',
       'StickyPays',
       'StickyPositions',
@@ -1731,7 +1851,7 @@ describe('the documents', () => {
     await readEverything()
 
     const revalidate = vi.mocked(fetch).mock.calls.map(([, init]) => (init as { next?: { revalidate?: number } }).next?.revalidate)
-    expect(revalidate).toHaveLength(10)
+    expect(revalidate).toHaveLength(11)
     expect(new Set(revalidate)).toEqual(new Set([15]))
   })
 
@@ -1743,6 +1863,7 @@ describe('the documents', () => {
       StickyCashOuts: () => ({ data: { _meta: META, cashOutTokensEvents: page([]) } }),
       StickyFees: () => listed('processFeeEvents', [feeRow(37)]),
       StickyAdditions: () => listed('addToBalanceEvents', [additionRow(37)]),
+      StickyFunding: () => listed('stickyFundEvents', [fundRow()]),
       StickyCreate: () => ({ data: { projectCreateEvents: { items: [{ txHash: tx(7), timestamp: 1 }] } } }),
       StickyEvents: () => listed('stickyEvents', [staked()]),
       StickyPositions: () => listed('stickyPositions', [positionRow()]),
@@ -1752,12 +1873,13 @@ describe('the documents', () => {
     await indexedStickyProjects('testnet')
     await indexedStickyMoves(84532, [37n])
     await indexedStickyFees(84532, 37n)
+    await indexedStickyFunding(84532, STICKY_TOKEN as Address)
     await indexedStickyCreateTx(84532, 37n)
     await indexedStickyEvents({ chainId: 84532, projectId: 37n })
     await indexedStickyPositions({ chainId: 84532, projectId: 37n })
     await indexedStickySettings(84532, 37n)
 
     expect(new Set(sent.map(({ url }) => url))).toEqual(new Set(['/api/bendystraw/testnet/query']))
-    expect(new Set(sent.map(({ operation }) => operation)).size).toBe(9)
+    expect(new Set(sent.map(({ operation }) => operation)).size).toBe(10)
   })
 })

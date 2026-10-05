@@ -11,6 +11,7 @@
 import { BendystrawTimeoutError, type BendystrawNetwork } from '@bananapus/nana-sdk-core'
 import { isAddress, type Address, type Hex } from 'viem'
 import { bendystraw } from '@/lib/bendystraw'
+import { inChainOrder } from '@/lib/hook-logs'
 import { stickyChainIds, stickyDeployment } from '@/lib/sticky-addresses'
 
 // An operation's ID is the SHA-256 of its exact text, so every document below keeps its whitespace as written.
@@ -50,6 +51,15 @@ const ADDITION_QUERY = `query StickyAdditions($where: addToBalanceEventFilter, $
     _meta { status }
     addToBalanceEvents(where: $where, orderBy: "timestamp", orderDirection: "asc", limit: 1000, after: $after) {
       items { chainId projectId version txHash logIndex timestamp amount returnedFees }
+      pageInfo { hasNextPage endCursor }
+    }
+  }`
+// The distributor's fundings of a Sticky token's holders' rewards (stickyFundEvents, which
+// peripheralist/bendystraw#38 adds): which pots exist. What a pot holds is read from the distributor.
+const FUNDING_QUERY = `query StickyFunding($where: stickyFundEventFilter, $after: String) {
+    _meta { status }
+    stickyFundEvents(where: $where, orderBy: "timestamp", orderDirection: "asc", limit: 1000, after: $after) {
+      items { chainId version txHash logIndex blockNumber hook groupId token amount }
       pageInfo { hasNextPage endCursor }
     }
   }`
@@ -109,6 +119,19 @@ export type IndexedMove = Placed & { holder: Address; amount: bigint; tokens: bi
  * balance when it was held. An `addition` added `amount` and the held fees it returned (`returnedFees`). */
 export type IndexedFee = Placed &
   ({ kind: 'fee'; amount: bigint; wasHeld: boolean } | { kind: 'addition'; amount: bigint; returnedFees: bigint })
+
+/** One funding of a Sticky token's holders' rewards (the distributor's Fund), in block `blockNumber`: `amount` of the
+ * reward `token`, after any transfer fee, for the reward group `groupId` of the Sticky token `hook`. */
+export type IndexedFunding = {
+  chainId: number
+  txHash: Hex
+  logIndex: number
+  blockNumber: bigint
+  hook: Address
+  groupId: bigint
+  token: Address
+  amount: bigint
+}
 
 /** One row of the hook's history. `count` is the shares that moved, `stakedBalance` the holder's balance
  * after, and `duration` the length of the streak that ended, in seconds. Transfers between holders are an
@@ -222,6 +245,27 @@ function additionOf(row: Row): IndexedFee | null {
     : { ...at, kind: 'addition', amount, returnedFees }
 }
 
+function fundingOf(row: Row): IndexedFunding | null {
+  const chainId = whole(row.chainId)
+  const txHash = hash(row.txHash)
+  const logIndex = whole(row.logIndex)
+  const blockNumber = big(row.blockNumber)
+  const hook = account(row.hook)
+  const groupId = big(row.groupId)
+  const token = account(row.token)
+  const amount = big(row.amount)
+  return chainId === null ||
+    txHash === null ||
+    logIndex === null ||
+    blockNumber === null ||
+    hook === null ||
+    groupId === null ||
+    token === null ||
+    amount === null
+    ? null
+    : { chainId, txHash, logIndex, blockNumber, hook, groupId, token, amount }
+}
+
 function eventOf(row: Row): IndexedStickyEvent | null {
   const at = placed(row)
   const holder = account(row.holder)
@@ -297,8 +341,12 @@ function settingOf(row: Row): IndexedSetting | null {
   }
 }
 
-/** What a question asked for. */
-type Scope = { chains: ReadonlySet<number>; projects?: ReadonlySet<number>; holder?: Address }
+/** What a question asked for. `hook` is a Sticky token, as the distributor names it. */
+type Scope = { chains: ReadonlySet<number>; projects?: ReadonlySet<number>; holder?: Address; hook?: Address }
+
+/** Whether a row's `field` is the address `wanted`, in any letter case, or the question did not ask about it. */
+const isOrUnasked = (row: Row, field: 'holder' | 'hook', wanted: Address | undefined) =>
+  wanted === undefined || (typeof row[field] === 'string' && row[field].toLowerCase() === wanted)
 
 /** The rows of `items` that answer `scope`, parsed. An indexer that ignored a filter would send others, so
  * they are dropped here. A row that is not a record, or that answers the question and is incomplete, rejects
@@ -309,7 +357,8 @@ function accept<T>(items: unknown[], scope: Scope, parse: (row: Row) => T | null
     (scope.chains.has(Number(row.chainId)) &&
       Number(row.version) === VERSION &&
       (scope.projects === undefined || scope.projects.has(Number(row.projectId))) &&
-      (scope.holder === undefined || (typeof row.holder === 'string' && row.holder.toLowerCase() === scope.holder)))
+      isOrUnasked(row, 'holder', scope.holder) &&
+      isOrUnasked(row, 'hook', scope.hook))
   return items.filter(asked).map(row => {
     const parsed = isRow(row) ? parse(row) : null
     if (parsed === null) throw new Error(`Bendystraw returned an incomplete ${what}.`)
@@ -576,6 +625,26 @@ export async function indexedStickyFees(
       withBlocks(fees.items, fees.first, scope, feeOf, 'fee'),
       withBlocks(additions.items, additions.first, scope, additionOf, 'addition to a balance'),
     )
+  })
+}
+
+/**
+ * Every funding of a Sticky token's holders' rewards on one chain, in the order of the chain, with the block the chain
+ * is indexed through. A chain the answer has no status for is absent from `blocks`, and its fundings are left out with
+ * it. Bendystraw lists only the funding of a token it knows is a Sticky token.
+ */
+export async function indexedStickyFunding(
+  chainId: number,
+  stToken: Address,
+  signal?: AbortSignal,
+): Promise<IndexedRows<IndexedFunding>> {
+  const hook = account(stToken)
+  if (hook === null) throw new TypeError(`${stToken} is not an address.`)
+  const scope = { chains: new Set([chainId]), hook }
+  return read(signal, async within => {
+    const where = { chainId, hook, version: VERSION }
+    const { items, first } = await allPages('stickyFundEvents', FUNDING_QUERY, { where }, { chainId }, within)
+    return withBlocks(items, first, scope, fundingOf, 'Sticky airdrop', inChainOrder)
   })
 }
 
