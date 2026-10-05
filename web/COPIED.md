@@ -278,7 +278,7 @@ Copied with JBM at `9af68f9` (`origin/main`, fetched 2026-09-30). The files last
 
 | File | Source | Source commit | Sticky edits |
 |---|---|---|---|
-| `src/components/project/DetailsCard.tsx` `CopyAddress` | JBM `src/components/project/ExtrasTab.tsx`, the copy button of `PayerDeployedPanel` | JBM b3f0220 (last changed a3f7b74) | The pattern only, no code: `navigator.clipboard.writeText`, then a "Copied!" label for 1.5 s. JBM has no shared copy component (`AddressLink` links to the explorer, `AddressLabel` shows an ENS name) and ignores the write's outcome. Sticky sets the label once the write has succeeded, and says "Could not copy" and tells the console when the browser refuses, where the old client's `guard` showed the failure. |
+| `src/components/ui/CopyAddress.tsx` (`DetailsCard.tsx`'s `CopyAddress` until Task W2-P4) | JBM `src/components/project/ExtrasTab.tsx`, the copy button of `PayerDeployedPanel` | JBM b3f0220 (last changed a3f7b74) | The pattern only, no code: `navigator.clipboard.writeText`, then a "Copied!" label for 1.5 s. JBM has no shared copy component (`AddressLink` links to the explorer, `AddressLabel` shows an ENS name) and ignores the write's outcome. Sticky sets the label once the write has succeeded, and says "Could not copy" and tells the console when the browser refuses, where the old client's `guard` showed the failure. |
 
 ## Task 2.7: old links, llms.txt, robots, not-found
 
@@ -486,3 +486,23 @@ JBM took these from Sticky's backports (rulings R22, R29 and R72 to R73), or Sti
 | `src/components/ProjectLink.tsx`, `test/components/project-link.test.tsx` (#100) | Sticky's `ProjectLink` is its own and never prefetches. |
 | `src/components/project/Tabs.tsx`, `test/components/project-tabs.test.ts` (#99) | The `activityLabel` hunks, and their two cases (`project-tabs.test.tsx`), Task 2.2. |
 | `test/data/bendystraw-proxy.test.ts` (#95) | Sticky's file (HR's) holds the relay's 502 and log cases. |
+
+## Task W2-P4: airdrops and auto-stick (Phase 4)
+
+The Airdrops tab's writes, written for Sticky in the shape of its Phase 3 flows: each is a form or a button whose
+review (`TxConfirmDialog`) reads the chain again, plans every step and its approvals, and sends them one press at a
+time through `useSafeTx`, naming the account that reviewed them (`reviewedAccount`, as JBM `BurnTokensFlow.tsx` at
+`445f9d5`). They port the old client's `fundRewards`, `claimReward`, `claimAndStick`, `saveAutoStick`,
+`toggleAutoStick`, `repairAutoStick`, `autoStickNow`, `beginAutoStickVesting`, `createRewardAddress` and
+`settleArrivals` (`webclient/app.js:4064-4630`) and its fund and auto-stick dialogs (`webclient/index.html:1177-1289`).
+No JBM code is copied.
+
+### Source files
+
+| File | Source | Source commit | Sticky edits |
+|---|---|---|---|
+| `src/components/project/flows/{FundFlow,ClaimFlow,AutoStickFlow,ReceiverFlow}.tsx` | Sticky's own, sending as JBM's `BurnTokensFlow.tsx` does since #103 | JBM 445f9d5 (shape of BurnTokensFlow.tsx) | New. |
+| `src/components/project/{SendAirdropsCard,StakeAgeFields}.tsx` | Sticky's own | none | New: the old client's Send airdrop rewards card, its split recipe and reward address disclosures, and the stake-age fields they share. |
+| `src/hooks/useStepPresses.ts` | Sticky's own, StickFlow's step logic moved out of it | none | One step per press, a confirmation counted only for a step the engine took, the next step simulated at the block the last confirmed in. StickFlow and the four flows above send their steps with it. |
+| `src/lib/preflight.ts`, `src/components/project/flows/{refusal,reward-token}.ts`, `src/components/ui/{CopyAddress,Disclosure}.tsx` | Sticky's own, moved out of `UnstickFlow.tsx`, `FundFlow.tsx` and `DetailsCard.tsx` | none | Shared by the flows above, each the one home of its rule. |
+| `src/lib/sticky-receivers.ts` | Sticky's own | none | New: a group's reward address and what it holds, the factory held to the deployment's distributor first. |
