@@ -1,5 +1,6 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
 import { fixtureOrigin } from '../../scripts/browser-env.mjs'
+import { PROJECT } from './suite'
 import { blockExternalTraffic, settling } from './traffic'
 
 // A reload hydrates the page over what the browser kept of the last visit. A view that rendered the kept copy while
@@ -12,7 +13,7 @@ const STORE_KEY = 'sticky:query-cache:v1'
 const views = [
   {
     name: 'a project page',
-    path: '/basesep:42',
+    path: PROJECT,
     kept: '"sticky-project"',
     shown: (page: Page) => page.getByRole('heading', { level: 1, name: 'E2ES E2E Sticky' }),
   },

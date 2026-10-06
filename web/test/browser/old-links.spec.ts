@@ -1,13 +1,12 @@
 import { expect, test, type BrowserContext, type Page, type Route } from '@playwright/test'
 import { fixtureOrigin } from '../../scripts/browser-env.mjs'
+import { HOLDER, PROJECT } from './suite'
 import { blockExternalTraffic, settling } from './traffic'
 
 // The old client's links all opened `/`, so an old link first shows the home
 // of the production chains, which starts reading them before the router sends
 // the visitor on. The recording holds the testnet world only, so those reads
 // are refused here, before they reach the fixture.
-
-const HOLDER = '0x042F619EED558723252593DB0375fC34306f203A'
 
 async function refuseProductionHome(context: BrowserContext) {
   const refuse = (route: Route) => route.fulfill({ status: 503, json: { error: 'The production home is not recorded' } })
@@ -49,7 +48,7 @@ test.describe('old links', () => {
   test('a project link lands on its tab, in place of the old address', async ({ baseURL, page }) => {
     await openOldLink(page, '/?chain=84532#/project/42/tokens')
 
-    await expect(page).toHaveURL(`${baseURL}/basesep:42#tokens`)
+    await expect(page).toHaveURL(`${baseURL}${PROJECT}#tokens`)
     await expect(
       page.getByRole('tablist', { name: 'Project sections' }).getByRole('tab', { name: 'Tokens', exact: true }),
     ).toHaveAttribute('aria-selected', 'true')
@@ -66,7 +65,7 @@ test.describe('old links', () => {
   })
 
   test("a testnet project's logo links home to the testnet", async ({ page }) => {
-    await page.goto('/basesep:42')
+    await page.goto(PROJECT)
 
     const logos = page.locator('a.overscroll-slime, a.brand-slime')
     await expect(logos).toHaveCount(2)
