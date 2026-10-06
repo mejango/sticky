@@ -279,6 +279,61 @@ describe('the browser\'s Center reader', () => {
     expect(sent.slice(1).every(({ at }) => at >= 60_000)).toBe(true)
   })
 
+  it('sends a deterministic browser build\'s fixture reads through the same slots, and holds them for a 429\'s Retry-After header', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    vi.stubEnv('NEXT_PUBLIC_DETERMINISTIC_BROWSER', 'true')
+    vi.stubEnv('NEXT_PUBLIC_BROWSER_FIXTURE_ORIGIN', 'http://127.0.0.1:4010')
+    const start = Date.now()
+    const sent: { at: number; what: string }[] = []
+    const pending: ((answer: (id: number) => Response) => void)[] = []
+    let open = 0
+    let most = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string, init: RequestInit) => {
+        const { id, method } = JSON.parse(String(init.body)) as { id: number; method: string }
+        sent.push({ at: Date.now() - start, what: `${input.slice(input.lastIndexOf('/') + 1)} ${method}` })
+        open += 1
+        most = Math.max(most, open)
+        try {
+          return await new Promise<Response>(resolve => pending.push(answer => resolve(answer(id))))
+        } finally {
+          open -= 1
+        }
+      }),
+    )
+    const { jbCenterPublicClient } = await import('@/lib/jbcenter-rpc')
+    // Four chains' heads: two go to the fixture at once, and two wait for a slot.
+    const heads = [84_532, 11_155_420, 11_155_111, 421_614].map(chainId =>
+      jbCenterPublicClient(chainId).getBlockNumber({ cacheTime: 0 }),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+    expect(sent.map(({ what }) => what)).toEqual(['base-sepolia eth_blockNumber', 'optimism-sepolia eth_blockNumber'])
+
+    // The fixture refuses the first for 2 s, through viem's HTTP error and its headers, and answers the second: both
+    // slots free, and nothing starts until the Retry-After has passed.
+    pending.shift()!(() => refusal('2'))
+    await vi.advanceTimersByTimeAsync(0)
+    pending.shift()!(id => answered(id, numberToHex(100n)))
+    await vi.advanceTimersByTimeAsync(1_999)
+    expect(sent).toHaveLength(2)
+
+    // Then the rest go, two at a time, viem's retry of the refused head among them.
+    await vi.advanceTimersByTimeAsync(1)
+    for (let turn = 0; turn < 20 && (sent.length < 5 || pending.length); turn += 1) {
+      pending.shift()?.(id => answered(id, numberToHex(100n)))
+      await vi.advanceTimersByTimeAsync(0)
+    }
+    await expect(Promise.all(heads)).resolves.toEqual([100n, 100n, 100n, 100n])
+    expect(most).toBe(2)
+    expect(sent.slice(2).every(({ at }) => at >= 2_000)).toBe(true)
+    expect(sent.slice(2).map(({ what }) => what).sort()).toEqual([
+      'arbitrum-sepolia eth_blockNumber',
+      'base-sepolia eth_blockNumber',
+      'sepolia eth_blockNumber',
+    ])
+  })
+
   it('keeps two in flight at most under load: four chains\' scans and heads at once, a 429 and a page left', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
     // Center answers each request after 100 to 500 ms, the same for every run, and refuses the 30th for 2 s.
