@@ -1,6 +1,6 @@
 import { erc20Abi, multicall3Abi, type Address } from 'viem'
 import { asked, freshHead } from '@/lib/hook-logs'
-import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
+import { SUPPORTED_CHAINS } from '@/lib/chains'
 import type { Answer } from '@/lib/sticky-project'
 import { need, readAt } from '@/lib/sticky-rewards'
 
@@ -39,8 +39,7 @@ export async function readNativeBalance(
   owner: Address,
   { signal }: { signal?: AbortSignal } = {},
 ): Promise<bigint> {
-  const client = jbCenterPublicClient(chainId)
-  const multicall3 = client.chain?.contracts?.multicall3?.address
+  const multicall3 = SUPPORTED_CHAINS.find(chain => chain.id === chainId)?.contracts?.multicall3?.address
   if (!multicall3) throw new Error(`chain ${chainId} has no Multicall3 to read a balance from`)
   const [balance] = (await asked(
     'the balance',
