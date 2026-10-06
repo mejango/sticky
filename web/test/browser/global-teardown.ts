@@ -27,6 +27,8 @@ export default async function globalTeardown() {
     'StickyIndex',
     'StickyPays',
     'StickyCashOuts',
+    // The Airdrops tab's list of what was funded.
+    'StickyFunding',
   ])
   const missingRpc = missingReads(status.rpc, [
     'eth_blockNumber',

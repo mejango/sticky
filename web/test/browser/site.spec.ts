@@ -8,6 +8,7 @@ const routes = [
   { path: PROJECT, surface: 'project' },
   { path: `${PROJECT}#tokens`, surface: 'project tokens' },
   { path: `/account/${HOLDER}?network=testnet`, surface: 'account' },
+  { path: `${PROJECT}#airdrops`, surface: 'project airdrops' },
 ] as const
 
 function securityHeaders(headers: Record<string, string>) {

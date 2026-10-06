@@ -10,6 +10,11 @@ import { tailOverlap } from '@/lib/sticky-events'
  * block to the head the fixture pins, so an answer recorded once the head had moved on by the overlap or more would
  * start its tails past the head, and the suite would read none. Every answer's block is checked against the head kept
  * under its chain's id, here, where the overlap's rule is the site's own; a chain with none fails.
+ *
+ * A recording fixes each chain's head with its first read and runs the specs in the order of their file names, so
+ * Bendystraw's answers must all be read within the overlap of that read (a minute on Arbitrum Sepolia, two on Base
+ * Sepolia). A spec that only replays pages many times, as `tab-airdrops.spec.ts` does, sorts after the ones that read
+ * them first, and a recording that was slower than the overlap is made again.
  */
 
 type Status = Record<string, { id: number; block: { number: number } }>
