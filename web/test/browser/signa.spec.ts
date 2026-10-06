@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import { expect, test, type Page } from '@playwright/test'
+import { clickUntil } from './click-until'
 import { PROJECT } from './suite'
 import { blockExternalTraffic, settling } from './traffic'
 
@@ -77,11 +78,14 @@ test('Signa signs in inside its frame, hands the callback up and scrubs it', asy
       // The page keeps the theme each message brings: the connect SDK's tokens
       // and font, and Sticky's heading font. It returns the way Signa's
       // wallet.ts does, with location.replace, so the frame adds no history.
+      // A click that reaches a new cross-origin frame before it takes input is
+      // dropped without a navigation, as a fresh Linux Chromium does to the
+      // first now and then; this page drops the first, so the test clicks again.
       return route.fulfill({
         contentType: 'text/html',
         body: `<h1>Modeled Signa approval</h1><a href="${callback.href.replaceAll('&', '&amp;')}"
-        onclick="event.preventDefault();location.replace(this.href)">Return to Sticky</a>
-      <script>addEventListener('message',event=>{if(event.source===parent&&event.origin===${JSON.stringify(base)}&&event.data?.type==='juicebox-center:theme'){
+        onclick="event.preventDefault();if(dropped-- > 0)return;location.replace(this.href)">Return to Sticky</a>
+      <script>let dropped=1;addEventListener('message',event=>{if(event.source===parent&&event.origin===${JSON.stringify(base)}&&event.data?.type==='juicebox-center:theme'){
         const theme=event.data.theme||{};if(typeof theme.font==='string')document.documentElement.dataset.font=theme.font;
         if(typeof theme.headingFont==='string')document.documentElement.dataset.headingFont=theme.headingFont;
       }});parent.postMessage({type:'juicebox-center:size',height:240},${JSON.stringify(base)});</script>`,
@@ -212,8 +216,9 @@ test('Signa signs in inside its frame, hands the callback up and scrubs it', asy
   expect(context.pages(), 'no popup opened').toHaveLength(1)
   await expect(page.getByRole('dialog')).toBeVisible()
 
-  await frame.getByRole('link', { name: 'Return to Sticky' }).click()
-  await exchangeStarted
+  // The first click is dropped by the modeled frame, so Center has the exchange only after the link is clicked again.
+  const returnLink = frame.getByRole('link', { name: 'Return to Sticky' })
+  expect(await clickUntil(returnLink, exchangeStarted), 'Center receives the exchange').toBe(true)
   await expect(frame.getByRole('heading', { name: 'Signing you in…' })).toBeVisible()
   await expect.poll(() => frame.locator('main').evaluate(node => getComputedStyle(node).paddingTop)).toBe('20px')
   await expect.poll(() => page.locator('iframe[name="juicebox-center-frame"]')
