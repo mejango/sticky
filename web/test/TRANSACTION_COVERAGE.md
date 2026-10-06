@@ -13,13 +13,30 @@ Legend:
 - **P**: pure planning/state-machine assertions
 - **-**: no dedicated regression test yet
 
-Each test file named for an action that a wallet write maps to carries the
-action's marker in the `it` or `test` title (`.each` included) of a test that
-proves it, for example `wallet-action:stick-for-someone-else` for "Stick for
-someone else". A `describe` or `suite` title, and any test under `.skip`,
-`.todo`, `.skipIf`, `.runIf`, `.fails` or a bracketed modifier
-(`describe['skip']`), does not count. `npm run transaction:check` fails on a
-missing marker.
+Every test file an action lists must carry the action's marker in the title of
+an `it` or `test` that runs and proves the action: `wallet-action:` plus the
+action's name in lowercase with hyphens (`wallet-action:stick-for-someone-else`
+for "Stick for someone else"). A marker counts only on a test written directly
+in a `describe` body or at the top of the file (not inside an `if`, a loop or a
+function, and not after a `return`), with an inline callback, options that carry
+no `skip`, `todo` or `fails` and no spread, computed key or variable before the
+callback (a constant after it is a timeout), a context that the test and the
+hooks of its suite only read as `ctx.name` and never as `skip` (the `arguments`
+of a `function` callback are the context too), no `beforeEach`, `afterEach` or
+`aroundEach` in its suite or the suites around it that is not written inline or
+as `vi.<name>`, no call statement there but a test, suite, hook, `vi`, `vitest`
+or `expect` call (a helper may register a hook that skips), and, for `.each` and
+`.for`, a table written as an array literal with a row; a `describe` or `suite`
+title does not count, and nothing under `.skip`, `.todo`, `.skipIf`, `.runIf`,
+`.fails`, `.extend` or a bracketed modifier (`describe['skip']`) counts, so a
+broad test file cannot make a new operation look covered.
+
+A hook hung off the test API (`test.beforeEach`) is refused like any hook the
+check cannot read. The check does not read a helper call inside a declaration or
+expression (`const gate = installGate()`, `ok && installGate()`) or an alias of
+an extended test (`const test = base.extend({...})`), since refusing every
+suite-level call, `new` included, would drop 75 of the 76 marked titles today.
+`npm run transaction:check` fails on a missing marker.
 
 | User action | Contract function or authorization | Coverage | Test |
 | --- | --- | :---: | --- |

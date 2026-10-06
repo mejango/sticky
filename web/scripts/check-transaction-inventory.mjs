@@ -293,7 +293,7 @@ function checkActionReference(file, action, { requireExact = false } = {}) {
     markedTests.add(`${test}#${marker}`)
     if (!testTitleWords(test).has(marker)) {
       failures.push(
-        `${file} action ${action} needs the marker ${marker} in the title of a test in test/${test} that proves it`,
+        `${file} action ${action} needs the marker ${marker} in the title of a test in test/${test} that runs and proves it (see test/TRANSACTION_COVERAGE.md)`,
       )
     }
   }
