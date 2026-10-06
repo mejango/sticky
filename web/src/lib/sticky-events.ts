@@ -630,8 +630,8 @@ export async function projectsContract(chainId: number, signal: AbortSignal | un
 /** A contract's logs that match `filter` through Center, from its block through the head, each with its block's
  * time: the `scan` every read of this module makes, and the one others make of the hook or the terminal. */
 export async function scanToHead(chainId: number, filter: LogFilter, { signal }: Cancel): Promise<ScannedLog[]> {
-  const client = jbCenterPublicClient(chainId)
-  const toBlock = await freshHead(client, signal)
+  const client = jbCenterPublicClient(chainId, signal)
+  const toBlock = await freshHead(chainId, signal)
   return timed(chainId, await scanLogs(client, { ...filter, toBlock }, { signal }), signal)
 }
 
@@ -655,7 +655,7 @@ const live: StickyReadDeps = {
   async projectLogs(chainId, projectId, fromBlock, { signal }) {
     return timed(chainId, await projectHookLogs(chainId, projectId, fromBlock, { signal }), signal)
   },
-  head: (chainId, { signal }) => freshHead(jbCenterPublicClient(chainId), signal),
+  head: (chainId, { signal }) => freshHead(chainId, signal),
   receipt: (chainId, hash, { signal }) =>
     untilAborted(jbCenterPublicClient(chainId).getTransactionReceipt({ hash }), signal),
   async projectCount(chainId, blockNumber, { signal }) {

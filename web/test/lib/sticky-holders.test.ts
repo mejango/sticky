@@ -190,12 +190,13 @@ describe('pinned block ages', () => {
       // A second stick 44 seconds later does not move the streak start.
       stick(HOLDER_A, 2n, 7n, 1044),
     ]
-    const pin = await pinnedBlock(CHAIN)
+    const { signal } = new AbortController()
+    const pin = await pinnedBlock(CHAIN, { signal })
     expect(pin).toEqual({ number: 0x99n, timestamp: 1074 })
-    // One read of the latest block, on the page's chain.
+    // One read of the latest block, on the page's chain, through the page's reader.
     expect(getBlock).toHaveBeenCalledTimes(1)
     expect(getBlock.mock.calls[0]).toEqual([])
-    expect(center.client).toHaveBeenCalledWith(CHAIN)
+    expect(center.client).toHaveBeenCalledWith(CHAIN, signal)
     const rows = holderRows(events, pin.timestamp)
     expect(stickAges(rows, pin.timestamp)).toEqual({ average: 74, longest: 74 })
     expect(rows[0].current).toBe(74)

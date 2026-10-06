@@ -141,7 +141,7 @@ describe('terminalMoves through Center', () => {
     const moves = await terminalMoves(events, { signal })
 
     expect(bendystraw.moves).not.toHaveBeenCalled()
-    expect(center.client).toHaveBeenCalledWith(CHAIN)
+    expect(center.client).toHaveBeenCalledWith(CHAIN, signal)
     expect(chain.requests).toEqual([
       {
         address: TERMINAL,

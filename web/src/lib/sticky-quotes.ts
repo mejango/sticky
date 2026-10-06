@@ -7,7 +7,7 @@
 
 import { cashOutProtocolFee } from '@bananapus/nana-sdk-core/v6'
 import { encodeFunctionData, type Address, type Hex } from 'viem'
-import { asked } from '@/lib/hook-logs'
+import { asked, freshHead } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { feelessAddressesAbi, stickyHookAbi, terminalAbi } from '@/lib/sticky-abis'
 import { deploymentOn } from '@/lib/sticky-addresses'
@@ -35,7 +35,7 @@ async function previewAs(
   request: { account: Address; to: Address; data: Hex; blockNumber?: bigint },
   signal: AbortSignal | undefined,
 ): Promise<Hex> {
-  const { data } = await asked(what, () => jbCenterPublicClient(chainId).call(request), signal)
+  const { data } = await asked(what, () => jbCenterPublicClient(chainId, signal).call(request), signal)
   return data ?? '0x'
 }
 
@@ -150,8 +150,7 @@ export async function quoteUnstick(
 ): Promise<UnstickQuote> {
   const { terminal } = deploymentOn(chainId)
   // The head is asked afresh: a quote is sent on as a minimum, and one from a cached block may be stale.
-  const client = jbCenterPublicClient(chainId)
-  const blockNumber = await asked('the current block', () => client.getBlockNumber({ cacheTime: 0 }), signal)
+  const blockNumber = await asked('the current block', () => freshHead(chainId, signal), signal)
   const [answer, rule] = await Promise.all([
     previewAs(
       chainId,

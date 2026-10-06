@@ -189,7 +189,7 @@ async function readSome(
   orphans: OrphanedPolicy,
   signal: AbortSignal | undefined,
 ): Promise<ProjectRead[]> {
-  const client = jbCenterPublicClient(chainId)
+  const client = jbCenterPublicClient(chainId, signal)
   const { deployer, hook, terminal, controller } = deployment
   // Each round is one request: the projects are already counted out, so viem is told not to split it.
   const ask = async (contracts: ContractFunctionParameters[]) =>
@@ -355,8 +355,7 @@ async function readEach(
 ): Promise<ProjectRead[]> {
   const deployment = deploymentOn(chainId)
   if (!projectIds.length) return []
-  const client = jbCenterPublicClient(chainId)
-  const blockNumber = await freshHead(client, signal)
+  const blockNumber = await freshHead(chainId, signal)
   const read = (some: readonly bigint[]) => readSome(chainId, deployment, some, blockNumber, orphans, signal)
   const reads: ProjectRead[] = []
   for (let at = 0; at < projectIds.length; at += PROJECTS_PER_REQUEST) {
@@ -366,8 +365,8 @@ async function readEach(
       reads.push(...(await read(some)))
     } catch (lost) {
       if (signal?.aborted || projectIds.length === 1) throw lost
-      // cacheTime 0: the head read above is cached for a moment, and only a fresh request says Center still answers.
-      await untilAborted(client.getBlockNumber({ cacheTime: 0 }), signal).catch(() => {
+      // Only a fresh head says Center still answers.
+      await freshHead(chainId, signal).catch(() => {
         throw signal?.aborted ? signal.reason : lost
       })
       for (const projectId of some) {

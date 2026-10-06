@@ -69,8 +69,8 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw signal.reason
 }
 
-/** What `work` gives, or the signal's reason the moment it aborts. Neither viem nor the SDK cancels a request
- * that is under way, so `work` is left to finish on its own, its answer or failure unheeded. */
+/** What `work` gives, or the signal's reason the moment it aborts. A request made without the signal is not stopped
+ * by it, so `work` is left to finish on its own, its answer or failure unheeded. */
 export function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (!signal) return work
   return new Promise<T>((resolve, reject) => {
@@ -81,10 +81,32 @@ export function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefine
   })
 }
 
+/** Each chain's head request under way: the reads waiting on it, and what stops it. */
+const heads = new Map<number, { head: Promise<bigint>; waiting: number; stop: AbortController }>()
+
 /** The chain's head as the node says it now. viem hands a head it read in the last few seconds to the next read, and
- * a read made right after a write lands must not pin a block before it; a head request already under way is shared. */
-export function freshHead(client: Pick<PublicClient, 'getBlockNumber'>, signal: AbortSignal | undefined): Promise<bigint> {
-  return untilAborted(client.getBlockNumber({ cacheTime: 0 }), signal)
+ * a read made right after a write lands must not pin a block before it. A head request already under way is shared by
+ * every read that asks for the chain's head meanwhile, whatever page it is of, and is stopped once every read waiting
+ * on it has left: a page that is left sends no head that no other read still waits for. */
+export function freshHead(chainId: number, signal: AbortSignal | undefined): Promise<bigint> {
+  if (signal?.aborted) return Promise.reject(signal.reason)
+  let shared = heads.get(chainId)
+  if (!shared) {
+    const stop = new AbortController()
+    const asking = { head: jbCenterPublicClient(chainId, stop.signal).getBlockNumber({ cacheTime: 0 }), waiting: 0, stop }
+    const done = () => void (heads.get(chainId) === asking && heads.delete(chainId))
+    asking.head.then(done, done)
+    heads.set(chainId, (shared = asking))
+  }
+  const asking = shared
+  asking.waiting += 1
+  const leave = () => {
+    if ((asking.waiting -= 1) > 0) return
+    if (heads.get(chainId) === asking) heads.delete(chainId)
+    asking.stop.abort(signal?.reason)
+  }
+  signal?.addEventListener('abort', leave, { once: true })
+  return untilAborted(asking.head, signal).finally(() => signal?.removeEventListener('abort', leave))
 }
 
 /** What `work` gives, or an error that names `what` and keeps the cause. A signal that has aborted stops it before it
@@ -446,7 +468,7 @@ export async function keptLogsOf(
   const { signal, keep = (log: ScannedLog) => log, trim = false } = opts
   const deployment = deploymentOn(chainId)
   throwIfAborted(signal)
-  const client = jbCenterPublicClient(chainId)
+  const client = jbCenterPublicClient(chainId, signal)
   const start = fromBlock ?? deployment.fromBlock
   // What each key holds, and of that what this read can use: a history that began after `fromBlock` lacks what came
   // before it, and is set aside.
@@ -454,7 +476,7 @@ export async function keptLogsOf(
   const kept = stored.map(saved =>
     saved && (fromBlock === null || saved.from === undefined || saved.from <= fromBlock) ? saved : null,
   )
-  const head = await freshHead(client, signal)
+  const head = await freshHead(chainId, signal)
   // The scan starts after what was kept, so a block every history holds is never asked for again. With no block to
   // start at, every kept history goes on from where it ends.
   const goesOn = (saved: Kept) => fromBlock === null || saved.through + 1n >= fromBlock

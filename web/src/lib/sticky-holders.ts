@@ -218,7 +218,7 @@ export async function verifyHolderPage(
   if (!rows.length) return []
   const { hook } = deploymentOn(chainId)
   const balances = await untilAborted(
-    jbCenterPublicClient(chainId).multicall({
+    jbCenterPublicClient(chainId, signal).multicall({
       contracts: rows.map(
         ({ holder }) =>
           ({ address: hook, abi: stickyHookAbi, functionName: 'stakedBalanceOf', args: [projectId, holder] }) as const,
@@ -238,7 +238,7 @@ export async function pinnedBlock(
   chainId: number,
   { signal }: Cancel = {},
 ): Promise<{ number: bigint; timestamp: number }> {
-  const block = await untilAborted(jbCenterPublicClient(chainId).getBlock(), signal)
+  const block = await untilAborted(jbCenterPublicClient(chainId, signal).getBlock(), signal)
   return { number: block.number, timestamp: Number(block.timestamp) }
 }
 
@@ -279,7 +279,7 @@ export async function readStickyPosition(
   const { hook } = deploymentOn(chainId)
   const pin = await pinnedBlock(chainId, { signal })
   const [staked, start, longest, wallet] = await untilAborted(
-    jbCenterPublicClient(chainId).multicall({
+    jbCenterPublicClient(chainId, signal).multicall({
       contracts: [
         { address: stToken, abi: erc20Abi, functionName: 'balanceOf', args: [holder] },
         { address: hook, abi: stickyHookAbi, functionName: 'streakStartOf', args: [projectId, holder] },

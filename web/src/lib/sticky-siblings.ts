@@ -238,7 +238,7 @@ const live: SiblingReadDeps = {
     if (!projectIds.length) return []
     const deployment = deploymentOn(chainId)
     const uris = await untilAborted(
-      jbCenterPublicClient(chainId).multicall({
+      jbCenterPublicClient(chainId, signal).multicall({
         contracts: projectIds.map(
           projectId =>
             ({ address: deployment.controller, abi: controllerAbi, functionName: 'uriOf', args: [projectId] }) as const,

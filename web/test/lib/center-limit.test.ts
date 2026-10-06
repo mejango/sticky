@@ -1,5 +1,5 @@
 import { base, optimism } from '@bananapus/nana-sdk-core/chains'
-import { createPublicClient, numberToHex } from 'viem'
+import { createPublicClient, erc20Abi, numberToHex } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Center's slots: at most two requests in flight to Center from the browser, every chain's and every reader's together,
@@ -235,6 +235,60 @@ describe('the browser\'s Center reader', () => {
     expect(sent).toEqual(['8453 eth_getLogs', '10 eth_getLogs', '1 eth_blockNumber'])
     expect(stopped).toEqual(['8453 eth_getLogs', '10 eth_getLogs'])
     await Promise.all(scans)
+  })
+
+  it('sends every read of a page\'s reader with the page\'s signal: once the page is left, what waits is never sent', async () => {
+    const answers: (() => void)[] = []
+    const sent: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string, init: RequestInit) => {
+        const { id, method } = JSON.parse(String(init.body)) as { id: number; method: string }
+        sent.push(`${input.slice(input.lastIndexOf('/') + 1)} ${method}`)
+        await new Promise<void>(resolve => answers.push(resolve))
+        return answered(id, numberToHex(100n))
+      }),
+    )
+    const [{ jbCenterPublicClient }, { freshHead }] = await Promise.all([import('@/lib/jbcenter-rpc'), import('@/lib/hook-logs')])
+    // Another page's reads hold both slots.
+    const others = [10, 1].map(chainId => jbCenterPublicClient(chainId).getBlockNumber({ cacheTime: 0 }))
+    await vi.waitFor(() => expect(sent).toHaveLength(2))
+
+    // The page's head, its pinned block and a Multicall3 read wait for a slot.
+    const page = new AbortController()
+    const reader = jbCenterPublicClient(8453, page.signal)
+    const token = `0x${'a'.repeat(40)}` as const
+    const reads = [
+      freshHead(8453, page.signal),
+      reader.getBlock(),
+      reader.multicall({ contracts: [{ address: token, abi: erc20Abi, functionName: 'totalSupply' }], allowFailure: false }),
+    ].map(read => read.catch((error: unknown) => error))
+    await ticks(20)
+    page.abort(new Error('left the page'))
+    while (answers.length) answers.shift()!()
+
+    await expect(Promise.all(others)).resolves.toEqual([100n, 100n])
+    await Promise.all(reads)
+    await ticks(20)
+    expect(sent).toEqual(['10 eth_blockNumber', '1 eth_blockNumber'])
+  })
+
+  it('reads a page\'s head afresh each time it is asked for, sharing one already under way', async () => {
+    const sent: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: string, init: RequestInit) => {
+        const { id, method } = JSON.parse(String(init.body)) as { id: number; method: string }
+        sent.push(method)
+        return answered(id, numberToHex(BigInt(100 + sent.length)))
+      }),
+    )
+    const { jbCenterPublicClient } = await import('@/lib/jbcenter-rpc')
+    const reader = jbCenterPublicClient(8453, new AbortController().signal)
+
+    await expect(Promise.all([reader.getBlockNumber(), reader.getBlockNumber()])).resolves.toEqual([101n, 101n])
+    await expect(reader.getBlockNumber()).resolves.toBe(102n)
+    expect(sent).toEqual(['eth_blockNumber', 'eth_blockNumber'])
   })
 
   it('lets go of a slot while a read waits out a node behind the head, and takes one again to ask once more', async () => {

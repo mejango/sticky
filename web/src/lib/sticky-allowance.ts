@@ -24,7 +24,7 @@ export async function readBalanceAndAllowance(
           { address: token, abi: erc20Abi, functionName: 'balanceOf', args: [owner] },
           { address: token, abi: erc20Abi, functionName: 'allowance', args: [owner, spender] },
         ],
-        await freshHead(jbCenterPublicClient(chainId), signal),
+        await freshHead(chainId, signal),
         signal,
       ),
     signal,
@@ -48,7 +48,7 @@ export async function readNativeBalance(
       readAt(
         chainId,
         [{ address: multicall3, abi: multicall3Abi, functionName: 'getEthBalance', args: [owner] }],
-        await freshHead(client, signal),
+        await freshHead(chainId, signal),
         signal,
       ),
     signal,

@@ -2,7 +2,7 @@ import {
   createJBCenterClient,
   type JBCenterRpcRequest,
 } from '@bananapus/nana-sdk-core/jbcenter'
-import { createPublicClient, custom, http, type PublicClient, type Transport } from 'viem'
+import { createPublicClient, custom, hexToBigInt, http, type PublicClient, type Transport } from 'viem'
 import { inCenterSlots, throughCenterSlots } from '@/lib/center-limit'
 import { SUPPORTED_CHAINS } from '@/lib/chains'
 import { jbCenterAppOrigin, jbCenterBaseUrl } from '@/lib/jbcenter-config'
@@ -111,20 +111,53 @@ export function jbCenterRpcTransport(
   })
 }
 
-const publicClients = new Map<number, PublicClient>()
+/** `transport`, with `signal` on every request made without one of its own. */
+const withSignal =
+  (transport: Transport, signal: AbortSignal): Transport =>
+  parameters => {
+    const built = transport(parameters)
+    const request = ((args, options) =>
+      built.request(args, { ...options, signal: options?.signal ?? signal })) as typeof built.request
+    return { ...built, request }
+  }
 
-/** One cached Center reader per chain. Multicall batching needs the chain's
- * multicall3 address; without `chain` viem quietly sends every read on its own,
- * and those bursts hit the one rate limit Center applies across all chains. */
-export function jbCenterPublicClient(chainId: number): PublicClient {
-  let client = publicClients.get(chainId)
+const publicClients = new Map<number, PublicClient>()
+const pageReaders = new WeakMap<AbortSignal, Map<number, PublicClient>>()
+
+/** One cached Center reader per chain, and one per chain for each page signal
+ * it is asked with. Multicall batching needs the chain's multicall3 address;
+ * without `chain` viem quietly sends every read on its own, and those bursts
+ * hit the one rate limit Center applies across all chains. A page's reader
+ * sends every request with the page's signal, so when the page is left, what it
+ * has in flight stops and what waits for one of Center's slots is never sent.
+ * A read viem can share with another page's (a `readContract` it batches, a
+ * receipt or a block by its number) stays on the shared reader, so that one
+ * page's signal neither splits the request nor stops the other page's read
+ * (`test/page-signals.test.ts`); `freshHead` shares the head. A page's reader
+ * reads its head afresh each time, sharing a request already under way: viem's
+ * own `getBlockNumber` keeps every reader's last head for good, by the reader's
+ * id, and a page's reader is made for each read of the page. */
+export function jbCenterPublicClient(chainId: number, signal?: AbortSignal): PublicClient {
+  let clients = publicClients
+  if (signal) {
+    clients = pageReaders.get(signal) ?? new Map()
+    pageReaders.set(signal, clients)
+  }
+  let client = clients.get(chainId)
   if (!client) {
+    const transport = jbCenterRpcTransport(chainId, 60_000)
     client = createPublicClient({
       chain: SUPPORTED_CHAINS.find(chain => chain.id === chainId),
-      transport: jbCenterRpcTransport(chainId, 60_000),
+      transport: signal ? withSignal(transport, signal) : transport,
       batch: { multicall: true },
     }) as PublicClient
-    publicClients.set(chainId, client)
+    if (signal) {
+      client = client.extend(reader => ({
+        getBlockNumber: async () =>
+          hexToBigInt(await reader.request({ method: 'eth_blockNumber' }, { dedupe: true })),
+      })) as PublicClient
+    }
+    clients.set(chainId, client)
   }
   return client
 }

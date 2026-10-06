@@ -170,7 +170,7 @@ async function holdingsIn(
   signal: AbortSignal | undefined,
 ): Promise<Holding[]> {
   const { hook } = deploymentOn(chainId)
-  const client = jbCenterPublicClient(chainId)
+  const client = jbCenterPublicClient(chainId, signal)
   const held: Holding[] = []
   for (let at = 0; at < projectIds.length; at += HOLDINGS_PER_REQUEST) {
     if (signal?.aborted) throw signal.reason
