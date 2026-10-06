@@ -4,6 +4,12 @@ import {
   type BendystrawOperationContract,
 } from '@bananapus/nana-sdk-core/bendystraw-operations'
 
+/**
+ * Sends one persisted operation to this site's relay. It is the SDK's
+ * `requestPersistedBendystraw` with a `signal`, which the SDK's does not take:
+ * a caller that leaves the page cancels its request, and the transport does
+ * not retry a request that was cancelled.
+ */
 export async function requestPersistedBendystraw<T>(args: {
   contract: BendystrawOperationContract
   network: BendystrawNetwork
