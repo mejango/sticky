@@ -18,6 +18,9 @@ permissions:
 jobs:
   forge-test:
     runs-on: ubuntu-latest
+    # Room for the 30-minute cap on the fork-test step below plus the rest of the job, and
+    # for the rehearsal a manual run adds.
+    timeout-minutes: 40
     defaults:
       run:
         working-directory: extensions/Sticky
