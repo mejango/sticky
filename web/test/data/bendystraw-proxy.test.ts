@@ -2,8 +2,10 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { POST } from '@/app/api/bendystraw/[net]/query/route'
-import { compileBendystrawOperation } from '@/lib/bendystraw-operation'
-import { bendystrawOperationId } from '@/lib/bendystraw-operation-id'
+import {
+  bendystrawOperationId,
+  compileBendystrawOperation,
+} from '@bananapus/nana-sdk-core/bendystraw-operations'
 import registry from '@/lib/bendystraw-operation-registry.json'
 import { resolvePersistedBendystrawRequest } from '@/lib/bendystraw-proxy'
 
@@ -131,26 +133,31 @@ describe('persisted Bendystraw operations', () => {
         variables,
       }),
     ).toEqual({ query: documents.project, variables })
+  })
 
-    for (const payload of [
-      {
-        operation: projectOperation,
-        variables: {},
-        query: 'query Attacker { projects { totalCount } }',
-      },
-      { operation: '0'.repeat(64), variables: {} },
-      { operation: projectOperation.toUpperCase(), variables: {} },
-      { operation: 'constructor', variables: {} },
-      { operation: projectOperation },
-      { operation: projectOperation, variables: [] },
-      { operation: projectOperation, variables: null },
-      { variables: {} },
-      [],
-      null,
-      'query { projects { totalCount } }',
-    ]) {
-      expect(resolvePersistedBendystrawRequest(payload)).toBeNull()
-    }
+  // Each check of the resolver has a row that only it refuses.
+  it.each([
+    ['a raw document beside the ID', { operation: projectOperation, variables: {}, query: 'query Attacker { projects { totalCount } }' }],
+    ['an own `__proto__` key, as JSON.parse makes one', JSON.parse(`{"operation":"${projectOperation}","variables":{},"__proto__":{}}`)],
+    ['an ID that is not registered', { operation: '0'.repeat(64), variables: {} }],
+    ['an upper case ID', { operation: projectOperation.toUpperCase(), variables: {} }],
+    ['an inherited property name for an ID', { operation: 'constructor', variables: {} }],
+    ['an ID one character short', { operation: projectOperation.slice(1), variables: {} }],
+    ['an ID one character long', { operation: `${projectOperation}0`, variables: {} }],
+    ['an ID with a line break after it', { operation: `${projectOperation}\n`, variables: {} }],
+    ['an ID with a space before it', { operation: ` ${projectOperation}`, variables: {} }],
+    ['an ID that is a number', { operation: 1, variables: {} }],
+    ['an ID in an array, which reads as the ID text', { operation: [projectOperation], variables: {} }],
+    ['no ID', { variables: {} }],
+    ['no variables', { operation: projectOperation }],
+    ['variables in an array', { operation: projectOperation, variables: [] }],
+    ['null variables', { operation: projectOperation, variables: null }],
+    ['variables that are text', { operation: projectOperation, variables: '{}' }],
+    ['an array for a body', []],
+    ['null for a body', null],
+    ['text for a body', 'query { projects { totalCount } }'],
+  ])('refuses %s', (_name, payload) => {
+    expect(resolvePersistedBendystrawRequest(payload)).toBeNull()
   })
 })
 

@@ -16,7 +16,7 @@ import {
   type BendystrawCachePolicy,
   type BendystrawNetwork,
 } from '@bananapus/nana-sdk-core'
-import { compileBendystrawOperation } from '@/lib/bendystraw-operation'
+import { compileBendystrawOperation } from '@bananapus/nana-sdk-core/bendystraw-operations'
 
 export function normalizeBendystrawUrl(value: string): string {
   return normalizeBendystrawEndpoint(value.trim())
@@ -25,13 +25,13 @@ export function normalizeBendystrawUrl(value: string): string {
 const MAINNET_URL = process.env.BROWSER_BUILD_FIXTURE_ORIGIN
   ? `${process.env.BROWSER_BUILD_FIXTURE_ORIGIN}/graphql`
   : normalizeBendystrawUrl(
-      process.env.NEXT_PUBLIC_BENDYSTRAW_URL ||
+      process.env.NEXT_PUBLIC_BENDYSTRAW_URL?.trim() ||
         'https://bendystraw.up.railway.app',
     )
 const TESTNET_URL = process.env.BROWSER_BUILD_FIXTURE_ORIGIN
   ? `${process.env.BROWSER_BUILD_FIXTURE_ORIGIN}/graphql`
   : normalizeBendystrawUrl(
-      process.env.NEXT_PUBLIC_TESTNET_BENDYSTRAW_URL ||
+      process.env.NEXT_PUBLIC_TESTNET_BENDYSTRAW_URL?.trim() ||
         'https://testnet.bendystraw.xyz',
     )
 const IS_DETERMINISTIC_BROWSER =
