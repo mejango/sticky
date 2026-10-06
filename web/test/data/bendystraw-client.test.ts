@@ -343,9 +343,13 @@ describe('the indexer origins', () => {
     ])
   })
 
-  it('fall back to the production indexers when a variable is blank, as `.env.example` leaves it', async () => {
-    vi.stubEnv('NEXT_PUBLIC_BENDYSTRAW_URL', '')
-    vi.stubEnv('NEXT_PUBLIC_TESTNET_BENDYSTRAW_URL', '')
+  it.each([
+    ['unset', undefined],
+    ['empty, as `.env.example` and an unset build argument leave it', ''],
+    ['only whitespace', ' \t\n '],
+  ])('fall back to the production indexers when a variable is %s', async (_name, value) => {
+    vi.stubEnv('NEXT_PUBLIC_BENDYSTRAW_URL', value)
+    vi.stubEnv('NEXT_PUBLIC_TESTNET_BENDYSTRAW_URL', value)
     vi.resetModules()
     const blank = await import('@/lib/bendystraw')
     const fetcher = indexer()
