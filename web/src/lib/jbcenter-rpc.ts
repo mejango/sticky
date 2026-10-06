@@ -1,61 +1,10 @@
 import {
-  createJBCenterClient,
   createJBCenterLimiter,
-  type JBCenterRpcRequest,
+  createJBCenterRpcProvider,
 } from '@bananapus/nana-sdk-core/jbcenter'
 import { createPublicClient, custom, hexToBigInt, http, type PublicClient, type Transport } from 'viem'
 import { SUPPORTED_CHAINS } from '@/lib/chains'
 import { jbCenterAppOrigin, jbCenterBaseUrl } from '@/lib/jbcenter-config'
-import { sleep } from '@/lib/with-timeout'
-
-/** JB Center load balances reads across RPC nodes that import blocks at
- * slightly different times. A read pinned to a block one node has already
- * imported can land on a sibling that has not, and the sibling answers
- * JSON-RPC -32001 — which viem renders as "Requested resource not found."
- * Waiting out the lag is the only correct answer: falling back to `latest`
- * would read state older than the approval the pinned block exists to
- * observe. Base mines every two seconds, so this schedule covers a few
- * blocks of drift. */
-const BLOCK_LAG_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, 2_000]
-
-function isBehindHead(error: unknown): boolean {
-  return (
-    !!error &&
-    typeof error === 'object' &&
-    (error as { code?: unknown }).code === -32001
-  )
-}
-
-/** A provider as viem's custom transport asks it: a request, and the signal of
- * the read that makes it, when it has one. */
-type CenterProvider = {
-  request(
-    request: { method: string; params?: readonly unknown[] },
-    options?: { signal?: AbortSignal },
-  ): Promise<unknown>
-}
-
-/** Retries reads that a lagging node cannot answer yet. Every method JB Center
- * allows is a read, so a retry can only repeat work, never repeat an effect.
- * The read's signal goes with every try, and a wait between tries ends the
- * moment it aborts. */
-export function retryWhileBehindHead(
-  provider: CenterProvider,
-  delaysMs: readonly number[] = BLOCK_LAG_RETRY_DELAYS_MS,
-): CenterProvider {
-  return {
-    async request(request, options) {
-      for (let attempt = 0; ; attempt += 1) {
-        try {
-          return await provider.request(request, options)
-        } catch (error) {
-          if (attempt >= delaysMs.length || !isBehindHead(error)) throw error
-          await sleep(delaysMs[attempt], options?.signal)
-        }
-      }
-    },
-  }
-}
 
 const FIXTURE_NETWORKS: Record<number, string> = {
   1: 'mainnet',
@@ -88,12 +37,19 @@ const inBrowser = () => typeof window !== 'undefined'
  * with a Retry-After, none starts until it has passed, a minute at most. */
 const centerLimiter = createJBCenterLimiter({ slots: 2 })
 
-/** Center's RPC for `chainId`. In the browser, every request to Center, from
- * every chain's reader of the tab (the page's, wagmi's, the fee check's and the
- * Center wallet's), waits for one of Center's slots (`centerLimiter`), so the
- * reads of a page can run side by side within its one rate limit. Each try
- * takes its own slot, so one waiting out a node behind the head holds none, and
- * a request whose read is dropped stops and lets its slot go. */
+/** Center's RPC for `chainId`. Center load balances reads across nodes that
+ * import blocks at slightly different times, so a read pinned to a block one
+ * node has imported can land on one that has not, which answers JSON-RPC
+ * -32001 ("Requested resource not found." in viem). The SDK's provider asks
+ * again after 250, 500, 1,000, 2,000 and 2,000 ms: reading `latest` instead
+ * would read state older than the block the read pins. The read's signal goes
+ * with every try, and a wait between tries ends the moment it aborts. In the
+ * browser, every request to Center, from every chain's reader of the tab (the
+ * page's, wagmi's, the fee check's and the Center wallet's), waits for one of
+ * Center's slots (`centerLimiter`), so the reads of a page can run side by side
+ * within its one rate limit. Each try takes its own slot, so one waiting out a
+ * node behind the head holds none, and a request whose read is dropped stops
+ * and lets its slot go. */
 export function jbCenterRpcTransport(
   chainId: number,
   timeoutMs = 15_000,
@@ -107,22 +63,15 @@ export function jbCenterRpcTransport(
     return inBrowser() ? centerLimiter.transport(fixture) : fixture
   }
   const browser = inBrowser()
-  const center = createJBCenterClient({
-    baseUrl: jbCenterBaseUrl(),
-    fetch: browser ? browserFetch : serverFetch,
-    timeoutMs,
-  })
-  // The SDK's `rpcProvider` drops the signal viem hands a request; `rpc` takes
-  // it, so a read that is dropped stops its request and lets go of its slot.
-  const ask: CenterProvider['request'] = (request, options) =>
-    center.rpc(chainId, request as JBCenterRpcRequest, { signal: options?.signal })
-  // Each try waits for a slot, and leaves the line unsent when its signal aborts.
-  const send: CenterProvider['request'] = browser
-    ? (request, options) => centerLimiter.run(() => ask(request, options), { signal: options?.signal })
-    : ask
-  return custom(retryWhileBehindHead({ request: send }), {
-    retryCount: 1,
-  })
+  return custom(
+    createJBCenterRpcProvider(chainId, {
+      baseUrl: jbCenterBaseUrl(),
+      fetch: browser ? browserFetch : serverFetch,
+      timeoutMs,
+      limiter: browser ? centerLimiter : undefined,
+    }),
+    { retryCount: 1 },
+  )
 }
 
 /** `transport`, with `signal` on every request made without one of its own. */
