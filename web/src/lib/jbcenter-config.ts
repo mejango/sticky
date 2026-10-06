@@ -12,7 +12,7 @@ export function jbCenterBaseUrl(
   siteUrl = process.env.NEXT_PUBLIC_SITE_URL,
 ): string {
   return (
-    process.env.NEXT_PUBLIC_JBCENTER_URL ||
+    process.env.NEXT_PUBLIC_JBCENTER_URL?.trim() ||
     (DEV_ORIGINS.has(jbCenterAppOrigin(siteUrl)) ? DEV_CENTER_URL : JBCENTER_DEFAULT_URL)
   )
 }

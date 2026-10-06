@@ -73,4 +73,19 @@ describe('Sticky JB Center deployment origins', () => {
     expect(jbCenterBaseUrl('https://sticky.center/path')).toBe('https://center.example')
     expect(jbCenterAppOrigin('https://sticky.center/path')).toBe('https://sticky.center')
   })
+
+  it.each([
+    ['unset', undefined],
+    ['empty, as `.env.example` leaves it', ''],
+    ['only whitespace, which the deployment check reads as unset', ' \t\n '],
+  ])('falls back to the default Center when NEXT_PUBLIC_JBCENTER_URL is %s', (_name, value) => {
+    vi.stubEnv('NEXT_PUBLIC_JBCENTER_URL', value)
+    expect(jbCenterBaseUrl('https://sticky.center')).toBe(JBCENTER_DEFAULT_URL)
+    expect(jbCenterBaseUrl('https://dev.sticky.center')).toBe('https://dev.juicebox.center')
+  })
+
+  it('takes a configured endpoint without the whitespace around it, as the deployment check does', () => {
+    vi.stubEnv('NEXT_PUBLIC_JBCENTER_URL', ' \thttps://center.example\n ')
+    expect(jbCenterBaseUrl('https://sticky.center')).toBe('https://center.example')
+  })
 })
