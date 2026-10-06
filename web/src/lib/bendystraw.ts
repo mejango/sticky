@@ -16,7 +16,10 @@ import {
   type BendystrawCachePolicy,
   type BendystrawNetwork,
 } from '@bananapus/nana-sdk-core'
-import { compileBendystrawOperation } from '@bananapus/nana-sdk-core/bendystraw-operations'
+import {
+  compileBendystrawOperation,
+  requestPersistedBendystraw,
+} from '@bananapus/nana-sdk-core/bendystraw-operations'
 
 export function normalizeBendystrawUrl(value: string): string {
   return normalizeBendystrawEndpoint(value.trim())
@@ -56,9 +59,6 @@ export async function bendystraw<T>(
     variables,
   })
   if (typeof window !== 'undefined') {
-    const { requestPersistedBendystraw } = await import(
-      '@/lib/bendystraw-browser'
-    )
     return requestPersistedBendystraw<T>({
       contract,
       network,

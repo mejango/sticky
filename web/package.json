@@ -20,11 +20,12 @@
     "transaction:check": "node scripts/check-transaction-inventory.mjs",
     "deployments:sync": "node scripts/sync-deployments.mjs",
     "deployments:check": "node scripts/sync-deployments.mjs --check",
-    "check": "npm run lint && npm run ts:check && npm run deployments:check && npm run schema:check:offline && npm run transaction:check && npm run test:ci && npm run build && npm run test:browser"
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
+    "check": "npm run audit:prod && npm run lint && npm run ts:check && npm run deployments:check && npm run schema:check:offline && npm run transaction:check && npm run test:ci && npm run build && npm run test:browser"
   },
   "dependencies": {
     "@bananapus/nana-sdk-connect": "^0.5.6",
-    "@bananapus/nana-sdk-core": "^2.18.0",
+    "@bananapus/nana-sdk-core": "^2.21.0",
     "@coinbase/wallet-sdk": "4.3.7",
     "@safe-global/safe-apps-provider": "0.18.6",
     "@safe-global/safe-apps-sdk": "9.1.0",

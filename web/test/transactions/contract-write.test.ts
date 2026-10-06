@@ -1,16 +1,11 @@
 import type { Address } from 'viem'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import {
-  assertReviewedAccountConnected,
-  REVIEWED_ACCOUNT_CHANGED,
-  submitReviewedContractWrite,
-} from '@/lib/contract-write'
+import { REVIEWED_ACCOUNT_CHANGED, submitReviewedContractWrite } from '@/lib/contract-write'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 
 // The write sequence itself is tested in @bananapus/nana-sdk-core/review.
 const ALICE = '0x1111111111111111111111111111111111111111' as Address
 const BOB = '0x2222222222222222222222222222222222222222' as Address
-const CHECKSUMMED = '0xAbCdEf0123456789aBcDeF0123456789AbCdEf01' as Address
 const options = () => ({
   request: { chainId: 10 },
   expectedAccount: ALICE as Address | undefined,
@@ -83,23 +78,5 @@ describe('Juicebox Money reviewed writes', () => {
     write.expectedAccount = undefined
     await expect(submitReviewedContractWrite(write)).rejects.toThrow('Connect a wallet first.')
     expect(write.review).not.toHaveBeenCalled()
-  })
-})
-
-describe('the reviewed account', () => {
-  it('matches the connected account in any letter case', () => {
-    expect(() =>
-      assertReviewedAccountConnected(CHECKSUMMED, CHECKSUMMED.toLowerCase() as Address),
-    ).not.toThrow()
-  })
-
-  it('refuses another account, or none, plainly', () => {
-    expect(() => assertReviewedAccountConnected(ALICE, BOB)).toThrow(
-      'The connected account changed. Review again.',
-    )
-    expect(() => assertReviewedAccountConnected(ALICE, undefined)).toThrow(REVIEWED_ACCOUNT_CHANGED)
-    expect(() => assertReviewedAccountConnected(ALICE, BOB, 'Review the batch again.')).toThrow(
-      'Review the batch again.',
-    )
   })
 })
