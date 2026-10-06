@@ -13,7 +13,8 @@ import { callsOf, sourcesUnder } from './source-gates'
  * which it batches into one Multicall3 request with the other reads of its block, and a receipt or a block by its
  * number, which it shares while one is under way. One page's signal would split those requests, or stop another
  * page's read with it, so they stay on the chain's shared reader. (The head is shared by `freshHead`.) So every call of
- * `jbCenterPublicClient` written where a `signal` is in scope passes it, unless its reader is used for those alone.
+ * `jbCenterPublicClient` written where a `signal` is in scope passes it, unless its reader is used for those alone, and
+ * each such reader is named in the list below.
  */
 
 const SRC = resolve('src')
@@ -32,15 +33,28 @@ function bindsSignal(fn: ts.SignatureDeclaration): boolean {
   return found
 }
 
-/** Whether a use of a reader is a read viem can share with another page's. */
-function shared(use: ts.Node): boolean {
+/** The reads viem can share with another page's. */
+const SHARED = new Set(['readContract', 'getTransactionReceipt', 'getBlock by number'])
+
+/** What a use of a reader is: the read it makes, a block by its number told from one by its tag or hash, or `other`. */
+function useOf(use: ts.Node): string {
   const access = use.parent
-  if (!ts.isPropertyAccessExpression(access) || access.expression !== use) return false
+  if (!ts.isPropertyAccessExpression(access) || access.expression !== use) return 'other'
   const call = access.parent
-  if (!ts.isCallExpression(call) || call.expression !== access) return false
+  if (!ts.isCallExpression(call) || call.expression !== access) return 'other'
   const method = access.name.text
-  return method === 'readContract' || method === 'getTransactionReceipt' || (method === 'getBlock' && call.arguments.length > 0)
+  if (method !== 'getBlock') return method
+  const [options] = call.arguments
+  const names = options && ts.isObjectLiteralExpression(options) ? options.properties.map(property => property.name?.getText()) : []
+  return names.includes('blockNumber') && !names.includes('blockTag') && !names.includes('blockHash') ? 'getBlock by number' : 'getBlock'
 }
+
+/** Whether an argument gives nothing: `undefined`, `void` anything or `null`. */
+const nothing = (argument: ts.Expression | undefined) =>
+  argument === undefined ||
+  (ts.isIdentifier(argument) && argument.text === 'undefined') ||
+  ts.isVoidExpression(argument) ||
+  argument.kind === ts.SyntaxKind.NullKeyword
 
 /** Where the reader a call gives is used: the call itself, or every mention of the variable it is kept in. */
 function usesOf(call: ts.CallExpression): ts.Node[] {
@@ -58,18 +72,23 @@ function usesOf(call: ts.CallExpression): ts.Node[] {
   return uses
 }
 
-/** Each call of `jbCenterPublicClient` in a source, by line: whether a signal is in scope, whether it is passed, and
- * whether the reader is used for shared reads alone. */
-function readers(fileName: string, text: string): { line: number; signalled: boolean; passed: boolean; shares: boolean }[] {
+/** Each call of `jbCenterPublicClient` in a source, by line: whether a signal is in scope, whether one is passed, what
+ * the reader is used for, and whether that is shared reads alone. */
+function readers(
+  fileName: string,
+  text: string,
+): { line: number; signalled: boolean; passed: boolean; uses: string[]; shares: boolean }[] {
   const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true)
   return callsOf(source, 'jbCenterPublicClient').map(call => {
     let signalled = false
     for (let at = call.parent; at && !signalled; at = at.parent) signalled = ts.isFunctionLike(at) && bindsSignal(at)
+    const uses = usesOf(call).map(useOf)
     return {
       line: source.getLineAndCharacterOfPosition(call.getStart(source)).line + 1,
       signalled,
-      passed: call.arguments.length > 1,
-      shares: usesOf(call).every(shared),
+      passed: !nothing(call.arguments[1]),
+      uses,
+      shares: uses.every(use => SHARED.has(use)),
     }
   })
 }
@@ -83,6 +102,16 @@ describe('a read that knows its page\'s signal', () => {
     // and siblings, a quote's preview and a preflight. A floor, so a check that found none would not pass.
     expect(found.filter(reader => reader.passed).length).toBeGreaterThanOrEqual(12)
     expect(found.filter(reader => reader.signalled && !reader.passed && !reader.shares)).toEqual([])
+    // The shared reads made where a signal is in scope, each named here: one more is a choice made in this list.
+    expect(found.filter(reader => reader.signalled && !reader.passed).map(({ file, uses }) => `${file}: ${uses.join(', ')}`).sort()).toEqual([
+      'lib/sticky-events.ts: getBlock by number',
+      'lib/sticky-events.ts: getTransactionReceipt',
+      'lib/sticky-events.ts: readContract',
+      'lib/sticky-events.ts: readContract',
+      'lib/sticky-metadata.ts: readContract',
+      'lib/sticky-metadata.ts: readContract, readContract',
+      'lib/sticky-tranches.ts: readContract, readContract',
+    ])
   })
 
   it('is told apart from one that drops the signal, wherever the signal is bound and however the reader is kept', () => {
@@ -94,9 +123,14 @@ describe('a read that knows its page\'s signal', () => {
     expect(read('const client = jbCenterPublicClient(chainId)\n return [client.readContract(a), client.readContract(b)]')).toMatchObject({ shares: true })
     expect(read('return jbCenterPublicClient(chainId).getBlock({ blockNumber })')).toMatchObject({ shares: true })
     expect(read('return jbCenterPublicClient(chainId).getTransactionReceipt({ hash })')).toMatchObject({ shares: true })
+    // A block named by its tag or its hash is not one viem shares, and `undefined` is no signal.
+    expect(read("return jbCenterPublicClient(chainId).getBlock({ blockTag: 'latest' })")).toMatchObject({ shares: false })
+    expect(read('return jbCenterPublicClient(chainId).getBlock({ blockHash })')).toMatchObject({ shares: false })
+    expect(read('return jbCenterPublicClient(chainId, undefined).multicall({ contracts })')).toMatchObject({ passed: false })
+    expect(read('return jbCenterPublicClient(chainId, void 0).multicall({ contracts })')).toMatchObject({ passed: false })
     const outer = 'function read(chainId, opts) { const { signal } = opts\n const ask = () => jbCenterPublicClient(chainId).multicall(c)\n return ask() }'
-    expect(readers('outer.ts', outer)).toEqual([{ line: 2, signalled: true, passed: false, shares: false }])
+    expect(readers('outer.ts', outer)).toEqual([{ line: 2, signalled: true, passed: false, uses: ['multicall'], shares: false }])
     const none = 'function verify(chainId) { const later = signal => signal\n return jbCenterPublicClient(chainId).multicall(c) }'
-    expect(readers('none.ts', none)).toEqual([{ line: 2, signalled: false, passed: false, shares: false }])
+    expect(readers('none.ts', none)).toEqual([{ line: 2, signalled: false, passed: false, uses: ['multicall'], shares: false }])
   })
 })
