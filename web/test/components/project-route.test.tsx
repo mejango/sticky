@@ -486,7 +486,7 @@ describe('a history that cannot be read', () => {
     await renderPage('base:23')
     expect(value('Sticks')).toBe('2')
     expect(warn).toHaveBeenCalledWith(
-      "Could not read a Sticky project's history; Latest and the chart cannot show, and the holders show only from Bendystraw's positions.",
+      "Could not read a Sticky project's history; Latest, the chart, Who can stick for you and the Details card's trusted-sender rule cannot show, and the holders show only from Bendystraw's positions.",
       { chainId: 8453, projectId: 23 },
       failure,
     )
