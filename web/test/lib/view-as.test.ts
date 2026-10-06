@@ -84,6 +84,8 @@ describe('View as', () => {
 
     store.setViewAs(ALICE)
     expect(() => store.assertNoViewAs()).toThrow(store.VIEW_AS_WRITE_BLOCKED)
+    // Two plain sentences: the site's copy puts no dash inside a sentence.
+    expect(store.VIEW_AS_WRITE_BLOCKED).toBe("You're viewing the site as another account. Exit View as to transact.")
 
     store.clearViewAs()
     expect(() => store.assertNoViewAs()).not.toThrow()

@@ -90,7 +90,7 @@ export function useViewAs(): {
 }
 
 export const VIEW_AS_WRITE_BLOCKED =
-  "You're viewing the site as another account — exit View as to transact."
+  "You're viewing the site as another account. Exit View as to transact."
 
 /** Write-seam guard: throws while view-as mode is active. */
 export function assertNoViewAs(): void {
