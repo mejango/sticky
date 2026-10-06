@@ -246,7 +246,9 @@ describe('a read that knows its page\'s signal', () => {
     const { program, sources } = typedSource()
     expect(sources.length).toBeGreaterThanOrEqual(100)
     expect(drops(program, sources)).toEqual([])
-  }, 60_000)
+    // ponytail: a whole type-checked program of src/, about 5 s idle and past a minute on a machine loaded with other
+    // gates, so it gets five; check only the changed files' calls if src/ grows enough for that to matter.
+  }, 300_000)
 
   it('is told apart from one that drops the signal on the way, as an argument or an option, or gives none for it', () => {
     const lib = `
@@ -273,5 +275,5 @@ describe('a read that knows its page\'s signal', () => {
       'page.ts:6 readOne drops the signal in scope',
       'page.ts:7 readOne drops the signal in scope',
     ])
-  })
+  }, 60_000)
 })
