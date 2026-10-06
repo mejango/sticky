@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels that pull request's earlier run. Every other run,
+# such as a push to main, has its own group, so none of them is cancelled or held back.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   analyze:
     runs-on: ubuntu-latest
