@@ -9,11 +9,11 @@ const APP = {
   name: 'Sticky',
   description:
     'Stick a Juicebox token, hold your streak, and share the bonus left behind by everyone who unsticks.',
-  url: process.env.NEXT_PUBLIC_SITE_URL ?? 'https://sticky.center',
+  url: process.env.NEXT_PUBLIC_SITE_URL?.trim() || 'https://sticky.center',
 }
 
 const WALLET_CONNECT_PROJECT_ID =
-  process.env.NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID ?? ''
+  process.env.NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID?.trim() ?? ''
 
 /**
  * WalletConnect — the only route to mobile wallets that aren't in this browser.
