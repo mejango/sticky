@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import { expect, test, type Page } from '@playwright/test'
+import { PROJECT } from './suite'
 import { blockExternalTraffic, settling } from './traffic'
 
 // The real Signa build of the site and the pinned connect SDK, with Signa's
@@ -9,7 +10,6 @@ import { blockExternalTraffic, settling } from './traffic'
 const issuer = 'https://signa.center'
 const audience = 'https://api.signa.center'
 const wallet = '0x1111111111111111111111111111111111111111'
-const PROJECT = '/basesep:42'
 
 type HandoffRequest = { callbackUri: string; origin: string; issuer: string; requestKey: string; state: string; expiresAtMs: number }
 

@@ -1,19 +1,13 @@
 import { expect, test } from '@playwright/test'
 import { expectAxeClean, expectNoDocumentOverflow } from './page-checks'
+import { PROJECT, viewports } from './suite'
 import { blockExternalTraffic, settling } from './traffic'
 
 // The Transfer form, opened by a visitor who has not signed in: what it asks for, that it fits every screen, and that it
 // is accessible. Nothing is sent: there is no wallet to ask.
 
-const viewports = [
-  { label: 'phone-320', width: 320, height: 720 },
-  { label: 'phone-390', width: 390, height: 844 },
-  { label: 'tablet-768', width: 768, height: 1024 },
-  { label: 'desktop-1280', width: 1280, height: 800 },
-] as const
-
-// The recorded Sticky project, whose token can be transferred.
-const TOKENS = '/basesep:42#tokens'
+// The recorded Sticky project's Tokens tab, whose token can be transferred.
+const TOKENS = `${PROJECT}#tokens`
 
 for (const viewport of viewports) {
   test.describe(viewport.label, () => {

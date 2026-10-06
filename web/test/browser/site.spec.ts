@@ -1,17 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { expectAxeClean, expectNoDocumentOverflow } from './page-checks'
+import { HOLDER, PROJECT, viewports } from './suite'
 import { blockExternalTraffic, settling } from './traffic'
-
-const viewports = [
-  { label: 'phone-320', width: 320, height: 720 },
-  { label: 'phone-390', width: 390, height: 844 },
-  { label: 'tablet-768', width: 768, height: 1024 },
-  { label: 'desktop-1280', width: 1280, height: 800 },
-] as const
-
-// The recorded Sticky project and its largest holder.
-const PROJECT = '/basesep:42'
-const HOLDER = '0x042F619EED558723252593DB0375fC34306f203A'
 
 const routes = [
   { path: '/?network=testnet', surface: 'home' },

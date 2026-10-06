@@ -519,3 +519,11 @@ No JBM code is copied.
 | `src/hooks/useStepPresses.ts` | Sticky's own, StickFlow's step logic moved out of it | none | One step per press, a confirmation counted only for a step the engine took, the next step simulated at the block the last confirmed in. StickFlow and the four flows above send their steps with it. |
 | `src/lib/preflight.ts`, `src/components/project/flows/{refusal,reward-token}.ts`, `src/components/ui/{Disclosure.tsx,detail-list.ts}` | Sticky's own, moved out of `UnstickFlow.tsx`, `FundFlow.tsx` and `DetailsCard.tsx` (`CopyAddress.tsx` keeps its Task 2.3 row) | none | Shared by the flows above, each the one home of its rule. `detail-list.ts` holds the label and value styles of `DetailsCard`, the split recipe and the reward address. |
 | `src/lib/sticky-receivers.ts` | Sticky's own | none | New: a group's reward address and what it holds, the factory held to the deployment's distributor first. |
+
+## Task W2-STKAIR: the browser suite opens the Airdrops tab
+
+### Source files
+
+| File | Source | Source commit | Sticky edits |
+|---|---|---|---|
+| `test/browser/suite.ts` | New | none | The recorded project's path, its largest holder and the four viewports (320, 390, 768 and 1280 px) every page is checked at, which the site, transfer, Signa, old-links and kept-reads specs had each written out. |
