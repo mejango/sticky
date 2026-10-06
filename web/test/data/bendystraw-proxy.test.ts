@@ -135,7 +135,7 @@ describe('persisted Bendystraw operations', () => {
     ).toEqual({ query: documents.project, variables })
   })
 
-  // Each row is one check of the resolver, on the input that trips only it.
+  // Each check of the resolver has a row that only it refuses.
   it.each([
     ['a raw document beside the ID', { operation: projectOperation, variables: {}, query: 'query Attacker { projects { totalCount } }' }],
     ['an own `__proto__` key, as JSON.parse makes one', JSON.parse(`{"operation":"${projectOperation}","variables":{},"__proto__":{}}`)],
