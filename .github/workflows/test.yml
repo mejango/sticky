@@ -11,6 +11,10 @@ on:
         type: choice
         default: ethereum_sepolia
         options: [testnets, mainnets, ethereum, optimism, base, arbitrum, ethereum_sepolia, optimism_sepolia, base_sepolia, arbitrum_sepolia]
+
+permissions:
+  contents: read
+
 jobs:
   forge-test:
     runs-on: ubuntu-latest
