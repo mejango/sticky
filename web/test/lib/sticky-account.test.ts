@@ -176,9 +176,11 @@ const figures = (): PositionReadDeps['readProjects'] => async (chainId, projectI
 describe('accountPositions', () => {
   it('asks StickyHook for the account\'s balance, streak start and longest streak in each project, in one request that is not split', async () => {
     const multicall = fakeHook()
-    await accountPositions(CHAIN, HOLDER, [7n, 5n], { readProjects: figures() })
+    const { signal } = new AbortController()
+    await accountPositions(CHAIN, HOLDER, [7n, 5n], { readProjects: figures(), signal })
 
-    expect(center.client).toHaveBeenCalledWith(CHAIN)
+    // Through the page's reader, so a page that is left does not send it.
+    expect(center.client).toHaveBeenCalledWith(CHAIN, signal)
     expect(multicall).toHaveBeenCalledTimes(1)
     const [request] = multicall.mock.calls[0]
     expect(request).toMatchObject({ allowFailure: false, batchSize: 0 })

@@ -189,7 +189,7 @@ async function readSome(
   orphans: OrphanedPolicy,
   signal: AbortSignal | undefined,
 ): Promise<ProjectRead[]> {
-  const client = jbCenterPublicClient(chainId)
+  const client = jbCenterPublicClient(chainId, signal)
   const { deployer, hook, terminal, controller } = deployment
   // Each round is one request: the projects are already counted out, so viem is told not to split it.
   const ask = async (contracts: ContractFunctionParameters[]) =>
@@ -355,8 +355,7 @@ async function readEach(
 ): Promise<ProjectRead[]> {
   const deployment = deploymentOn(chainId)
   if (!projectIds.length) return []
-  const client = jbCenterPublicClient(chainId)
-  const blockNumber = await freshHead(client, signal)
+  const blockNumber = await freshHead(chainId, signal)
   const read = (some: readonly bigint[]) => readSome(chainId, deployment, some, blockNumber, orphans, signal)
   const reads: ProjectRead[] = []
   for (let at = 0; at < projectIds.length; at += PROJECTS_PER_REQUEST) {
@@ -366,8 +365,8 @@ async function readEach(
       reads.push(...(await read(some)))
     } catch (lost) {
       if (signal?.aborted || projectIds.length === 1) throw lost
-      // cacheTime 0: the head read above is cached for a moment, and only a fresh request says Center still answers.
-      await untilAborted(client.getBlockNumber({ cacheTime: 0 }), signal).catch(() => {
+      // Only a fresh head says Center still answers.
+      await freshHead(chainId, signal).catch(() => {
         throw signal?.aborted ? signal.reason : lost
       })
       for (const projectId of some) {
@@ -404,13 +403,13 @@ export async function readStickyProjects(
 /** One Sticky project: its tokens, its terminal balance and its supply, all read at one block. The
  * deployment's own contracts are asked first, and they name the two tokens and the store; those are
  * asked second. Each round is one Multicall3 request, and both ask the same block. It rejects with why the
- * project cannot be read. */
+ * project cannot be read, or with the signal's reason once it aborts. */
 export async function readStickyProject(
   chainId: number,
   projectId: bigint,
-  { orphans = 'strict' }: { orphans?: OrphanedPolicy } = {},
+  { orphans = 'strict', signal }: { orphans?: OrphanedPolicy; signal?: AbortSignal } = {},
 ): Promise<StickyProjectInfo> {
-  const [read] = await readEach(chainId, [projectId], orphans, undefined)
+  const [read] = await readEach(chainId, [projectId], orphans, signal)
   if ('error' in read) throw read.error
   return read.info
 }

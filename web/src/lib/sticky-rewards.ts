@@ -33,7 +33,7 @@ import {
   type ContractFunctionParameters,
   type Hex,
 } from 'viem'
-import { asked, inChainOrder, untilAborted, type ScannedLog } from '@/lib/hook-logs'
+import { asked, freshHead, inChainOrder, untilAborted, type ScannedLog } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { stickyDistributorAbi, stickyHookAbi, stickyTokenAbi } from '@/lib/sticky-abis'
 import { deploymentOn } from '@/lib/sticky-addresses'
@@ -271,7 +271,7 @@ export async function readAt(
   block: bigint | undefined,
   signal: AbortSignal | undefined,
 ): Promise<Answer<unknown>[]> {
-  const client = jbCenterPublicClient(chainId)
+  const client = jbCenterPublicClient(chainId, signal)
   const answers: Answer<unknown>[] = []
   for (let at = 0; at < calls.length; at += CALLS_PER_REQUEST) {
     if (signal?.aborted) throw signal.reason
@@ -517,8 +517,8 @@ async function readTokenMetas(
       some.forEach((token, i) => keep(token, answers.slice(i * 3, i * 3 + 3)))
     } catch (lost) {
       if (signal?.aborted) throw lost
-      // cacheTime 0: a head read a moment ago is cached, and only a fresh request says Center still answers.
-      await untilAborted(jbCenterPublicClient(chainId).getBlockNumber({ cacheTime: 0 }), signal).catch(() => {
+      // Only a fresh head says Center still answers.
+      await freshHead(chainId, signal).catch(() => {
         throw signal?.aborted ? signal.reason : lost
       })
       for (const token of some) {

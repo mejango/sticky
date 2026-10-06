@@ -131,10 +131,10 @@ function securedOf(
 }
 
 /**
- * The home of a network: each chain's part, read one chain after another and drawn as each arrives. Its cards and
- * lists are kept in the browser, so that a return visit shows the last ones at once while the chains are read again.
- * The chart draws from the chains read in this visit, as each one's prices arrive; prices are not kept either. A chain
- * whose read fails is named in `failedChains`, and the console hears why; the others still show.
+ * The home of a network: each chain's part, read two chains at a time in the site's order and drawn as each arrives.
+ * Its cards and lists are kept in the browser, so that a return visit shows the last ones at once while the chains are
+ * read again. The chart draws from the chains read in this visit, as each one's prices arrive; prices are not kept
+ * either. A chain whose read fails is named in `failedChains`, and the console hears why; the others still show.
  */
 export function useStickyHome(network: BendystrawNetwork): StickyHome {
   const client = useQueryClient()

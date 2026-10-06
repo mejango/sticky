@@ -49,7 +49,11 @@ export async function readReceiver(
     throw new Error('the reward receiver factory uses a different distributor')
   }
   const address = need(predicted, 'the reward address')
-  const code = await asked('whether the reward address is created', () => jbCenterPublicClient(chainId).getCode({ address }), signal)
+  const code = await asked(
+    'whether the reward address is created',
+    () => jbCenterPublicClient(chainId, signal).getCode({ address }),
+    signal,
+  )
   return { address, created: code !== undefined && code !== '0x' }
 }
 

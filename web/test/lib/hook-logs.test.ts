@@ -840,7 +840,7 @@ describe('projectHookLogs', () => {
     const node = serve()
     const found = await projectHookLogs(CHAIN, 7n, 0x10n)
     expect(blocks(found)).toEqual([0x20n, 0x50n])
-    expect(center.client).toHaveBeenCalledWith(CHAIN)
+    expect(center.client).toHaveBeenCalledWith(CHAIN, undefined)
     // The events the old client scanned with, for the project alone.
     expect(node.asked[0]).toMatchObject({ fromBlock: 0x10n, address: deployment.hook })
     expect(node.asked.every(range => range.topics.length === 2 && range.topics[1] === word(7n))).toBe(true)

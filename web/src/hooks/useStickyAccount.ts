@@ -86,7 +86,7 @@ export type AccountPositionsRead = {
 }
 
 /**
- * The positions an account holds on the chains of a network, read one chain after another and drawn as each arrives.
+ * The positions an account holds on the chains of a network, read two chains at a time and drawn as each arrives.
  * Bendystraw lists them, once for the network, and each chain reads them again from StickyHook, adding the projects
  * the account's position events show past the block the listing is indexed through; when Bendystraw cannot list a
  * chain's, or those events are more than a scan may read, every Sticky project of the chain is asked. Every 15 s,
@@ -147,10 +147,10 @@ export type AccountActivityRead = {
 }
 
 /**
- * The newest activity of an account on the chains of a network, drawn as each chain arrives. The chains are read one
- * after another, in turn with the page's other reads. A chain whose read fails is named in `failedChains`, and the
- * console hears why; the others still show. It is read when the page opens and not again while the page is open: the
- * positions are the part of the page that changes under the reader.
+ * The newest activity of an account on the chains of a network, drawn as each chain arrives. The chains are read in
+ * turn with the page's other reads, two at a time, after the positions. A chain whose read fails is named in
+ * `failedChains`, and the console hears why; the others still show. It is read when the page opens and not again while
+ * the page is open: the positions are the part of the page that changes under the reader.
  */
 export function useAccountActivity(network: BendystrawNetwork, address: Address): AccountActivityRead {
   const client = useQueryClient()

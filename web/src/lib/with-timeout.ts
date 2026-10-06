@@ -21,3 +21,19 @@ export async function withTimeout<T>(
     caller?.removeEventListener('abort', relay)
   }
 }
+
+/** Waits `ms`, or rejects with the signal's reason the moment it aborts, leaving no timer behind. */
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason)
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', abort)
+      resolve()
+    }, ms)
+    function abort() {
+      clearTimeout(timer)
+      reject(signal?.reason)
+    }
+    signal?.addEventListener('abort', abort, { once: true })
+  })
+}

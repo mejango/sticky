@@ -200,16 +200,13 @@ export function fakeCenter(
 /** The chains of `calls` that made requests, in the order they first did. */
 export const chainsOf = (calls: readonly Call[]) => [...new Set(calls.map(call => call.chainId))]
 
-/** Whether no chain of `calls` began a request while another chain's was still under way. */
-export function oneAfterAnother(calls: readonly Call[]): boolean {
-  let current: number | null = null
-  let open = 0
+/** The most chains of `calls` that had a request under way at one time. */
+export function mostChainsAtOnce(calls: readonly Call[]): number {
+  const open = new Map<number, number>()
+  let most = 0
   for (const { chainId, phase } of calls) {
-    if (chainId !== current) {
-      if (open !== 0) return false
-      current = chainId
-    }
-    open += phase === 'start' ? 1 : -1
+    open.set(chainId, (open.get(chainId) ?? 0) + (phase === 'start' ? 1 : -1))
+    most = Math.max(most, [...open.values()].filter(count => count > 0).length)
   }
-  return open === 0
+  return most
 }

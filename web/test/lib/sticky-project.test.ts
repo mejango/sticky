@@ -134,7 +134,7 @@ describe('readStickyProject', () => {
 
     const info = await readStickyProject(CHAIN, 12n)
 
-    expect(center.client).toHaveBeenCalledWith(CHAIN)
+    expect(center.client).toHaveBeenCalledWith(CHAIN, undefined)
     expect(info).toEqual({
       chainId: CHAIN,
       projectId: 12n,
@@ -597,6 +597,18 @@ describe('readStickyProjects', () => {
     expect(multicall).not.toHaveBeenCalled()
   })
 
+  it('reads one project through the page\'s reader when given the page\'s signal, and rejects with its reason once it aborts', async () => {
+    const controller = new AbortController()
+    const reason = new Error('left the page')
+    const { multicall } = fakeCenter(world())
+    multicall.mockReturnValue(new Promise(() => {}))
+    const reading = readStickyProject(CHAIN, 12n, { signal: controller.signal })
+    await vi.waitFor(() => expect(multicall).toHaveBeenCalled())
+    expect(center.client).toHaveBeenCalledWith(CHAIN, controller.signal)
+    controller.abort(reason)
+    await expect(reading).rejects.toBe(reason)
+  })
+
   it('rejects with the caller\'s reason once cancelled, without waiting for the request under way', async () => {
     const controller = new AbortController()
     const reason = new Error('left the page')
@@ -604,6 +616,8 @@ describe('readStickyProjects', () => {
     multicall.mockReturnValue(new Promise(() => {}))
     const reading = readStickyProjects(CHAIN, ids(2), { signal: controller.signal })
     await vi.waitFor(() => expect(multicall).toHaveBeenCalled())
+    // Through the page's reader, so the request stops too.
+    expect(center.client).toHaveBeenCalledWith(CHAIN, controller.signal)
     controller.abort(reason)
     await expect(reading).rejects.toBe(reason)
   })

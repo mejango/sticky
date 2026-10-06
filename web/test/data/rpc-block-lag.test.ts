@@ -52,6 +52,30 @@ describe('RPC block lag', () => {
     expect(request).toHaveBeenCalledOnce()
   })
 
+  it('passes on the signal of the read that asks, so Center can stop the request when the read is dropped', async () => {
+    const request = vi.fn().mockResolvedValue('0x2a')
+    const { signal } = new AbortController()
+
+    await retryWhileBehindHead({ request }, [0]).request({ method: 'eth_call' }, { signal })
+    expect(request).toHaveBeenCalledWith({ method: 'eth_call' }, { signal })
+  })
+
+  it('stops waiting out the lag the moment the signal aborts, and asks no more', async () => {
+    vi.useFakeTimers()
+    const request = vi.fn().mockRejectedValue(blockAhead())
+    const page = new AbortController()
+    const reason = new Error('left the page')
+
+    const read = retryWhileBehindHead({ request }, [60_000]).request({ method: 'eth_call' }, { signal: page.signal })
+    const settled = read.catch((error: unknown) => error)
+    await vi.advanceTimersByTimeAsync(0)
+    page.abort(reason)
+
+    expect(await settled).toBe(reason)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(request).toHaveBeenCalledOnce()
+  })
+
   it('carries a pinned read through a lagging backend on the wired transport', async () => {
     const envelope = (id: unknown, body: Record<string, unknown>) =>
       new Response(JSON.stringify({ jsonrpc: '2.0', id, ...body }), {

@@ -28,10 +28,10 @@ import { launchSiblings, missingChains, siblingRows, type SiblingRow } from '@/l
  *
  * These reads keep the page's rules (`useStickyProject`): none of a project's history is read before the project has
  * been, a read that scans is not tried again on its own (the page offers a retry), and the scans take their turn
- * (`inTurn`). Turns are first come first served, and a project's balance history can take many requests, so each read
- * here waits until what the rest of the page shows first is through, whether it succeeded or failed: the history, then
- * the header's holders and Latest, then the balance flows, then the search for the copies on the other chains. All of
- * them are observed here, so a page that closes cancels them.
+ * (`inTurn`). Turns are first come first served, two at a time, and a project's balance history can take many requests,
+ * so the reads here wait until what the rest of the page shows first is through, whether it succeeded or failed: the
+ * history and the header's holders, and Latest; then the balance flows beside the search for the copies on the other
+ * chains, the flows in line first. All of them are observed here, so a page that closes cancels them.
  */
 
 /** The version of what the browser keeps of the chains, in the key. Change it whenever `SiblingRow` or

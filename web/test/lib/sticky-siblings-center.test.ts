@@ -88,10 +88,12 @@ describe('sticky-siblings, reading for itself', () => {
     center.client.mockImplementation(() => {
       throw new Error('siblingRows reads through readStickyProject alone')
     })
-    const rows = await siblingRows(siblings)
+    // Each with the read's signal, so a page that is left stops them.
+    const { signal } = new AbortController()
+    const rows = await siblingRows(siblings, { signal })
     expect(project.read.mock.calls).toEqual([
-      [BASE_SEPOLIA, 12n, { orphans: 'clamp' }],
-      [OP_SEPOLIA, 5n, { orphans: 'clamp' }],
+      [BASE_SEPOLIA, 12n, { orphans: 'clamp', signal }],
+      [OP_SEPOLIA, 5n, { orphans: 'clamp', signal }],
     ])
     expect(rows.map(row => ('info' in row ? row.info.backing : null))).toEqual([0n, 0n])
   })

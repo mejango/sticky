@@ -14,13 +14,13 @@ export function reasonOf(error: unknown): string {
 
 /**
  * `step` tried against the chain as `account` will send it, before its review is shown: the request the review shows,
- * asked of a node. A call the chain would refuse is refused here, in `refusal`'s words and the chain's, and the cause
- * is kept.
+ * asked of a node, with the flow's signal. A call the chain would refuse is refused here, in `refusal`'s words and the
+ * chain's, and the cause is kept.
  */
 export async function preflight(step: TxRequest, account: Address, signal: AbortSignal, refusal: string): Promise<void> {
   try {
     await untilAborted(
-      jbCenterPublicClient(step.chainId).simulateContract({
+      jbCenterPublicClient(step.chainId, signal).simulateContract({
         account,
         address: step.address,
         abi: step.abi,

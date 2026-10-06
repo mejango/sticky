@@ -12,9 +12,11 @@ import {
   type Log,
   type PublicClient,
 } from 'viem'
+import { failures, isRateLimited, retryAfterOf, type Failure } from '@/lib/center-limit'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { stickyHookAbi } from '@/lib/sticky-abis'
 import { deploymentOn } from '@/lib/sticky-addresses'
+import { sleep } from '@/lib/with-timeout'
 
 /** A log that is in a block, so it has a block, a hash and an index. Center also sends the block's
  * timestamp with it, which viem keeps as `blockTimestamp`. */
@@ -43,26 +45,8 @@ export function statedRange(message: string): bigint {
   return span >= 10n && span <= 10_000_000n ? span : 0n
 }
 
-type Failure = { status?: unknown; code?: unknown; message?: unknown; details?: unknown; retryAfter?: unknown }
-
-/** An error and what it wraps, outermost first. viem wraps whatever its transport throws, so the HTTP
- * status or the JSON-RPC code Center answered with usually sits on a cause. */
-function failures(error: unknown): Failure[] {
-  const chain: Failure[] = []
-  for (
-    let next = error;
-    typeof next === 'object' && next !== null && chain.length < 8;
-    next = (next as { cause?: unknown }).cause
-  ) {
-    chain.push(next as Failure)
-  }
-  return chain
-}
-
 /** What one error says, without viem's own framing (its docs link, version and request). */
 const said = ({ details, message }: Failure) => (typeof details === 'string' ? details : String(message ?? ''))
-
-const isRateLimited = (error: unknown) => failures(error).some(({ status, code }) => status === 429 || code === 429)
 
 const refusesRange = (error: unknown) =>
   failures(error).some(link => link.status === 413 || link.code === -32005 || RANGE_ERROR.test(said(link)))
@@ -77,9 +61,7 @@ const statedIn = (error: unknown) =>
  * reads Center's Retry-After header into `retryAfter`, in seconds, on the error it throws: the range waits that
  * long, never less than the schedule and never more than a minute. With none it waits as the schedule says. */
 function waitAfter(error: unknown, retry: number): number {
-  const asked = failures(error)
-    .map(link => link.retryAfter)
-    .find((seconds): seconds is number => typeof seconds === 'number' && Number.isFinite(seconds))
+  const asked = retryAfterOf(error)
   return asked === undefined ? BACKOFF_MS[retry] : Math.min(Math.max(asked * 1_000, BACKOFF_MS[retry]), MAX_WAIT_MS)
 }
 
@@ -87,24 +69,8 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw signal.reason
 }
 
-/** Waits `ms`, or rejects with the signal's reason the moment it aborts, leaving no timer behind. */
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) return reject(signal.reason)
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', abort)
-      resolve()
-    }, ms)
-    function abort() {
-      clearTimeout(timer)
-      reject(signal?.reason)
-    }
-    signal?.addEventListener('abort', abort, { once: true })
-  })
-}
-
-/** What `work` gives, or the signal's reason the moment it aborts. Neither viem nor the SDK cancels a request
- * that is under way, so `work` is left to finish on its own, its answer or failure unheeded. */
+/** What `work` gives, or the signal's reason the moment it aborts. A request made without the signal is not stopped
+ * by it, so `work` is left to finish on its own, its answer or failure unheeded. */
 export function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (!signal) return work
   return new Promise<T>((resolve, reject) => {
@@ -115,10 +81,32 @@ export function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefine
   })
 }
 
+/** Each chain's head request under way: the reads waiting on it, and what stops it. */
+const heads = new Map<number, { head: Promise<bigint>; waiting: number; stop: AbortController }>()
+
 /** The chain's head as the node says it now. viem hands a head it read in the last few seconds to the next read, and
- * a read made right after a write lands must not pin a block before it; a head request already under way is shared. */
-export function freshHead(client: Pick<PublicClient, 'getBlockNumber'>, signal: AbortSignal | undefined): Promise<bigint> {
-  return untilAborted(client.getBlockNumber({ cacheTime: 0 }), signal)
+ * a read made right after a write lands must not pin a block before it. A head request already under way is shared by
+ * every read that asks for the chain's head meanwhile, whatever page it is of, and is stopped once every read waiting
+ * on it has left: a page that is left sends no head that no other read still waits for. */
+export function freshHead(chainId: number, signal: AbortSignal | undefined): Promise<bigint> {
+  if (signal?.aborted) return Promise.reject(signal.reason)
+  let shared = heads.get(chainId)
+  if (!shared) {
+    const stop = new AbortController()
+    const asking = { head: jbCenterPublicClient(chainId, stop.signal).getBlockNumber({ cacheTime: 0 }), waiting: 0, stop }
+    const done = () => void (heads.get(chainId) === asking && heads.delete(chainId))
+    asking.head.then(done, done)
+    heads.set(chainId, (shared = asking))
+  }
+  const asking = shared
+  asking.waiting += 1
+  const leave = () => {
+    if ((asking.waiting -= 1) > 0) return
+    if (heads.get(chainId) === asking) heads.delete(chainId)
+    asking.stop.abort(signal?.reason)
+  }
+  signal?.addEventListener('abort', leave, { once: true })
+  return untilAborted(asking.head, signal).finally(() => signal?.removeEventListener('abort', leave))
 }
 
 /** What `work` gives, or an error that names `what` and keeps the cause. A signal that has aborted stops it before it
@@ -480,7 +468,7 @@ export async function keptLogsOf(
   const { signal, keep = (log: ScannedLog) => log, trim = false } = opts
   const deployment = deploymentOn(chainId)
   throwIfAborted(signal)
-  const client = jbCenterPublicClient(chainId)
+  const client = jbCenterPublicClient(chainId, signal)
   const start = fromBlock ?? deployment.fromBlock
   // What each key holds, and of that what this read can use: a history that began after `fromBlock` lacks what came
   // before it, and is set aside.
@@ -488,7 +476,7 @@ export async function keptLogsOf(
   const kept = stored.map(saved =>
     saved && (fromBlock === null || saved.from === undefined || saved.from <= fromBlock) ? saved : null,
   )
-  const head = await freshHead(client, signal)
+  const head = await freshHead(chainId, signal)
   // The scan starts after what was kept, so a block every history holds is never asked for again. With no block to
   // start at, every kept history goes on from where it ends.
   const goesOn = (saved: Kept) => fromBlock === null || saved.through + 1n >= fromBlock

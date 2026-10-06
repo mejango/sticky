@@ -490,11 +490,13 @@ describe('the Chains card', () => {
       plannedChains: [10, 8453],
     })
     expect(mocks.siblings.mock.calls[0][1]).toEqual({ signal: expect.any(AbortSignal) })
-    // A copy's figures clamp an unowned balance recorded above the terminal's, where the page's own read does not.
+    // A copy's figures clamp an unowned balance recorded above the terminal's, where the page's own read does not. Each
+    // read goes with its signal.
+    const signal = expect.any(AbortSignal)
     expect(mocks.project.mock.calls).toEqual([
-      [8453, 23n],
-      [8453, 23n, { orphans: 'clamp' }],
-      [10, 5n, { orphans: 'clamp' }],
+      [8453, 23n, { signal }],
+      [8453, 23n, { orphans: 'clamp', signal }],
+      [10, 5n, { orphans: 'clamp', signal }],
     ])
   })
 
@@ -571,8 +573,8 @@ describe('the Chains card', () => {
   })
 
   it('shows no total where nothing could be read, rather than a total of nothing', async () => {
-    mocks.project.mockImplementation(async (chainId: number, _projectId: bigint, options?: unknown) => {
-      if (options) throw new Error('down')
+    mocks.project.mockImplementation(async (chainId: number, _projectId: bigint, options?: { orphans?: string }) => {
+      if (options?.orphans === 'clamp') throw new Error('down')
       return chainId === 10 ? optimism() : slopshop()
     })
     await renderTab()
@@ -827,29 +829,33 @@ describe('the chart', () => {
 })
 
 describe('leaving the page', () => {
-  it('cancels the balance flows and the chains being read, and tells the console of no failure', async () => {
+  it('cancels the balance flows and the chains being read side by side, and tells the console of no failure', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const untilAborted = (signal: AbortSignal) =>
       new Promise<never>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason)))
-    const started: string[] = []
+    const started: [string, AbortSignal][] = []
     mocks.flows.mockImplementation(async (_chainId: number, _projectId: bigint, _from: bigint | null, { signal }: { signal: AbortSignal }) => {
-      started.push('flows')
+      started.push(['flows', signal])
+      return untilAborted(signal)
+    })
+    mocks.siblings.mockImplementation((_info: StickyProjectInfo, { signal }: { signal: AbortSignal }) => {
+      started.push(['chains', signal])
       return untilAborted(signal)
     })
     await renderTab()
-    expect(started).toEqual(['flows'])
+    // Both are under way: the flows have their turn first, and read the creation block before the balance history.
+    expect(started.map(([name]) => name).sort()).toEqual(['chains', 'flows'])
     await act(async () => root.unmount())
     root = createRoot(host)
     await settle()
+    expect(started.every(([, signal]) => signal.aborted)).toBe(true)
     expect(warn).not.toHaveBeenCalled()
-    // The chains, which wait behind the flows, are never searched for.
-    expect(mocks.siblings).not.toHaveBeenCalled()
   })
 
-  it('cancels the holders and Latest reads it started, and the ones that wait behind them, and tells the console of no failure', async () => {
+  it('cancels the holders and Latest reads under way, and the reads that wait for them, and tells the console of no failure', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const started: AbortSignal[] = []
-    // A scan that answers only when it is cancelled. Its options come last: the holders' third, Latest's second.
+    // A read that answers only when it is cancelled. Its options come last: the holders' third, Latest's second.
     const hangs = (...args: unknown[]) =>
       new Promise<never>((_resolve, reject) => {
         const { signal } = args.at(-1) as { signal: AbortSignal }
@@ -859,16 +865,15 @@ describe('leaving the page', () => {
     mocks.holders.mockImplementation(hangs)
     mocks.moves.mockImplementation(hangs)
     await renderTab()
-    // One scan at a time: the other is in line behind it.
-    expect(started).toHaveLength(1)
-    expect(started[0].aborted).toBe(false)
+    // The holders are read beside the history, and Latest's amounts once the history is in: both are under way.
+    expect(started).toHaveLength(2)
+    expect(started.some(signal => signal.aborted)).toBe(false)
 
     await act(async () => root.unmount())
     root = createRoot(host)
     await settle()
-    expect(started[0].aborted).toBe(true)
-    // The scan in line never starts, and neither do the balance flows and the chains, which wait for both.
-    expect(started).toHaveLength(1)
+    expect(started.every(signal => signal.aborted)).toBe(true)
+    // Neither the balance flows nor the chains, which wait for both, ever start.
     expect(mocks.flows).not.toHaveBeenCalled()
     expect(mocks.siblings).not.toHaveBeenCalled()
     expect(warn).not.toHaveBeenCalled()
@@ -929,7 +934,7 @@ describe('the reads behind the tab', () => {
     expect(mocks.flows).toHaveBeenCalledTimes(1)
   })
 
-  it('run the history, the header\'s holders and Latest, the balance flows and the chains one after another, never at once', async () => {
+  it('run the history beside the header\'s holders, then Latest, then the balance flows beside the chains: never more than two at once', async () => {
     const order: string[] = []
     let running = 0
     let most = 0
@@ -946,7 +951,7 @@ describe('the reads behind the tab', () => {
     mocks.moves.mockImplementation(slow('moves', new Map()))
     mocks.flows.mockImplementation(slow('flows', paid))
     mocks.siblings.mockImplementation(slow('chains', [HERE, THERE]))
-    // The holders are in line only once the pinned block is read, which takes longer than Latest's scan.
+    // The pinned block takes longer than the holders' own read, and the holders are through once it is in.
     mocks.pinned.mockImplementation(async () => {
       await new Promise(resolve => setTimeout(resolve, 300))
       return { number: 100n, timestamp: NOW }
@@ -954,11 +959,11 @@ describe('the reads behind the tab', () => {
     await renderTab()
     await settle(2_000)
     // The chart's balance flows are the longest read, and the header's holders and Latest are not held up by them.
-    expect(order).toHaveLength(5)
-    expect(order[0]).toBe('history')
-    expect(order.slice(1, 3).sort()).toEqual(['holders', 'moves'])
-    expect(order.slice(3)).toEqual(['flows', 'chains'])
-    expect(most).toBe(1)
+    expect(order.slice(0, 3)).toEqual(['history', 'holders', 'moves'])
+    // The flows and the chains are read side by side, the flows in line first: they read the creation block first.
+    expect(order.slice(3).sort()).toEqual(['chains', 'flows'])
+    expect(mocks.creation.mock.invocationCallOrder[0]).toBeLessThan(mocks.siblings.mock.invocationCallOrder[0])
+    expect(most).toBe(2)
     expect(peaks()).toEqual(['Peak: 1 active stick', 'Peak: 1,010 SLOPSHOP stuck'])
     expect(chainRows()).toHaveLength(3)
   })
@@ -1046,11 +1051,11 @@ describe('the reads behind the tab', () => {
     site.clear()
   })
 
-  it('take their turn with every other scan of the page: the flows and the chains wait for one under way', async () => {
+  it('take their turn with every other read of the page: the flows and the chains wait while two are under way', async () => {
     await renderTab()
-    // A scan of another tab is under way, and holds the turn.
-    const done = Promise.withResolvers<void>()
-    void inTurn(client, new AbortController().signal, () => done.promise)
+    // Two reads of another tab are under way, and hold both turns.
+    const done = [Promise.withResolvers<void>(), Promise.withResolvers<void>()]
+    for (const read of done) void inTurn(client, new AbortController().signal, () => read.promise)
     // The reads are invalidated, and are under way but not started: what an invalidation waits for is not over.
     await act(async () => {
       void client.invalidateQueries({ queryKey: ['sticky-project', 8453, 23, 'flows'] })
@@ -1059,10 +1064,12 @@ describe('the reads behind the tab', () => {
     await settle()
     expect([mocks.creation, mocks.flows, mocks.siblings].map(read => read.mock.calls.length)).toEqual([1, 1, 1])
 
-    // They are read, one after the other, when it ends.
-    await act(async () => done.resolve())
+    // When one of them ends, they are read in the turn it leaves, the flows first.
+    await act(async () => done[0].resolve())
     await settle()
     expect([mocks.creation, mocks.flows, mocks.siblings].map(read => read.mock.calls.length)).toEqual([2, 2, 2])
+    expect(mocks.flows.mock.invocationCallOrder[1]).toBeLessThan(mocks.siblings.mock.invocationCallOrder[1])
+    await act(async () => done[1].resolve())
   })
 
   it('wait for a retry of the header\'s Latest, and read the flows and the chains again only once they have gone stale', async () => {
