@@ -403,13 +403,13 @@ export async function readStickyProjects(
 /** One Sticky project: its tokens, its terminal balance and its supply, all read at one block. The
  * deployment's own contracts are asked first, and they name the two tokens and the store; those are
  * asked second. Each round is one Multicall3 request, and both ask the same block. It rejects with why the
- * project cannot be read. */
+ * project cannot be read, or with the signal's reason once it aborts. */
 export async function readStickyProject(
   chainId: number,
   projectId: bigint,
-  { orphans = 'strict' }: { orphans?: OrphanedPolicy } = {},
+  { orphans = 'strict', signal }: { orphans?: OrphanedPolicy; signal?: AbortSignal } = {},
 ): Promise<StickyProjectInfo> {
-  const [read] = await readEach(chainId, [projectId], orphans, undefined)
+  const [read] = await readEach(chainId, [projectId], orphans, signal)
   if ('error' in read) throw read.error
   return read.info
 }

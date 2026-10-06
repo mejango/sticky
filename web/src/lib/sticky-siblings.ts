@@ -252,5 +252,5 @@ const live: SiblingReadDeps = {
   // A copy's figures clamp an orphaned balance the hook recorded above what the terminal holds to no backing, where
   // the page's own read fails (webclient/app.js chainBacking and poolBacking): one bad copy must not break the page.
   read: (chainId, projectId, { signal }) =>
-    untilAborted(readStickyProject(chainId, projectId, { orphans: 'clamp' }), signal),
+    untilAborted(readStickyProject(chainId, projectId, { orphans: 'clamp', signal }), signal),
 }

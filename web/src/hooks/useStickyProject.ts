@@ -67,7 +67,7 @@ const infoOptions = (chainId: number, projectId: number) =>
     queryKey: ['sticky-project', chainId, projectId, 'info', PROJECT_VERSION],
     queryFn: ({ signal }) =>
       warned(PROJECT_UNREADABLE, { chainId, projectId }, signal, async () => {
-        const info = await readStickyProject(chainId, BigInt(projectId))
+        const info = await readStickyProject(chainId, BigInt(projectId), { signal })
         readThisVisit.add(info)
         return info
       }),

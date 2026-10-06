@@ -157,7 +157,7 @@ export function jbCenterPublicClient(chainId: number, signal?: AbortSignal): Pub
     if (signal) {
       client = client.extend(reader => ({
         getBlockNumber: async () =>
-          hexToBigInt(await reader.request({ method: 'eth_blockNumber' }, { dedupe: true })),
+          hexToBigInt(await reader.request({ method: 'eth_blockNumber' }, { dedupe: true, signal })),
       })) as PublicClient
     }
     clients.set(chainId, client)

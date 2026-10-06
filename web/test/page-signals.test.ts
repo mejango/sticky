@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { readFileSync } from 'node:fs'
-import { relative, resolve } from 'node:path'
+import { relative, resolve, sep } from 'node:path'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 import { callsOf, sourcesUnder } from './source-gates'
@@ -15,6 +15,10 @@ import { callsOf, sourcesUnder } from './source-gates'
  * page's read with it, so they stay on the chain's shared reader. (The head is shared by `freshHead`.) So every call of
  * `jbCenterPublicClient` written where a `signal` is in scope passes it, unless its reader is used for those alone, and
  * each such reader is named in the list below.
+ *
+ * The signal has to get there, too: a read that knows it gives it to every read it calls that takes one, and no read
+ * that a page's read calls gives its own reads none (`undefined`, or nothing at all) for want of one. Those two are
+ * checked with the source's types, so they follow a signal through any module, as an argument or an option.
  */
 
 const SRC = resolve('src')
@@ -93,6 +97,110 @@ function readers(
   })
 }
 
+/** Where a call's callee takes a signal: the argument of a parameter named `signal`, or the options of a parameter
+ * whose type has a `signal` field; null when it takes none. */
+type Slot = { index: number; options: boolean }
+
+function slotOf(checker: ts.TypeChecker, call: ts.CallExpression): Slot | null {
+  const parameters = checker.getResolvedSignature(call)?.parameters ?? []
+  for (const [index, parameter] of parameters.entries()) {
+    const declared = parameter.valueDeclaration
+    if (declared && ts.isParameter(declared) && declared.dotDotDotToken) continue
+    if (parameter.name === 'signal') return { index, options: false }
+    const type = checker.getNonNullableType(checker.getTypeOfSymbolAtLocation(parameter, call))
+    if (checker.getPropertyOfType(type, 'signal')) return { index, options: true }
+  }
+  return null
+}
+
+/** Whether a call gives its callee a signal: the argument, or the options' `signal`, is there and is not nothing.
+ * Options that are not written out here, or are spread from others, are taken to carry one. */
+function gives(call: ts.CallExpression, { index, options }: Slot): boolean {
+  const argument = call.arguments[index]
+  if (!options || nothing(argument)) return !nothing(argument)
+  if (!ts.isObjectLiteralExpression(argument!)) return true
+  const field = argument.properties.find(property => property.name?.getText() === 'signal')
+  if (field) return ts.isShorthandPropertyAssignment(field) || (ts.isPropertyAssignment(field) && !nothing(field.initializer))
+  return argument.properties.some(ts.isSpreadAssignment)
+}
+
+/** Whether a signal is in scope where `node` is written. */
+const signalled = (node: ts.Node) => {
+  for (let at = node.parent; at; at = at.parent) if (ts.isFunctionLike(at) && bindsSignal(at)) return true
+  return false
+}
+
+/** Where `node` is written, as `file:line`. */
+const placeOf = (node: ts.Node) => {
+  const source = node.getSourceFile()
+  return `${relative(SRC, source.fileName)}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`
+}
+
+/**
+ * The calls in `sources` that drop a signal: one made where a signal is in scope to a callee that takes one, without
+ * giving it (the readers `jbCenterPublicClient` gives are the check above's); and one that gives its callee no signal
+ * where none is in scope, in a function that a call made where one is in scope calls, which should have taken it.
+ */
+function drops(program: ts.Program, sources: readonly ts.SourceFile[]): string[] {
+  const checker = program.getTypeChecker()
+  const calls: { call: ts.CallExpression; slot: Slot | null; scoped: boolean }[] = []
+  for (const source of sources) {
+    const visit = (at: ts.Node) => {
+      if (ts.isCallExpression(at)) calls.push({ call: at, slot: slotOf(checker, at), scoped: signalled(at) })
+      ts.forEachChild(at, visit)
+    }
+    visit(source)
+  }
+  // The calls made of each function, by its declaration.
+  const callsOf = new Map<ts.Node, typeof calls>()
+  for (const made of calls) {
+    const declaration = checker.getResolvedSignature(made.call)?.declaration
+    if (declaration) callsOf.set(declaration, [...(callsOf.get(declaration) ?? []), made])
+  }
+  const found: string[] = []
+  for (const { call, slot, scoped } of calls) {
+    if (!slot || gives(call, slot)) continue
+    const callee = call.expression.getText()
+    if (scoped) {
+      if (callee !== 'jbCenterPublicClient') found.push(`${placeOf(call)} ${callee} drops the signal in scope`)
+      continue
+    }
+    for (let at = call.parent; at; at = at.parent) {
+      if (!ts.isFunctionLike(at)) continue
+      const caller = (callsOf.get(at) ?? []).find(made => made.scoped)
+      if (caller) {
+        found.push(`${placeOf(call)} ${callee} gets no signal, though ${placeOf(caller.call)} has one`)
+        break
+      }
+    }
+  }
+  return found
+}
+
+/** The site's source, with its types. */
+function typedSource(): { program: ts.Program; sources: ts.SourceFile[] } {
+  const { config } = ts.readConfigFile(resolve('tsconfig.json'), ts.sys.readFile)
+  const parsed = ts.parseJsonConfigFileContent(config, ts.sys, resolve('.'))
+  const rootNames = parsed.fileNames.filter(file => resolve(file).startsWith(SRC + sep))
+  const program = ts.createProgram({ rootNames, options: { ...parsed.options, noEmit: true, incremental: false } })
+  return { program, sources: program.getSourceFiles().filter(source => resolve(source.fileName).startsWith(SRC + sep)) }
+}
+
+/** `files`, type-checked alone, as `read.ts` and its neighbours. */
+function typedSnippets(files: Record<string, string>): { program: ts.Program; sources: ts.SourceFile[] } {
+  const host = ts.createCompilerHost({ strict: true, noEmit: true, target: ts.ScriptTarget.ES2022 })
+  const named = new Map(Object.entries(files).map(([name, text]) => [resolve(SRC, name), text]))
+  const original = host.getSourceFile
+  host.getSourceFile = (fileName, language) => {
+    const text = named.get(resolve(fileName))
+    return text === undefined ? original.call(host, fileName, language) : ts.createSourceFile(fileName, text, language, true)
+  }
+  const exists = host.fileExists
+  host.fileExists = fileName => named.has(resolve(fileName)) || exists.call(host, fileName)
+  const program = ts.createProgram({ rootNames: [...named.keys()], options: { strict: true, noEmit: true }, host })
+  return { program, sources: [...named.keys()].map(file => program.getSourceFile(file)!) }
+}
+
 describe('a read that knows its page\'s signal', () => {
   it('asks Center through the page\'s reader unless viem can share it with another page\'s, in every source file', () => {
     const found = sourcesUnder(SRC).flatMap(file =>
@@ -132,5 +240,38 @@ describe('a read that knows its page\'s signal', () => {
     expect(readers('outer.ts', outer)).toEqual([{ line: 2, signalled: true, passed: false, uses: ['multicall'], shares: false }])
     const none = 'function verify(chainId) { const later = signal => signal\n return jbCenterPublicClient(chainId).multicall(c) }'
     expect(readers('none.ts', none)).toEqual([{ line: 2, signalled: false, passed: false, uses: ['multicall'], shares: false }])
+  })
+
+  it('gives it to every read it calls that takes one, and calls no read that gives its own reads none, in every source file', () => {
+    const { program, sources } = typedSource()
+    expect(sources.length).toBeGreaterThanOrEqual(100)
+    expect(drops(program, sources)).toEqual([])
+  }, 60_000)
+
+  it('is told apart from one that drops the signal on the way, as an argument or an option, or gives none for it', () => {
+    const lib = `
+      export async function readEach(chainId: number, signal: AbortSignal | undefined) { return [chainId, signal] }
+      export async function readOne(chainId: number, { signal }: { signal?: AbortSignal } = {}) { return readEach(chainId, signal) }
+      export async function readOneOwn(chainId: number) { return readEach(chainId, undefined) }
+      export async function readOneAlone(chainId: number) { return readOne(chainId, { signal: undefined }) }
+      export async function unread(chainId: number) { return readEach(chainId, undefined) }`
+    const page = `
+      import { readEach, readOne, readOneOwn, readOneAlone, unread } from './lib'
+      export const queryFn = async ({ signal }: { signal: AbortSignal }) => [
+        await readEach(1, signal),
+        await readOne(2, { signal }),
+        await readOne(3),
+        await readOne(4, {}),
+        await readOneOwn(5),
+        await readOneAlone(6),
+      ]
+      export const server = async () => [await unread(7), await readOne(8)]`
+    const { program, sources } = typedSnippets({ 'lib.ts': lib, 'page.ts': page })
+    expect(drops(program, sources)).toEqual([
+      'lib.ts:4 readEach gets no signal, though page.ts:8 has one',
+      'lib.ts:5 readOne gets no signal, though page.ts:9 has one',
+      'page.ts:6 readOne drops the signal in scope',
+      'page.ts:7 readOne drops the signal in scope',
+    ])
   })
 })

@@ -490,11 +490,13 @@ describe('the Chains card', () => {
       plannedChains: [10, 8453],
     })
     expect(mocks.siblings.mock.calls[0][1]).toEqual({ signal: expect.any(AbortSignal) })
-    // A copy's figures clamp an unowned balance recorded above the terminal's, where the page's own read does not.
+    // A copy's figures clamp an unowned balance recorded above the terminal's, where the page's own read does not. Each
+    // read goes with its signal.
+    const signal = expect.any(AbortSignal)
     expect(mocks.project.mock.calls).toEqual([
-      [8453, 23n],
-      [8453, 23n, { orphans: 'clamp' }],
-      [10, 5n, { orphans: 'clamp' }],
+      [8453, 23n, { signal }],
+      [8453, 23n, { orphans: 'clamp', signal }],
+      [10, 5n, { orphans: 'clamp', signal }],
     ])
   })
 
@@ -571,8 +573,8 @@ describe('the Chains card', () => {
   })
 
   it('shows no total where nothing could be read, rather than a total of nothing', async () => {
-    mocks.project.mockImplementation(async (chainId: number, _projectId: bigint, options?: unknown) => {
-      if (options) throw new Error('down')
+    mocks.project.mockImplementation(async (chainId: number, _projectId: bigint, options?: { orphans?: string }) => {
+      if (options?.orphans === 'clamp') throw new Error('down')
       return chainId === 10 ? optimism() : slopshop()
     })
     await renderTab()

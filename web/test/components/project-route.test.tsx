@@ -264,7 +264,8 @@ async function type(input: HTMLInputElement, text: string) {
 describe('the project route', () => {
   it('opens /base:23, and tells the header which project is in view', async () => {
     await renderPage('base:23')
-    expect(mocks.project).toHaveBeenCalledWith(8453, 23n)
+    // With the read's signal, so a page that is left stops it.
+    expect(mocks.project).toHaveBeenCalledWith(8453, 23n, { signal: expect.any(AbortSignal) })
     expect(host.querySelector('output')?.textContent).toBe('8453:23:null')
     expect(header().querySelector('h1')?.textContent).toBe('STICKYSLOPSHOP Sticky Slop Shop')
     expect(mocks.handle).not.toHaveBeenCalled()
