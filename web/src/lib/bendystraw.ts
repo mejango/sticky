@@ -16,7 +16,7 @@ import {
   type BendystrawCachePolicy,
   type BendystrawNetwork,
 } from '@bananapus/nana-sdk-core'
-import { compileBendystrawOperation } from '@/lib/bendystraw-operation'
+import { compileBendystrawOperation } from '@bananapus/nana-sdk-core/bendystraw-operations'
 
 export function normalizeBendystrawUrl(value: string): string {
   return normalizeBendystrawEndpoint(value.trim())

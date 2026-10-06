@@ -3,7 +3,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { POST } from '@/app/api/bendystraw/[net]/query/route'
 import { bendystraw } from '@/lib/bendystraw'
-import { bendystrawOperationId } from '@/lib/bendystraw-operation-id'
+import { bendystrawOperationId } from '@bananapus/nana-sdk-core/bendystraw-operations'
 
 // A fixed document stands in for the registry, so the relay is tested whatever the real registry holds.
 const query = vi.hoisted(

@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { describe, expect, it } from 'vitest'
-import { compileBendystrawOperation } from '@/lib/bendystraw-operation'
+import { compileBendystrawOperation } from '@bananapus/nana-sdk-core/bendystraw-operations'
 
 describe('a compiled Bendystraw operation', () => {
   it('has the name of its one operation', () => {

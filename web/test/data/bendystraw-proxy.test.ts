@@ -2,8 +2,10 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { POST } from '@/app/api/bendystraw/[net]/query/route'
-import { compileBendystrawOperation } from '@/lib/bendystraw-operation'
-import { bendystrawOperationId } from '@/lib/bendystraw-operation-id'
+import {
+  bendystrawOperationId,
+  compileBendystrawOperation,
+} from '@bananapus/nana-sdk-core/bendystraw-operations'
 import registry from '@/lib/bendystraw-operation-registry.json'
 import { resolvePersistedBendystrawRequest } from '@/lib/bendystraw-proxy'
 

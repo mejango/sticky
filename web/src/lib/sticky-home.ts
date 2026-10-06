@@ -109,7 +109,7 @@ const MOVES_UNAVAILABLE = "Bendystraw could not list a chain's sticks and unstic
 const TAIL_UNAVAILABLE = "Could not read a chain's newest blocks; Latest shows Bendystraw's pays and cash outs."
 const PRICES_UNAVAILABLE = 'Could not price the tokens stuck on a chain; the secured chart leaves them out.'
 
-/** The most project IDs one request may list: the relay refuses a longer list (`bendystraw-operation.ts`). */
+/** The most project IDs one request may list: the relay refuses a longer list (the SDK's `compileBendystrawOperation`). */
 const MAX_LISTED_IDS = 1_000
 
 const byTime = (a: IndexedMove, b: IndexedMove) => a.timestamp - b.timestamp || a.logIndex - b.logIndex
