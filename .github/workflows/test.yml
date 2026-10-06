@@ -18,23 +18,23 @@ jobs:
       run:
         working-directory: extensions/Sticky
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           path: extensions/Sticky
           submodules: recursive
       # These package.json file dependencies are intentional. Pin their sources
       # and reproduce the same sibling layout as the protocol workspace.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: Bananapus/nana-core-v6
           ref: feff600654aee6fb1747dded692f18068b2230a6
           path: nana-core-v6
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: Bananapus/nana-distributor-v6
           ref: 44d6d5d2e7cca77422ee0ac4909cf42ccf7839b5
           path: nana-distributor-v6
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22.23.1
           cache: npm
@@ -42,7 +42,7 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
       - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
+        uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with:
           version: v1.8.1
       - name: Run tests
