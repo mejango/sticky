@@ -2,32 +2,14 @@ import { base, optimism } from '@bananapus/nana-sdk-core/chains'
 import { createPublicClient, erc20Abi, numberToHex } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// Center's slots: at most two requests in flight to Center from the browser, every chain's and every reader's together,
-// and none started while a Retry-After runs. The slots are the module's, so each test loads its own copy. How a line
-// starts, orders and lets go of what waits is line.test.ts's.
-
-const load = async () => {
-  vi.resetModules()
-  return import('@/lib/center-limit')
-}
-
-/** A request the test answers when it likes, and whether it was sent. */
-function pending<T = string>() {
-  const answer = Promise.withResolvers<T>()
-  const request = { sent: false, answer, send: () => ((request.sent = true), answer.promise) }
-  return request
-}
+// The browser's Center reader, with only `fetch` faked: every chain's requests and every reader's of the tab share
+// Center's two slots, a page's requests go with its signal, and a 429's Retry-After holds every one of them, viem's own
+// retry included. The slots are the SDK's limiter, whose own tests cover how a limiter lines up, pauses and lets go of
+// what waits.
 
 const ticks = async (count = 5) => {
   for (let at = 0; at < count; at += 1) await Promise.resolve()
 }
-
-/** Center's 429 as the SDK throws it and viem wraps it: the status and Retry-After on a cause. */
-const refused = (retryAfter?: number) =>
-  Object.assign(new Error('An unknown RPC error occurred.'), {
-    code: -1,
-    cause: Object.assign(new Error('Request limit exceeded'), { status: 429, code: 'rate_limit', retryAfter }),
-  })
 
 /** Center's answer to one JSON-RPC request, or its refusal of the rest of the minute. */
 const answered = (id: number, result: unknown) =>
@@ -41,95 +23,6 @@ const refusal = (retryAfter: string) =>
 afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
-})
-
-describe('Center\'s slots', () => {
-  it('keep at most two requests in flight, and start the next as one ends', async () => {
-    const { inCenterSlot } = await load()
-    const requests = Array.from({ length: 3 }, () => pending())
-    const answers = requests.map(request => inCenterSlot(request.send))
-    await ticks()
-    expect(requests.map(request => request.sent)).toEqual([true, true, false])
-
-    requests[0].answer.resolve('a')
-    await ticks()
-    expect(requests[2].sent).toBe(true)
-    requests[1].answer.resolve('b')
-    requests[2].answer.resolve('c')
-    expect(await Promise.all(answers)).toEqual(['a', 'b', 'c'])
-  })
-
-  it('start nothing more until the Retry-After of a 429 has passed: every request in that minute would be refused', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
-    const { inCenterSlot } = await load()
-    const first = pending()
-    const other = pending()
-    const refusedAnswer = inCenterSlot(first.send)
-    const inFlight = inCenterSlot(other.send)
-    const waiting = [pending(), pending()]
-    const later = waiting.map(request => inCenterSlot(request.send))
-    await ticks()
-
-    first.answer.reject(refused(60))
-    await expect(refusedAnswer).rejects.toMatchObject({ cause: { status: 429 } })
-    // The request in flight when Center refused is not stopped, and its slot frees, but nothing new starts.
-    other.answer.resolve('in flight')
-    expect(await inFlight).toBe('in flight')
-    await vi.advanceTimersByTimeAsync(59_999)
-    expect(waiting.map(request => request.sent)).toEqual([false, false])
-
-    await vi.advanceTimersByTimeAsync(1)
-    expect(waiting.map(request => request.sent)).toEqual([true, true])
-    for (const request of waiting) request.answer.resolve('after the minute')
-    expect(await Promise.all(later)).toEqual(['after the minute', 'after the minute'])
-  })
-
-  it('hold the line a minute at most, and not at all for a refusal that names no wait', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
-    const { inCenterSlot } = await load()
-    const long = pending()
-    const refusedLong = inCenterSlot(long.send)
-    long.answer.reject(refused(600))
-    await expect(refusedLong).rejects.toBeDefined()
-    const held = pending()
-    const heldAnswer = inCenterSlot(held.send)
-    await vi.advanceTimersByTimeAsync(59_999)
-    expect(held.sent).toBe(false)
-    await vi.advanceTimersByTimeAsync(1)
-    expect(held.sent).toBe(true)
-    held.answer.resolve('ok')
-    await heldAnswer
-
-    // A 429 without a Retry-After (a node's JSON-RPC 429) is the caller's to wait out: the line goes on.
-    const bare = pending()
-    const bareAnswer = inCenterSlot(bare.send)
-    bare.answer.reject(refused())
-    await expect(bareAnswer).rejects.toBeDefined()
-    const next = pending()
-    void inCenterSlot(next.send)
-    await ticks()
-    expect(next.sent).toBe(true)
-    next.answer.resolve('ok')
-  })
-
-  it('keep the later end when a second refusal names a shorter wait', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
-    const { inCenterSlot } = await load()
-    const [first, second] = [pending(), pending()]
-    const answers = Promise.allSettled([inCenterSlot(first.send), inCenterSlot(second.send)])
-    await ticks()
-    first.answer.reject(refused(60))
-    await vi.advanceTimersByTimeAsync(10_000)
-    second.answer.reject(refused(5))
-    expect((await answers).map(answer => answer.status)).toEqual(['rejected', 'rejected'])
-    const held = pending()
-    void inCenterSlot(held.send)
-    await vi.advanceTimersByTimeAsync(49_999)
-    expect(held.sent).toBe(false)
-    await vi.advanceTimersByTimeAsync(1)
-    expect(held.sent).toBe(true)
-    held.answer.resolve('ok')
-  })
 })
 
 describe('the browser\'s Center reader', () => {

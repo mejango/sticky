@@ -1,3 +1,4 @@
+import { errorChain, isRateLimited, retryAfterOf, type ErrorChainLink } from '@bananapus/nana-sdk-core/jbcenter'
 import {
   getAbiItem,
   isAddress,
@@ -12,7 +13,6 @@ import {
   type Log,
   type PublicClient,
 } from 'viem'
-import { failures, isRateLimited, retryAfterOf, type Failure } from '@/lib/center-limit'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
 import { stickyHookAbi } from '@/lib/sticky-abis'
 import { deploymentOn } from '@/lib/sticky-addresses'
@@ -46,20 +46,21 @@ export function statedRange(message: string): bigint {
 }
 
 /** What one error says, without viem's own framing (its docs link, version and request). */
-const said = ({ details, message }: Failure) => (typeof details === 'string' ? details : String(message ?? ''))
+const said = ({ details, message }: ErrorChainLink) => (typeof details === 'string' ? details : String(message ?? ''))
 
 const refusesRange = (error: unknown) =>
-  failures(error).some(link => link.status === 413 || link.code === -32005 || RANGE_ERROR.test(said(link)))
+  errorChain(error).some(link => link.status === 413 || link.code === -32005 || RANGE_ERROR.test(said(link)))
 
 const statedIn = (error: unknown) =>
-  failures(error)
+  errorChain(error)
     .map(link => statedRange(said(link)))
     .find(span => span > 0n) ?? 0n
 
 /** How long a range waits before its next try after a 429. Center's window is a fixed minute in which refused
- * requests count too, so a retry sooner than Center says lands in the same window and is refused again. The SDK
- * reads Center's Retry-After header into `retryAfter`, in seconds, on the error it throws: the range waits that
- * long, never less than the schedule and never more than a minute. With none it waits as the schedule says. */
+ * requests count too, so a retry sooner than Center says lands in the same window and is refused again. The SDK's
+ * `retryAfterOf` reads how long the refusal asked for, in seconds, from the Retry-After the SDK reads into the error
+ * it throws or from the header of viem's HTTP error: the range waits that long, never less than the schedule and
+ * never more than a minute. With none it waits as the schedule says. */
 function waitAfter(error: unknown, retry: number): number {
   const asked = retryAfterOf(error)
   return asked === undefined ? BACKOFF_MS[retry] : Math.min(Math.max(asked * 1_000, BACKOFF_MS[retry]), MAX_WAIT_MS)

@@ -1,9 +1,9 @@
 import {
   createJBCenterClient,
+  createJBCenterLimiter,
   type JBCenterRpcRequest,
 } from '@bananapus/nana-sdk-core/jbcenter'
 import { createPublicClient, custom, hexToBigInt, http, type PublicClient, type Transport } from 'viem'
-import { inCenterSlots, throughCenterSlots } from '@/lib/center-limit'
 import { SUPPORTED_CHAINS } from '@/lib/chains'
 import { jbCenterAppOrigin, jbCenterBaseUrl } from '@/lib/jbcenter-config'
 import { sleep } from '@/lib/with-timeout'
@@ -78,9 +78,19 @@ const browserFetch: typeof fetch = (input, init) => window.fetch(input, init)
 
 const inBrowser = () => typeof window !== 'undefined'
 
+/** Center's slots: the tab's requests to Center, every chain's and every
+ * reader's together. Center counts each origin's requests, refused ones too,
+ * in a fixed minute: 600 a minute for this site's origins, and a 429 whose
+ * Retry-After says how long is left past that. Two in flight is what one log
+ * scan of the hook always kept (`hook-logs.ts`), so reads that run side by
+ * side ask no more of Center at once than one scan did, at most 343 requests a
+ * minute at the quickest round trip staging measured (0.35 s). After a 429
+ * with a Retry-After, none starts until it has passed, a minute at most. */
+const centerLimiter = createJBCenterLimiter({ slots: 2 })
+
 /** Center's RPC for `chainId`. In the browser, every request to Center, from
  * every chain's reader of the tab (the page's, wagmi's, the fee check's and the
- * Center wallet's), waits for one of Center's slots (`center-limit.ts`), so the
+ * Center wallet's), waits for one of Center's slots (`centerLimiter`), so the
  * reads of a page can run side by side within its one rate limit. Each try
  * takes its own slot, so one waiting out a node behind the head holds none, and
  * a request whose read is dropped stops and lets its slot go. */
@@ -94,7 +104,7 @@ export function jbCenterRpcTransport(
       process.env.NEXT_PUBLIC_BROWSER_FIXTURE_ORIGIN ??
       'http://127.0.0.1:4399'
     const fixture = network ? http(`${origin}/rpc/${network}`) : http()
-    return inBrowser() ? throughCenterSlots(fixture) : fixture
+    return inBrowser() ? centerLimiter.transport(fixture) : fixture
   }
   const browser = inBrowser()
   const center = createJBCenterClient({
@@ -106,7 +116,11 @@ export function jbCenterRpcTransport(
   // it, so a read that is dropped stops its request and lets go of its slot.
   const ask: CenterProvider['request'] = (request, options) =>
     center.rpc(chainId, request as JBCenterRpcRequest, { signal: options?.signal })
-  return custom(retryWhileBehindHead({ request: browser ? inCenterSlots(ask) : ask }), {
+  // Each try waits for a slot, and leaves the line unsent when its signal aborts.
+  const send: CenterProvider['request'] = browser
+    ? (request, options) => centerLimiter.run(() => ask(request, options), { signal: options?.signal })
+    : ask
+  return custom(retryWhileBehindHead({ request: send }), {
     retryCount: 1,
   })
 }
