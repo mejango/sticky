@@ -159,13 +159,9 @@ redemption. Direct Ethereum cases exercise the real authenticated distributor
 split hook.
 
 Manual-custodian cases exercise the shipped bridge path. Separate collector cases
-deploy the parent and fee child on local forks, redirect source splits through
-authorized setup, then use an unrelated caller to distribute and submit rewards.
-They check principal/fee receipt separation, the requested REV fraction and
-remainder, and the actual source leaf before reusing the destination proof.
-These local deployments do not establish live collector configuration or a running
-keeper. Unsent manual leaves are also tested for their
+must prove permissionless source initiation after authorized configuration;
+source custody does not become permissionless merely because destination
+settlement already is. Unsent manual leaves are also tested for their
 source-chain emergency-beneficiary limitation. See the
 [qualification record](../../tasks/sticky-jbx-qualification.md) for completed
-results and exact proposed allocation, and [the deployment recipe](../../DEPLOYMENT.md#source-collectors)
-for remaining live actions.
+results, exact proposed allocation and remaining live actions.
