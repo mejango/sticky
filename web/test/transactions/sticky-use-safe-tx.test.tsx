@@ -1,3 +1,4 @@
+import { QueryClient } from '@tanstack/react-query'
 // @vitest-environment jsdom
 
 /**
@@ -11,10 +12,17 @@ import { createRoot, type Root } from 'react-dom/client'
 import { parseAbi, type Address } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+const displayQueries = new QueryClient()
+vi.mock('@tanstack/react-query', async importOriginal => ({
+  ...(await importOriginal<typeof import('@tanstack/react-query')>()),
+  useQueryClient: () => displayQueries,
+}))
+
 const mocks = vi.hoisted(() => ({
   wallet: { isConnected: true, address: undefined as Address | undefined, isCenterWallet: false },
   publicClient: { simulateContract: vi.fn(), estimateContractGas: vi.fn() },
   getAccount: vi.fn(),
+  chainId: 1,
   requestReview: vi.fn(),
   switchChain: vi.fn(),
   writeContract: vi.fn(),
@@ -69,11 +77,13 @@ let root: Root
 let tx: { current: SafeTx | null }
 
 beforeEach(async () => {
+  displayQueries.clear()
   mocks.wallet = { isConnected: true, address: ALICE, isCenterWallet: false }
   // The wallet starts on Ethereum; the request is for Base Sepolia.
-  mocks.getAccount.mockImplementation(() => ({ address: ALICE, chainId: 1 }))
+  mocks.chainId = 1
+  mocks.getAccount.mockImplementation(() => ({ address: ALICE, chainId: mocks.chainId }))
   mocks.requestReview.mockResolvedValue(true)
-  mocks.switchChain.mockResolvedValue(undefined)
+  mocks.switchChain.mockImplementation(async ({ chainId }: { chainId: number }) => { mocks.chainId = chainId })
   mocks.publicClient.simulateContract.mockResolvedValue({ request: { address: HOOK, functionName: 'setTrustedSenderFor' } })
   mocks.publicClient.estimateContractGas.mockResolvedValue(50_000n)
   mocks.writeContract.mockResolvedValue(HASH)

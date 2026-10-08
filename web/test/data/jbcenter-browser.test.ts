@@ -3,9 +3,8 @@ import { createPublicClient, erc20Abi, numberToHex } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // The browser's Center reader, with only `fetch` faked: every chain's requests and every reader's of the tab share
-// Center's two slots, a page's requests go with its signal, and a 429's Retry-After holds every one of them, viem's own
-// retry included. The slots are the SDK's limiter, whose own tests cover how a limiter lines up, pauses and lets go of
-// what waits.
+// the SDK's paced request starts, a page's requests go with its signal, and a 429's Retry-After holds new starts,
+// viem's own retry included. Slow responses must never hold later chains behind a whole-request concurrency limit.
 
 const ticks = async (count = 5) => {
   for (let at = 0; at < count; at += 1) await Promise.resolve()
@@ -28,9 +27,10 @@ afterEach(() => {
 describe('the browser\'s Center reader', () => {
   beforeEach(() => {
     vi.resetModules()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
   })
 
-  it('sends every chain\'s requests through the slots: two in flight at once, the next as one answers', async () => {
+  it('paces every chain\'s request starts independently of unresolved responses', async () => {
     const answers: (() => void)[] = []
     const sent: string[] = []
     vi.stubGlobal(
@@ -46,23 +46,22 @@ describe('the browser\'s Center reader', () => {
     // Three chains' heads, and a log scan's request with its signal.
     const reads = [8453, 10, 1].map(chainId => jbCenterPublicClient(chainId).getBlockNumber({ cacheTime: 0 }))
     const scan = jbCenterPublicClient(8453).request({ method: 'eth_chainId' }, { signal: new AbortController().signal })
-    await vi.waitFor(() => expect(sent).toHaveLength(2))
-    await ticks(20)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(sent).toEqual(['8453 eth_blockNumber'])
+    await vi.advanceTimersByTimeAsync(124)
+    expect(sent).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(1)
     expect(sent).toEqual(['8453 eth_blockNumber', '10 eth_blockNumber'])
-
-    answers.shift()!()
-    await vi.waitFor(() => expect(sent).toHaveLength(3))
-    expect(sent[2]).toBe('1 eth_blockNumber')
-    while (sent.length < 4 || answers.length) {
-      answers.shift()?.()
-      await ticks()
-    }
+    await vi.advanceTimersByTimeAsync(250)
+    expect(sent).toEqual(['8453 eth_blockNumber', '10 eth_blockNumber', '1 eth_blockNumber', '8453 eth_chainId'])
+    expect(answers).toHaveLength(4)
+    while (answers.length) answers.shift()!()
     await expect(Promise.all(reads)).resolves.toEqual([100n, 100n, 100n])
     await expect(scan).resolves.toBe('0x64')
     expect(sent[3]).toBe('8453 eth_chainId')
   })
 
-  it('shares the slots with every other reader of the tab, as wagmi\'s and the Center wallet\'s are built', async () => {
+  it('shares pacing with every reader of the tab, including wagmi and the Center wallet', async () => {
     const answers: (() => void)[] = []
     const sent: string[] = []
     vi.stubGlobal(
@@ -83,17 +82,15 @@ describe('the browser\'s Center reader', () => {
       jbCenterPublicClient(8453).getBlockNumber({ cacheTime: 0 }),
       wallet.request({ method: 'eth_blockNumber' }),
     ]
-    await vi.waitFor(() => expect(sent).toHaveLength(2))
-    await ticks(20)
-    expect(sent).toEqual(['10 eth_blockNumber', '8453 eth_blockNumber'])
-    while (sent.length < 3 || answers.length) {
-      answers.shift()?.()
-      await ticks()
-    }
+    await vi.advanceTimersByTimeAsync(0)
+    expect(sent).toEqual(['10 eth_blockNumber'])
+    await vi.advanceTimersByTimeAsync(250)
+    expect(sent).toEqual(['10 eth_blockNumber', '8453 eth_blockNumber', '8453 eth_blockNumber'])
+    while (answers.length) answers.shift()!()
     await expect(Promise.all(reads)).resolves.toEqual([100n, 100n, '0x64'])
   })
 
-  it('frees the slots of a page\'s requests the moment the page is left, so the next request goes at once', async () => {
+  it('aborts a page\'s in-flight request and queued request without delaying another reader', async () => {
     const sent: string[] = []
     const stopped: string[] = []
     vi.stubGlobal(
@@ -119,14 +116,14 @@ describe('the browser\'s Center reader', () => {
       jbCenterPublicClient(chainId).request(logs, { signal: page.signal }).catch((error: unknown) => error),
     )
     const head = jbCenterPublicClient(1).getBlockNumber({ cacheTime: 0 })
-    await vi.waitFor(() => expect(sent).toHaveLength(2))
-    await ticks(20)
-    expect(sent).toEqual(['8453 eth_getLogs', '10 eth_getLogs'])
+    await vi.advanceTimersByTimeAsync(100)
+    expect(sent).toEqual(['8453 eth_getLogs'])
 
     page.abort(new Error('left the page'))
+    await vi.advanceTimersByTimeAsync(25)
     await expect(head).resolves.toBe(100n)
-    expect(sent).toEqual(['8453 eth_getLogs', '10 eth_getLogs', '1 eth_blockNumber'])
-    expect(stopped).toEqual(['8453 eth_getLogs', '10 eth_getLogs'])
+    expect(sent).toEqual(['8453 eth_getLogs', '1 eth_blockNumber'])
+    expect(stopped).toEqual(['8453 eth_getLogs'])
     await Promise.all(scans)
   })
 
@@ -143,11 +140,11 @@ describe('the browser\'s Center reader', () => {
       }),
     )
     const [{ jbCenterPublicClient }, { freshHead }] = await Promise.all([import('@/lib/jbcenter-rpc'), import('@/lib/hook-logs')])
-    // Another page's reads hold both slots.
+    // Another page's first read starts; the next waits for its paced start.
     const others = [10, 1].map(chainId => jbCenterPublicClient(chainId).getBlockNumber({ cacheTime: 0 }))
-    await vi.waitFor(() => expect(sent).toHaveLength(2))
+    await vi.advanceTimersByTimeAsync(0)
 
-    // The page's head, its pinned block and a Multicall3 read wait for a slot.
+    // The page's head, its pinned block and a Multicall3 read wait for a paced start.
     const page = new AbortController()
     const reader = jbCenterPublicClient(8453, page.signal)
     const token = `0x${'a'.repeat(40)}` as const
@@ -158,6 +155,7 @@ describe('the browser\'s Center reader', () => {
     ].map(read => read.catch((error: unknown) => error))
     await ticks(20)
     page.abort(new Error('left the page'))
+    await vi.advanceTimersByTimeAsync(125)
     while (answers.length) answers.shift()!()
 
     await expect(Promise.all(others)).resolves.toEqual([100n, 100n])
@@ -179,13 +177,16 @@ describe('the browser\'s Center reader', () => {
     const { jbCenterPublicClient } = await import('@/lib/jbcenter-rpc')
     const reader = jbCenterPublicClient(8453, new AbortController().signal)
 
-    await expect(Promise.all([reader.getBlockNumber(), reader.getBlockNumber()])).resolves.toEqual([101n, 101n])
-    await expect(reader.getBlockNumber()).resolves.toBe(102n)
+    const shared = Promise.all([reader.getBlockNumber(), reader.getBlockNumber()])
+    await vi.advanceTimersByTimeAsync(0)
+    await expect(shared).resolves.toEqual([101n, 101n])
+    const next = reader.getBlockNumber()
+    await vi.advanceTimersByTimeAsync(125)
+    await expect(next).resolves.toBe(102n)
     expect(sent).toEqual(['eth_blockNumber', 'eth_blockNumber'])
   })
 
-  it('lets go of a slot while a read waits out a node behind the head, and takes one again to ask once more', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+  it('paces retries of a lagging block without waiting for other readers\' responses', async () => {
     const answers: (() => void)[] = []
     const sent: string[] = []
     vi.stubGlobal(
@@ -208,24 +209,23 @@ describe('the browser\'s Center reader', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(sent).toEqual(['8453 eth_call'])
 
-    // While it waits to ask again, both slots are the other readers'.
+    // While it waits to ask again, other readers start.
     const heads = [10, 1].map(chainId => jbCenterPublicClient(chainId).getBlockNumber({ cacheTime: 0 }))
-    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(250)
     expect(sent).toEqual(['8453 eth_call', '10 eth_blockNumber', '1 eth_blockNumber'])
 
-    // Its next try waits for a slot like any other request.
-    await vi.advanceTimersByTimeAsync(1_000)
+    // Its retry gets its own paced start, while both other reads remain unresolved.
     expect(sent).toHaveLength(3)
-    answers.shift()!()
-    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(125)
     expect(sent[3]).toBe('8453 eth_call')
     while (answers.length) answers.shift()!()
     await expect(Promise.all([pinned, ...heads])).resolves.toEqual(['0x64', 100n, 100n])
   })
 
-  it('lets two page reads Center does not answer hold the tab\'s reads for 15 s at most, the try every reader waits', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+  it('starts review reads while page scans are unanswered and retains the 15-second request timeout', async () => {
     const sent: string[] = []
+    const timedOut: number[] = []
+    const start = Date.now()
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: string, init: RequestInit) => {
@@ -233,7 +233,10 @@ describe('the browser\'s Center reader', () => {
         sent.push(`${input.slice(input.lastIndexOf('/') + 1)} ${method}`)
         if (method !== 'eth_getLogs') return answered(id, numberToHex(100n))
         // Center never answers the page's scans.
-        return new Promise<Response>((_, reject) => init.signal!.addEventListener('abort', () => reject(init.signal!.reason)))
+        return new Promise<Response>((_, reject) => init.signal!.addEventListener('abort', () => {
+          timedOut.push(Date.now() - start)
+          reject(init.signal!.reason)
+        }))
       }),
     )
     const { jbCenterPublicClient, jbCenterRpcTransport } = await import('@/lib/jbcenter-rpc')
@@ -242,18 +245,17 @@ describe('the browser\'s Center reader', () => {
     const scans = [8453, 10].map(chainId => jbCenterPublicClient(chainId, page.signal).request(logs).catch((error: unknown) => error))
     // A write's review reads through the Center wallet's transport.
     const review = jbCenterRpcTransport(8453)({ chain: base }).request({ method: 'eth_blockNumber' })
-    await vi.advanceTimersByTimeAsync(14_999)
-    expect(sent).toEqual(['8453 eth_getLogs', '10 eth_getLogs'])
-
-    await vi.advanceTimersByTimeAsync(1)
+    await vi.advanceTimersByTimeAsync(250)
     expect(sent[2]).toBe('8453 eth_blockNumber')
     await expect(review).resolves.toBe('0x64')
+    expect(timedOut).toEqual([])
+    await vi.advanceTimersByTimeAsync(14_750)
+    expect(timedOut).toContain(15_000)
     page.abort(new Error('left the page'))
     await Promise.all(scans)
   })
 
   it('sends nothing at all while a Retry-After runs, its own retry of the refused request included', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
     const sent: { at: number; what: string }[] = []
     const start = Date.now()
     vi.stubGlobal(
@@ -273,14 +275,13 @@ describe('the browser\'s Center reader', () => {
     expect(sent.map(({ what }) => what)).toEqual(['8453 eth_blockNumber'])
 
     // When the minute is over, the refused request is asked again and the other goes, and both are answered.
-    await vi.advanceTimersByTimeAsync(1)
+    await vi.advanceTimersByTimeAsync(126)
     await expect(Promise.all([refused, other])).resolves.toEqual([100n, 100n])
     expect(sent.slice(1).map(({ what }) => what).sort()).toEqual(['10 eth_blockNumber', '8453 eth_blockNumber'])
     expect(sent.slice(1).every(({ at }) => at >= 60_000)).toBe(true)
   })
 
-  it('sends a deterministic browser build\'s fixture reads through the same slots, and holds them for a 429\'s Retry-After header', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+  it('paces fixture reads too, including their retries after a 429', async () => {
     vi.stubEnv('NEXT_PUBLIC_DETERMINISTIC_BROWSER', 'true')
     vi.stubEnv('NEXT_PUBLIC_BROWSER_FIXTURE_ORIGIN', 'http://127.0.0.1:4010')
     const start = Date.now()
@@ -303,30 +304,30 @@ describe('the browser\'s Center reader', () => {
       }),
     )
     const { jbCenterPublicClient } = await import('@/lib/jbcenter-rpc')
-    // Four chains' heads: two go to the fixture at once, and two wait for a slot.
+    // Four chains' heads start 125 ms apart even while their responses remain pending.
     const heads = [84_532, 11_155_420, 11_155_111, 421_614].map(chainId =>
       jbCenterPublicClient(chainId).getBlockNumber({ cacheTime: 0 }),
     )
-    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(125)
     expect(sent.map(({ what }) => what)).toEqual(['base-sepolia eth_blockNumber', 'optimism-sepolia eth_blockNumber'])
 
-    // The fixture refuses the first for 2 s, through viem's HTTP error and its headers, and answers the second: both
-    // slots free, and nothing starts until the Retry-After has passed.
+    // The fixture refuses the first for 2 s and answers the second; no new start precedes Retry-After.
     pending.shift()!(() => refusal('2'))
     await vi.advanceTimersByTimeAsync(0)
     pending.shift()!(id => answered(id, numberToHex(100n)))
     await vi.advanceTimersByTimeAsync(1_999)
     expect(sent).toHaveLength(2)
 
-    // Then the rest go, two at a time, viem's retry of the refused head among them.
+    // The remaining reads and viem's retry start in turn, independently of their response completion.
     await vi.advanceTimersByTimeAsync(1)
     for (let turn = 0; turn < 20 && (sent.length < 5 || pending.length); turn += 1) {
       pending.shift()?.(id => answered(id, numberToHex(100n)))
-      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(125)
     }
     await expect(Promise.all(heads)).resolves.toEqual([100n, 100n, 100n, 100n])
-    expect(most).toBe(2)
-    expect(sent.slice(2).every(({ at }) => at >= 2_000)).toBe(true)
+    expect(most).toBeGreaterThanOrEqual(2)
+    expect(sent.slice(2).every(({ at }) => at >= 2_125)).toBe(true)
+    expect(sent.slice(1).every(({ at }, index) => at - sent[index].at >= 125)).toBe(true)
     expect(sent.slice(2).map(({ what }) => what).sort()).toEqual([
       'arbitrum-sepolia eth_blockNumber',
       'base-sepolia eth_blockNumber',
@@ -334,8 +335,7 @@ describe('the browser\'s Center reader', () => {
     ])
   })
 
-  it('keeps two in flight at most under load: four chains\' scans and heads at once, a 429 and a page left', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+  it('paces starts under load across four chains, a 429 and a page left', async () => {
     // Center answers each request after 100 to 500 ms, the same for every run, and refuses the 30th for 2 s.
     let seed = 7
     const latency = () => 100 + ((seed = (seed * 48_271) % 2_147_483_647) % 401)
@@ -350,11 +350,12 @@ describe('the browser\'s Center reader', () => {
         const { id, method, params } = JSON.parse(String(init.body)) as { id: number; method: string; params: [{ fromBlock: string }] }
         const chainId = Number(input.slice(input.lastIndexOf('/') + 1))
         sent.push({ at: Date.now() - origin, chainId, method, from: method === 'eth_getLogs' ? BigInt(params[0].fromBlock) : undefined })
+        const refuse = sent.length === 30
         open += 1
         most = Math.max(most, open)
         try {
           await new Promise(resolve => setTimeout(resolve, latency()))
-          if (sent.length === 30) {
+          if (refuse) {
             refusedAt = Date.now() - origin
             return refusal('2')
           }
@@ -385,7 +386,8 @@ describe('the browser\'s Center reader', () => {
 
     await expect(Promise.all([scans[0], scans[1], scans[3], ...heads])).resolves.toEqual([[], [], [], 100n, 100n, 100n, 100n])
     expect(await baseScan).toBe(reason)
-    expect(most).toBe(2)
+    expect(most).toBeGreaterThan(2)
+    expect(sent.slice(1).every(({ at }, index) => at - sent[index].at >= 125)).toBe(true)
     // Nothing starts while the refusal's Retry-After runs, and no request of the page that was left starts once it is.
     expect(refusedAt).toBeGreaterThan(0)
     expect(sent.filter(({ at }) => at > refusedAt && at < refusedAt + 2_000)).toEqual([])

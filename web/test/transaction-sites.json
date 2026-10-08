@@ -21,6 +21,21 @@
         }
       ]
     },
+    "src/components/project/flows/BridgeFlow.tsx": {
+      "hooks": 1,
+      "sends": 1,
+      "sendSites": [
+        {
+          "id": "bridge-step",
+          "actions": [
+            "Approve a bridge transfer",
+            "Queue cross-chain rewards",
+            "Send queued rewards across chains",
+            "Claim arriving rewards"
+          ]
+        }
+      ]
+    },
     "src/components/project/flows/ClaimFlow.tsx": {
       "hooks": 1,
       "sends": 1,
@@ -118,6 +133,14 @@
   },
   "authorityCalls": {},
   "reviewedDirectWrites": {
+    "src/lib/sticky-launch-adapter.ts": {
+      "calls": 2,
+      "actions": [
+        "Create a Sticky token",
+        "Pay for a multichain Sticky launch",
+        "Authorize Sticky listing"
+      ]
+    },
     "src/hooks/useSafeTx.ts": {
       "calls": 1,
       "actions": [
@@ -132,6 +155,15 @@
     }
   },
   "rawWalletCalls": {
+    "writeContract": {
+      "src/lib/sticky-launch-adapter.ts": 1
+    },
+    "sendTransaction": {
+      "src/lib/sticky-launch-adapter.ts": 1
+    },
+    "signMessage": {
+      "src/lib/sticky-launch-adapter.ts": 1
+    },
     "useWriteContract": {
       "src/hooks/useSafeTx.ts": 1
     },

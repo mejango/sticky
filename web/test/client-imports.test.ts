@@ -101,6 +101,32 @@ describe('the browser never loads name normalization', () => {
   })
 })
 
+describe('shared client rules have one SDK owner', () => {
+  const sources = readSources()
+  const namedImport = /\b(?:import|export)\s*\{([^{}]*)\}\s*from\s*['"]([^'"]+)['"]/g
+  const imports = [...sources.values()].flatMap(text => [...text.matchAll(namedImport)].flatMap(([, members, owner]) =>
+    members.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '').split(',').map(member =>
+      `${owner}:${member.trim().replace(/^type\s+/, '').split(/\s+as\s+/)[0]}`,
+    ),
+  ))
+
+  it.each([
+    ['jbcenter', 'createPacedJBCenterLimiter'],
+    ['review', 'submitReviewedContractWrite'],
+    ['review', 'transactionMessage'],
+    ['safe-service', 'readSafeAppExecution'],
+    ['safe-service', 'heldCall'],
+    ['safe-service', 'watchSafeProposal'],
+  ])('consumes %s/%s from its shared owner', (owner, symbol) => {
+    expect(imports).toContain(`@bananapus/nana-sdk-core/${owner}:${symbol}`)
+  })
+
+  it('has no local copies of pacing, stamped-call or Safe-proof rules', () => {
+    const duplicate = /\b(?:const|let|function)\s+(RPC_START_INTERVAL_MS|STAMPED_CALLS|readSafeAppExecution|safeTransactionRunsCalls|heldCall|stampedDeadline|transactionMessage)\b/
+    expect([...sources].filter(([, text]) => duplicate.test(text)).map(([file]) => file)).toEqual([])
+  })
+})
+
 describe('the scan itself', () => {
   const root = '/app/src'
   const files = (entries: Record<string, string>): Sources =>

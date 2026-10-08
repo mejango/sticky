@@ -246,9 +246,10 @@ async function readAll() {
 }
 
 /** The reads `refresh` invalidates, when everything was just read. */
-function refreshed(refresh: (client: QueryClient) => void): string[] {
+async function refreshed(refresh: (client: QueryClient) => void): Promise<string[]> {
   for (const query of client.getQueryCache().getAll()) client.setQueryData(query.queryKey, query.state.data)
   refresh(client)
+  await vi.advanceTimersByTimeAsync(0)
   return client
     .getQueryCache()
     .getAll()
@@ -290,6 +291,6 @@ describe("the refreshes against the hooks' own queries", () => {
     ],
   ])('reads again after %s what it changed, and nothing else', async (_send, refresh, expected) => {
     await readAll()
-    expect(refreshed(refresh)).toEqual([...expected].sort())
+    expect(await refreshed(refresh)).toEqual([...expected].sort())
   })
 })

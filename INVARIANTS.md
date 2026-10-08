@@ -54,4 +54,4 @@ These guarantees apply to projects launched by `StickyDeployer`, using the confi
 | Callback ordering | `test/StickyPricingCallbacks.t.sol` |
 | Core and reward integration | `test/Sticky_Integration.t.sol`, `test/StickyRewards_Regression.t.sol`, `test/StickyAutoStick_Unit.t.sol` |
 | Deployment identity and restart | `test/deployment/` |
-| Quotes, configuration, and transaction recovery | `webclient/test/` |
+| Quotes, configuration, and transaction recovery | `web/test/lib/sticky-quotes.test.ts`, `web/test/deployment-env.test.ts`, `web/test/transactions/`, `web/test/lib/sticky-launch-session.test.ts`, `web/test/lib/sticky-bridge-journal.test.ts` |

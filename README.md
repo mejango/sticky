@@ -16,7 +16,7 @@ Sticky shares are not a promise to redeem one underlying token each. Their issua
 - [AUDIT_INSTRUCTIONS.md](./AUDIT_INSTRUCTIONS.md) — review scope, attack sequences, and verification commands.
 - [STYLE_GUIDE.md](./STYLE_GUIDE.md) — the shared V6 Solidity and documentation conventions.
 - [DEPLOYMENT.md](./DEPLOYMENT.md) — Sphinx deployment and verification on testnets and mainnets.
-- [webclient/README.md](./webclient/README.md) — site configuration and transaction checks.
+- [web/README.md](./web/README.md) — Next client development, configuration, deployment and transaction checks.
 - [AUDIT_REMEDIATION.md](./AUDIT_REMEDIATION.md) — historical review findings and validation at those revisions.
 
 ## Issuance and backing
@@ -43,7 +43,7 @@ Use `JBMultiTerminal.cashOutTokensOf(...)` to redeem. Zero cash out tax gives a 
 
 Every positive share burn updates the hook from the token's authoritative balance-change path, including voluntary controller burns. Cash outs do not consume the same tranches twice. A voluntary burn returns no underlying tokens. In transferable mode, a positive transfer consumes the sender's newest tranches and creates a fresh tranche for the recipient; their existing holder streak continues if they already had a balance. Zero transfers and self-transfers do not change Sticky accounting. Soulbound mode rejects transfers between nonzero addresses. Transfers are not gated by granters or trusted senders: in transferable mode anyone holding shares can give some to any address, which starts or extends that address's position with the giver's own value. Projects that want positions to be opt-in should deploy soulbound.
 
-Stakes that join a position in the same week as its newest tranche merge into that tranche, which takes the latest timestamp; a stake in a later week starts a new tranche. Every active tranche therefore sits in a distinct week. Partial exits use indexed tranche balances and binary search, and every consumed tranche debits the epoch bucket it was credited to, so an exit's cost grows with the number of distinct weeks it consumes rather than with the number of deposits: incoming same-week dust cannot make an exit traverse every transfer, while a ten-year weekly position exits in about 3.3M gas. For reads, use `trancheCountOf(...)` and the bounded `tranchesOf(projectId, holder, start, count)` overload, capped at 256 entries. The original whole-array getter remains available but is unbounded. The webclient reads pages of 50 at a pinned block.
+Stakes that join a position in the same week as its newest tranche merge into that tranche, which takes the latest timestamp; a stake in a later week starts a new tranche. Every active tranche therefore sits in a distinct week. Partial exits use indexed tranche balances and binary search, and every consumed tranche debits the epoch bucket it was credited to, so an exit's cost grows with the number of distinct weeks it consumes rather than with the number of deposits: incoming same-week dust cannot make an exit traverse every transfer, while a ten-year weekly position exits in about 3.3M gas. For reads, use `trancheCountOf(...)` and the bounded `tranchesOf(projectId, holder, start, count)` overload, capped at 256 entries. The original whole-array getter remains available but is unbounded. The Next client reads pages of 50 at a pinned block.
 
 Balance and streak views include `stakedBalanceOf`, `streakStartOf`, `currentStreakOf`, and `longestStreakOf`. `Staked` and `Unstaked` describe share-accounting changes, including transfers and burns; an `Unstaked` event alone is not proof of an underlying-token payout.
 
@@ -98,7 +98,7 @@ forge build --sizes --skip '*/test/**' --skip '*/script/**' --skip SphinxUtils
 forge build --skip '*/test/**'
 ```
 
-The tests cover accounting invariants and adversarial dust, direct burns, share pricing and orphaned backing, rounding/decimal boundaries, reward compounding, and deployment restart/verification behavior. The repository also runs Slither and webclient checks in CI. Passing local checks is not evidence that contracts have been deployed or that a particular target chain's dependencies have been verified.
+The tests cover accounting invariants and adversarial dust, direct burns, share pricing and orphaned backing, rounding/decimal boundaries, reward compounding, and deployment restart/verification behavior. The repository also runs Slither and the [Next client checks](.github/workflows/web.yml) in CI. Passing local checks is not evidence that contracts have been deployed or that a particular target chain's dependencies have been verified.
 
 Run `STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork` for the
 [real-project fork suites](test/fork/README.md): Base `6` (Artizen), Ethereum `3`
@@ -107,7 +107,7 @@ They require archive RPC access and exercise real project tokens and payment
 contracts. The cross-chain suite models portal delivery at the live messenger
 boundary; its precise scope and pinned blocks are documented with the tests.
 
-See [the webclient guide](webclient/README.md) for local demo setup, configuration, and browser/server checks.
+The maintained web client is the Next app in `web/`. See [its guide](web/README.md) for local development, configuration, and browser/container checks. The retained `webclient/` source and its workflow support the existing deployment until the [production cutover](tasks/sticky-next-cutover.md) is confirmed.
 
 ## Deploy
 
@@ -130,4 +130,4 @@ and `deploy:post:testnets` / `deploy:post:mainnets` to verify them after Sphinx 
 explorer-verified per-contract artifacts.
 Grouped proposal commands rehearse every destination before collecting a proposal.
 Set `STICKY_ENV_FILE=../../deploy-all-v6/.env` to reuse the workspace credentials.
-Repeat rehearsals and verification for every intended network. `simulation.json` describes simulated state; only post-execution verification produces `verified.json`. Retain executed Sphinx receipts and publish the verified release artifacts before configuring a live client. The site should remain in demo mode until its addresses and target-chain transaction flows have been checked. Source changes produce new deployment predictions and do not upgrade existing immutable Sticky projects.
+Repeat rehearsals and verification for every intended network. `simulation.json` describes simulated state; only post-execution verification produces `verified.json`. Retain executed Sphinx receipts and publish the verified release artifacts before configuring a live client. Verify the client addresses and target-chain transaction flows before production cutover. Source changes produce new deployment predictions and do not upgrade existing immutable Sticky projects.

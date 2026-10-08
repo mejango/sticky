@@ -54,6 +54,18 @@ async function press(steps: readonly string[], hash: Hex | null) {
 }
 
 describe('useStepPresses', () => {
+  it('counts no Safe proposal as landed until the engine proves its execution', async () => {
+    await engine({})
+    const steps = ['approve', 'stick']
+    await press(steps, H1)
+    await engine({ phase: 'submitted', receipt: null })
+    expect(landed()).toBe(0)
+
+    await confirmed(10n)
+    expect(landed()).toBe(1)
+    expect((await press(steps, H2)).mock.calls).toEqual([['stick', 10n]])
+  })
+
   it('sends one step per press, the next once the one before it confirmed, at the block it confirmed in', async () => {
     await engine({})
     const steps = ['approve', 'stick']

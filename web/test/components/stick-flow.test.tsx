@@ -32,7 +32,7 @@ const STICK_HASH = `0x${'b2'.repeat(32)}` as Hex
 const MINTED = 9_870_000_000_000_000_000n
 const CPN = 10n ** 6n
 
-type Phase = 'idle' | 'review' | 'simulating' | 'signing' | 'pending' | 'success' | 'error'
+type Phase = 'idle' | 'review' | 'simulating' | 'signing' | 'pending' | 'submitted' | 'success' | 'error'
 type EngineState = {
   phase: Phase
   busy: boolean
@@ -41,7 +41,8 @@ type EngineState = {
   receipt: { blockNumber: bigint } | null
   isSafe: boolean
   send: ReturnType<typeof vi.fn>
-  reset: ReturnType<typeof vi.fn>
+  reset: ReturnType<typeof vi.fn<() => void>>
+  dismiss: ReturnType<typeof vi.fn>
 }
 
 const mocks = vi.hoisted(() => ({
@@ -114,6 +115,7 @@ const engine = (): EngineState => {
       state.receipt = null
       return STICK_HASH
     }),
+    dismiss: vi.fn(() => state.reset()),
     reset: vi.fn(() => {
       state.phase = 'idle'
       state.busy = false

@@ -1,6 +1,23 @@
 # Copied files
 
-Files in `web/` that come from Homerun (HR, `extensions/homerun`) or Juicebox Money (JBM, `webclients/juicebox-money`). Each row names the source path, the source repo's commit when it was copied, and the edits Sticky made. A fix to a copied wallet or transaction primitive lands in jbm, revnet-money and Homerun in the same change.
+Files in `web/` that originally came from Homerun (HR, `extensions/homerun`) or Juicebox Money (JBM, `webclients/juicebox-money`). The dated rows below retain port provenance; current shared transaction, transport and presentation rules belong in the SDK and are consumed by Juicebox Money, Revnet Money, Homerun and Sticky together.
+
+The 2026-10-08 reconciliation uses published `@bananapus/nana-sdk-core@2.25.0`, pinned exactly in `package.json` and the registry lockfile. Shared owners below describe the current integration; historical dependency versions in the dated port records remain provenance.
+
+## Current ownership
+
+| Capability | Shared owner | Sticky integration |
+|---|---|---|
+| Reviewed writes, immutable call snapshots, gas and receipts | SDK `/review` | `contract-write.ts`, `useSafeTx.ts`, review provider and dialogs |
+| Safe exact-call execution proof, queued-call identity, proposal observation and replacement | SDK `/safe-service` | `safe-connector.ts` binds wallet state; `useSafeTx.ts` holds the current browser session's visible proposals |
+| Center retry and paced request starts | SDK `/jbcenter` | `jbcenter-rpc.ts` supplies origin, transport and abortable page clients |
+| User-facing transaction messages | SDK `/review` | Error and progress components render the message without changing saved evidence |
+| Live framework wallet identity at send/sign | Sticky `wallet-core.assertReviewedWallet`, following the sibling adapter contract | The transaction hook and launch adapter capture account, connector instance and Safe mode before awaiting review; the final check also binds chain, view-as and external-wallet eligibility |
+| Mutable project alias proof | Sticky server resolver and route provider, following the sibling route contract | A short display lease avoids tab reloads; approval rechecks identity and cancels stale review scopes |
+| Sticky amounts, rewards, tranches, event attribution and invalidation | Sticky `sticky-*.ts` owners | Product flows keep their specific checks and only advance after proven effects |
+| Sticky launch and bridge recovery | SDK `/review`, `/review/relayr`, `/safe-service`, Center intent signing and chain finality primitives | Typed `sticky-launch-*`, `sticky-listing`, and `sticky-bridge*` modules own product preparation, durable exact-request evidence and verified progress; the Next create/reward components display those owners without importing the legacy renderer |
+
+Framework integration may follow the sibling component structure; protocol rules must not be copied back into it. Sticky feed rows currently lack a verified cross-chain launch identity, so their distinct project transactions remain distinct instead of being merged by token name or numeric project ID.
 
 | File | Source | Source commit | Sticky edits |
 |---|---|---|---|

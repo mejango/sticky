@@ -25,7 +25,7 @@ import { projectKey } from '@/lib/sticky-keys'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { readArrivals, readReceiver } from '@/lib/sticky-receivers'
 import { refreshAfterReceiver, refreshAfterSettle } from '@/lib/sticky-refresh'
-import { groupIdFromWeeks, groupLabel, groupNote, NATIVE_REWARD_TOKEN, rewardTokenMeta, type TokenMeta } from '@/lib/sticky-rewards'
+import { decodeGroupId, groupIdFromWeeks, groupLabel, groupNote, NATIVE_REWARD_TOKEN, rewardTokenMeta, type TokenMeta } from '@/lib/sticky-rewards'
 import { chainName } from '@/lib/urn'
 import { useViewAs } from '@/lib/viewAs'
 
@@ -150,11 +150,17 @@ export function ReceiverFlow({
   projectId,
   info,
   onSettled,
+  initialToken,
+  initialGroupId = 0n,
+  initiallyOpen = false,
 }: {
   chainId: number
   projectId: number
   info: StickyProjectInfo
   onSettled: (token: Address) => void
+  initialToken?: Address
+  initialGroupId?: bigint
+  initiallyOpen?: boolean
 }) {
   const { address, isConnected, isCenterWallet, openSignIn } = useWallet()
   const { viewAs } = useViewAs()
@@ -163,10 +169,10 @@ export function ReceiverFlow({
   const { landed } = presses
   const client = useQueryClient()
   const tokenId = useId()
-  const [opened, setOpened] = useState(false)
-  const [minWeeks, setMinWeeks] = useState('')
-  const [maxWeeks, setMaxWeeks] = useState('')
-  const [tokenText, setTokenText] = useState('')
+  const [opened, setOpened] = useState(initiallyOpen)
+  const [minWeeks, setMinWeeks] = useState(() => String(decodeGroupId(initialGroupId).minWeeks || ''))
+  const [maxWeeks, setMaxWeeks] = useState(() => String(decodeGroupId(initialGroupId).maxWeeks || ''))
+  const [tokenText, setTokenText] = useState(initialToken ?? '')
   const [plan, setPlan] = useState<Plan | null>(null)
   const [preparing, setPreparing] = useState(false)
   const [failure, setFailure] = useState<Failure | null>(null)
@@ -240,7 +246,7 @@ export function ReceiverFlow({
     reading.current?.abort()
     setPlan(null)
     setPreparing(false)
-    if (tx.phase !== 'success') tx.reset()
+    if (tx.phase !== 'success') tx.dismiss()
   }
 
   useEffect(() => {
@@ -371,6 +377,7 @@ export function ReceiverFlow({
           onConfirm={() => void confirm()}
           busy={sending}
           complete={complete}
+          settled={tx.phase === 'submitted'}
           status={
             !plan ? (
               'Reading the reward address…'

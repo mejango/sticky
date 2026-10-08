@@ -126,7 +126,7 @@ sources on Etherscan and writes `deployments/<network>/StickyDeployer.json`,
 `StickyRewardReceiverFactory.json`
 and `StickyAutoStick.json` in the `sphinx-sol-ct-artifact-1` layout the other V6
 repositories keep: address, ABI, constructor arguments, creation receipt, bytecode,
-metadata and source revision. It finally regenerates `webclient/deployments.json`, the addresses and scan start blocks sticky.center builds from, so a redeploy reaches the site when its records merge. The constructor arguments come from the bindings the
+metadata and source revision. It finally runs `web/scripts/sync-deployments.mjs` to regenerate `web/src/lib/sticky-deployments.json`, the addresses and scan start blocks the Next client builds from, so a redeploy reaches the site when its records merge. The constructor arguments come from the bindings the
 verified manifest recorded, and for every factory-deployed contract the explorer's
 creation bytecode must equal the compiled creation code followed by those
 arguments; the hook is created by the deployer's constructor, so its receipt is the
@@ -191,4 +191,4 @@ single-chain Forge calls do not provide those RPC fields automatically; retain
 their fork context separately. Deployment start blocks for client event discovery
 must come from execution receipts, not verification manifests. `revision: unrecorded` means the operator did not set `STICKY_REVISION`; fill that gap by rerunning with the actual reviewed commit before publishing artifacts.
 
-Retain the executed Sphinx proposal/transaction receipts alongside the verified manifest and the per-contract artifacts `deploy:post:*` writes. Publish only verified artifacts for chains that have executed, and propagate them through the existing V6 artifact distribution process before configuring the website. Confirm the deployer, hook, token registry, distributor, reward receiver factory, and adapter against the manifest; keep the website in demo mode until those checks and target-chain transaction smoke tests succeed. No live deployment or production artifact is implied by files generated during local tests.
+Retain the executed Sphinx proposal/transaction receipts alongside the verified manifest and the per-contract artifacts `deploy:post:*` writes. Publish only verified artifacts for chains that have executed, and propagate them through the existing V6 artifact distribution process before configuring the website. Confirm the deployer, hook, token registry, distributor, reward receiver factory, and adapter against the manifest; complete those checks and target-chain transaction smoke tests before production cutover. Follow [the Next client deployment guide](web/README.md#deployment) for website configuration. No live deployment or production artifact is implied by files generated during local tests.

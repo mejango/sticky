@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactElement, type ReactNode } from 'react'
 import { renderToString } from 'react-dom/server'
 import TestRenderer, { act, type ReactTestInstance } from 'react-test-renderer'
@@ -25,7 +26,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/hooks/useWallet', () => ({
   useWallet: () => ({ ...mocks.wallet, disconnect: mocks.disconnect, openSignIn: mocks.openSignIn }),
 }))
-vi.mock('next/navigation', () => ({
+vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn() }),
   usePathname: () => mocks.pathname,
   useSearchParams: () => new URLSearchParams(mocks.search),
 }))
@@ -46,8 +47,10 @@ import { WalletButton } from '@/components/WalletButton'
 import { ProjectRouteProvider, ProjectRouteSync } from '@/providers/ProjectRouteContext'
 
 let renderer: TestRenderer.ReactTestRenderer | undefined
+let queryClient: QueryClient
 
 beforeEach(() => {
+  queryClient = new QueryClient()
   mocks.wallet = { address: undefined, isConnected: false, isCenterWallet: false }
   mocks.pathname = '/'
   mocks.search = ''
@@ -72,8 +75,9 @@ const connect = (address = ALICE) => {
 
 async function render(tree: ReactElement = createElement(WalletButton)) {
   await act(async () => {
-    if (renderer) renderer.update(tree)
-    else renderer = TestRenderer.create(tree)
+    const wrapped = createElement(QueryClientProvider, { client: queryClient }, tree)
+    if (renderer) renderer.update(wrapped)
+    else renderer = TestRenderer.create(wrapped)
   })
 }
 

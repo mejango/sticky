@@ -9,7 +9,7 @@ Find a concrete sequence that loses backing, corrupts share or tranche accountin
 - Solidity in `src/`, including interfaces, structs, and `StickyPricing`.
 - Deployment and verification under `script/`, environment handling, and Sphinx network groups.
 - The core pay/mint/burn/cash-out flows and the inherited `JBDistributor` snapshot, vesting, and recycling logic actually used by `StickyDistributor`.
-- `webclient/` configuration, project identity, quote units, transaction preparation, receipt recovery, rewards, and cross-chain flows.
+- `web/` configuration, project identity, quote units, transaction preparation, receipt recovery, rewards, and cross-chain flows, including the shared SDK rules it consumes.
 
 Read [ARCHITECTURE.md](./ARCHITECTURE.md), [INVARIANTS.md](./INVARIANTS.md), [RISKS.md](./RISKS.md), and [USER_JOURNEYS.md](./USER_JOURNEYS.md), then trace source in this order:
 
@@ -55,8 +55,14 @@ STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork
 forge build --deny notes --sizes --skip '*/test/**' --skip '*/script/**' --skip SphinxUtils
 forge build --skip '*/test/**'
 slither . --config-file slither-ci.config.json --fail-medium
-node --test webclient/test/*.test.cjs
-python -m unittest discover -s webclient/test -p 'test_*.py' -v
 ```
+
+Use the separate Node/npm toolchain in [web/README.md](web/README.md), then run the client's complete check from `web/`:
+
+```sh
+npm run check
+```
+
+The client gate includes lint, types, deployment/schema/transaction inventories, coverage, a production build and browser tests. The [web workflow](.github/workflows/web.yml) additionally checks the production container. Historical reports retain their original legacy-client evidence; the [cutover record](tasks/sticky-next-cutover.md) tracks when the retained `webclient/` runtime can be retired.
 
 Use [DEPLOYMENT.md](./DEPLOYMENT.md) for fork rehearsals, Sphinx proposals, and post-execution verification. Run target-chain wallet checks after execution; a local test or read-only rehearsal cannot establish those outcomes.

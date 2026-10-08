@@ -1234,9 +1234,9 @@ describe('what the browser keeps', () => {
 describe('the project page', () => {
   it('opens on the Overview tab, with this project\'s chart, details and chains', async () => {
     const page = (await ProjectPage({ params: Promise.resolve({ urn: 'base:23' }), searchParams: Promise.resolve({}) })) as ReactElement<{
-      children: ReactElement<{ tabs?: TabDef[] }>[]
+      children: ReactElement<{ children: ReactElement<{ tabs?: TabDef[] }>[] }>
     }>
-    const tabs = page.props.children.find(child => child.type === ProjectTabs)!.props.tabs!
+    const tabs = page.props.children.props.children.find(child => child.type === ProjectTabs)!.props.tabs!
     expect(tabs.map(tab => tab.label)).toEqual(['Overview', 'Tokens', 'Airdrops'])
     const overview = tabs[0].content as ReactElement
     expect(overview.type).toBe(OverviewTab)

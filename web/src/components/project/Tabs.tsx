@@ -6,6 +6,7 @@ import {
   ProjectOverflowIcon,
   ProjectTabIcon,
 } from '@/components/project/ProjectTabIcon'
+import { requestProjectTabNavigation } from '@/providers/ProjectRouteContext'
 import { projectRouteSegmentFromPathname } from '@/lib/project-route'
 
 export type TabDef = {
@@ -44,25 +45,15 @@ export function replaceTabHash(hash: string): void {
   history.replaceState(history.state, '', hash)
 }
 
-/**
- * Handle aliases are mutable ENS records, so a tab change must re-enter the
- * server route and revalidate the alias before rendering more project data.
- * Immutable numeric project routes keep the native hash-only fast path.
- */
+/** Keep local tab state and shareable hashes under the verified alias lease. */
 export function replaceProjectTabHash(hash: string): void {
-  replaceTabHash(hash)
-
-  reloadMutableProjectAlias()
-}
-
-/** Re-enter the server route after any hash mutation on a mutable alias URL. */
-function reloadMutableProjectAlias(): void {
-  const routeSegment = projectRouteSegmentFromPathname(
-    window.location.pathname,
-  )
-  if (routeSegment?.startsWith('@')) {
-    window.location.reload()
+  const commit = () => {
+    replaceTabHash(hash)
+    window.dispatchEvent(new Event('hashchange'))
   }
+  const segment = projectRouteSegmentFromPathname(window.location.pathname)
+  if (segment?.startsWith('@')) requestProjectTabNavigation(commit)
+  else commit()
 }
 
 /**
@@ -199,14 +190,9 @@ export function ProjectTabs({
     }
     apply()
     window.addEventListener('hashchange', apply)
-    // Pay/shop and authority-edit shortcuts also mutate `location.hash`
-    // directly. Catch every such project hash transition at the shell so an
-    // alias cannot keep rendering after its ENS mapping has changed.
-    window.addEventListener('hashchange', reloadMutableProjectAlias)
     singleColumnQuery.addEventListener('change', apply)
     return () => {
       window.removeEventListener('hashchange', apply)
-      window.removeEventListener('hashchange', reloadMutableProjectAlias)
       singleColumnQuery.removeEventListener('change', apply)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -220,7 +206,6 @@ export function ProjectTabs({
       subtabByParent.current[tabSlug(currentParent)] = tabSlug(currentChild)
     }
 
-    setActiveSlug(nextSlug)
     // Keep the hash shareable without adding history entries per click.
     const child = subtabByParent.current[nextSlug]
     replaceProjectTabHash(`#${nextSlug}${child ? `/${child}` : ''}`)
@@ -383,7 +368,7 @@ export function SubTabs({
   }, [hashParent])
 
   const activate = (i: number) => {
-    setActive(i)
+    if (!hashParent) setActive(i)
     if (hashParent) {
       replaceProjectTabHash(
         `#${tabSlug(hashParent)}/${tabSlug(tabs[i].label)}`,

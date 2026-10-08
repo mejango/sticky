@@ -13,6 +13,7 @@ import type { FeedRow } from '@/lib/sticky-feed'
 import { stickyLabel } from '@/lib/sticky-format'
 import { chainName } from '@/lib/urn'
 import { useViewAs } from '@/lib/viewAs'
+import { openStickyLaunch } from '@/lib/sticky-launch-events'
 
 type List = 'latest' | 'stickiest' | 'airdrops'
 type Ranking = Exclude<List, 'latest'>
@@ -166,6 +167,7 @@ export function HomeLists({ network }: { network: BendystrawNetwork }) {
   const { state, note, retry } = viewOf(home, network === 'testnet')
   const dashboard = state === 'loading' || state === 'ready'
   const loading = state === 'loading'
+  const create = () => openStickyLaunch(network === 'testnet' ? 'testnet' : 'production')
 
   const labels = new Map(
     home.cards.flatMap(group => group.cards.map(({ info }) => [`${info.chainId}:${info.projectId}`, stickyLabel(info)])),
@@ -176,6 +178,7 @@ export function HomeLists({ network }: { network: BendystrawNetwork }) {
 
   return (
     <div data-state={state} aria-busy={loading} className="w-full">
+      {dashboard ? <div className="mb-4 flex justify-end"><button type="button" className="btn-primary px-4 py-2" onClick={create}>Make your token sticky</button></div> : null}
       <div
         className={
           dashboard
@@ -260,7 +263,7 @@ export function HomeLists({ network }: { network: BendystrawNetwork }) {
               : 'mx-auto max-w-[560px]'
           }
         >
-          <HomeHero note={note} error={state === 'error'} onRetry={retry ? home.retry : undefined} />
+          <HomeHero note={note} error={state === 'error'} onRetry={retry ? home.retry : undefined} onCreate={create} />
         </div>
       </div>
       {state === 'empty' ? (

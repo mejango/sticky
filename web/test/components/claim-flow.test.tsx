@@ -45,7 +45,7 @@ const pot = (extra: Partial<RewardCard> = {}): RewardCard => ({
   ...extra,
 })
 
-type Phase = 'idle' | 'review' | 'simulating' | 'signing' | 'pending' | 'success' | 'error'
+type Phase = 'idle' | 'review' | 'simulating' | 'signing' | 'pending' | 'submitted' | 'success' | 'error'
 type EngineState = {
   phase: Phase
   busy: boolean
@@ -56,7 +56,8 @@ type EngineState = {
   safeProposalHash: null
   safeNonceGuidance: null
   send: ReturnType<typeof vi.fn>
-  reset: ReturnType<typeof vi.fn>
+  reset: ReturnType<typeof vi.fn<() => void>>
+  dismiss: ReturnType<typeof vi.fn>
 }
 
 const mocks = vi.hoisted(() => ({
@@ -110,6 +111,7 @@ const engine = (): EngineState => {
       state.receipt = null
       return HASH
     }),
+    dismiss: vi.fn(() => state.reset()),
     reset: vi.fn(() => {
       state.phase = 'idle'
       state.busy = false

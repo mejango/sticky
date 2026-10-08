@@ -1,6 +1,8 @@
 'use client'
 
 import { useQueryClient } from '@tanstack/react-query'
+import type { JBChainId } from '@bananapus/nana-sdk-core'
+import dynamic from 'next/dynamic'
 import { useEffect, useId, useRef, useState } from 'react'
 import { formatUnits, type Address } from 'viem'
 import { Refusal, refusalOf } from '@/components/project/flows/refusal'
@@ -15,6 +17,7 @@ import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
 import { useStepPresses } from '@/hooks/useStepPresses'
 import { useWallet } from '@/hooks/useWallet'
 import { asked } from '@/lib/hook-logs'
+import { chainsForEnvironment, environmentForChainIds } from '@/lib/chains'
 import { stickyDistributorAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import { readBalanceAndAllowance, readNativeBalance } from '@/lib/sticky-allowance'
@@ -43,6 +46,7 @@ const NOT_ACCEPTED = 'The distributor does not accept this stake-age window.'
 const NOTHING = 'Enter an amount greater than zero.'
 const MORE_THAN_HELD = 'That is more than you hold.'
 const ACCEPTS = 'whether the distributor accepts this stake-age window'
+const BridgeFlow = dynamic(() => import('./BridgeFlow').then(module => module.BridgeFlow))
 
 /** What a review refused or could not read, and the account it was for (lowercase), and is shown for: a refusal of the
  * wallet itself, Signa or View as, is no account's, and stands until the wallet changes. */
@@ -133,8 +137,7 @@ function rowsOf({ meta, amount, groupId }: Plan, info: StickyProjectInfo): TxCon
 
 /**
  * Sending airdrop rewards to a project's Sticky token holders, in a modal: a token (an address, or ETH), the stake-age
- * window of the holders it rewards, and an amount. The chain to send from is this one; sending from another chain is a
- * bridge, which comes with the bridge flows.
+ * window of the holders it rewards, and an amount. Another origin chain opens the bridge workflow.
  *
  * The review opens in the same card and reads the token, whether the distributor accepts the group, and the funder's
  * balance and allowance, then lists what it sends: an approval of the amount to the distributor when the allowance does
@@ -142,12 +145,28 @@ function rowsOf({ meta, amount, groupId }: Plan, info: StickyProjectInfo): TxCon
  * approval. Each is sent on its own press, from the account that reviewed it, and the balance is read again before each.
  * Once the airdrop is confirmed, the pots are read again and its token is checked for rewards (`onFunded`).
  */
-export function FundFlow({
+type FundFlowProps = {
+  chainId: number
+  projectId: number
+  info: StickyProjectInfo
+  onClose: () => void
+  onFunded: (token: Address) => void
+}
+
+export function FundFlow(props: FundFlowProps) {
+  const [sourceChainId, setSourceChainId] = useState(props.chainId as JBChainId)
+  return sourceChainId === props.chainId
+    ? <SameChainFundFlow {...props} onSourceChain={setSourceChainId} />
+    : <BridgeFlow info={props.info} sourceChainId={sourceChainId} onClose={props.onClose} onFunded={props.onFunded} />
+}
+
+function SameChainFundFlow({
   chainId,
   projectId,
   info,
   onClose,
   onFunded,
+  onSourceChain,
 }: {
   chainId: number
   projectId: number
@@ -156,6 +175,7 @@ export function FundFlow({
   onClose: () => void
   /** The token of an airdrop that went through, in lowercase. */
   onFunded: (token: Address) => void
+  onSourceChain: (chainId: JBChainId) => void
 }) {
   const { address, isConnected, isCenterWallet, openSignIn } = useWallet()
   const { viewAs } = useViewAs()
@@ -234,7 +254,7 @@ export function FundFlow({
     if (complete) return onClose()
     setPlan(null)
     setPreparing(false)
-    if (tx.phase !== 'success') tx.reset()
+    if (tx.phase !== 'success') tx.dismiss()
   }
 
   // A refusal of the wallet itself is about the wallet that was connected, or the account in View as: another is asked
@@ -267,8 +287,8 @@ export function FundFlow({
             <label htmlFor={ids.from} className={FIELD_LABEL}>
               From chain
             </label>
-            <select id={ids.from} defaultValue={chainId} className={FIELD_INPUT}>
-              <option value={chainId}>{chainName(chainId)}</option>
+            <select id={ids.from} value={chainId} disabled={sending || preparing || !!plan} onChange={event => onSourceChain(Number(event.target.value) as JBChainId)} className={FIELD_INPUT}>
+              {chainsForEnvironment(environmentForChainIds([chainId])).map(chain => <option key={chain.id} value={chain.id}>{chainName(chain.id)}</option>)}
             </select>
           </div>
           <div className="min-w-0">
@@ -334,6 +354,7 @@ export function FundFlow({
           onConfirm={() => void confirm()}
           busy={sending}
           complete={complete}
+          settled={tx.phase === 'submitted'}
           status={
             !plan ? (
               'Reading the token, your balance and allowance…'

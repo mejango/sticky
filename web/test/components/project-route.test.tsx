@@ -62,7 +62,7 @@ vi.mock('@/lib/sticky-siblings', async importOriginal => ({
   siblingRows: mocks.rows,
 }))
 vi.mock('@/lib/sticky-handles', () => ({ resolveProjectHandle: mocks.handle }))
-vi.mock('next/navigation', () => ({ notFound: mocks.notFound }))
+vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn() }), notFound: mocks.notFound }))
 vi.mock('next/link', () => ({
   default: (props: AnchorHTMLAttributes<HTMLAnchorElement>) => <a {...props} />,
 }))
@@ -176,7 +176,10 @@ const siteClient = () =>
     defaultOptions: { queries: { staleTime: 30_000, gcTime: 10 * 60_000, retry: 1, refetchOnWindowFocus: false } },
   })
 
+let routeClock = Date.now()
 beforeEach(() => {
+  routeClock += 10_000
+  vi.spyOn(Date, 'now').mockImplementation(() => routeClock)
   notifyManager.setScheduler(callback => queueMicrotask(callback))
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   stubWidth(1280)

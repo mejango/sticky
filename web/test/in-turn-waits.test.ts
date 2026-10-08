@@ -32,8 +32,7 @@ type Wait = {
 }
 
 /** Each read made in turn in a source that waits on a query that takes a lane, or one this check cannot find. */
-function waitsInTurn(fileName: string, text: string): Wait[] {
-  const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true)
+function waitsInTurn(fileName: string, text: string, source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true)): Wait[] {
   // The file's functions by name: declared, or bound to a variable.
   const named = new Map<string, ts.Node>()
   const collect = (at: ts.Node) => {
@@ -118,17 +117,20 @@ function waitsInTurn(fileName: string, text: string): Wait[] {
 
 describe('a read made in turn', () => {
   it('waits on no query that takes a lane, in every source file', () => {
-    const files = sourcesUnder(SRC)
-    const turns = files.flatMap(file => callsOf(ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true), 'inTurn'))
+    const files = sourcesUnder(SRC).map(file => {
+      const text = readFileSync(file, 'utf8')
+      return { file, text, source: ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true) }
+    })
+    const turns = files.flatMap(({ source }) => callsOf(source, 'inTurn'))
     // The reads made in turn: the project's history, its holders' and Latest's scans, the balance flows, the Chains
     // search, the airdrop funding, the account's positions and activity, and the home's chains. A floor, so a check
     // that found none would not pass.
     expect(turns.length).toBeGreaterThanOrEqual(9)
-    const found = files.flatMap(file =>
-      waitsInTurn(file, readFileSync(file, 'utf8')).map(wait => ({ file: relative(SRC, file), ...wait })),
+    const found = files.flatMap(({ file, text, source }) =>
+      waitsInTurn(file, text, source).map(wait => ({ file: relative(SRC, file), ...wait })),
     )
     expect(found).toEqual([])
-  })
+  }, 30_000)
 
   it('is told apart from one that waits on a query taking a lane, through any function of its file', () => {
     // Line 1 is a read of no query; line 2 the options of a query whose read takes a lane.

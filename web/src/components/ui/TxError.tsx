@@ -1,4 +1,5 @@
 import { ExternalWalletAction } from '@/components/ui/ExternalWalletAction'
+import { transactionMessage } from '@bananapus/nana-sdk-core/review'
 
 /**
  * The red error block every write flow renders under its action button.
@@ -15,7 +16,7 @@ export function TxError({
   if (!error) return null
   // Wallet errors carry unbroken hex; `wrap-anywhere` (unlike `break-words`)
   // also shrinks the min-content width, so one can't widen its container.
-  return <p className={`wrap-anywhere ${className}`}>{error}<ExternalWalletAction error={error} /></p>
+  return <p className={`wrap-anywhere ${className}`}>{transactionMessage(error)}<ExternalWalletAction error={error} /></p>
 }
 
 /** The authority cards' compact variant (smaller text, tighter margin). */

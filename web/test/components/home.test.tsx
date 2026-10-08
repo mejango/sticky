@@ -586,7 +586,7 @@ describe('StickyFeed', () => {
     expect(items().map(amountOf)).toEqual(['99 SLOPSHOP', '1,010 SLOPSHOP', '10 STICKYSLOPSHOP'])
     expect(items().map(item => item.querySelector('[data-direction]')?.textContent)).toEqual(['out', 'in', 'in'])
     expect(items().map(item => item.querySelector('p')?.textContent)).toEqual([
-      `unstuck by ${short(HOLDER)}`,
+      `unstuck from ${short(HOLDER)}`,
       `stuck by ${short(HOLDER)}`,
       `to ${short(RECIPIENT)} from ${short(HOLDER)}`,
     ])
@@ -601,12 +601,20 @@ describe('StickyFeed', () => {
       row(8453, 23n, NOW, { line: { kind: 'autoStuck', holder: HOLDER } }),
     ]
     await renderNode(<StickyFeed rows={rows} empty="No activity yet" />)
-    expect(items()[0].querySelector('p')!.textContent).toBe(`removed by ${short(HOLDER)} and came unstuck after 1d 0h`)
+    expect(items()[0].querySelector('p')!.textContent).toBe(`removed from ${short(HOLDER)} and came unstuck after 1d 0h`)
     expect(items()[1].textContent).toContain(`${short(RECIPIENT)} got sticky`)
     expect(items()[1].querySelector('[data-direction]')).toBeNull()
     expect(items()[2].querySelector('p')!.textContent).toBe(`stuck by ${short(HOLDER)} and got sticky`)
     expect(items()[3].textContent).toContain(`${short(FUNDER)} came unstuck after 1h 1m`)
-    expect(items()[4].querySelector('p')!.textContent).toBe(`auto-stuck by ${short(HOLDER)}`)
+    expect(items()[4].querySelector('p')!.textContent).toBe(`auto-stuck to ${short(HOLDER)}`)
+  })
+
+  it('keeps the exact token value available behind a compact amount', async () => {
+    const amount = { value: 1_000_000_000_000_000_001n, decimals: 18, symbol: 'STK' }
+    await renderNode(<StickyFeed rows={[row(8453, 23n, NOW, { amount })]} empty="No activity yet" />)
+    const shown = items()[0].querySelector<HTMLElement>('[data-amount]')!
+    expect(shown.textContent).toBe('1 STK')
+    expect(shown.title).toBe('1.000000000000000001 STK')
   })
 
   it('links the age and the chain to the transaction, with its full time on the age', async () => {

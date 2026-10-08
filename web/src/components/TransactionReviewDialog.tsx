@@ -457,6 +457,13 @@ function PrettyCall({
         ) : null}
       </dl>
 
+      {batched ? (
+        <div className="mt-5 border-t border-smoke-200 pt-4">
+          <p className="text-xs font-medium text-smoke-600">Calls it makes, in order</p>
+          <NestedCalls calls={batched} />
+        </div>
+      ) : null}
+
       {fn ? (
         <div className="mt-5 border-t border-smoke-200 pt-4">
           <p className="text-xs font-medium text-smoke-600">Contract function</p>
@@ -519,13 +526,6 @@ function PrettyCall({
         </div>
       )}
 
-      {batched ? (
-        <div className="mt-5 border-t border-smoke-200 pt-4">
-          <p className="text-xs font-medium text-smoke-600">Calls it makes, in order</p>
-          <NestedCalls calls={batched} />
-        </div>
-      ) : null}
-
       <p className="mt-3 text-[11px] text-smoke-500">
         Calldata: {byteLength.toLocaleString('en-US')} byte{byteLength === 1 ? '' : 's'}
       </p>
@@ -536,7 +536,9 @@ function PrettyCall({
 function ReviewModal({
   pending,
   onFinish,
+  checkingProject = false,
 }: {
+  checkingProject?: boolean
   pending: PendingReview
   onFinish: (approved: boolean) => void
 }) {
@@ -683,10 +685,10 @@ function ReviewModal({
             <button
               type="button"
               onClick={async () => { if (await feeReview.confirm()) onFinish(true) }}
-              disabled={!agreed || feeReview.busy}
+              disabled={!agreed || feeReview.busy || checkingProject}
               className="btn-primary min-h-[44px] px-5 text-sm"
             >
-              {feeReview.confirmLabel ?? request.confirmLabel ??
+              {checkingProject ? 'Checking project link…' : feeReview.confirmLabel ?? request.confirmLabel ??
                 (isAuthorization ? 'Agree & authorize' : 'Agree & continue')}
             </button>
           </div>
@@ -699,7 +701,9 @@ function ReviewModal({
 function FundingChainSelectionModal({
   pending,
   onFinish,
+  checkingProject = false,
 }: {
+  checkingProject?: boolean
   pending: PendingFundingChainSelection
   onFinish: (chainId: number | null) => void
 }) {
@@ -763,13 +767,13 @@ function FundingChainSelectionModal({
           </button>
           <button
             type="button"
-            disabled={!selectedOption}
+            disabled={!selectedOption || checkingProject}
             onClick={() => {
               if (selectedOption) onFinish(selectedOption.chainId)
             }}
             className="btn-primary min-h-[44px] px-5 text-sm"
           >
-            Continue to payment review
+            {checkingProject ? 'Checking project link…' : 'Continue to payment review'}
           </button>
         </footer>
       </div>
@@ -777,10 +781,10 @@ function FundingChainSelectionModal({
   )
 }
 
-export function TransactionReviewDialog({ pending, onFinish }: TransactionReviewDialogProps) {
+export function TransactionReviewDialog({ pending, onFinish, checkingProject }: TransactionReviewDialogProps) {
   return pending.kind === 'review' ? (
-    <ReviewModal key={pending.id} pending={pending} onFinish={onFinish} />
+    <ReviewModal key={pending.id} pending={pending} onFinish={onFinish} checkingProject={checkingProject} />
   ) : (
-    <FundingChainSelectionModal key={pending.id} pending={pending} onFinish={onFinish} />
+    <FundingChainSelectionModal key={pending.id} pending={pending} onFinish={onFinish} checkingProject={checkingProject} />
   )
 }

@@ -125,13 +125,13 @@ export function TrustFlow({
     attempt.current += 1
     setReview(null)
     if (complete) onClose()
-    else tx.reset()
+    else tx.dismiss()
   }
 
   const planSender = plan ? (plan.args as readonly [bigint, Address, boolean])[1] : null
 
   return (
-    <ModalShell title={trusting ? 'Trust a sender' : 'Untrust sender'} onClose={onClose} busy={sending} maxWidth="max-w-md">
+    <ModalShell title={trusting ? 'Trust a sender' : 'Untrust sender'} onClose={plan || current?.preparing ? closeReview : onClose} busy={sending} maxWidth="max-w-md">
       <div className="space-y-4">
         <p className="text-sm text-muted">
           {trusting ? 'This address will be able to stick tokens for you.' : 'This address will no longer be able to stick tokens for you.'}
@@ -188,6 +188,7 @@ export function TrustFlow({
           activeIndex={0}
           stepsIntro={stepsIntro(1, complete ? 1 : 0)}
           complete={complete}
+          settled={tx.phase === 'submitted'}
           busy={sending}
           action={confirmAction(tx.phase, tx.phase === 'error' ? 'Retry' : trusting ? 'Confirm & trust' : 'Confirm & untrust')}
           onConfirm={() => void send()}

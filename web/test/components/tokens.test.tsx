@@ -63,7 +63,7 @@ vi.mock('@/components/project/flows/UnstickFlow', () => ({
     </div>
   ),
 }))
-vi.mock('next/navigation', () => ({ notFound: vi.fn() }))
+vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn() }), notFound: vi.fn() }))
 vi.mock('next/link', () => ({
   default: (props: AnchorHTMLAttributes<HTMLAnchorElement>) => <a {...props} />,
 }))

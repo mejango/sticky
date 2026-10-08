@@ -65,7 +65,7 @@ const on = (extra: Partial<AutoStickState> = {}): AutoStickState =>
 /** What a state of auto-stick rests on: whether it is on, the holder's trust in the adapter, and their allowance. */
 const standing = ({ enabled, personallyTrusted, allowance }: AutoStickState) => ({ enabled, personallyTrusted, allowance })
 
-type Phase = 'idle' | 'review' | 'simulating' | 'signing' | 'pending' | 'success' | 'error'
+type Phase = 'idle' | 'review' | 'simulating' | 'signing' | 'pending' | 'submitted' | 'success' | 'error'
 type EngineState = {
   phase: Phase
   busy: boolean
@@ -76,7 +76,8 @@ type EngineState = {
   safeProposalHash: null
   safeNonceGuidance: null
   send: ReturnType<typeof vi.fn>
-  reset: ReturnType<typeof vi.fn>
+  reset: ReturnType<typeof vi.fn<() => void>>
+  dismiss: ReturnType<typeof vi.fn>
 }
 
 const mocks = vi.hoisted(() => ({
@@ -130,6 +131,7 @@ const engine = (): EngineState => {
       state.receipt = null
       return HASH
     }),
+    dismiss: vi.fn(() => state.reset()),
     reset: vi.fn(() => {
       state.phase = 'idle'
       state.busy = false

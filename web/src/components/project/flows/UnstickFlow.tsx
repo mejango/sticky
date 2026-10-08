@@ -384,9 +384,9 @@ export function UnstickFlow({
     preparation.current?.abort()
     preparation.current = null
     setPreparing(false)
-    setError(plan && landed.length > 0 ? progress(landed, plan.steps, 'idle') : null)
+    setError(plan && landed.length > 0 ? progress(landed, plan.steps, tx.phase === 'submitted' ? 'sending' : 'idle') : null)
     setPlan(null)
-    tx.reset()
+    tx.dismiss()
   }
 
   function submit(event: FormEvent) {
@@ -408,7 +408,7 @@ export function UnstickFlow({
     plan ? CHECKING : PLANNING
   ) : plan && (partway || inFlight || showsLink) ? (
     <>
-      {partway ? <span className="block">{progress(landed, plan.steps, sending ? 'sending' : failed ? 'failed' : 'idle')}</span> : null}
+      {partway ? <span className="block">{progress(landed, plan.steps, sending || tx.phase === 'submitted' ? 'sending' : failed ? 'failed' : 'idle')}</span> : null}
       {inFlight ? <span className="block">{inFlight}</span> : null}
       {showsLink ? <ViewTransactionLink chainId={chainId} hash={tx.hash} /> : null}
     </>
@@ -487,6 +487,7 @@ export function UnstickFlow({
           onConfirm={() => (failed ? retry() : void sendNext())}
           busy={sending}
           complete={complete}
+          settled={tx.phase === 'submitted'}
           status={status}
           error={flowError}
         >
