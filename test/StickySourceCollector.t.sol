@@ -20,7 +20,8 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {Test} from "forge-std/Test.sol";
 
-import {StickySourceCollector, StickySourceFeePayer} from "../src/StickySourceCollector.sol";
+import {StickySourceCollector} from "../src/StickySourceCollector.sol";
+import {StickySourceFeePayer} from "../src/StickySourceFeePayer.sol";
 
 import {StickyPricingToken} from "./helpers/StickyPricingToken.sol";
 
