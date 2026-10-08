@@ -63,6 +63,6 @@ Use the separate Node/npm toolchain in [web/README.md](web/README.md), then run 
 npm run check
 ```
 
-The client gate includes lint, types, deployment/schema/transaction inventories, coverage, a production build and browser tests. The [web workflow](.github/workflows/web.yml) additionally checks the production container. Historical reports retain their original legacy-client evidence; the [cutover record](tasks/sticky-next-cutover.md) tracks when the retained `webclient/` runtime can be retired.
+The client gate includes lint, types, deployment/schema/transaction inventories, coverage, a production build and browser tests. The [web workflow](.github/workflows/web.yml) additionally checks the production container. Historical reports retain their original legacy-client evidence, with source and tests preserved at the [pre-cutover revision](https://github.com/mejango/sticky/tree/8bff9575f57807df244c1c41b9045f614ab7a76c/webclient). The [cutover record](tasks/sticky-next-cutover.md) documents the transition.
 
 Use [DEPLOYMENT.md](./DEPLOYMENT.md) for fork rehearsals, Sphinx proposals, and post-execution verification. Run target-chain wallet checks after execution; a local test or read-only rehearsal cannot establish those outcomes.

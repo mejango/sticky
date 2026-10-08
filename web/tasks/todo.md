@@ -34,6 +34,9 @@
 - **Resource budget:** Limit production changes to the existing hydration owner and two entry props; coordinate the next build slot with the reference-client owner. Reuse the current official SDK lock and prior unaffected coverage rather than repeating all local units.
 
 - [x] Bind create readiness to hydration and prove server-disabled behavior.
-- [ ] Verify the cold-bootstrap browser flow, publish the correction and confirm hosted gates.
+- [x] Verify the cold-bootstrap browser flow, publish the correction and confirm hosted gates.
 
 The server-rendered readiness regression failed before the fix and passes afterwards. Exporting the existing hydration helper first preserved all four helper tests; the completed change passes 111 home, launch-host, hydration and architecture regressions plus scoped lint, full nonincremental TypeScript and diff checks. The production browser case now delays app JavaScript explicitly before checking readiness, without increasing timeouts or weakening the fixture census.
+
+
+Hosted verification passed at `f6ed26bc8a41d748ef1caa1831dee1efc7eebd05`: all seven checks, the complete 3604-unit-test suite, and all 53 browser cases, including the held-JavaScript cold-create case, passed without relaxing the failure-on-flaky policy. [PR 53](https://github.com/mejango/sticky/pull/53) merged the correction as `9530a5ae2534fac784284fa63439da5948029eae`. Root then confirmed the exact revision live, including the fully loaded mobile create defaults, input and connect entry; see the [cutover evidence](../../tasks/sticky-next-cutover.md). No wallet connection, signature or transaction was submitted during acceptance.
