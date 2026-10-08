@@ -48,7 +48,8 @@ No contract PR merge is authorized. The premature #56 merge is handled by a sepa
 - [x] Extend deterministic deployment and verification without changing existing singleton identities.
 - [x] Prove real reserved-split acceptance and delivery in four-chain fork harness, within its documented finality model.
 - [x] Independently review, resolve findings and update complete NatSpec/STYLE_GUIDE gates and owning documentation.
-- [ ] Run required checks and publish exact evidence in an unmerged PR.
+- [x] Run required local checks and publish exact evidence in unmerged draft PR #58.
+- [ ] Confirm GitHub checks pass for the final PR revision.
 - [ ] Prepare concrete deployment, execute only with applicable authority, verify and then request explicit final merge approval.
 
 ## Receipt refinement from adversarial review
@@ -66,3 +67,7 @@ The complete four-chain fork run passes **80/80**, including all six shared-hook
 Formatting, strict production build/sizes and deployment-entrypoint compilation pass. The final machine comparison confirms that the six existing singleton creation/runtime bytecodes and ABI match the pre-audit baseline, and both new contracts match their pre-final-style snapshots. Collector runtime/init-code sizes are **8,484/11,273 bytes**; the fee child's are **2,120/2,164 bytes**. The final deployment command passes all **26 Solidity and 53 Node** cases in one clean run, including the earlier loopback-server case blocked by sandbox permissions. Slither 0.11.3 analyzes **131 contracts with 77 detectors**, reports the same **87 existing Low findings** and no collector findings; the `--fail-medium` gate passes. Independent custody, protocol, deployment and documentation reviews found no unresolved concrete blocker under the recorded dependency assumptions.
 
 The [current review report](../OMNICHAIN_SPLIT_HOOK_REVIEW.md) records the scope and limitations. Final bytecode fingerprints, deployment rehearsals, proposed addresses, GitHub CI and publication of exact evidence in an unmerged PR remain outstanding. Authorized deployment, post-execution verification and explicit approval of the final contract PR are separate remaining gates. These local/fork results establish neither live delivery nor merge authority.
+
+## Release review
+
+The production-helper rehearsal passed twice per chain on all four mainnets at committed implementation `24632c528669f9261c60bb203f65bc3e0d6ac7b6`; these were read-only fork simulations. Both new addresses, bindings and full simulated runtimes agree across chains. Independent RPC code-absence and exact factory-payload gas estimates also pass. [Recorded fingerprints and block identities](omnichain-split-hook-rehearsal.json) and the [current review report](../OMNICHAIN_SPLIT_HOOK_REVIEW.md) make the proposed deployment concrete. Draft PR #58 and recovery draft PR #57 remain unmerged with automatic merge disabled. Final CI, authorized deployment, onchain verification and explicit final merge approval remain release gates.
