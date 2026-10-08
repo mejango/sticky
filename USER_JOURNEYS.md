@@ -2,7 +2,7 @@
 
 ## Repo Purpose
 
-This repo owns staking-with-streaks for ERC-20 tokens on Juicebox V6: permanently configured staking projects, backing-priced Sticky shares that are soulbound or transferable, per-deposit tranche accounting, holder streaks, opt-in reward compounding, cross-chain reward receivers, and the Sticky webclient. Juicebox core handles custody, issuance math, and cash out economics; `StickyDistributor` handles rewards, by vote snapshot or by tenure. Start here if you're integrating staking into a client, designing a reward program on streak data, or launching a sticky project for a token. See [the webclient guide](webclient/README.md) for site configuration and production checks.
+This repo owns staking-with-streaks for ERC-20 tokens on Juicebox V6: permanently configured staking projects, backing-priced Sticky shares that are soulbound or transferable, per-deposit tranche accounting, holder streaks, opt-in reward compounding, cross-chain reward receivers, and the Sticky Next client. Juicebox core handles custody, issuance math, and cash out economics; `StickyDistributor` handles rewards, by vote snapshot or by tenure. Start here if you're integrating staking into a client, designing a reward program on streak data, or launching a sticky project for a token. See [the client guide](web/README.md) for site configuration and production checks.
 
 ## Primary Actors
 

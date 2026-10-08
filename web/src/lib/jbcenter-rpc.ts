@@ -1,6 +1,6 @@
 import {
-  createJBCenterLimiter,
   createJBCenterRpcProvider,
+  createPacedJBCenterLimiter,
 } from '@bananapus/nana-sdk-core/jbcenter'
 import { createPublicClient, custom, hexToBigInt, http, type PublicClient, type Transport } from 'viem'
 import { SUPPORTED_CHAINS } from '@/lib/chains'
@@ -24,18 +24,10 @@ const serverFetch: typeof fetch = (input, init) => {
 }
 
 const browserFetch: typeof fetch = (input, init) => window.fetch(input, init)
+// Admit starts before the provider starts its timeout, including a shared 429 cooldown.
+const centerLimiter = createPacedJBCenterLimiter()
 
 const inBrowser = () => typeof window !== 'undefined'
-
-/** Center's slots: the tab's requests to Center, every chain's and every
- * reader's together. Center counts each origin's requests, refused ones too,
- * in a fixed minute: 600 a minute for this site's origins, and a 429 whose
- * Retry-After says how long is left past that. Two in flight is what one log
- * scan of the hook always kept (`hook-logs.ts`), so reads that run side by
- * side ask no more of Center at once than one scan did, at most 343 requests a
- * minute at the quickest round trip staging measured (0.35 s). After a 429
- * with a Retry-After, none starts until it has passed, a minute at most. */
-const centerLimiter = createJBCenterLimiter({ slots: 2 })
 
 /** Center's RPC for `chainId`. Center load balances reads across nodes that
  * import blocks at slightly different times, so a read pinned to a block one
@@ -45,11 +37,10 @@ const centerLimiter = createJBCenterLimiter({ slots: 2 })
  * would read state older than the block the read pins. The read's signal goes
  * with every try, and a wait between tries ends the moment it aborts. In the
  * browser, every request to Center, from every chain's reader of the tab (the
- * page's, wagmi's, the fee check's and the Center wallet's), waits for one of
- * Center's slots (`centerLimiter`), so the reads of a page can run side by side
- * within its one rate limit. Each try takes its own slot, so one waiting out a
- * node behind the head holds none, and a request whose read is dropped stops
- * and lets its slot go. */
+ * page's, wagmi's, the fee check's and the Center wallet's), shares the SDK's
+ * request-start pacing. Slow responses do not hold up other chains, every
+ * retry is paced, and a 429's Retry-After pauses new starts across the tab.
+ * A page's abort cancels its queued and in-flight requests. */
 export function jbCenterRpcTransport(
   chainId: number,
   timeoutMs = 15_000,
@@ -92,7 +83,7 @@ const pageReaders = new WeakMap<AbortSignal, Map<number, PublicClient>>()
  * without `chain` viem quietly sends every read on its own, and those bursts
  * hit the one rate limit Center applies across all chains. A page's reader
  * sends every request with the page's signal, so when the page is left, what it
- * has in flight stops and what waits for one of Center's slots is never sent.
+ * has in flight stops and what waits for its paced start is never sent.
  * A read viem can share with another page's (a `readContract` it batches, a
  * receipt or a block by its number) stays on the shared reader, so that one
  * page's signal neither splits the request nor stops the other page's read
@@ -100,8 +91,7 @@ const pageReaders = new WeakMap<AbortSignal, Map<number, PublicClient>>()
  * reads its head afresh each time, sharing a request already under way: viem's
  * own `getBlockNumber` keeps every reader's last head for good, by the reader's
  * id, and a page's reader is made for each read of the page. A try waits 15 s,
- * as every other reader of the tab's does: two of a page's reads hold both of
- * Center's slots, a write's review and receipt reads included, for no longer.
+ * as every other reader of the tab's does, independently of the other reads.
  * The slowest of the 3,261 requests measured against staging took 6.0 s. */
 export function jbCenterPublicClient(chainId: number, signal?: AbortSignal): PublicClient {
   let clients = publicClients

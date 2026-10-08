@@ -1,7 +1,7 @@
 'use client'
 
 import type { ReactNode } from 'react'
-import type { Address } from 'viem'
+import { formatUnits, type Address } from 'viem'
 import { ChainIcon } from '@/components/ChainIcon'
 import { ProjectLink } from '@/components/ProjectLink'
 import { AddressLabel } from '@/components/ui/AddressLabel'
@@ -48,7 +48,7 @@ function sentence(line: FeedLine, who: Who, you: Address | null | undefined): Re
     case 'stuck':
       return <>stuck by {who(line.holder)}{streakStarted(line)}</>
     case 'autoStuck':
-      return <>auto-stuck by {who(line.holder)}{streakStarted(line)}</>
+      return <>auto-stuck to {who(line.holder)}{streakStarted(line)}</>
     case 'gift': {
       const yours = you !== null && you !== undefined && line.holder.toLowerCase() === you.toLowerCase()
       return (
@@ -60,9 +60,9 @@ function sentence(line: FeedLine, who: Who, you: Address | null | undefined): Re
       )
     }
     case 'unstuck':
-      return <>unstuck by {who(line.holder)}{streakEnded(line)}</>
+      return <>unstuck from {who(line.holder)}{streakEnded(line)}</>
     case 'removed':
-      return <>removed by {who(line.holder)}{streakEnded(line)}</>
+      return <>removed from {who(line.holder)}{streakEnded(line)}</>
     default:
       return null
   }
@@ -91,7 +91,11 @@ function FeedItem({ row, label, you }: { row: FeedRow; label: string | undefined
         <span className="flex min-w-0 items-center gap-1.5 text-sm">
           {row.amount ? (
             <>
-              <span data-amount className="truncate font-semibold text-ink">
+              <span
+                data-amount
+                title={`${formatUnits(row.amount.value, row.amount.decimals)} ${row.amount.symbol}`}
+                className="truncate font-semibold text-ink"
+              >
                 {formatAmount(row.amount.value, row.amount.decimals)} {row.amount.symbol}
               </span>
               {row.direction ? (

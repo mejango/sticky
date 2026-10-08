@@ -140,7 +140,7 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
     attempt.current += 1
     setReview(null)
     if (complete) onClose()
-    else tx.reset()
+    else tx.dismiss()
   }
 
   const [planTo, planCount] = (plan?.args ?? []) as readonly [Address?, bigint?]
@@ -154,7 +154,7 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
           : 'Checking your balance…'
 
   return (
-    <ModalShell title="Transfer" onClose={onClose} busy={sending} maxWidth="max-w-md">
+    <ModalShell title="Transfer" onClose={plan || current?.preparing ? closeReview : onClose} busy={sending} maxWidth="max-w-md">
       <div className="space-y-4">
         {holding ? (
           <p className="text-sm text-muted" title={held === undefined ? undefined : `${formatUnits(held, SHARE_DECIMALS)} ${label}`}>
@@ -225,6 +225,7 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
           activeIndex={0}
           stepsIntro={stepsIntro(1, complete ? 1 : 0)}
           complete={complete}
+          settled={tx.phase === 'submitted'}
           busy={sending}
           action={confirmAction(tx.phase, tx.phase === 'error' ? 'Retry' : 'Confirm & transfer')}
           onConfirm={() => void send()}

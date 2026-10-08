@@ -65,6 +65,7 @@ const idle = () => ({
   confirmationUncertain: false,
   send: vi.fn().mockResolvedValue(null),
   reset: vi.fn(),
+  dismiss: vi.fn(),
 })
 const tx = () => mocks.tx as ReturnType<typeof idle>
 

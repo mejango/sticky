@@ -1,12 +1,13 @@
 // @vitest-environment node
 
-import { QueryClient, type QueryKey } from '@tanstack/react-query'
+import { QueryClient, QueryObserver, type QueryKey } from '@tanstack/react-query'
 import { getAddress } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   REFRESH_AFTER_MS,
   refreshAfterAutoStick,
   refreshAfterCollect,
+  refreshAfterConfirmedWrite,
   refreshAfterFund,
   refreshAfterReceiver,
   refreshAfterRewardStick,
@@ -160,6 +161,74 @@ function readAgain() {
 const inOrder = (names: string[]) => Object.keys(KEYS).filter(name => names.includes(name))
 
 describe('the refresh after a send', () => {
+  it.each(['scheduled', 'detached'] as const)('%s refresh discards an initial old read and leaves unrelated reads running', async mode => {
+    client.removeQueries({ queryKey: KEYS.info })
+    client.removeQueries({ queryKey: KEYS['another chain'] })
+    let finishOld!: (value: string) => void
+    let finishOther!: (value: string) => void
+    const options = {
+      queryKey: KEYS.info,
+      staleTime: 30_000,
+      queryFn: vi.fn()
+        .mockImplementationOnce(() => new Promise<string>(resolve => { finishOld = resolve }))
+        .mockResolvedValue('confirmed'),
+    }
+    const old = client.fetchQuery(options).catch(() => undefined)
+    const other = client.fetchQuery({
+      queryKey: KEYS['another chain'],
+      queryFn: () => new Promise<string>(resolve => { finishOther = resolve }),
+    })
+
+    if (mode === 'scheduled') refreshAfterStick(client, CHAIN, 23)
+    else refreshAfterConfirmedWrite(client, CHAIN)
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(client.getQueryState(KEYS.info)?.fetchStatus).toBe('idle')
+    expect(client.getQueryState(KEYS.info)?.isInvalidated).toBe(true)
+    expect(client.getQueryState(KEYS['another chain'])?.fetchStatus).toBe('fetching')
+    expect(options.queryFn).toHaveBeenCalledTimes(1)
+    expect(await client.fetchQuery(options)).toBe('confirmed')
+    finishOld('before confirmation')
+    finishOther('other chain')
+    await old
+    expect(await other).toBe('other chain')
+    expect(client.getQueryData(KEYS.info)).toBe('confirmed')
+  })
+
+  it('marks a detached confirmed write\'s chain stale without refetching or discarding other chains and histories', async () => {
+    const extra: Record<string, QueryKey> = {
+      'home latest': ['sticky-home', 'mainnet', 'latest'],
+      'home chain': ['sticky-home', 'mainnet', 'chain', CHAIN, 'v1'],
+      'home history': ['sticky-home', 'mainnet', 'history', CHAIN],
+      'home prices': ['sticky-home', 'mainnet', 'prices', CHAIN, []],
+      'other home chain': ['sticky-home', 'mainnet', 'chain', 10, 'v1'],
+      'other home network': ['sticky-home', 'testnet', 'index'],
+      'other account chain': ['sticky-account', 'mainnet', HOLDER, 'positions', 10],
+      'other account network': ['sticky-account', 'testnet', HOLDER, 'index'],
+      unrelated: ['some-other-query', CHAIN],
+    }
+    for (const key of Object.values(extra)) client.setQueryData(key, 'read')
+    const queryFn = vi.fn(async () => 'new')
+    const observer = new QueryObserver(client, { queryKey: KEYS.info, queryFn, staleTime: Infinity })
+    const stop = observer.subscribe(() => {})
+
+    refreshAfterConfirmedWrite(client, CHAIN)
+    await vi.advanceTimersByTimeAsync(60_000)
+
+    expect(invalidated()).toEqual(inOrder([
+      ...PAGE, 'funding', 'receiver', 'arrivals',
+      'position', 'tranches', 'rewards', 'auto-stick', 'trusted',
+      "another's position", "another's tranches", "another's rewards", "another's auto-stick", "another's trusted",
+      'account index', 'account positions', "another's account", 'another project', "another project's position", 'home',
+    ]))
+    expect(Object.keys(extra).filter(name => client.getQueryState(extra[name])?.isInvalidated)).toEqual([
+      'home latest', 'home chain',
+    ])
+    expect(queryFn).not.toHaveBeenCalled()
+    for (const key of [...Object.values(KEYS), ...Object.values(extra)]) expect(client.getQueryData(key)).toBe('read')
+    stop()
+  })
+
   it('reads again now, at +4 s and at +12 s', () => {
     expect(REFRESH_AFTER_MS).toEqual([0, 4_000, 12_000])
   })
@@ -167,6 +236,7 @@ describe('the refresh after a send', () => {
   it.each(SCOPES)('after %s, and nothing else', async (_what, refresh, expected) => {
     expect(expected.every(name => name in KEYS)).toBe(true)
     refresh(client)
+    await vi.advanceTimersByTimeAsync(0)
     expect(invalidated()).toEqual(inOrder(expected))
     readAgain()
 
@@ -186,19 +256,22 @@ describe('the refresh after a send', () => {
     expect(invalidated()).toEqual([])
   })
 
-  it("never reads a project's whole page again, nor another project's, another chain's or the home", () => {
+  it("never reads a project's whole page again, nor another project's, another chain's or the home", async () => {
     for (const [, refresh] of SCOPES) refresh(client)
+    await vi.advanceTimersByTimeAsync(0)
     const untouched = ['flows', 'siblings', 'another project', 'another chain', "another project's position", 'home']
     expect(invalidated().filter(name => untouched.includes(name))).toEqual([])
   })
 
-  it('reads the pots again only after a send that adds one', () => {
+  it('reads the pots again only after a send that adds one', async () => {
     for (const [, refresh] of SCOPES) if (!FUNDING.has(refresh)) refresh(client)
+    await vi.advanceTimersByTimeAsync(0)
     expect(invalidated()).not.toContain('funding')
   })
 
-  it("reads again only the holder's own reads after an unstick, not another account's", () => {
+  it("reads again only the holder's own reads after an unstick, not another account's", async () => {
     refreshAfterUnstick(client, CHAIN, 23, OTHER)
+    await vi.advanceTimersByTimeAsync(0)
     expect(invalidated()).toEqual(
       inOrder([...PAGE, "another's position", "another's tranches", "another's rewards", "another's auto-stick", "another's account"]),
     )

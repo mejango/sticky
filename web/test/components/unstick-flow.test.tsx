@@ -22,7 +22,7 @@ import { CHAIN, HOLDER, OTHER, PROJECT, REVERT, STAKED, STICKY, deployment, rewa
 const mocks = vi.hoisted(() => ({
   wallet: { address: undefined as string | undefined, isCenterWallet: false },
   openSignIn: vi.fn(),
-  publicClient: { simulateContract: vi.fn(), estimateContractGas: vi.fn() },
+  publicClient: { simulateContract: vi.fn(), estimateContractGas: vi.fn(), waitForTransactionReceipt: vi.fn() },
   getAccount: vi.fn(),
   requestReview: vi.fn(),
   switchChain: vi.fn(),
@@ -69,12 +69,16 @@ vi.mock('@/hooks/useSafeTx', async importOriginal => {
 })
 vi.mock('@/providers/Providers', () => ({ wagmiConfig: {} }))
 vi.mock('@/lib/safe-connector', async importOriginal => ({
-  // The engine reads a Safe's executed proposal for the Safe's own ExecutionFailure.
-  safeExecutionFailed: (await importOriginal<typeof import('@/lib/safe-connector')>()).safeExecutionFailed,
+  ...(await importOriginal<typeof import('@/lib/safe-connector')>()),
   isSafeConnection: () => mocks.safe.on,
   SAFE_NONCE_GUIDANCE: 'Safe nonce guidance',
   useSafeConnection: () => mocks.safe.on,
   waitForSafeExecutionHash: () => mocks.safe.execution!.promise,
+  atOnceExecution: async () => null,
+  findPendingSafeAppProposal: async () => null,
+  watchSafeProposal: () => new Promise(() => {}),
+  // The shared Safe proof tests establish this result; this suite checks the dependent flow.
+  readSafeAppExecution: async () => ({ status: 'success' }),
 }))
 
 import { UnstickFlow } from '@/components/project/flows/UnstickFlow'
@@ -174,6 +178,9 @@ beforeEach(() => {
   mocks.switchChain.mockResolvedValue(undefined)
   mocks.publicClient.simulateContract.mockImplementation(async (request: unknown) => ({ request }))
   mocks.publicClient.estimateContractGas.mockResolvedValue(50_000n)
+  mocks.publicClient.waitForTransactionReceipt.mockImplementation(async ({ hash }: { hash: string }) => ({
+    status: 'success', transactionHash: hash, blockNumber: 100n, logs: [],
+  }))
   mocks.writeContract.mockImplementation(async () => `0x${(hashes += 1).toString(16).padStart(64, '0')}`)
   mocks.openSignIn.mockResolvedValue(undefined)
   requestSignIn.mockResolvedValue(undefined)
@@ -796,11 +803,13 @@ describe('a send that stops halfway', () => {
     world(on)
     await review('1')
     await press('Turn off auto-stick', confirm()!)
-    await until(() => confirm()!.textContent!.includes('Safe nonce guidance'), 'the proposal')
+    await until(() => nameOf(confirm()!).includes('Done'), 'the proposal')
 
-    // A proposal is not a transaction: there is nothing on an explorer to link, and nothing else to send.
+    // A proposal is not a confirmed step: it can be dismissed, but no dependent step can be sent.
     expect(confirm()!.querySelector('a')).toBeNull()
-    expect(buttonsOf(confirm()!).find(each => each.textContent === 'Confirming…')!.disabled).toBe(true)
+    expect(confirm()!.textContent).toContain('Proposed to your Safe. Its other signers can approve it there.')
+    expect(buttonsOf(confirm()!).find(each => each.textContent === 'Done')!.disabled).toBe(false)
+    expect(steps().map(step => step.state)).toEqual(['active', 'pending', 'pending', 'pending'])
     expect(called()).toEqual(['setConfigFor'])
 
     await act(async () => mocks.safe.execution!.resolve(`0x${'e'.repeat(64)}`))
@@ -1121,7 +1130,7 @@ describe('after a confirmed send', () => {
     expect(later.map(([, delay]) => delay)).toEqual([4_000, 12_000])
     for (const [callback] of later) {
       const again = callback as () => void
-      again()
+      await act(async () => again())
       expect(invalidated()).toEqual(UNSTICK)
       readAgain()
     }

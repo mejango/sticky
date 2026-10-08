@@ -30,7 +30,7 @@ const HASH = `0x${'c3'.repeat(32)}` as Hex
 /** Project 12 on Base Sepolia sticks ART, of 6 decimals, for STICKYART. */
 const INFO = stickyInfo(CHAIN, BigInt(PROJECT), { stakedToken: ART, symbol: 'ART', decimals: 6, stSymbol: 'STICKYART' })
 
-type Phase = 'idle' | 'review' | 'simulating' | 'signing' | 'pending' | 'success' | 'error'
+type Phase = 'idle' | 'review' | 'simulating' | 'signing' | 'pending' | 'submitted' | 'success' | 'error'
 type EngineState = {
   phase: Phase
   busy: boolean
@@ -41,7 +41,8 @@ type EngineState = {
   safeProposalHash: null
   safeNonceGuidance: null
   send: ReturnType<typeof vi.fn>
-  reset: ReturnType<typeof vi.fn>
+  reset: ReturnType<typeof vi.fn<() => void>>
+  dismiss: ReturnType<typeof vi.fn>
 }
 
 const mocks = vi.hoisted(() => ({
@@ -86,6 +87,7 @@ const engine = (): EngineState => {
       state.receipt = null
       return HASH
     }),
+    dismiss: vi.fn(() => state.reset()),
     reset: vi.fn(() => {
       state.phase = 'idle'
       state.busy = false
@@ -135,12 +137,12 @@ async function settled() {
   for (let round = 0; round < 5; round += 1) await settle()
 }
 
-async function render() {
+async function render(initial: { initialToken?: Address; initialGroupId?: bigint; initiallyOpen?: boolean } = {}) {
   await act(async () =>
     root.render(
       <QueryClientProvider client={client}>
         <WalletAuthContext.Provider value={{ requestSignIn: mocks.requestSignIn }}>
-          <ReceiverFlow chainId={CHAIN} projectId={PROJECT} info={INFO} onSettled={onSettled} />
+          <ReceiverFlow chainId={CHAIN} projectId={PROJECT} info={INFO} onSettled={onSettled} {...initial} />
         </WalletAuthContext.Provider>
       </QueryClientProvider>,
     ),
@@ -305,6 +307,13 @@ describe('creating it', () => {
 })
 
 describe('settling it', () => {
+  it('opens the bridge destination token and stake-age group directly for settlement', async () => {
+    await render({ initialToken: USDC, initialGroupId: 4008n, initiallyOpen: true })
+    expect(field('Token to settle')?.value).toBe(USDC)
+    expect(field('Minimum stake age (weeks)')?.value).toBe('4')
+    expect(field('Maximum stake age (weeks)')?.value).toBe('8')
+  })
+
   it('wallet-action:settle-arrivals-into-airdrops receiver settlement uses the selected destination reward token, verifies distributor, and rejects empty arrivals', async () => {
     const invalidate = vi.spyOn(client, 'invalidateQueries')
     await open()
@@ -332,12 +341,14 @@ describe('settling it', () => {
     await confirmed()
     expect(confirm()!.textContent).toContain('Arrivals settled into rewards')
     expect(onSettled).toHaveBeenCalledExactlyOnceWith(USDC.toLowerCase())
-    expect(invalidate.mock.calls.map(([filters]) => filters!.queryKey as QueryKey)).toEqual([
+    const refreshed = invalidate.mock.calls.map(([filters]) => filters!.queryKey as QueryKey)
+    expect(refreshed).toHaveLength(4)
+    expect(refreshed).toEqual(expect.arrayContaining([
       ['sticky-project', CHAIN, PROJECT, 'funding'],
       ['sticky-project', CHAIN, PROJECT, 'receiver'],
       ['sticky-rewards', CHAIN, PROJECT],
       ['sticky-autostick', CHAIN, PROJECT],
-    ])
+    ]))
   })
 
   it('rejects empty arrivals before review', async () => {
@@ -387,6 +398,8 @@ describe('settling it', () => {
     await open()
     expect(arrivals()).toBe('1.5 ART waiting to settle')
     await type('Token to settle', CAROL)
+    // The real Center reader now spaces consecutive requests; let its next start run.
+    await settle(1_000)
     expect(arrivals()).toBe('That address is not a token.')
     expect(mocks.arrivals).not.toHaveBeenCalledWith(CHAIN, RECEIVER, CAROL, expect.anything())
     await press(panel(), 'Settle into airdrops')

@@ -1,9 +1,12 @@
 'use client'
 
 import { usePathname } from 'next/navigation'
+import dynamic from 'next/dynamic'
 import type { ReactNode } from 'react'
 import { SiteFooter } from '@/components/SiteFooter'
 import { SiteHeader } from '@/components/SiteHeader'
+
+const StickyLaunchHost = dynamic(() => import('@/components/create/StickyLaunchHost').then(module => module.StickyLaunchHost), { ssr: false })
 
 /**
  * The header, the page column and the footer around every page except the
@@ -22,6 +25,7 @@ export function SiteChrome({ children }: { children: ReactNode }) {
         <main id="main-content">{children}</main>
       </div>
       <SiteFooter />
+      <StickyLaunchHost />
     </div>
   )
 }

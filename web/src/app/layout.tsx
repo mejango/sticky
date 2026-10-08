@@ -4,7 +4,6 @@ import type { ReactNode } from 'react'
 import './globals.css'
 import { SiteChrome } from '@/components/SiteChrome'
 import { jbCenterAppOrigin } from '@/lib/jbcenter-config'
-import { ProjectRouteProvider } from '@/providers/ProjectRouteContext'
 import { Providers } from '@/providers/Providers'
 
 // Body and UI text: Beatrice. Its Medium face serves every weight from 500 up,
@@ -66,9 +65,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     >
       <body>
         <Providers>
-          <ProjectRouteProvider>
-            <SiteChrome>{children}</SiteChrome>
-          </ProjectRouteProvider>
+          <SiteChrome>{children}</SiteChrome>
         </Providers>
       </body>
     </html>

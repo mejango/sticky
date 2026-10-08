@@ -31,10 +31,11 @@ const E6 = 10n ** 6n
 /** Project 12 on Base Sepolia sticks ART, of 6 decimals, for STICKYART. */
 const INFO = stickyInfo(CHAIN, BigInt(PROJECT), { stakedToken: ART, symbol: 'ART', decimals: 6, stSymbol: 'STICKYART' })
 
-type Phase = 'idle' | 'review' | 'simulating' | 'signing' | 'pending' | 'success' | 'error'
+type Phase = 'idle' | 'review' | 'simulating' | 'signing' | 'pending' | 'submitted' | 'success' | 'error'
 type EngineState = {
   phase: Phase
   busy: boolean
+  notice: string | null
   error: string | null
   hash: Hex | null
   receipt: { blockNumber: bigint } | null
@@ -42,7 +43,8 @@ type EngineState = {
   safeProposalHash: null
   safeNonceGuidance: null
   send: ReturnType<typeof vi.fn>
-  reset: ReturnType<typeof vi.fn>
+  reset: ReturnType<typeof vi.fn<() => void>>
+  dismiss: ReturnType<typeof vi.fn>
 }
 
 const mocks = vi.hoisted(() => ({
@@ -73,6 +75,7 @@ import { FundFlow } from '@/components/project/flows/FundFlow'
 const engine = (): EngineState => {
   const state: EngineState = {
     phase: 'idle',
+    notice: null,
     busy: false,
     error: null,
     hash: null,
@@ -89,6 +92,7 @@ const engine = (): EngineState => {
       state.receipt = null
       return FUND_HASH
     }),
+    dismiss: vi.fn(() => state.reset()),
     reset: vi.fn(() => {
       state.phase = 'idle'
       state.busy = false
@@ -222,11 +226,12 @@ async function confirmed(hash: Hex, block: bigint) {
 }
 
 describe('the form', () => {
-  it('lists only this chain to send from', async () => {
+  it('lists origins from the same network environment and keeps this chain selected', async () => {
     await render()
     expect(modal().querySelector('h2')?.textContent).toBe('Airdrop')
     const from = field('From chain') as HTMLSelectElement
-    expect([...from.options].map(option => option.textContent)).toEqual(['Base Sepolia'])
+    expect([...from.options].map(option => option.textContent)).toEqual(['Sepolia', 'Optimism Sepolia', 'Base Sepolia', 'Arbitrum Sepolia'])
+    expect(from.value).toBe(String(CHAIN))
   })
 
   it('says who a group rewards as the weeks are typed, and why weeks name none', async () => {
@@ -434,6 +439,33 @@ describe('the review', () => {
 })
 
 describe('the send', () => {
+  it.each([
+    'Proposal submitted. Other Safe owners still need to sign.',
+    'The Safe result could not be proven. Check the Safe before trying again.',
+  ])('ends the approval review on Done without funding when a Safe says: %s', async notice => {
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+    await review()
+    await press(confirm(), 'Confirm & approve')
+    mocks.tx.phase = 'submitted'
+    mocks.tx.busy = false
+    mocks.tx.notice = notice
+    await render()
+
+    expect(confirm()!.textContent).toContain(notice)
+    expect(stepStates()).toEqual(['active', 'pending'])
+    expect(primary().textContent).toBe('Done')
+    expect(primary().disabled).toBe(false)
+    expect(confirm()!.textContent).not.toContain('All transactions confirmed.')
+    expect(mocks.tx.send).toHaveBeenCalledOnce()
+    expect(onFunded).not.toHaveBeenCalled()
+    expect(invalidate).not.toHaveBeenCalled()
+
+    await press(confirm(), 'Done')
+    expect(mocks.tx.dismiss).toHaveBeenCalledOnce()
+    expect(confirm()).toBeNull()
+    expect(onFunded).not.toHaveBeenCalled()
+  })
+
   it('names the account that reviewed the airdrop on every step, whichever account is connected by then', async () => {
     await review()
     // The review stays for the account it was made for, and the engine refuses another.

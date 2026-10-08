@@ -273,7 +273,7 @@ let client: QueryClient
 const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } })
 beforeEach(() => {
   notifyManager.setScheduler(callback => queueMicrotask(callback))
-  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   mocks.address = VIEWER
   mocks.project.mockReset().mockImplementation(async () => slopshop())
@@ -914,7 +914,7 @@ describe('the reads behind the rewards', () => {
 describe('the reads when the tab is shown again', () => {
   const counts = () => [mocks.rewards.mock.calls.length, mocks.autoStick.mock.calls.length, mocks.trusted.mock.calls.length]
 
-  it('read the viewer\'s again as soon as the browser tab is shown again, whatever the site\'s defaults', async () => {
+  it('reuses fresh viewer evidence on focus and reads stale evidence again, whatever the site\'s defaults', async () => {
     const site = siteClient()
     await renderTab(site)
     expect(counts()).toEqual([1, 1, 1])
@@ -924,6 +924,15 @@ describe('the reads when the tab is shown again', () => {
     await settled()
     expect(counts()).toEqual([1, 1, 1])
 
+    state.mockReturnValue('visible')
+    await act(async () => document.dispatchEvent(new Event('visibilitychange', { bubbles: true })))
+    await settled()
+    expect(counts()).toEqual([1, 1, 1])
+
+    state.mockReturnValue('hidden')
+    await act(async () => document.dispatchEvent(new Event('visibilitychange', { bubbles: true })))
+    await settle(15_001)
+    expect(counts()).toEqual([1, 1, 1])
     state.mockReturnValue('visible')
     await act(async () => document.dispatchEvent(new Event('visibilitychange', { bubbles: true })))
     await settled()
@@ -978,6 +987,11 @@ describe('a panel that is hidden', () => {
     await settled()
     expect(counts()).toEqual([1, 1, 1])
 
+    await act(async () => FakeObserver.tell(true))
+    await settled()
+    expect(counts()).toEqual([1, 1, 1])
+    await act(async () => FakeObserver.tell(false))
+    await settle(15_001)
     await act(async () => FakeObserver.tell(true))
     await settled()
     expect(counts()).toEqual([2, 2, 2])

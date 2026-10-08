@@ -1,5 +1,6 @@
 import type { InvalidateQueryFilters, QueryClient } from '@tanstack/react-query'
 import type { Address } from 'viem'
+import { environmentForChainIds } from '@/lib/chains'
 import {
   ACCOUNT_PAGES,
   accountOfKey,
@@ -16,7 +17,10 @@ export const REFRESH_AFTER_MS = [0, 4_000, 12_000] as const
 /** Invalidates what each of `filters` names, now and at +4 s and +12 s. */
 export function refreshOnSchedule(client: QueryClient, filters: readonly InvalidateQueryFilters[]): void {
   const again = () => {
-    for (const filter of filters) void client.invalidateQueries(filter)
+    for (const filter of filters) {
+      // Initial reads started before confirmation must not restore stale results as fresh.
+      void client.cancelQueries(filter).then(() => client.invalidateQueries(filter))
+    }
   }
   for (const delay of REFRESH_AFTER_MS) {
     if (delay === 0) again()
@@ -32,6 +36,29 @@ const PAGE: readonly ProjectPart[] = ['info', 'events', 'holders', 'sticks', 'la
 const HOLDINGS: readonly ProjectPart[] = ['events', 'holders', 'sticks', 'latest', 'page-balances']
 /** What shares minted, burned or moved change of an account in a project. */
 const STAKE: readonly HolderRead[] = ['sticky-position', 'sticky-tranches', 'sticky-rewards']
+const CHAIN_READS = new Set([...STAKE, 'sticky-autostick', 'sticky-trusted'])
+const DISPLAY_PARTS = new Set<ProjectPart>([...PAGE, 'funding', 'receiver'])
+
+/** Fallback after a receipt is verified outside its original flow. Mark that chain's display evidence and shared
+ * index dependencies stale, retaining cached data and scan histories. Mounted flows still perform their precise
+ * refreshes below; this fallback starts no scans or polling merely because a closed review completed. */
+export function refreshAfterConfirmedWrite(client: QueryClient, chainId: number): void {
+  const network = environmentForChainIds([chainId]) === 'testnet' ? 'testnet' : 'mainnet'
+  const filter: InvalidateQueryFilters = {
+    refetchType: 'none',
+    predicate: ({ queryKey: key }) => {
+      if (key[0] === 'sticky-project') return key[1] === chainId && DISPLAY_PARTS.has(key[3] as ProjectPart)
+      if (CHAIN_READS.has(String(key[0]))) return key[1] === chainId
+      if (key[1] !== network) return false
+      if (key[0] === ACCOUNT_PAGES[0]) {
+        return key[2] !== 'deployed' && (key[3] === 'index' || key[4] === chainId)
+      }
+      return key[0] === 'sticky-home' &&
+        (key[2] === 'index' || key[2] === 'latest' || (key[2] === 'chain' && key[3] === chainId))
+    },
+  }
+  void client.cancelQueries(filter).then(() => client.invalidateQueries(filter))
+}
 
 const ofPage = (chainId: number, projectId: number, parts: readonly ProjectPart[]): InvalidateQueryFilters[] =>
   parts.map(part => ({ queryKey: projectKey(chainId, projectId, part) }))

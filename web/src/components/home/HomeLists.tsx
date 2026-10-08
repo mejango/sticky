@@ -8,11 +8,13 @@ import { StickiestCard } from '@/components/home/StickiestCard'
 import { FeedPlaceholder, StickyFeed } from '@/components/StickyFeed'
 import { Revalidating } from '@/components/ui/Revalidating'
 import { useStickyHome, type StickyHome } from '@/hooks/useStickyHome'
+import { useHydrated } from '@/hooks/useKeptQuery'
 import { useWallet } from '@/hooks/useWallet'
 import type { FeedRow } from '@/lib/sticky-feed'
 import { stickyLabel } from '@/lib/sticky-format'
 import { chainName } from '@/lib/urn'
 import { useViewAs } from '@/lib/viewAs'
+import { openStickyLaunch } from '@/lib/sticky-launch-events'
 
 type List = 'latest' | 'stickiest' | 'airdrops'
 type Ranking = Exclude<List, 'latest'>
@@ -157,6 +159,7 @@ const heading = 'mb-2 mt-1 font-agrandir-wide text-xl'
  * and to the three steps when there are no Sticky tokens yet.
  */
 export function HomeLists({ network }: { network: BendystrawNetwork }) {
+  const hydrated = useHydrated()
   const home = useStickyHome(network)
   const { viewAs } = useViewAs()
   const { address } = useWallet()
@@ -166,6 +169,7 @@ export function HomeLists({ network }: { network: BendystrawNetwork }) {
   const { state, note, retry } = viewOf(home, network === 'testnet')
   const dashboard = state === 'loading' || state === 'ready'
   const loading = state === 'loading'
+  const create = () => openStickyLaunch(network === 'testnet' ? 'testnet' : 'production')
 
   const labels = new Map(
     home.cards.flatMap(group => group.cards.map(({ info }) => [`${info.chainId}:${info.projectId}`, stickyLabel(info)])),
@@ -176,6 +180,7 @@ export function HomeLists({ network }: { network: BendystrawNetwork }) {
 
   return (
     <div data-state={state} aria-busy={loading} className="w-full">
+      {dashboard ? <div className="mb-4 flex justify-end"><button type="button" className="btn-primary px-4 py-2" onClick={create} disabled={!hydrated}>Make your token sticky</button></div> : null}
       <div
         className={
           dashboard
@@ -260,7 +265,7 @@ export function HomeLists({ network }: { network: BendystrawNetwork }) {
               : 'mx-auto max-w-[560px]'
           }
         >
-          <HomeHero note={note} error={state === 'error'} onRetry={retry ? home.retry : undefined} />
+          <HomeHero note={note} error={state === 'error'} onRetry={retry ? home.retry : undefined} onCreate={hydrated ? create : undefined} />
         </div>
       </div>
       {state === 'empty' ? (

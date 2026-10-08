@@ -49,22 +49,21 @@ describe('project tab alias revalidation', () => {
     return { native, patched, restore: () => delete (window.history as { replaceState?: unknown }).replaceState }
   }
 
-  it('updates the hash and reloads a mutable @handle route', () => {
+  it('waits for alias verification before committing a native hash update', () => {
     const { native, patched, restore } = histories()
     at('/%40caf%C3%A9.juicebox')
-
+    let commit: (() => void) | undefined
+    const listen = (event: Event) => { commit = (event as CustomEvent<() => void>).detail }
+    window.addEventListener('project-route-navigate', listen)
     replaceProjectTabHash('#owner')
-
+    expect(native).not.toHaveBeenCalled()
+    expect(commit).toBeTypeOf('function')
+    commit!()
     expect(native).toHaveBeenCalledWith(window.history.state, '', '#owner')
     expect(patched).not.toHaveBeenCalled()
-    expect(reload).toHaveBeenCalledOnce()
+    expect(reload).not.toHaveBeenCalled()
+    window.removeEventListener('project-route-navigate', listen)
     restore()
-  })
-
-  it('reloads an unchanged hash on a mutable alias', () => {
-    at('/@design.juicebox', '#shop')
-    replaceProjectTabHash('#shop')
-    expect(reload).toHaveBeenCalledOnce()
   })
 
   it('keeps numeric routes on the native hash-only fast path', () => {
@@ -85,7 +84,7 @@ describe('project tab alias revalidation', () => {
     expect(reload).not.toHaveBeenCalled()
   })
 
-  it('reloads when another project control assigns location.hash directly', async () => {
+  it('leaves direct hash revalidation to the route provider', async () => {
     at('/@design.juicebox')
     await act(async () =>
       root.render(
@@ -102,7 +101,7 @@ describe('project tab alias revalidation', () => {
 
     await act(async () => window.dispatchEvent(new Event('hashchange')))
 
-    expect(reload).toHaveBeenCalledOnce()
+    expect(reload).not.toHaveBeenCalled()
   })
 })
 

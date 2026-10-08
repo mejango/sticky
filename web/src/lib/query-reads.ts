@@ -10,15 +10,15 @@ export const FRESH_MS = 30_000
 export const REFRESH_MS = 15_000
 
 /**
- * How a read of the viewer's is made again: every 15 seconds while the page is in view, and at once when the tab is
- * shown again, however new it is. It is never fresh, so a panel that is shown again reads again as well. A read of an
- * account is never kept by the browser, so none of this is about what is kept.
+ * Viewer evidence is reused for one refresh interval when a panel or tab is shown again. Polling and explicit
+ * post-transaction invalidation still refresh it, and final send guards read live state independently. These
+ * account-scoped queries stay in memory only; query persistence never stores them in the browser.
  */
 export const VIEWER_REFRESH = {
-  staleTime: 0,
+  staleTime: REFRESH_MS,
   refetchInterval: REFRESH_MS,
   refetchIntervalInBackground: false,
-  refetchOnWindowFocus: 'always',
+  refetchOnWindowFocus: true,
 } as const
 
 /** What `read` gives, or its failure, which the console hears about under `label` unless the read was cancelled. */

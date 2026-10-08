@@ -81,6 +81,7 @@ const idle = () => ({
   confirmationUncertain: false,
   send: vi.fn().mockResolvedValue(null),
   reset: vi.fn(),
+  dismiss: vi.fn(),
 })
 const tx = () => mocks.tx as ReturnType<typeof idle>
 
@@ -422,13 +423,13 @@ describe('the review', () => {
   it('brings the form back, as it was, when the confirm is cancelled', async () => {
     await render()
     await review(BOB, '1')
-    tx().reset.mockClear()
+    tx().dismiss.mockClear()
     await press(confirm(), 'Cancel')
     expect(confirm()).toBeNull()
     expect(field('Recipient')!.value).toBe(BOB)
     expect(field('Amount')!.value).toBe('1')
     expect(field('Recipient')!.closest('[hidden]')).toBeNull()
-    expect(tx().reset).toHaveBeenCalledOnce()
+    expect(tx().dismiss).toHaveBeenCalledOnce()
     expect(onClose).not.toHaveBeenCalled()
   })
 
@@ -590,6 +591,9 @@ describe('once the transfer is confirmed', () => {
   it('reads again what a transfer changes, now and as the index catches up, and nothing else of the project', async () => {
     const invalidate = vi.spyOn(client, 'invalidateQueries')
     const keys = (): QueryKey[] => invalidate.mock.calls.map(([filters]) => filters!.queryKey!)
+    // Each filter waits for its own cancellation; a running position read may
+    // settle after empty filters. Exact membership and repetition are the contract.
+    const sorted = (values: QueryKey[]) => values.map(key => JSON.stringify(key)).sort()
     const project = (...rest: string[]) => ['sticky-project', CHAIN, PROJECT, ...rest]
     const changed = [
       project('events'),
@@ -603,14 +607,14 @@ describe('once the transfer is confirmed', () => {
       ['sticky-account'],
     ]
     await confirmed()
-    expect(keys()).toEqual(changed)
+    expect(sorted(keys())).toEqual(sorted(changed))
 
     await settle(3_999)
-    expect(keys()).toEqual(changed)
+    expect(sorted(keys())).toEqual(sorted(changed))
     await settle(1)
-    expect(keys()).toEqual([...changed, ...changed])
+    expect(sorted(keys())).toEqual(sorted([...changed, ...changed]))
     await settle(8_000)
-    expect(keys()).toEqual([...changed, ...changed, ...changed])
+    expect(sorted(keys())).toEqual(sorted([...changed, ...changed, ...changed]))
     await settle(60_000)
     expect(keys()).toHaveLength(changed.length * 3)
     // The Overview's scans are a project's prefix of their own: they are never requeued by a transfer.

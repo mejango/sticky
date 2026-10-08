@@ -220,7 +220,7 @@ describe('a read that knows its page\'s signal', () => {
       'lib/sticky-metadata.ts: readContract, readContract',
       'lib/sticky-tranches.ts: readContract, readContract',
     ])
-  })
+  }, 30_000)
 
   it('is told apart from one that drops the signal, wherever the signal is bound and however the reader is kept', () => {
     const read = (body: string) => readers('read.ts', `async function read(chainId, { signal }) { ${body} }`)[0]

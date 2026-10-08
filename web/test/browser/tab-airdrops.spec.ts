@@ -141,6 +141,23 @@ for (const viewport of viewports) {
       await expectForm(
         page,
         surface,
+        'Airdrop across chains',
+        async () => {
+          await card(page, 'Send airdrop rewards').getByRole('button', { name: 'Send', exact: true }).click()
+          await page.getByRole('dialog', { name: 'Airdrop', exact: true }).getByLabel('From chain').selectOption('11155420')
+        },
+        dialog => Promise.all([
+          expect(dialog.getByLabel('Origin project token')).toBeVisible(),
+          expect(dialog.getByLabel('Minimum stake age (weeks)')).toBeVisible(),
+          expect(dialog.getByLabel('Maximum stake age (weeks)')).toBeVisible(),
+          expect(dialog.getByLabel('Amount', { exact: true })).toBeVisible(),
+          expect(dialog.getByRole('button', { name: 'Review transfer' })).toBeDisabled(),
+          expect(dialog.getByRole('button', { name: 'Find bridge' })).toBeVisible(),
+        ]),
+      )
+      await expectForm(
+        page,
+        surface,
         'Trust a sender',
         () => card(page, 'Who can stick for you').getByRole('button', { name: 'Trust', exact: true }).click(),
         dialog =>

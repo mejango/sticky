@@ -82,6 +82,18 @@ const SCRIPT_KINDS: Record<string, ts.ScriptKind> = {
   '.cjs': ts.ScriptKind.JS,
 }
 
+// All three architecture checks inspect the same source snapshot. Parse each
+// distinct input once; synthetic scanner cases still get their own exact AST.
+const parsed = new Map<string, ts.SourceFile>()
+function sourceOf(file: string, text: string): ts.SourceFile {
+  const key = `${file}\0${text}`
+  const existing = parsed.get(key)
+  if (existing) return existing
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, SCRIPT_KINDS[extname(file)] ?? ts.ScriptKind.TS)
+  parsed.set(key, source)
+  return source
+}
+
 function sourceFiles(dir = 'src'): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
     const full = join(dir, entry.name)
@@ -210,13 +222,7 @@ function persistedOf(tag: ts.Node, source: ts.SourceFile): Persisted {
 
 /** Every persist tag of a file, with the key it is on. */
 function persistedQueries(file: string, text: string): Persisted[] {
-  const source = ts.createSourceFile(
-    file,
-    text,
-    ts.ScriptTarget.Latest,
-    true,
-    SCRIPT_KINDS[extname(file)] ?? ts.ScriptKind.TS,
-  )
+  const source = sourceOf(file, text)
   const names = tagNames(source)
   const found: Persisted[] = []
   const visit = (node: ts.Node) => {
@@ -263,13 +269,7 @@ const BARE_READS = new Set([
  * it exports with a tag in it, which another module could read bare. An exported hook is the file's own read, and
  * the imports rule covers it. A file with no tag passes. */
 function bareReads(file: string, text: string): string[] {
-  const source = ts.createSourceFile(
-    file,
-    text,
-    ts.ScriptTarget.Latest,
-    true,
-    SCRIPT_KINDS[extname(file)] ?? ts.ScriptKind.TS,
-  )
+  const source = sourceOf(file, text)
   const names = tagNames(source)
   const holdsTag = (node: ts.Node): boolean =>
     (ts.isIdentifier(node) && names.has(node.text) && isReference(node)) ||

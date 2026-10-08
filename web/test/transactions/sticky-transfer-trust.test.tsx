@@ -30,6 +30,8 @@ const mocks = vi.hoisted(() => ({
   requestReview: vi.fn(),
   switchChain: vi.fn(),
   writeContract: vi.fn(),
+  safe: false,
+  waitForSafeExecutionHash: vi.fn(),
   read: vi.fn(),
   position: vi.fn(),
 }))
@@ -49,11 +51,17 @@ vi.mock('@/lib/transaction-review', async importOriginal => ({
   requestContractTransactionReview: mocks.requestReview,
 }))
 vi.mock('@/providers/Providers', () => ({ wagmiConfig: {} }))
-vi.mock('@/lib/safe-connector', () => ({
-  isSafeConnection: () => false,
+vi.mock('@/lib/safe-connector', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/lib/safe-connector')>()),
+  isSafeConnection: () => mocks.safe,
   SAFE_NONCE_GUIDANCE: 'Safe nonce guidance',
-  useSafeConnection: () => false,
-  waitForSafeExecutionHash: vi.fn(),
+  useSafeConnection: () => mocks.safe,
+  waitForSafeExecutionHash: mocks.waitForSafeExecutionHash,
+  atOnceExecution: async () => null,
+  findPendingSafeAppProposal: async () => null,
+  reportedSafeExecution: async () => null,
+  chainAnswer: async () => null,
+  watchSafeProposal: () => new Promise(() => {}),
 }))
 vi.mock('@/lib/sticky-rewards', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-rewards')>()),
@@ -100,6 +108,8 @@ beforeEach(() => {
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   mocks.receipt = { data: undefined, isError: false }
   mocks.account = ALICE
+  mocks.safe = false
+  mocks.waitForSafeExecutionHash.mockReset().mockImplementation(() => new Promise(() => {}))
   mocks.getAccount.mockReset().mockImplementation(() => ({ address: mocks.account, chainId: CHAIN }))
   mocks.requestReview.mockReset().mockResolvedValue(true)
   mocks.switchChain.mockReset().mockResolvedValue(undefined)
@@ -153,6 +163,60 @@ const switchWalletOnly = (account: Address) => mocks.getAccount.mockImplementati
 /** The confirm's main button, and the line under its step that says what the engine is doing. */
 const primary = () => confirm().querySelector<HTMLButtonElement>('footer button.btn-primary')!
 const statusLine = () => confirm().querySelector('p.text-bluebs-700')?.textContent ?? null
+
+describe('a Safe review dismissed from its enclosing modal', () => {
+  const escape = () => act(async () => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+  })
+
+  it.each(['transfer', 'trust'] as const)('releases an unproven %s only after its notice is dismissed', async kind => {
+    mocks.safe = true
+    mocks.waitForSafeExecutionHash.mockRejectedValue(new Error('Confirmation unavailable.'))
+    const onClose = vi.fn()
+    const flow = kind === 'transfer'
+      ? <TransferFlow info={info} onClose={onClose} />
+      : <TrustFlow chainId={CHAIN} projectId={12} info={info} sender={null} onClose={onClose} />
+    if (kind === 'trust') mocks.read.mockResolvedValue(answer(false))
+    await render(flow)
+    await type(kind === 'transfer' ? 'Recipient' : 'Sender address', BOB)
+    if (kind === 'transfer') await type('Amount', '1.123456789')
+    await press(modal(), `Review ${kind}`)
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+    await press(confirm(), `Confirm & ${kind}`)
+
+    expect(statusLine()).toContain('Safe proposal submitted, but confirmation is unavailable.')
+    expect(primary().textContent).toBe('Done')
+    expect(confirm().querySelector('li')?.getAttribute('data-state')).toBe('active')
+    expect(invalidate).not.toHaveBeenCalled()
+    await escape()
+    expect(document.querySelector('[data-tx-confirm]')).toBeNull()
+    expect(onClose).not.toHaveBeenCalled()
+
+    // Escape dismissed the unproven result, so an explicit new review may send again.
+    await press(modal(), `Review ${kind}`)
+    await press(confirm(), `Confirm & ${kind}`)
+    expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+    await escape()
+    await escape()
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('keeps a pending transfer held after Escape and reopening', async () => {
+    mocks.safe = true
+    await render(transfer())
+    await type('Recipient', BOB)
+    await type('Amount', '1.987654321')
+    await press(modal(), 'Review transfer')
+    await press(confirm(), 'Confirm & transfer')
+    expect(statusLine()).toBe('Proposed to your Safe. Its other signers can approve it there.')
+    expect(primary().textContent).toBe('Done')
+    await escape()
+    await press(modal(), 'Review transfer')
+    await press(confirm(), 'Confirm & transfer')
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
+    expect(primary().textContent).toBe('Done')
+  })
+})
 
 describe('a transfer', () => {
   async function reviewed(amount = '1.5') {

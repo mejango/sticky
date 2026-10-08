@@ -431,7 +431,7 @@ export function AutoStickFlow({
     if (complete) setForm(null)
     setPlan(null)
     setPreparing(false)
-    if (tx.phase !== 'success') tx.reset()
+    if (tx.phase !== 'success') tx.dismiss()
   }
 
   function closeForm() {
@@ -484,6 +484,7 @@ export function AutoStickFlow({
         onConfirm={() => void confirm()}
         busy={sending}
         complete={complete}
+        settled={tx.phase === 'submitted'}
         status={
           !plan ? (
             'Reading your auto-stick…'

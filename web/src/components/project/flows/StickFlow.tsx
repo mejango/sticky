@@ -260,7 +260,7 @@ export function StickFlow({
     setPreparing(false)
     setFailure(null)
     if (complete) setAmount('')
-    if (tx.phase !== 'success') tx.reset()
+    if (tx.phase !== 'success') tx.dismiss()
   }
 
   // A refusal for want of an external wallet stands until one connects. The plan it refused was built for the account
@@ -389,6 +389,7 @@ export function StickFlow({
           onConfirm={() => void confirm()}
           busy={sending}
           complete={complete}
+          settled={tx.phase === 'submitted'}
           status={
             !plan ? (
               'Reading your balance, allowance and the current price…'

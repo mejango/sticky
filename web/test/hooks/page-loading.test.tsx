@@ -459,7 +459,7 @@ describe('how the project page loads', () => {
       at: { header: 3, sticks: 6, latest: 7, chart: 14 },
       center: 14,
       bendystraw: 10,
-      peak: 2,
+      peak: 3,
     })
   })
 
@@ -472,9 +472,9 @@ describe('how the project page loads', () => {
       projectMilestones(BASE_SEPOLIA, 42),
     )
     // The holders fall back on the history, and do not wait behind Latest's scan of the terminal for a turn. The
-    // chart's two scans of the terminal keep both of Center's slots busy.
+    // chart's two independent scans overlap while admission paces their starts.
     expect(summary(page)).toEqual({
-      at: { header: 3, sticks: 38, latest: 49, chart: 72 },
+      at: { header: 3, sticks: 38, latest: 50, chart: 73 },
       center: 112,
       bendystraw: 8,
       peak: 2,
@@ -492,9 +492,9 @@ describe('how the project page loads again', () => {
     await modules.react.act(async () => void (await vi.advanceTimersByTimeAsync(60_000)))
     const again = await measureIn(browser, projectPage(modules, BASE_SEPOLIA, 42), projectMilestones(BASE_SEPOLIA, 42, Date.now()))
     await browser.close()
-    // The header's three requests share Center's two slots with the history's, the holders' and the logo's, so it is
-    // confirmed a step later than on a first visit; the holder figures come with it, and Latest a step after.
-    expect(summary(again)).toEqual({ at: { header: 4, sticks: 4, latest: 5, chart: 10 }, center: 12, bendystraw: 9, peak: 2 })
+    // Starts are paced while replies may overlap: the holder figures arrive a step before the header, and Latest
+    // follows it. Cached history still bounds the requests made on a return visit.
+    expect(summary(again)).toEqual({ at: { header: 4, sticks: 3, latest: 5, chart: 10 }, center: 12, bendystraw: 9, peak: 3 })
   })
 })
 
@@ -502,19 +502,19 @@ describe('how the account page loads', () => {
   it('with Bendystraw answering, as on the testnets: two chains at a time, the positions first', async () => {
     const modules = await load()
     const page = await measure(modules, accountWorld(), accountPage(modules, A), accountMilestones(A, 3, 7))
-    // Center's two slots are busy nearly throughout, so 34 requests take at least 17 steps. The activity begins while
-    // the index the positions read is fresh, and reads it from there.
+    // Two chain workflows may have overlapping Center replies. The activity begins while the index the positions
+    // read is fresh, and reads it from there; pacing adds no requests.
     expect(summary(page)).toEqual({
-      at: { firstPosition: 7, allPositions: 10, firstActivity: 17, allActivity: 20 },
+      at: { firstPosition: 7, allPositions: 9, firstActivity: 17, allActivity: 20 },
       center: 34,
       bendystraw: 9,
-      peak: 2,
+      peak: 3,
     })
   })
 })
 
 describe('leaving a page', () => {
-  it('lets the next page read at once: what the page left had waiting is never sent, and two in flight at most', async () => {
+  it('lets the next page read at once while cancelling abandoned scans and pacing request starts', async () => {
     const modules = await load()
     // Bendystraw has stalled 10,000 blocks behind, so the history's tail and the holders' are long scans that run side
     // by side, and each has requests waiting for a slot. #43 is another project of the chain.
@@ -539,6 +539,8 @@ describe('leaving a page', () => {
     expect(since.filter(of42)).toEqual([])
     // The next page's first request goes out within a step: it waits for no more than what was in flight.
     expect(since[0].start - left).toBeLessThanOrEqual(STEP_MS)
-    expect(browser.traffic.peak).toBe(2)
+    expect(browser.traffic.peak).toBe(4)
+    const starts = browser.traffic.of('center').map(request => request.start)
+    expect(starts.slice(1).every((start, index) => start - starts[index] >= 125)).toBe(true)
   })
 })

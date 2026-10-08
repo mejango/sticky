@@ -20,8 +20,8 @@ import { useViewAs } from '@/lib/viewAs'
  * account's, and when the pots are scanned for, the scan keeps its own history (`discoverFunding`). Every read waits
  * for this visit's read of the project: a copy of it that the browser kept from an earlier visit names the tokens, and
  * nothing is read on its word. What belongs to the viewer is read again every 15 seconds and when the browser tab is
- * shown again. While the panel is hidden it is not read at all (`useShowing`), and it is read at once when the panel is
- * shown again.
+ * shown again if the evidence is at least 15 seconds old. While the panel is hidden it is not read at all
+ * (`useShowing`), and returning within that freshness window reuses the same account and project's evidence.
  */
 
 const FUNDING_UNREADABLE = "Could not list a Sticky project's airdrops; the Airdrops tab shows only the staked token's."

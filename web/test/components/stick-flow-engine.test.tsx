@@ -57,7 +57,8 @@ vi.mock('@/lib/transaction-review', async importOriginal => ({
   requestContractTransactionReview: mocks.requestReview,
 }))
 vi.mock('@/providers/Providers', () => ({ wagmiConfig: {} }))
-vi.mock('@/lib/safe-connector', () => ({
+vi.mock('@/lib/safe-connector', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/lib/safe-connector')>()),
   isSafeConnection: () => false,
   SAFE_NONCE_GUIDANCE: 'Safe nonce guidance',
   useSafeConnection: () => false,

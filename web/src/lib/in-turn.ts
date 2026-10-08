@@ -1,9 +1,9 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { line, type Line } from '@/lib/line'
 
-/** How many reads made in turn are under way at once with each query client. Every request they send waits for one of
- * Center's slots (`jbcenter-rpc.ts`), which bound what Center gets; two reads keep both slots busy while one of them
- * waits on Bendystraw, and the rest wait in order, so that what a page shows first is read first. */
+/** Bound whole scan workloads per query client, keeping their requested order so the page's first sections start
+ * first. Individual RPC starts are independently paced across every reader and chain (`jbcenter-rpc.ts`); slow
+ * responses in these two scan lanes do not hold up wallet, review or other readers' requests. */
 export const READ_LANES = 2
 
 /** The reads under way and waiting with each query client. */

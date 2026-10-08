@@ -257,7 +257,7 @@ export function ClaimFlow({
     reading.current?.abort()
     setPlan(null)
     setPreparing(false)
-    if (tx.phase !== 'success') tx.reset()
+    if (tx.phase !== 'success') tx.dismiss()
   }
 
   useEffect(() => {
@@ -328,6 +328,7 @@ export function ClaimFlow({
           onConfirm={() => void confirm()}
           busy={sending}
           complete={complete}
+          settled={tx.phase === 'submitted'}
           status={
             !plan ? (
               'Reading your rewards…'

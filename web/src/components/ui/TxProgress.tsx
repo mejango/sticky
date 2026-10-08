@@ -10,7 +10,8 @@ export function confirmAction(phase: TxPhase, idle: string): string {
 /** The line a flow's confirm shows while the engine sends a step, from the engine's phase: the check before the wallet
  * is asked, the wallet's own prompt, then the wait for the chain, or a Safe's guidance while it waits on a proposal.
  * Null while nothing is being sent. */
-export function sendingStatus({ phase, safeNonceGuidance }: { phase: TxPhase; safeNonceGuidance?: string | null }): string | null {
+export function sendingStatus({ phase, safeNonceGuidance, notice }: { phase: TxPhase; safeNonceGuidance?: string | null; notice?: string | null }): string | null {
+  if (phase === 'submitted') return notice ?? null
   const label = txPhaseLabel(phase, { idle: '', pending: 'Waiting for confirmation…' })
   return label ? (safeNonceGuidance ?? label) : null
 }

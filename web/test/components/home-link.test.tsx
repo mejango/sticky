@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, type AnchorHTMLAttributes, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { renderToString } from 'react-dom/server'
@@ -12,7 +13,7 @@ const mocks = vi.hoisted(() => ({
   failure: null as Error | null,
 }))
 
-vi.mock('next/navigation', () => ({
+vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn() }),
   usePathname: () => mocks.pathname,
   useSearchParams: () => {
     if (mocks.failure) throw mocks.failure
@@ -48,7 +49,7 @@ afterEach(async () => {
 })
 
 const link = () => host.querySelector('a')!
-const show = (tree: ReactNode = <HomeLink>home</HomeLink>) => act(async () => root.render(tree))
+const show = (tree: ReactNode = <HomeLink>home</HomeLink>) => act(async () => root.render(<QueryClientProvider client={new QueryClient()}>{tree}</QueryClientProvider>))
 const hrefAt = async (pathname: string, search = '') => {
   mocks.pathname = pathname
   mocks.search = search

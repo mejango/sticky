@@ -1,6 +1,7 @@
 'use client'
 
 import { createContext, type ButtonHTMLAttributes, type ReactNode, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useProjectRouteBlocked } from '@/providers/ProjectRouteBlockedContext'
 
 /**
  * Body scroll lock, reference counted.
@@ -77,10 +78,11 @@ export function ModalDialog({
   children: ReactNode
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null)
+  const routeBlocked = useProjectRouteBlocked()
 
   useEffect(() => {
     const dialog = dialogRef.current
-    if (!dialog) return
+    if (!dialog || routeBlocked) return
     // showModal() throws InvalidStateError on an already open dialog.
     if (!dialog.open) dialog.showModal()
     // showModal() hands focus to the first focusable descendant, which is the close button in every
@@ -93,7 +95,7 @@ export function ModalDialog({
       releaseScroll()
       if (dialog.open) dialog.close()
     }
-  }, [])
+  }, [routeBlocked])
 
   const dismiss = () => {
     if (dismissible) onClose()

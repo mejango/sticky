@@ -1,3 +1,4 @@
+import { QueryClient } from '@tanstack/react-query'
 // @vitest-environment jsdom
 
 /**
@@ -13,6 +14,12 @@ import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { parseAbi, type Address } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+const displayQueries = new QueryClient()
+vi.mock('@tanstack/react-query', async importOriginal => ({
+  ...(await importOriginal<typeof import('@tanstack/react-query')>()),
+  useQueryClient: () => displayQueries,
+}))
 
 const mocks = vi.hoisted(() => ({
   publicClient: { simulateContract: vi.fn(), estimateContractGas: vi.fn() },
@@ -70,6 +77,7 @@ let host: HTMLDivElement
 let root: Root
 
 beforeEach(() => {
+  displayQueries.clear()
   mocks.receipt = { data: undefined, isError: false }
   mocks.getAccount.mockImplementation(() => ({ address: ALICE, chainId: 8453 }))
   mocks.requestReview.mockResolvedValue(true)

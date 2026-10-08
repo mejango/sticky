@@ -15,6 +15,7 @@ import { lazyCenterConnector } from './lazy-center-connector'
 import { externalWalletConnectors } from './wallet-connectors'
 import { CENTER_WALLET_ENABLED } from './wallet-config'
 import { ExternalWalletDialog } from './ExternalWalletDialog'
+import { ProjectRouteProvider } from './ProjectRouteContext'
 import { arbitrum, arbitrumSepolia, base, baseSepolia, mainnet, optimism, optimismSepolia, sepolia } from '@bananapus/nana-sdk-core/chains'
 
 export const IS_DETERMINISTIC_BROWSER = process.env.NEXT_PUBLIC_DETERMINISTIC_BROWSER === 'true'
@@ -59,7 +60,9 @@ export function Providers({ children }: PropsWithChildren) {
   return <QueryClientProvider client={queryClient}>
     <WagmiProvider config={wagmiConfig} reconnectOnMount={!IS_DETERMINISTIC_BROWSER}>
       <WalletAuthContext.Provider value={walletAuth}>
-        <TransactionReviewProvider>{children}</TransactionReviewProvider>
+        <ProjectRouteProvider>
+          <TransactionReviewProvider>{children}</TransactionReviewProvider>
+        </ProjectRouteProvider>
         {walletOpen ? (
           <ExternalWalletDialog
             key={walletOpen.walletsOnly ? 'wallets' : 'sign-in'}

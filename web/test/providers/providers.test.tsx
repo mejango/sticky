@@ -6,6 +6,8 @@ import { useConfig } from 'wagmi'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { serializeState } from '@/lib/query-persist'
 
+vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn() }) }))
+
 vi.mock('@/providers/ExternalWalletDialog', () => ({
   ExternalWalletDialog: ({ onClose, walletsOnly }: { onClose: () => void; walletsOnly?: boolean }) => (
     <div data-testid="chooser" data-wallets-only={String(walletsOnly === true)}>

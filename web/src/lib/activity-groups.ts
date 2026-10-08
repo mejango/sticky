@@ -1,5 +1,7 @@
 /** jbm's groupSameTxEvents (JBM/src/components/ActivityList.tsx:303), keyed by the caller.
- * A group sits where its newest member sat. */
+ * A group sits where its newest member sat. Sticky's project feed is single-chain; home/account feeds span unrelated
+ * projects and carry no verified launch identity. Keep chain and project in the key instead of applying the SDK's
+ * cross-chain display heuristic to those feeds. */
 export function groupSameTx<T>(events: T[], key: (event: T) => string): T[][] {
   const groups = new Map<string, T[]>()
   const order: T[][] = []

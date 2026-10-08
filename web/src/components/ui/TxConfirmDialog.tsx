@@ -9,6 +9,7 @@ import {
   useHoldEnclosingModal,
 } from '@/components/ui/ModalShell'
 import { ExternalWalletAction } from '@/components/ui/ExternalWalletAction'
+import { transactionMessage } from '@bananapus/nana-sdk-core/review'
 import { TxSteps } from '@/components/ui/TxSteps'
 
 export type TxConfirmRow = {
@@ -41,6 +42,7 @@ export function TxConfirmDialog({
   onConfirm,
   busy = false,
   complete = false,
+  settled = false,
   preparing = false,
   status,
   error,
@@ -61,6 +63,8 @@ export function TxConfirmDialog({
   onConfirm: () => void
   busy?: boolean
   complete?: boolean
+  /** A Safe holds the pending action; Done closes this review without marking its steps confirmed. */
+  settled?: boolean
   /** Rows and steps are still being read; `status` says what is happening. */
   preparing?: boolean
   status?: ReactNode
@@ -116,7 +120,7 @@ export function TxConfirmDialog({
         <div className="space-y-4 px-5 py-5">
           {preparing ? (
             <p className="py-2 text-sm text-bluebs-700" role="status">
-              {status ?? 'Preparing…'}
+              {typeof status === 'string' ? transactionMessage(status) : status ?? 'Preparing…'}
             </p>
           ) : (
             <>
@@ -134,13 +138,13 @@ export function TxConfirmDialog({
                 intro={stepsIntro}
                 className="rounded-xl border border-smoke-200 bg-white p-3"
               />
-              {status ? <p className="text-sm text-bluebs-700">{status}</p> : null}
+              {status ? <p className="text-sm text-bluebs-700">{typeof status === 'string' ? transactionMessage(status) : status}</p> : null}
             </>
           )}
-          {error ? <p className="text-sm text-red-600">{error}<ExternalWalletAction error={error} /></p> : null}
+          {error ? <p className="text-sm text-red-600">{typeof error === 'string' ? transactionMessage(error) : error}<ExternalWalletAction error={error} /></p> : null}
         </div>
         <footer className="flex justify-end gap-2 border-t border-smoke-200 bg-bone px-5 py-4">
-          {complete ? (
+          {complete || settled ? (
             <button
               type="button"
               className="btn-primary min-h-[44px] px-5 text-sm"
