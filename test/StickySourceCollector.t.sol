@@ -10,6 +10,7 @@ import {JBFees} from "@bananapus/core-v6/src/libraries/JBFees.sol";
 import {JBCashOutHookSpecification} from "@bananapus/core-v6/src/structs/JBCashOutHookSpecification.sol";
 import {JBRuleset} from "@bananapus/core-v6/src/structs/JBRuleset.sol";
 import {JBSucker} from "@bananapus/suckers-v6/src/JBSucker.sol";
+import {JBSuckerState} from "@bananapus/suckers-v6/src/enums/JBSuckerState.sol";
 import {IJBSucker} from "@bananapus/suckers-v6/src/interfaces/IJBSucker.sol";
 import {IJBSuckerRegistry} from "@bananapus/suckers-v6/src/interfaces/IJBSuckerRegistry.sol";
 import {JBOutboxTree} from "@bananapus/suckers-v6/src/structs/JBOutboxTree.sol";
@@ -454,6 +455,124 @@ contract StickySourceCollectorTest is Test {
         _setUpProject(3);
     }
 
+    /// @notice Repeated unrelated callers conserve principal and their own fees across donations, callbacks and
+    /// retries.
+    /// @param seed Entropy for positive bounded additions, donations, callback reserves, fees and receipts.
+    /// @param sameToken Whether source rewards and caller fee receipts share project 1's ERC-20.
+    function testFuzz_sendConservesAcrossCallerSequences(bytes32 seed, bool sameToken) public {
+        if (sameToken) _setUpProject(1);
+        address child = address(_collector.FEE_PAYER());
+        address firstCaller = _caller;
+        address secondCaller = makeAddr("second sequence caller");
+        uint256 principalDelivered = _AMOUNT;
+        uint256 childDonations;
+        uint256 firstReceipts;
+        uint256 secondReceipts;
+        uint256 feesPaid;
+        // Each sequence begins with an older unsent frontier and unrelated native donations.
+        _sucker.setOutbox({count: 7, sent: 3, balance: 1 ether, nonce: 4});
+        vm.deal({account: address(_collector), newBalance: 2 ether});
+        vm.deal({account: child, newBalance: 3 ether});
+        vm.deal({account: secondCaller, newBalance: 10 ether});
+
+        // Every input includes successful fee payment, a refund, and a repeated caller selected by the seed.
+        for (uint256 i; i < 3; i++) {
+            uint256 entropy = uint256(keccak256(abi.encode(seed, i)));
+            uint256 addition = bound(entropy, 1, 1e24);
+            uint256 donation = bound(entropy >> 32, 1, 1e24);
+            uint256 callbackReserve = bound(entropy >> 64, 1, 1e24);
+            uint256 receipt = i == 1 ? 0 : bound(entropy >> 96, 1, 1e24);
+            uint256 fee = bound(entropy >> 128, 1, 1 ether);
+            uint256 gross = bound(entropy >> 192, 1, 100 ether);
+            _sourceToken.mint({account: address(_collector), amount: addition});
+            _feeToken.mint({account: child, amount: donation});
+            principalDelivered += addition;
+            childDonations += donation;
+            uint256 principalBefore = _sourceToken.balanceOf(address(_collector));
+            uint256 preparedBefore = _sourceToken.balanceOf(address(_sucker));
+            _mockPreview({amount: principalBefore, gross: gross, terminal: _terminal});
+            _mockFee(fee);
+            _caller = i == 0 || (i == 2 && uint256(seed) % 2 == 0) ? firstCaller : secondCaller;
+            uint256 callerNativeBefore = _caller.balance;
+            _sucker.setSendBehavior({
+                failFee: i == 1,
+                failTransport: true,
+                leaveUnsent: false,
+                receipt: receipt,
+                principal: callbackReserve,
+                reenter: false
+            });
+
+            // Fail after receipt or retained-credit creation, proving prior successful sends survive intact.
+            bytes32 beforeState = _stateHash();
+            vm.prank(_caller);
+            vm.expectRevert(StickySourceSuckerStub.StickySourceSuckerStub_Rejected.selector);
+            _collector.send{value: fee}();
+            assertEq(_stateHash(), beforeState);
+            assertEq(_feeToken.balanceOf(firstCaller), firstReceipts);
+            assertEq(_feeToken.balanceOf(secondCaller), secondReceipts);
+
+            _sucker.setSendBehavior({
+                failFee: i == 1,
+                failTransport: false,
+                leaveUnsent: false,
+                receipt: receipt,
+                principal: callbackReserve,
+                reenter: false
+            });
+            vm.prank(_caller);
+            uint256 index = _collector.send{value: fee}();
+            principalDelivered += callbackReserve;
+            if (_caller == firstCaller) firstReceipts += receipt;
+            else secondReceipts += receipt;
+            if (i != 1) feesPaid += fee;
+
+            // Principal moves to the sucker; reserves arriving during fee payment remain for the next send.
+            assertEq(_sourceToken.balanceOf(address(_sucker)), preparedBefore + principalBefore);
+            assertEq(_sourceToken.balanceOf(address(_collector)), callbackReserve);
+            assertEq(
+                _sourceToken.balanceOf(address(_sucker)) + _sourceToken.balanceOf(address(_collector)),
+                principalDelivered
+            );
+            assertEq(_feeToken.balanceOf(child), childDonations);
+            assertEq(_feeToken.balanceOf(firstCaller), firstReceipts);
+            assertEq(_feeToken.balanceOf(secondCaller), secondReceipts);
+            uint256 feeInventory = childDonations + firstReceipts + secondReceipts;
+            assertEq(_sourceToken.totalSupply(), principalDelivered + (sameToken ? feeInventory : 0));
+            if (!sameToken) assertEq(_feeToken.totalSupply(), feeInventory);
+            assertEq(_caller.balance, callerNativeBefore - (i == 1 ? 0 : fee));
+            assertEq(address(_sucker).balance, feesPaid);
+            assertEq(address(_collector).balance, 2 ether);
+            assertEq(child.balance, 3 ether);
+            assertEq(_sucker.retainedToRemoteFeeOf(child), 0);
+            assertEq(_sourceToken.allowance({owner: address(_collector), spender: address(_sucker)}), 0);
+            assertEq(_sucker.beneficiaryPrepared(), bytes32(uint256(uint160(_receiver))));
+            assertEq(index, 7 + i);
+            JBOutboxTree memory outbox = _sucker.outboxOf(JBConstants.NATIVE_TOKEN);
+            assertEq(outbox.tree.count, 8 + i);
+            assertEq(outbox.numberOfClaimsSent, 8 + i);
+            assertEq(outbox.nonce, 5 + i);
+            assertEq(outbox.balance, 0);
+        }
+        // A fuzz input cannot pass by exercising only revert paths.
+        assertEq(_sucker.prepareCalls(), 3);
+    }
+
+    /// @notice A scheduled retirement remains usable while the sucker still accepts preparation and submission.
+    function test_constructorAcceptsPendingDeprecation() public {
+        vm.mockCall({
+            callee: address(_sucker),
+            data: abi.encodeCall(IJBSucker.state, ()),
+            returnData: abi.encode(JBSuckerState.DEPRECATION_PENDING)
+        });
+        StickySourceCollector collector = _deploy();
+        assertEq(address(collector.SUCKER()), address(_sucker));
+        _sourceToken.mint({account: address(collector), amount: _AMOUNT});
+        vm.prank(_caller);
+        assertEq(collector.send{value: _FEE}(), 0);
+        assertEq(_sourceToken.balanceOf(address(collector)), 0);
+    }
+
     /// @notice Each supported source chain accepts the fixed Ethereum route.
     function test_constructorAcceptsSupportedChains() public {
         uint256[3] memory chains = [uint256(10), uint256(8453), uint256(42_161)];
@@ -479,7 +598,28 @@ contract StickySourceCollectorTest is Test {
         vm.mockCall({
             callee: _tokens, data: abi.encodeCall(IJBTokens.tokenOf, (_projectId)), returnData: abi.encode(_caller)
         });
-        vm.expectRevert(StickySourceCollector.StickySourceCollector_InvalidRoute.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InvalidTokens.selector, _caller, address(_feeToken)
+            )
+        );
+        _deploy();
+    }
+
+    /// @notice A fully deprecated route cannot create a collector that has no way to send its balance.
+    function test_constructorRejectsDeprecatedSucker() public {
+        vm.mockCall({
+            callee: address(_sucker),
+            data: abi.encodeCall(IJBSucker.state, ()),
+            returnData: abi.encode(JBSuckerState.DEPRECATED)
+        });
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_SuckerNotSending.selector,
+                address(_sucker),
+                JBSuckerState.DEPRECATED
+            )
+        );
         _deploy();
     }
 
@@ -488,7 +628,11 @@ contract StickySourceCollectorTest is Test {
         vm.mockCall({
             callee: _tokens, data: abi.encodeCall(IJBTokens.tokenOf, (_projectId)), returnData: abi.encode(address(0))
         });
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InvalidTokens.selector, address(0), address(_feeToken)
+            )
+        );
         _deploy();
         vm.mockCall({
             callee: _tokens,
@@ -496,7 +640,11 @@ contract StickySourceCollectorTest is Test {
             returnData: abi.encode(address(_sourceToken))
         });
         vm.mockCall({callee: _tokens, data: abi.encodeCall(IJBTokens.tokenOf, (1)), returnData: abi.encode(address(0))});
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InvalidTokens.selector, address(_sourceToken), address(0)
+            )
+        );
         _deploy();
     }
 
@@ -505,13 +653,13 @@ contract StickySourceCollectorTest is Test {
         _mockMapping({
             enabled: false, emergency: false, remoteToken: bytes32(uint256(uint160(JBConstants.NATIVE_TOKEN)))
         });
-        vm.expectRevert();
+        vm.expectRevert(_nativeRouteError());
         _deploy();
         _mockMapping({enabled: true, emergency: true, remoteToken: bytes32(uint256(uint160(JBConstants.NATIVE_TOKEN)))});
-        vm.expectRevert();
+        vm.expectRevert(_nativeRouteError());
         _deploy();
         _mockMapping({enabled: true, emergency: false, remoteToken: bytes32(uint256(uint160(address(_sourceToken))))});
-        vm.expectRevert();
+        vm.expectRevert(_nativeRouteError());
         _deploy();
     }
 
@@ -522,7 +670,11 @@ contract StickySourceCollectorTest is Test {
             data: abi.encodeWithSignature("FEE_PROJECT_ID()"),
             returnData: abi.encode(uint256(3))
         });
-        vm.expectRevert(StickySourceCollector.StickySourceCollector_InvalidRoute.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InvalidProject.selector, address(_sucker), _projectId
+            )
+        );
         _deploy();
     }
 
@@ -533,7 +685,7 @@ contract StickySourceCollectorTest is Test {
             data: abi.encodeCall(IJBSucker.peerChainId, ()),
             returnData: abi.encode(uint256(10))
         });
-        vm.expectRevert();
+        vm.expectRevert(_nativeRouteError());
         _deploy();
     }
 
@@ -542,7 +694,28 @@ contract StickySourceCollectorTest is Test {
         vm.mockCall({
             callee: address(_sucker), data: abi.encodeCall(IJBSucker.projectId, ()), returnData: abi.encode(uint256(2))
         });
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InvalidProject.selector, address(_sucker), uint256(2)
+            )
+        );
+        _deploy();
+    }
+
+    /// @notice A sending-disabled route cannot create a collector that has no way to send its balance.
+    function test_constructorRejectsSendingDisabledSucker() public {
+        vm.mockCall({
+            callee: address(_sucker),
+            data: abi.encodeCall(IJBSucker.state, ()),
+            returnData: abi.encode(JBSuckerState.SENDING_DISABLED)
+        });
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_SuckerNotSending.selector,
+                address(_sucker),
+                JBSuckerState.SENDING_DISABLED
+            )
+        );
         _deploy();
     }
 
@@ -553,17 +726,35 @@ contract StickySourceCollectorTest is Test {
             data: abi.encodeCall(IJBSuckerRegistry.isSuckerOf, (_projectId, address(_sucker))),
             returnData: abi.encode(false)
         });
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InvalidProject.selector, address(_sucker), _projectId
+            )
+        );
         _deploy();
     }
 
     /// @notice Ethereum and unrelated chains cannot deploy a source collector.
     function test_constructorRejectsUnsupportedChains() public {
         vm.chainId(1);
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InvalidRoute.selector,
+                uint256(1),
+                address(_sucker),
+                _receiver
+            )
+        );
         _deploy();
         vm.chainId(137);
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InvalidRoute.selector,
+                uint256(137),
+                address(_sucker),
+                _receiver
+            )
+        );
         _deploy();
     }
 
@@ -572,15 +763,26 @@ contract StickySourceCollectorTest is Test {
         vm.mockCall({
             callee: address(_sucker), data: abi.encodeCall(IJBSucker.peer, ()), returnData: abi.encode(bytes32(0))
         });
-        vm.expectRevert(StickySourceCollector.StickySourceCollector_InvalidRoute.selector);
+        vm.expectRevert(_nativeRouteError());
         _deploy();
-        vm.expectRevert(StickySourceCollector.StickySourceCollector_InvalidRoute.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InvalidRoute.selector, uint256(10), _caller, _receiver
+            )
+        );
         new StickySourceCollector({sucker: JBSucker(payable(_caller)), receiver: _receiver});
     }
 
     /// @notice A zero destination cannot receive bridged principal.
     function test_constructorRejectsZeroReceiver() public {
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InvalidRoute.selector,
+                uint256(10),
+                address(_sucker),
+                address(0)
+            )
+        );
         new StickySourceCollector({sucker: JBSucker(payable(address(_sucker))), receiver: address(0)});
     }
 
@@ -693,11 +895,19 @@ contract StickySourceCollectorTest is Test {
         vm.prank(address(_collector));
         bool transferred = _sourceToken.transfer({to: _caller, value: _AMOUNT});
         assertTrue(transferred);
-        vm.expectRevert(StickySourceCollector.StickySourceCollector_EmptyBalance.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_EmptyBalance.selector, address(_sourceToken)
+            )
+        );
         _send();
         _sourceToken.mint({account: address(_collector), amount: _AMOUNT});
         _mockPreview({amount: _AMOUNT, gross: 0, terminal: _terminal});
-        _expectAtomicRevert(abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_ZeroReclaim.selector));
+        _expectAtomicRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_ZeroReclaim.selector, _AMOUNT, uint256(0)
+            )
+        );
     }
 
     /// @notice A send can neither underpay nor overpay the exact current registry fee.
@@ -723,7 +933,9 @@ contract StickySourceCollectorTest is Test {
             data: abi.encodeCall(IJBDirectory.primaryTerminalOf, (_projectId, JBConstants.NATIVE_TOKEN)),
             returnData: abi.encode(address(0))
         });
-        _expectAtomicRevert(abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_NoTerminal.selector));
+        _expectAtomicRevert(
+            abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_NoTerminal.selector, _projectId)
+        );
     }
 
     /// @notice Preexisting child credit is not attributed to the next unrelated fee payer.
@@ -770,7 +982,24 @@ contract StickySourceCollectorTest is Test {
     /// @notice A mapping changed after construction is rejected before preparing another leaf.
     function test_sendRejectsRemappedNativeToken() public {
         _mockMapping({enabled: true, emergency: false, remoteToken: bytes32(uint256(uint160(address(_sourceToken))))});
-        _expectAtomicRevert(abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_InvalidRoute.selector));
+        _expectAtomicRevert(_nativeRouteError());
+    }
+
+    /// @notice A route retired after construction rejects sending without changing balances or the prior outbox.
+    function test_sendRejectsRetiredSuckerAtomically() public {
+        _sucker.setOutbox({count: 7, sent: 3, balance: 1 ether, nonce: 4});
+        vm.mockCall({
+            callee: address(_sucker),
+            data: abi.encodeCall(IJBSucker.state, ()),
+            returnData: abi.encode(JBSuckerState.SENDING_DISABLED)
+        });
+        _expectAtomicRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_SuckerNotSending.selector,
+                address(_sucker),
+                JBSuckerState.SENDING_DISABLED
+            )
+        );
     }
 
     /// @notice The collector rejects either zero or multiple appended leaves and rolls the transfer back.
@@ -800,6 +1029,28 @@ contract StickySourceCollectorTest is Test {
             abi.encodeWithSelector(StickySourceFeePayer.StickySourceFeePayer_RetainedFee.selector, uint256(1))
         );
         assertEq(_sucker.retainedToRemoteFeeOf(address(_collector.FEE_PAYER())), 0);
+    }
+
+    /// @notice A source-token rejection during preparation restores the granted approval and existing outbox.
+    function test_sendRollsBackFailedPrincipalPull() public {
+        _sucker.setOutbox({count: 7, sent: 3, balance: 1 ether, nonce: 4});
+        vm.mockCallRevert({
+            callee: address(_sourceToken),
+            data: abi.encodeCall(IERC20.transferFrom, (address(_collector), address(_sucker), _AMOUNT)),
+            revertData: abi.encodeWithSelector(StickySourceSuckerStub.StickySourceSuckerStub_Rejected.selector)
+        });
+        _expectAtomicRevert(abi.encodeWithSelector(StickySourceSuckerStub.StickySourceSuckerStub_Rejected.selector));
+    }
+
+    /// @notice A rejected allowance cleanup unwinds the completed prepare before transport can be submitted.
+    function test_sendRollsBackRejectedAllowanceReset() public {
+        _sucker.setOutbox({count: 7, sent: 3, balance: 1 ether, nonce: 4});
+        vm.mockCallRevert({
+            callee: address(_sourceToken),
+            data: abi.encodeCall(IERC20.approve, (address(_sucker), uint256(0))),
+            revertData: abi.encodeWithSelector(StickySourceSuckerStub.StickySourceSuckerStub_Rejected.selector)
+        });
+        _expectAtomicRevert(abi.encodeWithSelector(StickySourceSuckerStub.StickySourceSuckerStub_Rejected.selector));
     }
 
     /// @notice A rejected fee receipt transfer restores principal, callback reserves, fee tokens and the outbox.
@@ -988,6 +1239,11 @@ contract StickySourceCollectorTest is Test {
         _feeToken = projectId == 1 ? _sourceToken : new StickyPricingToken(18);
         _sucker = new StickySourceSuckerStub({sourceToken: _sourceToken, feeToken: _feeToken});
         vm.mockCall({
+            callee: address(_sucker),
+            data: abi.encodeCall(IJBSucker.state, ()),
+            returnData: abi.encode(JBSuckerState.ENABLED)
+        });
+        vm.mockCall({
             callee: address(_sucker), data: abi.encodeWithSignature("DIRECTORY()"), returnData: abi.encode(_directory)
         });
         vm.mockCall({
@@ -1047,6 +1303,19 @@ contract StickySourceCollectorTest is Test {
     //*********************************************************************//
     // ------------------------- internal views -------------------------- //
     //*********************************************************************//
+
+    /// @notice Encodes the complete configured route context expected in a rejected native binding.
+    /// @return reason The error carrying the fixture's peer and remote-token mapping.
+    function _nativeRouteError() internal view returns (bytes memory reason) {
+        JBSucker sucker = JBSucker(payable(address(_sucker)));
+        return abi.encodeWithSelector(
+            StickySourceCollector.StickySourceCollector_InvalidNativeRoute.selector,
+            address(_sucker),
+            sucker.peerChainId(),
+            sucker.peer(),
+            sucker.remoteTokenFor(JBConstants.NATIVE_TOKEN)
+        );
+    }
 
     /// @notice Encodes the sucker's actual cashout context rather than the collector's token custody context.
     /// @param amount The amount of source tokens being cashed out.
