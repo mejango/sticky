@@ -46,6 +46,8 @@ These guarantees apply to projects launched by `StickyDeployer`, using the confi
 
 ## Verification map
 
+Source collectors fix one source project token, native sucker and Ethereum receiver. Successful `send()` appends exactly one leaf, clears source allowance and includes that leaf in the sent count; failures restore principal and prior outbox state. The fee child can only submit for its parent and returns only its own new receipt/refund to the caller. Callback-delivered reserves stay in the parent. These properties are checked by `test/StickySourceCollector.t.sol` and the collector cases in `test/fork/StickyJbxOmnichain.t.sol`; the latter additionally bind canonical deployed routes.
+
 | Surface | Tests |
 | --- | --- |
 | Tranche accounting, exits, epoch buckets, and streaks | `test/StickyAccounting.t.sol`, `test/StickyHook_Unit.t.sol`, `test/StickyBurn_Integration.t.sol` |

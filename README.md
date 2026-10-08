@@ -7,6 +7,7 @@ Sticky shares are not a promise to redeem one underlying token each. Their issua
 ## Documentation
 
 - [Production review](AUDIT_REPORT.md): findings, fixes, validation, and remaining release limits.
+- [Sticky JBX qualification](tasks/sticky-jbx-qualification.md): deployed JBX custody tests, V6 reserved-reward routing, source collectors and live setup boundaries.
 
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — contracts, accounting flows, and trust boundaries.
 - [USER_JOURNEYS.md](./USER_JOURNEYS.md) — launch, stake, exit, rewards, and compounding.
@@ -80,6 +81,7 @@ For cross-chain rewards, `StickyRewardReceiverFactory` predicts and clones a `St
 | `StickyAutoStick` | Opt-in reward collection and compounding for the same holder and project across chosen reward groups. |
 | `StickyRewardReceiverFactory` | Predicts/deploys reward receivers per Sticky token and group and settles their balances into the distributor. |
 | `StickyRewardReceiver` | Holds arriving reward tokens for one destination Sticky token and group and its bound distributor. |
+| `StickySourceCollector` | Lets anyone submit one V6 project's reserved rewards from a fixed native source route to a fixed Ethereum receiver; its fee-payer child isolates caller fee receipts. |
 
 The deployer, hook, distributor and AutoStick accept core's ERC-2771 forwarder, so a sponsor can relay a launch or a holder's trust updates, auto-stick settings, claims and funding on the signer's behalf. Staking and unstaking already relay through the core terminal.
 
@@ -102,10 +104,12 @@ The tests cover accounting invariants and adversarial dust, direct burns, share 
 
 Run `STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork` for the
 [real-project fork suites](test/fork/README.md): Base `6` (Artizen), Ethereum `3`
-(Revnet Network), and Ethereum `3` rewards through its deployed Base sucker route.
+(Revnet Network), Ethereum `3` rewards through its deployed Base sucker route,
+and canonical Ethereum JBX against the already deployed Sticky release. The JBX
+suite also covers V6 projects `1` and `3` coming from OP, Base and Arbitrum.
 They require archive RPC access and exercise real project tokens and payment
-contracts. The cross-chain suite models portal delivery at the live messenger
-boundary; its precise scope and pinned blocks are documented with the tests.
+contracts. Transport fixtures model consensus/finality at documented bridge
+boundaries; their precise scope and pinned blocks are documented with the tests.
 
 The maintained web client is the Next app in `web/`. See [its guide](web/README.md) for local development, configuration, and browser/container checks. The [cutover record](tasks/sticky-next-cutover.md) documents the transition; legacy source and tests remain available at the [pre-cutover revision](https://github.com/mejango/sticky/tree/8bff9575f57807df244c1c41b9045f614ab7a76c/webclient).
 

@@ -1,16 +1,20 @@
 # Real-project fork tests
 
-These tests run Sticky against the deployed V6 projects on Base `6` (Artizen,
+The original suites run Sticky against the deployed V6 projects on Base `6` (Artizen,
 `ART`) and Ethereum `3` (Revnet Network, `REV`). They create Sticky locally through
 the production deployment helper, verify its bindings, and launch projects backed
 by the existing project tokens. Underlying tokens are acquired by paying the live
 project's native-token terminal. No ERC-20 balances, contract code, or project
 configuration are replaced.
 
+The `StickyJbx*` suites instead use the already deployed Ethereum Sticky suite,
+canonical JBX, and current V6 project `1`/`3` reserved rewards. Their independent
+pins and additional transport boundaries are described below.
+
 ## Run
 
 Use the pinned workspace dependencies and Foundry version in the root
-[README](../../README.md#develop-and-check). Provide Ethereum and Base archive RPCs
+[README](../../README.md#develop-and-check). Provide Ethereum, OP, Base and Arbitrum archive RPCs
 through `.env`, exported variables, or the existing deployment environment:
 
 ```sh
@@ -18,18 +22,26 @@ STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork
 STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork -- --match-contract StickyBase6ForkTest
 STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork -- --match-contract StickyEthereum3ForkTest
 STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork -- --match-contract StickyCrossChainRewardsForkTest
+STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork -- --match-contract 'StickyJbx(Lifecycle|Authority)ForkTest'
+STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork -- --match-contract StickyJbxOmnichainForkTest
 ```
 
 The wrapper selects the `fork` profile, using the same non-isolated production
-artifact inspection as deployment rehearsals, and fails if either required RPC
+artifact inspection as deployment rehearsals, and fails if a required RPC
 variable is missing. A missing archive block, wrong chain, unavailable project, failed
 payment, or missing bridge route fails the suite. Tests contain no RPC skip
 guards. Default `forge test` runs the local suites without requiring public RPCs.
+The wrapper supplies `-vvv` for the Arbitrum opcode capture and runs one worker to
+bound archive-RPC pressure and trace memory. Direct Forge invocations of the
+Arbitrum cases also need at least `-vvv`. Foundry's account-access recorder omits
+mocked precompile calls; the opcode recorder preserves their actual CALL target,
+value and full calldata without replacing the deployed bridge code.
 
 The regular test workflow runs the fork suite on main-branch pushes, manual runs,
 and pull requests originating in the same repository. External pull requests run
 the local checks; their fork suite must be run from a reviewed revision with RPC
-access. CI needs `RPC_ETHEREUM_MAINNET` and `RPC_BASE_MAINNET` secrets. Sphinx and
+access. CI needs `RPC_ETHEREUM_MAINNET`, `RPC_OPTIMISM_MAINNET`,
+`RPC_BASE_MAINNET` and `RPC_ARBITRUM_MAINNET` secrets. Sphinx and
 wallet credentials are unnecessary for these tests.
 
 ## Pinned state
@@ -94,3 +106,62 @@ reverse withdrawals and alternate-token routes require separate bridge checks.
 The existing [deployment rehearsals](../../DEPLOYMENT.md) cover singleton deployment
 and restart across all eight configured networks. Neither suite broadcasts a
 transaction or creates a Sphinx proposal.
+
+## Deployed Sticky JBX qualification
+
+[StickyJbxLifecycle.t.sol](StickyJbxLifecycle.t.sol) reuses the existing lifecycle
+scenarios through [StickyJbxDeployedFork.sol](helpers/StickyJbxDeployedFork.sol).
+It selects the deployed suite rather than creating a replacement, verifies every
+manifest runtime/binding, and obtains real JBX from an existing holder on the fork.
+No ERC-20 balance, code or storage replacement supplies the position. Additional
+cases exercise 100 million JBX across two holders, the provisional zero-tax
+transferable policy, eight tax/transfer-mode combinations, actual JBP6/REV reward
+issuance, and recovery of a startup round with no eligible shares.
+
+[StickyJbxAuthority.t.sol](StickyJbxAuthority.t.sol) pins and calls the deployed
+forwarder/operator/permissions contracts. Local test-key signatures cover valid
+forwarding, wrong signer, tampering, replay and expiry; an unrelated caller cannot
+queue rulesets through the operator. No user key or signature is used.
+
+[StickyJbxOmnichain.t.sol](StickyJbxOmnichain.t.sol) exercises actual source
+reserved-token distribution and native routes into Ethereum for projects `1`
+(JBP6) and `3` (REV). The [source fixture](fixtures/sticky-jbx-sources.json)
+records the deployed core/token/sucker runtime identities, implementation
+bindings, current custodians and enabled native mappings.
+
+| Chain | Block | Canonical block hash |
+| --- | --- | --- |
+| Ethereum | `26149188` | `0xaddf5db4175ca8a6c92885cee2619e4012b867f8ff15ff42889de2de1b98784e` |
+| OP | `157940574` | `0x7653b5502773e096dc637685b97fc5c24970bbf61d9831f0739bdbe7180e4a70` |
+| Base | `52345331` | `0x7d3b8898d9c8959201d6c5171b70f6a7bdb56c454e602f19d41d6a0e74cc4d45` |
+| Arbitrum | `512949569` | `0x2b04b520d63191f0d7bb70e9055215e9c9852bc2707c7a3936062f433eb05386` |
+
+Each case verifies the chain, pinned block hash and parent identity before test
+mutations. The Arbitrum RPC block identity is distinct from the EVM's L1-style
+`block.number`; the fixture must respect that distinction. Runtime checks reject
+missing or changed route implementations. Tests fund a payer/keeper with bounded
+native ETH, then pay actual terminals and fees; project-token issuance and bridge
+escrow remain governed by deployed code.
+
+The OP/Base helper captures the real L2 messenger call and relays it through the
+deployed Ethereum messenger. OP's Portal uses its real ETH lockbox; Base uses the
+Portal's escrow. The Arbitrum helper captures the actual ArbSys call and executes
+the real Ethereum Bridge through the rollup's currently allowed outbox. Escrow,
+destination native backing and token mint deltas must agree exactly.
+
+Only consensus-established sender/finality context and the unsupported ArbSys
+precompile response are modeled. Tests do not establish withdrawal proof
+inclusion/finality, the outer Portal/outbox spent-message protection, or a running
+relayer. Destination early/tampered/duplicate claims and unauthorized bridge
+delivery are checked separately. Successful arrival continues through fixed
+receiver settlement, four-round vesting, one-time holder collection and JBX
+redemption. Direct Ethereum cases exercise the real authenticated distributor
+split hook.
+
+Manual-custodian cases exercise the shipped bridge path. Separate collector cases
+must prove permissionless source initiation after authorized configuration;
+source custody does not become permissionless merely because destination
+settlement already is. Unsent manual leaves are also tested for their
+source-chain emergency-beneficiary limitation. See the
+[qualification record](../../tasks/sticky-jbx-qualification.md) for completed
+results, exact proposed allocation and remaining live actions.
