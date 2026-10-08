@@ -107,7 +107,7 @@ They require archive RPC access and exercise real project tokens and payment
 contracts. The cross-chain suite models portal delivery at the live messenger
 boundary; its precise scope and pinned blocks are documented with the tests.
 
-The maintained web client is the Next app in `web/`. See [its guide](web/README.md) for local development, configuration, and browser/container checks. The retained `webclient/` source and its workflow support the existing deployment until the [production cutover](tasks/sticky-next-cutover.md) is confirmed.
+The maintained web client is the Next app in `web/`. See [its guide](web/README.md) for local development, configuration, and browser/container checks. The [cutover record](tasks/sticky-next-cutover.md) documents the transition; legacy source and tests remain available at the [pre-cutover revision](https://github.com/mejango/sticky/tree/8bff9575f57807df244c1c41b9045f614ab7a76c/webclient).
 
 ## Deploy
 

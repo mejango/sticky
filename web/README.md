@@ -35,4 +35,4 @@ Provide the public variables in [.env.example](.env.example) at build time. Prod
 
 Readiness is `GET /api/healthz`, returning `{ "ok": true, "revision": "<built commit>" }` with no caching. Verify the exact expected revision after deployment. The Railway configuration uses a 60-second readiness timeout; the container runs as `node` on `$PORT` (3000 by default). A read-only container needs writable storage at `/app/.next/cache`, as exercised by CI.
 
-The legacy `/webclient` service uses Nixpacks and `/healthz`. It remains in the repository until the deployment owner confirms the production switch. Follow the [cutover and retirement checklist](../tasks/sticky-next-cutover.md); changing these files alone does not change the live service. Dated audit and port records remain evidence about their recorded revisions.
+The [cutover record](../tasks/sticky-next-cutover.md) documents the transition to this app. Legacy source and tests remain available at the [pre-cutover revision](https://github.com/mejango/sticky/tree/8bff9575f57807df244c1c41b9045f614ab7a76c/webclient). Dated audit and port records remain evidence about their recorded revisions.
