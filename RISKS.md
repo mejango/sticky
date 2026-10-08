@@ -60,6 +60,8 @@ Vesting starts through a transaction for eligible past allocations; elapsed time
 
 ## Operational limits
 
+`StickySourceCollector` has a fixed route and destination, no owner and no rescue. Transient preparation/transport/refund failures revert the whole source send, preserving rewards for a retry. Permanent route retirement can strand its unsubmitted token balance; source operators can redirect future unlocked splits but cannot change this collector. A successful submission still depends on native withdrawal finality and later claim/settlement execution. The caller pays the registry fee and gas; permissionless availability does not provide an automatic operator. Authenticate the canonical source sucker and confirmed Ethereum receiver before deploying or funding a collector, and name its parent rather than its fee-payer child in every source split.
+
 An exit debits one epoch bucket per distinct week it consumes. Same-week deposits merge, so dust cannot multiply that work, but a position built up weekly for ten years (520 tranches) costs about 3.3M gas to exit fully from cold storage, roughly 6,300 gas per week. Tenure denominators walk at most `MAX_CRITERIA_WEEKS` buckets plus the weeks elapsed since the round started.
 
 Whole-array tranche reads are unbounded; use pagination at a pinned block. RPC failures and incomplete log ranges must be distinguished from a zero balance or absent reward. A submitted transaction is not a confirmed action: recover the canonical receipt before retrying a launch, approval, stake, or bridge operation.

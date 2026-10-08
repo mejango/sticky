@@ -63,13 +63,15 @@ jobs:
           version: v1.8.1
       - name: Run tests
         run: forge test --deny notes --fail-fast --summary --detailed --skip "*/script/**"
-      - name: Test real projects and Ethereum-to-Base rewards
+      - name: Test real projects and four-chain rewards
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         timeout-minutes: 30
         run: npm run test:fork
         env:
           RPC_ETHEREUM_MAINNET: ${{ secrets.RPC_ETHEREUM_MAINNET }}
+          RPC_OPTIMISM_MAINNET: ${{ secrets.RPC_OPTIMISM_MAINNET }}
           RPC_BASE_MAINNET: ${{ secrets.RPC_BASE_MAINNET }}
+          RPC_ARBITRUM_MAINNET: ${{ secrets.RPC_ARBITRUM_MAINNET }}
       - name: Check Sphinx configuration without public RPC calls
         run: node --test test/deployment/*.test.cjs test/deployment/*.test.mjs
       - name: Check runtime lint and contract sizes

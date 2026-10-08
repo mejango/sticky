@@ -71,10 +71,18 @@ Repeat with every intended RPC alias. CI's manually dispatched `test` workflow r
 Before proposing a release, also run
 `STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork`. The
 [real-project suites](test/fork/README.md) exercise Sticky's lifecycle against Base
-`6` and Ethereum `3`, including Ethereum `3`'s deployed Base reward route. These
-complement the eight singleton deployment rehearsals. Trusted CI runs require
-Ethereum and Base archive RPC secrets; the tests fail when required state or
+`6` and Ethereum `3`, including Ethereum `3`'s deployed Base reward route, and
+canonical JBX against the deployed Ethereum Sticky suite with V6 project `1`/`3`
+rewards arriving from OP, Base and Arbitrum. These complement the eight singleton
+deployment rehearsals. Trusted CI runs require Ethereum, OP, Base and Arbitrum
+archive RPC secrets; the tests fail when required state or
 configuration is unavailable.
+
+The pool-specific [Sticky JBX qualification](tasks/sticky-jbx-qualification.md)
+describes the separate source collectors and split configuration. They are not
+part of the singleton deployment suite: adding their source does not redeploy or
+upgrade existing Sticky projects. A confirmed Ethereum share token and receiver
+must be established before configuring any live source collector or split.
 
 ## Network-group commands
 

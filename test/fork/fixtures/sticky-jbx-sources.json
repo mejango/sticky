@@ -1,0 +1,580 @@
+{
+  "schemaVersion": 1,
+  "scope": "Pinned deployed V6 projects 1 (JBP6) and 3 (REV); native-backed Ethereum/OP/Base/Arbitrum routes only. Current source custodians must authorize bridging; destination claim and settlement are permissionless. Transport tests model consensus/finality only.",
+  "generatedAt": "2026-10-08T17:45:13.024Z",
+  "chains": {
+    "1": {
+      "chainId": 1,
+      "rpcAlias": "ethereum",
+      "blockNumber": 26149188,
+      "blockHash": "0xaddf5db4175ca8a6c92885cee2619e4012b867f8ff15ff42889de2de1b98784e",
+      "contracts": [
+        {
+          "name": "JBController",
+          "address": "0x3fcec3572e84b624477bcff4e2cf1f7deab648f1",
+          "codeHash": "0x4c39ff1b4f602a48afd96307873f723f062518e99c6d6451a120ce0c41e65ad2"
+        },
+        {
+          "name": "JBDirectory",
+          "address": "0x5aff29060e023e6fb87be5596652b33c65af535b",
+          "codeHash": "0x7a4a5068c85e9410aad8c001130d7f3ecdde641988f150f1edfc769af7cca644"
+        },
+        {
+          "name": "JBTokens",
+          "address": "0x1f80d8f057ee36b4c2656d107e4e4558b71ba7d9",
+          "codeHash": "0x8fe2405ccf9a500abc075f9b885aec7cdece0a4fca7bae5ef7999f035a29f900"
+        },
+        {
+          "name": "JBProjects",
+          "address": "0x6017d1fba9dc279bfa0b03fd931c22e242ab3691",
+          "codeHash": "0x1e05c31f2f02590eea6bf9b2abfaba43679d9b4805086341bcb9f08b94889985"
+        },
+        {
+          "name": "JBSplits",
+          "address": "0x28b3d11fcb8d2ad0a143c5b193cd9f2e4d43f4c3",
+          "codeHash": "0xdf47ef20f801184d207e12ecb97fbd3a2a89306fd81fb3aed6e36b206bff0df3"
+        },
+        {
+          "name": "JBRulesets",
+          "address": "0x26f2228a4e8b0079ed1c2a3d22f12ff7f83cdfba",
+          "codeHash": "0x0cc3d3bb1058ffeebc2c361b821114a1c94293a90b5f7f88ae0cd962d92637ec"
+        },
+        {
+          "name": "JBPermissions",
+          "address": "0xf92ac1ab5a00033e35a3975739124f61928c36b0",
+          "codeHash": "0x302c93606d1149f38b112417c25457d2c436606f1251ecff4eed32ec067aee4c"
+        },
+        {
+          "name": "REVDeployer",
+          "address": "0xb552eb94284f94b833837d4b2cbb237128415d4e",
+          "codeHash": "0x77ce39d2ccc29161be4de9099d50905786f3bd6d8a65058aeeb270db3cc33dc0"
+        },
+        {
+          "name": "REVOwner",
+          "address": "0x2ba4705ad0332cdfb299b452068438bcba3faaf3",
+          "codeHash": "0x28e8854f1f519b98b4ac4a1607a952fac9d7b8d3d39586a0177eb8bc52b5181b"
+        },
+        {
+          "name": "JBSuckerRegistry",
+          "address": "0x7903a854ae91eaf635430d120a1a434085cef297",
+          "codeHash": "0x22bc92da75c9a74b71a33565a92cafd616743b1827f5acb15f7c412000859f48"
+        },
+        {
+          "name": "JBMultiTerminal",
+          "address": "0x130f5dd2bd8805443cf41755253d778a75a67f53",
+          "codeHash": "0x42858668218d32f236473bf470b30fe4d498fd4a7eb18620aac05bfc484063fb"
+        }
+      ],
+      "projects": {
+        "1": {
+          "token": "0x6b50843C88290c180DF24c445E37B296d9760FA8",
+          "name": "Juicebox Protocol V6",
+          "symbol": "JBP6",
+          "owner": "0x2BA4705AD0332CdFB299B452068438bCba3faAf3",
+          "controller": "0x3Fcec3572e84b624477BcfF4E2CF1f7dEAb648F1",
+          "reservedSplits": [
+            {
+              "percent": 1000000000,
+              "projectId": "0",
+              "beneficiary": "0x4dc161eF837fF1C4485b08DDFcDB182F2157bE18",
+              "preferAddToBalance": false,
+              "lockedUntil": 0,
+              "hook": "0x0000000000000000000000000000000000000000"
+            }
+          ],
+          "tokenCodeHash": "0x3dc743ad8a029b24b6f75742ac763c10e07c7a9d3397a865004d2bf1e883668b",
+          "reservedPercent": 6200,
+          "rulesetId": 1781612915,
+          "nativeRoutes": {
+            "10": {
+              "sucker": "0x2381Cff4dE6Cd94f2fceaBB2B0F747BFbB9DEf6a",
+              "peer": "0x2381cff4de6cd94f2fceabb2b0f747bfbb9def6a",
+              "codeHash": "0xdbfb8bf273ac422e7ca2fd84890ffe36d4cb2320feeed974d49356abbebaad0d",
+              "implementation": "0x8c3b3d0fe56b31850a000333ef16195dbcd5a806",
+              "implementationCodeHash": "0xf756e6522919235ba414091d8e43cb5caee4e6536c94d46366d09a20a82d9678",
+              "transport": "JBOptimismSucker",
+              "nativeMappingEnabled": true,
+              "usdcMappingEnabled": false,
+              "projectTokenMappingEnabled": false
+            },
+            "8453": {
+              "sucker": "0xD360f44a88242A5F115eE8FC2893243Cd6feF936",
+              "peer": "0xd360f44a88242a5f115ee8fc2893243cd6fef936",
+              "codeHash": "0x6abbe5966c63c3ea128bff2ee46bd4a2c069c9c2b02e450d9ff33322470a91b7",
+              "implementation": "0x2fc1f6e8010e7a6198da9465931cce8d0c52e788",
+              "implementationCodeHash": "0x7d606126881d2b2ea9013b9dcd46d4e6e1c453353aad0736ce9d07bc92f136f3",
+              "transport": "JBBaseSucker",
+              "nativeMappingEnabled": true,
+              "usdcMappingEnabled": false,
+              "projectTokenMappingEnabled": false
+            },
+            "42161": {
+              "sucker": "0x0773E792D5dBd0Be8285D4A738cBbf7df1579eFE",
+              "peer": "0x0773e792d5dbd0be8285d4a738cbbf7df1579efe",
+              "codeHash": "0x1731389223de112041140a61447b4ceafc5f8ceed120e5366274d04b32836533",
+              "implementation": "0xf044d9f16c4bce21bd75227561bb3d1838ce8651",
+              "implementationCodeHash": "0xcb82256103c6cb3276b976cd09fec03a10fc6f7a2a71dba28ebd842dbc9b21ad",
+              "transport": "JBArbitrumSucker",
+              "nativeMappingEnabled": true,
+              "usdcMappingEnabled": false,
+              "projectTokenMappingEnabled": false
+            }
+          }
+        },
+        "3": {
+          "token": "0x3dD82a891C80Db068e95708E83583d626E2c1Fac",
+          "name": "Revnet Network",
+          "symbol": "REV",
+          "owner": "0x2BA4705AD0332CdFB299B452068438bCba3faAf3",
+          "controller": "0x3Fcec3572e84b624477BcfF4E2CF1f7dEAb648F1",
+          "reservedSplits": [
+            {
+              "percent": 1000000000,
+              "projectId": "0",
+              "beneficiary": "0x6b92c73682f0e1fac35A18ab17efa5e77DDE9fE1",
+              "preferAddToBalance": false,
+              "lockedUntil": 0,
+              "hook": "0x0000000000000000000000000000000000000000"
+            }
+          ],
+          "tokenCodeHash": "0x3dc743ad8a029b24b6f75742ac763c10e07c7a9d3397a865004d2bf1e883668b",
+          "reservedPercent": 3800,
+          "rulesetId": 1781612819,
+          "nativeRoutes": {
+            "10": {
+              "sucker": "0x505D884F0EA357C0D6F7eD286C232876190dfE44",
+              "peer": "0x505d884f0ea357c0d6f7ed286c232876190dfe44",
+              "codeHash": "0xdbfb8bf273ac422e7ca2fd84890ffe36d4cb2320feeed974d49356abbebaad0d",
+              "implementation": "0x8c3b3d0fe56b31850a000333ef16195dbcd5a806",
+              "implementationCodeHash": "0xf756e6522919235ba414091d8e43cb5caee4e6536c94d46366d09a20a82d9678",
+              "transport": "JBOptimismSucker",
+              "nativeMappingEnabled": true,
+              "usdcMappingEnabled": false,
+              "projectTokenMappingEnabled": false
+            },
+            "8453": {
+              "sucker": "0xA2b081638dC179Dbb7e63f338357cEA2487bb933",
+              "peer": "0xa2b081638dc179dbb7e63f338357cea2487bb933",
+              "codeHash": "0x6abbe5966c63c3ea128bff2ee46bd4a2c069c9c2b02e450d9ff33322470a91b7",
+              "implementation": "0x2fc1f6e8010e7a6198da9465931cce8d0c52e788",
+              "implementationCodeHash": "0x7d606126881d2b2ea9013b9dcd46d4e6e1c453353aad0736ce9d07bc92f136f3",
+              "transport": "JBBaseSucker",
+              "nativeMappingEnabled": true,
+              "usdcMappingEnabled": false,
+              "projectTokenMappingEnabled": false
+            },
+            "42161": {
+              "sucker": "0x791A2BCf7345dcd9e7493a9739Ac5e2b9B94EC2f",
+              "peer": "0x791a2bcf7345dcd9e7493a9739ac5e2b9b94ec2f",
+              "codeHash": "0x1731389223de112041140a61447b4ceafc5f8ceed120e5366274d04b32836533",
+              "implementation": "0xf044d9f16c4bce21bd75227561bb3d1838ce8651",
+              "implementationCodeHash": "0xcb82256103c6cb3276b976cd09fec03a10fc6f7a2a71dba28ebd842dbc9b21ad",
+              "transport": "JBArbitrumSucker",
+              "nativeMappingEnabled": true,
+              "usdcMappingEnabled": false,
+              "projectTokenMappingEnabled": false
+            }
+          }
+        }
+      },
+      "contractCount": 11
+    },
+    "10": {
+      "chainId": 10,
+      "rpcAlias": "optimism",
+      "blockNumber": 157940574,
+      "blockHash": "0x7653b5502773e096dc637685b97fc5c24970bbf61d9831f0739bdbe7180e4a70",
+      "contracts": [
+        {
+          "name": "JBController",
+          "address": "0x3fcec3572e84b624477bcff4e2cf1f7deab648f1",
+          "codeHash": "0x4c39ff1b4f602a48afd96307873f723f062518e99c6d6451a120ce0c41e65ad2"
+        },
+        {
+          "name": "JBDirectory",
+          "address": "0x5aff29060e023e6fb87be5596652b33c65af535b",
+          "codeHash": "0x7a4a5068c85e9410aad8c001130d7f3ecdde641988f150f1edfc769af7cca644"
+        },
+        {
+          "name": "JBTokens",
+          "address": "0x1f80d8f057ee36b4c2656d107e4e4558b71ba7d9",
+          "codeHash": "0x8fe2405ccf9a500abc075f9b885aec7cdece0a4fca7bae5ef7999f035a29f900"
+        },
+        {
+          "name": "JBProjects",
+          "address": "0x6017d1fba9dc279bfa0b03fd931c22e242ab3691",
+          "codeHash": "0x1e05c31f2f02590eea6bf9b2abfaba43679d9b4805086341bcb9f08b94889985"
+        },
+        {
+          "name": "JBSplits",
+          "address": "0x28b3d11fcb8d2ad0a143c5b193cd9f2e4d43f4c3",
+          "codeHash": "0xdf47ef20f801184d207e12ecb97fbd3a2a89306fd81fb3aed6e36b206bff0df3"
+        },
+        {
+          "name": "JBRulesets",
+          "address": "0x26f2228a4e8b0079ed1c2a3d22f12ff7f83cdfba",
+          "codeHash": "0x0cc3d3bb1058ffeebc2c361b821114a1c94293a90b5f7f88ae0cd962d92637ec"
+        },
+        {
+          "name": "JBPermissions",
+          "address": "0xf92ac1ab5a00033e35a3975739124f61928c36b0",
+          "codeHash": "0x302c93606d1149f38b112417c25457d2c436606f1251ecff4eed32ec067aee4c"
+        },
+        {
+          "name": "REVDeployer",
+          "address": "0xb552eb94284f94b833837d4b2cbb237128415d4e",
+          "codeHash": "0x77ce39d2ccc29161be4de9099d50905786f3bd6d8a65058aeeb270db3cc33dc0"
+        },
+        {
+          "name": "REVOwner",
+          "address": "0x2ba4705ad0332cdfb299b452068438bcba3faaf3",
+          "codeHash": "0x28e8854f1f519b98b4ac4a1607a952fac9d7b8d3d39586a0177eb8bc52b5181b"
+        },
+        {
+          "name": "JBSuckerRegistry",
+          "address": "0x7903a854ae91eaf635430d120a1a434085cef297",
+          "codeHash": "0x22bc92da75c9a74b71a33565a92cafd616743b1827f5acb15f7c412000859f48"
+        },
+        {
+          "name": "JBMultiTerminal",
+          "address": "0x130f5dd2bd8805443cf41755253d778a75a67f53",
+          "codeHash": "0x42858668218d32f236473bf470b30fe4d498fd4a7eb18620aac05bfc484063fb"
+        }
+      ],
+      "projects": {
+        "1": {
+          "token": "0x6b50843C88290c180DF24c445E37B296d9760FA8",
+          "name": "Juicebox Protocol V6",
+          "symbol": "JBP6",
+          "owner": "0x2BA4705AD0332CdFB299B452068438bCba3faAf3",
+          "controller": "0x3Fcec3572e84b624477BcfF4E2CF1f7dEAb648F1",
+          "reservedSplits": [
+            {
+              "percent": 1000000000,
+              "projectId": "0",
+              "beneficiary": "0x4dc161eF837fF1C4485b08DDFcDB182F2157bE18",
+              "preferAddToBalance": false,
+              "lockedUntil": 0,
+              "hook": "0x0000000000000000000000000000000000000000"
+            }
+          ],
+          "tokenCodeHash": "0x3dc743ad8a029b24b6f75742ac763c10e07c7a9d3397a865004d2bf1e883668b",
+          "reservedPercent": 6200,
+          "rulesetId": 1781587789,
+          "nativeRoutes": {
+            "1": {
+              "sucker": "0x2381Cff4dE6Cd94f2fceaBB2B0F747BFbB9DEf6a",
+              "peer": "0x2381cff4de6cd94f2fceabb2b0f747bfbb9def6a",
+              "codeHash": "0xdbfb8bf273ac422e7ca2fd84890ffe36d4cb2320feeed974d49356abbebaad0d",
+              "implementation": "0x8c3b3d0fe56b31850a000333ef16195dbcd5a806",
+              "implementationCodeHash": "0x97f4d5106c4cca2a66856061dec4df1ccb38da5cb42df89382d7767e576590f6",
+              "transport": "JBOptimismSucker",
+              "nativeMappingEnabled": true,
+              "usdcMappingEnabled": false,
+              "projectTokenMappingEnabled": false
+            }
+          }
+        },
+        "3": {
+          "token": "0x3dD82a891C80Db068e95708E83583d626E2c1Fac",
+          "name": "Revnet Network",
+          "symbol": "REV",
+          "owner": "0x2BA4705AD0332CdFB299B452068438bCba3faAf3",
+          "controller": "0x3Fcec3572e84b624477BcfF4E2CF1f7dEAb648F1",
+          "reservedSplits": [
+            {
+              "percent": 1000000000,
+              "projectId": "0",
+              "beneficiary": "0x6b92c73682f0e1fac35A18ab17efa5e77DDE9fE1",
+              "preferAddToBalance": false,
+              "lockedUntil": 0,
+              "hook": "0x0000000000000000000000000000000000000000"
+            }
+          ],
+          "tokenCodeHash": "0x3dc743ad8a029b24b6f75742ac763c10e07c7a9d3397a865004d2bf1e883668b",
+          "reservedPercent": 3800,
+          "rulesetId": 1781587747,
+          "nativeRoutes": {
+            "1": {
+              "sucker": "0x505D884F0EA357C0D6F7eD286C232876190dfE44",
+              "peer": "0x505d884f0ea357c0d6f7ed286c232876190dfe44",
+              "codeHash": "0xdbfb8bf273ac422e7ca2fd84890ffe36d4cb2320feeed974d49356abbebaad0d",
+              "implementation": "0x8c3b3d0fe56b31850a000333ef16195dbcd5a806",
+              "implementationCodeHash": "0x97f4d5106c4cca2a66856061dec4df1ccb38da5cb42df89382d7767e576590f6",
+              "transport": "JBOptimismSucker",
+              "nativeMappingEnabled": true,
+              "usdcMappingEnabled": false,
+              "projectTokenMappingEnabled": false
+            }
+          }
+        }
+      },
+      "contractCount": 11
+    },
+    "8453": {
+      "chainId": 8453,
+      "rpcAlias": "base",
+      "blockNumber": 52345331,
+      "blockHash": "0x7d3b8898d9c8959201d6c5171b70f6a7bdb56c454e602f19d41d6a0e74cc4d45",
+      "contracts": [
+        {
+          "name": "JBController",
+          "address": "0x3fcec3572e84b624477bcff4e2cf1f7deab648f1",
+          "codeHash": "0x4c39ff1b4f602a48afd96307873f723f062518e99c6d6451a120ce0c41e65ad2"
+        },
+        {
+          "name": "JBDirectory",
+          "address": "0x5aff29060e023e6fb87be5596652b33c65af535b",
+          "codeHash": "0x7a4a5068c85e9410aad8c001130d7f3ecdde641988f150f1edfc769af7cca644"
+        },
+        {
+          "name": "JBTokens",
+          "address": "0x1f80d8f057ee36b4c2656d107e4e4558b71ba7d9",
+          "codeHash": "0x8fe2405ccf9a500abc075f9b885aec7cdece0a4fca7bae5ef7999f035a29f900"
+        },
+        {
+          "name": "JBProjects",
+          "address": "0x6017d1fba9dc279bfa0b03fd931c22e242ab3691",
+          "codeHash": "0x1e05c31f2f02590eea6bf9b2abfaba43679d9b4805086341bcb9f08b94889985"
+        },
+        {
+          "name": "JBSplits",
+          "address": "0x28b3d11fcb8d2ad0a143c5b193cd9f2e4d43f4c3",
+          "codeHash": "0xdf47ef20f801184d207e12ecb97fbd3a2a89306fd81fb3aed6e36b206bff0df3"
+        },
+        {
+          "name": "JBRulesets",
+          "address": "0x26f2228a4e8b0079ed1c2a3d22f12ff7f83cdfba",
+          "codeHash": "0x0cc3d3bb1058ffeebc2c361b821114a1c94293a90b5f7f88ae0cd962d92637ec"
+        },
+        {
+          "name": "JBPermissions",
+          "address": "0xf92ac1ab5a00033e35a3975739124f61928c36b0",
+          "codeHash": "0x302c93606d1149f38b112417c25457d2c436606f1251ecff4eed32ec067aee4c"
+        },
+        {
+          "name": "REVDeployer",
+          "address": "0xb552eb94284f94b833837d4b2cbb237128415d4e",
+          "codeHash": "0x77ce39d2ccc29161be4de9099d50905786f3bd6d8a65058aeeb270db3cc33dc0"
+        },
+        {
+          "name": "REVOwner",
+          "address": "0x2ba4705ad0332cdfb299b452068438bcba3faaf3",
+          "codeHash": "0x28e8854f1f519b98b4ac4a1607a952fac9d7b8d3d39586a0177eb8bc52b5181b"
+        },
+        {
+          "name": "JBSuckerRegistry",
+          "address": "0x7903a854ae91eaf635430d120a1a434085cef297",
+          "codeHash": "0x22bc92da75c9a74b71a33565a92cafd616743b1827f5acb15f7c412000859f48"
+        },
+        {
+          "name": "JBMultiTerminal",
+          "address": "0x130f5dd2bd8805443cf41755253d778a75a67f53",
+          "codeHash": "0x42858668218d32f236473bf470b30fe4d498fd4a7eb18620aac05bfc484063fb"
+        }
+      ],
+      "projects": {
+        "1": {
+          "token": "0x6b50843C88290c180DF24c445E37B296d9760FA8",
+          "name": "Juicebox Protocol V6",
+          "symbol": "JBP6",
+          "owner": "0x2BA4705AD0332CdFB299B452068438bCba3faAf3",
+          "controller": "0x3Fcec3572e84b624477BcfF4E2CF1f7dEAb648F1",
+          "reservedSplits": [
+            {
+              "percent": 1000000000,
+              "projectId": "0",
+              "beneficiary": "0x4dc161eF837fF1C4485b08DDFcDB182F2157bE18",
+              "preferAddToBalance": false,
+              "lockedUntil": 0,
+              "hook": "0x0000000000000000000000000000000000000000"
+            }
+          ],
+          "tokenCodeHash": "0x3dc743ad8a029b24b6f75742ac763c10e07c7a9d3397a865004d2bf1e883668b",
+          "reservedPercent": 6200,
+          "rulesetId": 1781587841,
+          "nativeRoutes": {
+            "1": {
+              "sucker": "0xD360f44a88242A5F115eE8FC2893243Cd6feF936",
+              "peer": "0xd360f44a88242a5f115ee8fc2893243cd6fef936",
+              "codeHash": "0x6abbe5966c63c3ea128bff2ee46bd4a2c069c9c2b02e450d9ff33322470a91b7",
+              "implementation": "0x2fc1f6e8010e7a6198da9465931cce8d0c52e788",
+              "implementationCodeHash": "0xfb91c288ca056e50b6ee6b6d1c0e08413827459f85b213d00438f4e62f8058f1",
+              "transport": "JBBaseSucker",
+              "nativeMappingEnabled": true,
+              "usdcMappingEnabled": false,
+              "projectTokenMappingEnabled": false
+            }
+          }
+        },
+        "3": {
+          "token": "0x3dD82a891C80Db068e95708E83583d626E2c1Fac",
+          "name": "Revnet Network",
+          "symbol": "REV",
+          "owner": "0x2BA4705AD0332CdFB299B452068438bCba3faAf3",
+          "controller": "0x3Fcec3572e84b624477BcfF4E2CF1f7dEAb648F1",
+          "reservedSplits": [
+            {
+              "percent": 1000000000,
+              "projectId": "0",
+              "beneficiary": "0x6b92c73682f0e1fac35A18ab17efa5e77DDE9fE1",
+              "preferAddToBalance": false,
+              "lockedUntil": 0,
+              "hook": "0x0000000000000000000000000000000000000000"
+            }
+          ],
+          "tokenCodeHash": "0x3dc743ad8a029b24b6f75742ac763c10e07c7a9d3397a865004d2bf1e883668b",
+          "reservedPercent": 3800,
+          "rulesetId": 1781587797,
+          "nativeRoutes": {
+            "1": {
+              "sucker": "0xA2b081638dC179Dbb7e63f338357cEA2487bb933",
+              "peer": "0xa2b081638dc179dbb7e63f338357cea2487bb933",
+              "codeHash": "0x6abbe5966c63c3ea128bff2ee46bd4a2c069c9c2b02e450d9ff33322470a91b7",
+              "implementation": "0x2fc1f6e8010e7a6198da9465931cce8d0c52e788",
+              "implementationCodeHash": "0xfb91c288ca056e50b6ee6b6d1c0e08413827459f85b213d00438f4e62f8058f1",
+              "transport": "JBBaseSucker",
+              "nativeMappingEnabled": true,
+              "usdcMappingEnabled": false,
+              "projectTokenMappingEnabled": false
+            }
+          }
+        }
+      },
+      "contractCount": 11
+    },
+    "42161": {
+      "chainId": 42161,
+      "rpcAlias": "arbitrum",
+      "blockNumber": 512949569,
+      "blockHash": "0x2b04b520d63191f0d7bb70e9055215e9c9852bc2707c7a3936062f433eb05386",
+      "contracts": [
+        {
+          "name": "JBController",
+          "address": "0x3fcec3572e84b624477bcff4e2cf1f7deab648f1",
+          "codeHash": "0x4c39ff1b4f602a48afd96307873f723f062518e99c6d6451a120ce0c41e65ad2"
+        },
+        {
+          "name": "JBDirectory",
+          "address": "0x5aff29060e023e6fb87be5596652b33c65af535b",
+          "codeHash": "0x7a4a5068c85e9410aad8c001130d7f3ecdde641988f150f1edfc769af7cca644"
+        },
+        {
+          "name": "JBTokens",
+          "address": "0x1f80d8f057ee36b4c2656d107e4e4558b71ba7d9",
+          "codeHash": "0x8fe2405ccf9a500abc075f9b885aec7cdece0a4fca7bae5ef7999f035a29f900"
+        },
+        {
+          "name": "JBProjects",
+          "address": "0x6017d1fba9dc279bfa0b03fd931c22e242ab3691",
+          "codeHash": "0x1e05c31f2f02590eea6bf9b2abfaba43679d9b4805086341bcb9f08b94889985"
+        },
+        {
+          "name": "JBSplits",
+          "address": "0x28b3d11fcb8d2ad0a143c5b193cd9f2e4d43f4c3",
+          "codeHash": "0xdf47ef20f801184d207e12ecb97fbd3a2a89306fd81fb3aed6e36b206bff0df3"
+        },
+        {
+          "name": "JBRulesets",
+          "address": "0x26f2228a4e8b0079ed1c2a3d22f12ff7f83cdfba",
+          "codeHash": "0x0cc3d3bb1058ffeebc2c361b821114a1c94293a90b5f7f88ae0cd962d92637ec"
+        },
+        {
+          "name": "JBPermissions",
+          "address": "0xf92ac1ab5a00033e35a3975739124f61928c36b0",
+          "codeHash": "0x302c93606d1149f38b112417c25457d2c436606f1251ecff4eed32ec067aee4c"
+        },
+        {
+          "name": "REVDeployer",
+          "address": "0xb552eb94284f94b833837d4b2cbb237128415d4e",
+          "codeHash": "0x77ce39d2ccc29161be4de9099d50905786f3bd6d8a65058aeeb270db3cc33dc0"
+        },
+        {
+          "name": "REVOwner",
+          "address": "0x2ba4705ad0332cdfb299b452068438bcba3faaf3",
+          "codeHash": "0x28e8854f1f519b98b4ac4a1607a952fac9d7b8d3d39586a0177eb8bc52b5181b"
+        },
+        {
+          "name": "JBSuckerRegistry",
+          "address": "0x7903a854ae91eaf635430d120a1a434085cef297",
+          "codeHash": "0x22bc92da75c9a74b71a33565a92cafd616743b1827f5acb15f7c412000859f48"
+        },
+        {
+          "name": "JBMultiTerminal",
+          "address": "0x130f5dd2bd8805443cf41755253d778a75a67f53",
+          "codeHash": "0x42858668218d32f236473bf470b30fe4d498fd4a7eb18620aac05bfc484063fb"
+        }
+      ],
+      "projects": {
+        "1": {
+          "token": "0x6b50843C88290c180DF24c445E37B296d9760FA8",
+          "name": "Juicebox Protocol V6",
+          "symbol": "JBP6",
+          "owner": "0x2BA4705AD0332CdFB299B452068438bCba3faAf3",
+          "controller": "0x3Fcec3572e84b624477BcfF4E2CF1f7dEAb648F1",
+          "reservedSplits": [
+            {
+              "percent": 1000000000,
+              "projectId": "0",
+              "beneficiary": "0x4dc161eF837fF1C4485b08DDFcDB182F2157bE18",
+              "preferAddToBalance": false,
+              "lockedUntil": 0,
+              "hook": "0x0000000000000000000000000000000000000000"
+            }
+          ],
+          "tokenCodeHash": "0x3dc743ad8a029b24b6f75742ac763c10e07c7a9d3397a865004d2bf1e883668b",
+          "reservedPercent": 6200,
+          "rulesetId": 1781633577,
+          "nativeRoutes": {
+            "1": {
+              "sucker": "0x0773E792D5dBd0Be8285D4A738cBbf7df1579eFE",
+              "peer": "0x0773e792d5dbd0be8285d4a738cbbf7df1579efe",
+              "codeHash": "0x1731389223de112041140a61447b4ceafc5f8ceed120e5366274d04b32836533",
+              "implementation": "0xf044d9f16c4bce21bd75227561bb3d1838ce8651",
+              "implementationCodeHash": "0x5196c5eb2f2b2dd4126389763ca8edf11cfeb639253749f52b1d35faf0965004",
+              "transport": "JBArbitrumSucker",
+              "nativeMappingEnabled": true,
+              "usdcMappingEnabled": false,
+              "projectTokenMappingEnabled": false
+            }
+          }
+        },
+        "3": {
+          "token": "0x3dD82a891C80Db068e95708E83583d626E2c1Fac",
+          "name": "Revnet Network",
+          "symbol": "REV",
+          "owner": "0x2BA4705AD0332CdFB299B452068438bCba3faAf3",
+          "controller": "0x3Fcec3572e84b624477BcfF4E2CF1f7dEAb648F1",
+          "reservedSplits": [
+            {
+              "percent": 1000000000,
+              "projectId": "0",
+              "beneficiary": "0x6b92c73682f0e1fac35A18ab17efa5e77DDE9fE1",
+              "preferAddToBalance": false,
+              "lockedUntil": 0,
+              "hook": "0x0000000000000000000000000000000000000000"
+            }
+          ],
+          "tokenCodeHash": "0x3dc743ad8a029b24b6f75742ac763c10e07c7a9d3397a865004d2bf1e883668b",
+          "reservedPercent": 3800,
+          "rulesetId": 1781633534,
+          "nativeRoutes": {
+            "1": {
+              "sucker": "0x791A2BCf7345dcd9e7493a9739Ac5e2b9B94EC2f",
+              "peer": "0x791a2bcf7345dcd9e7493a9739ac5e2b9b94ec2f",
+              "codeHash": "0x1731389223de112041140a61447b4ceafc5f8ceed120e5366274d04b32836533",
+              "implementation": "0xf044d9f16c4bce21bd75227561bb3d1838ce8651",
+              "implementationCodeHash": "0x5196c5eb2f2b2dd4126389763ca8edf11cfeb639253749f52b1d35faf0965004",
+              "transport": "JBArbitrumSucker",
+              "nativeMappingEnabled": true,
+              "usdcMappingEnabled": false,
+              "projectTokenMappingEnabled": false
+            }
+          }
+        }
+      },
+      "contractCount": 11,
+      "evmBlockNumber": 26149158
+    }
+  }
+}

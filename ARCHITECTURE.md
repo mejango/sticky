@@ -39,10 +39,17 @@ See [INVARIANTS.md](./INVARIANTS.md) for the complete verification checklist and
 | `StickyAutoStick` | Opt-in, keeper-executable compounding of a holder's vested underlying-token rewards from the caller's chosen reward groups back into the same position | Immutable; nothing caller-provided beyond project, holder, and groups; quotes the terminal and enforces the quoted minimum |
 | `StickyRewardReceiverFactory` | Predicts and deploys one deterministic reward receiver per Sticky token and reward group; `settleFor` deploys it if needed and settles its balance | A shared deployment entrypoint bound to one distributor; rejects groups the distributor rejects |
 | `StickyRewardReceiver` | Holds arriving reward tokens for one Sticky token and group and settles them permissionlessly into its bound distributor | Attribution by receiver address; minimal clone of one implementation; no deposit ledger or ordered queue; can receive tokens before deployment |
+| `StickySourceCollector` / `StickySourceFeePayer` | Permissionless, atomic preparation and native outbox submission for fixed V6 project 1 or 3 reserved rewards from OP, Base or Arbitrum to Ethereum | Parent holds principal; only-parent child isolates fee receipts/refunds; no owner, arbitrary calls, rescue or route changes |
 
 ### Why a receiver and a factory?
 
 A bridged ERC-20 transfer delivers a token balance to an address without telling Sticky which reward pool should receive it or how it should be weighed. Each receiver's address identifies one Sticky token and one reward group, so arrivals for different pools and weightings remain separate even when they use the same reward asset. Its immutable bindings determine which distributor pool settlement funds. The factory predicts these receiving addresses, deploys the receivers when needed, and provides the shared `settleFor` entrypoint. That deployment role could be folded into another contract, but receiving addresses still need separate pool attribution; sending every arrival to one shared balance would lose it. Settlement forwards the receiver's whole balance of the chosen reward asset, so there is no ordered queue of deposits.
+
+### Reserved rewards from remote chains
+
+A plain source split can name a `StickySourceCollector`. Anyone can distribute reserves and pay the exact current registry fee to `send()`. The collector uses the existing cashout preview and standard fee calculation for a positive minimum, prepares its entire source-token balance for the fixed receiver, clears its allowance, and submits the native outbox in one transaction. An appended-count and sent-index check ensures its leaf was included; failure rolls back preparation. Canonical native proving/finalization, destination claim and receiver settlement remain separate permissionless actions.
+
+Fee payment may invoke a hook that distributes further reserves. A separate `StickySourceFeePayer`, created by and callable only from the collector, receives the bridge-fee payment's JBP6 receipt or retained refund and returns it to that submission's caller. Source splits must name the parent, never this child, so newly delivered principal cannot be confused with the caller's fee receipt. Route authenticity and the Ethereum receiver identity are deployment inputs verified against canonical artifacts; a sucker's self-reported registry membership alone cannot authenticate them. The [JBX qualification](tasks/sticky-jbx-qualification.md) records exact tested routes and deployment limits.
 
 ### Why a per-project price feed?
 
