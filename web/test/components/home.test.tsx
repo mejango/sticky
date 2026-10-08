@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider, notifyManager } from '@tanstack/react-query'
 import { act, type AnchorHTMLAttributes, type ReactElement, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { renderToString } from 'react-dom/server'
 import { getAddress, type Address } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HomeCard, HomeChain, SecuredSeries } from '@/lib/sticky-home'
@@ -106,6 +107,19 @@ const home = () => host.querySelector<HTMLElement>('[data-state]')!
 const state = () => home().dataset.state
 const status = () => host.querySelector('[role="status"]')!
 const note = () => status().querySelector('span')?.textContent ?? ''
+
+it('keeps create entries disabled in server markup and enables them only after hydration', async () => {
+  const server = document.createElement('div')
+  server.innerHTML = renderToString(inClient(<HomeLists network="testnet" />))
+  const entries = (within: ParentNode) => [...within.querySelectorAll('button')]
+    .filter(button => button.textContent === 'Make your token sticky')
+  expect(entries(server)).toHaveLength(2)
+  expect(entries(server).every(button => button.disabled)).toBe(true)
+
+  await renderHome('testnet')
+  expect(entries(host).length).toBeGreaterThan(0)
+  expect(entries(host).every(button => !button.disabled)).toBe(true)
+})
 const retryButton = () =>
   [...host.querySelectorAll('button')].find(button => button.textContent === 'Try again') ?? null
 const panel = (name: string) => host.querySelector<HTMLElement>(`#home-panel-${name}`)

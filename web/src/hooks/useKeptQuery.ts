@@ -28,7 +28,7 @@ const unchanging = () => () => {}
 
 /** False while the server renders the calling component and while React hydrates it; true from then on, and true
  * from the first render for a component that mounts later. */
-function useHydrated(): boolean {
+export function useHydrated(): boolean {
   return useSyncExternalStore(
     unchanging,
     () => true,

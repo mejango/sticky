@@ -8,6 +8,7 @@ import { StickiestCard } from '@/components/home/StickiestCard'
 import { FeedPlaceholder, StickyFeed } from '@/components/StickyFeed'
 import { Revalidating } from '@/components/ui/Revalidating'
 import { useStickyHome, type StickyHome } from '@/hooks/useStickyHome'
+import { useHydrated } from '@/hooks/useKeptQuery'
 import { useWallet } from '@/hooks/useWallet'
 import type { FeedRow } from '@/lib/sticky-feed'
 import { stickyLabel } from '@/lib/sticky-format'
@@ -158,6 +159,7 @@ const heading = 'mb-2 mt-1 font-agrandir-wide text-xl'
  * and to the three steps when there are no Sticky tokens yet.
  */
 export function HomeLists({ network }: { network: BendystrawNetwork }) {
+  const hydrated = useHydrated()
   const home = useStickyHome(network)
   const { viewAs } = useViewAs()
   const { address } = useWallet()
@@ -178,7 +180,7 @@ export function HomeLists({ network }: { network: BendystrawNetwork }) {
 
   return (
     <div data-state={state} aria-busy={loading} className="w-full">
-      {dashboard ? <div className="mb-4 flex justify-end"><button type="button" className="btn-primary px-4 py-2" onClick={create}>Make your token sticky</button></div> : null}
+      {dashboard ? <div className="mb-4 flex justify-end"><button type="button" className="btn-primary px-4 py-2" onClick={create} disabled={!hydrated}>Make your token sticky</button></div> : null}
       <div
         className={
           dashboard
@@ -263,7 +265,7 @@ export function HomeLists({ network }: { network: BendystrawNetwork }) {
               : 'mx-auto max-w-[560px]'
           }
         >
-          <HomeHero note={note} error={state === 'error'} onRetry={retry ? home.retry : undefined} onCreate={create} />
+          <HomeHero note={note} error={state === 'error'} onRetry={retry ? home.retry : undefined} onCreate={hydrated ? create : undefined} />
         </div>
       </div>
       {state === 'empty' ? (
