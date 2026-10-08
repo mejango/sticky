@@ -7,7 +7,7 @@ function fixture(group) {
   const env = { SPHINX_ORG_ID: JSON.parse(readFileSync('sphinx.lock')).orgId, SPHINX_API_KEY: 'test-key',
     SPHINX_MANAGED_BASE_URL: 'https://sphinx.example.test' };
   const files = {};
-  const manifest = JSON.stringify(Object.fromEntries(suite.map((field, i) => [field, `0x${String(i).repeat(2)}`])));
+  const manifest = JSON.stringify(Object.fromEntries(suite.map((field, i) => [field, `0x${String(i + 1).repeat(40)}`])));
   for (const [, chainId, key, folder] of networks[group]) {
     env[key] = 'http://127.0.0.1:8545';
     for (const name of ['JBController', 'JBDirectory', 'JBMultiTerminal']) {
@@ -15,6 +15,9 @@ function fixture(group) {
         address: '0x' + '12'.repeat(20), chainId: `0x${chainId.toString(16)}`,
       });
     }
+    files[`node_modules/@bananapus/suckers-v6/deployments/${folder}/JBSuckerRegistry.json`] = JSON.stringify({
+      address: '0x' + '34'.repeat(20), chainId: `0x${chainId.toString(16)}`,
+    });
     files[`deployments/${folder}/simulation.json`] = manifest;
     files[`deployments/${folder}/verified.json`] = manifest;
   }
@@ -147,7 +150,7 @@ test('proposal rejects a missing lock, wrong organization, or unregistered proje
 
 test('every compiled source root is pinned: linked checkouts by revision, packages by the lockfile', () => {
   const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
-  for (const name of ['StickyDeployer', 'StickyHook', 'StickyDistributor', 'StickyRewardReceiver', 'StickyRewardReceiverFactory', 'StickyAutoStick']) {
+  for (const name of ['StickyDeployer', 'StickyHook', 'StickyDistributor', 'StickyRewardReceiver', 'StickyRewardReceiverFactory', 'StickyAutoStick', 'StickySourceCollector', 'StickySourceFeePayer']) {
     const artifact = JSON.parse(readFileSync(`out/${name}.sol/${name}.json`, 'utf8'));
     for (const source of Object.keys(artifact.metadata.sources)) {
       if (/^(src|script)\//.test(source)) continue;
@@ -239,7 +242,7 @@ test('a sphinx.lock Sphinx only reordered is clean; a changed one is not', () =>
 
 test('a chain predicting different addresses stops the group before the Sphinx proposal', () => {
   const setup = fixture('mainnets');
-  setup.files['deployments/base/simulation.json'] = JSON.stringify({ ...JSON.parse(setup.files['deployments/base/simulation.json']), autoStick: '0xee' });
+  setup.files['deployments/base/simulation.json'] = JSON.stringify({ ...JSON.parse(setup.files['deployments/base/simulation.json']), autoStick: '0x' + 'ee'.repeat(20) });
   assert.throws(() => requireOneAddressPerGroup('mainnets', 'simulation', setup.read), /base predicts a different deployment/);
   assert.throws(() => run('propose', 'mainnets', { ...setup, spawn(command, args) {
     const tool = readOnlyTool(command, args);
@@ -247,4 +250,31 @@ test('a chain predicting different addresses stops the group before the Sphinx p
     assert.notEqual(command, 'node_modules/.bin/sphinx', 'the proposal must not be collected');
     return { status: 0 };
   } }), /different deployment/);
+});
+
+
+test('all chains must contain both source singleton addresses before any group is accepted', () => {
+  for (const field of ['sourceCollector', 'sourceFeePayer']) {
+    for (const value of [undefined, '0x00', '0x' + '00'.repeat(20)]) {
+      const setup = fixture('mainnets');
+      for (const [, , , folder] of networks.mainnets) {
+        const file = `deployments/${folder}/simulation.json`;
+        setup.files[file] = JSON.stringify({ ...JSON.parse(setup.files[file]), [field]: value });
+      }
+      assert.throws(() => requireOneAddressPerGroup('mainnets', 'simulation', setup.read), new RegExp(`invalid ${field}`));
+    }
+  }
+});
+
+test('registry artifact roots are explicit and wrong registry chain metadata fails preflight', () => {
+  const setup = fixture('mainnets');
+  setup.env.NANA_SUCKERS_DEPLOYMENT_PATH = '/reviewed/suckers';
+  const requested = [];
+  preflight('mainnets', setup.env, file => {
+    requested.push(file);
+    return setup.read(file.replace('/reviewed/suckers', 'node_modules/@bananapus/suckers-v6/deployments'));
+  });
+  assert.equal(requested.filter(file => file.startsWith('/reviewed/suckers/')).length, 4);
+  assert.throws(() => preflight('mainnets', setup.env, file => file.includes('JBSuckerRegistry')
+    ? JSON.stringify({ address: '0x' + '34'.repeat(20), chainId: 999 }) : setup.read(file)), /invalid JBSuckerRegistry/);
 });

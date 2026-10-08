@@ -41,7 +41,28 @@ contract StickyDeploymentHarness is StickyDeployment {
     /// @param root The directory holding the per-network artifact folders.
     /// @return core The loaded core contracts.
     function loadCore(string memory root) external view returns (StickyCoreDeployment memory core) {
-        return _loadCoreFrom(root);
+        return _loadCoreFrom({
+            root: root,
+            suckerRoot: vm.envOr({
+                name: "NANA_SUCKERS_DEPLOYMENT_PATH",
+                defaultValue: string("node_modules/@bananapus/suckers-v6/deployments")
+            })
+        });
+    }
+
+    /// @notice Loads explicit core and sucker artifact roots without changing process environment.
+    /// @param root The core artifact root.
+    /// @param suckerRoot The sucker registry artifact root.
+    /// @return core The loaded and validated canonical dependencies.
+    function loadCoreFrom(
+        string memory root,
+        string memory suckerRoot
+    )
+        external
+        view
+        returns (StickyCoreDeployment memory core)
+    {
+        return _loadCoreFrom({root: root, suckerRoot: suckerRoot});
     }
 
     /// @notice Resolves the deployment folder name for a chain.

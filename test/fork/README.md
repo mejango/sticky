@@ -24,6 +24,7 @@ STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork -- --match-contract S
 STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork -- --match-contract StickyCrossChainRewardsForkTest
 STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork -- --match-contract 'StickyJbx(Lifecycle|Authority)ForkTest'
 STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork -- --match-contract StickyJbxOmnichainForkTest
+STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork -- --match-contract StickySourceCreditsForkTest
 ```
 
 The wrapper selects the `fork` profile, using the same non-isolated production
@@ -155,14 +156,37 @@ inclusion/finality, the outer Portal/outbox spent-message protection, or a runni
 relayer. Destination early/tampered/duplicate claims and unauthorized bridge
 delivery are checked separately. Successful arrival continues through fixed
 receiver settlement, four-round vesting, one-time holder collection and JBX
-redemption. Direct Ethereum cases exercise the real authenticated distributor
-split hook.
+redemption. Direct Ethereum cases use the same shared reserved split hook and
+then permissionlessly settle its attributed custody through the existing receiver.
 
-Manual-custodian cases exercise the shipped bridge path. Separate collector cases
-deploy the parent and fee child on local forks, redirect source splits through
-authorized setup, then use an unrelated caller to distribute and submit rewards.
-They check principal/fee receipt separation, the requested REV fraction and
-remainder, and the actual source leaf before reusing the destination proof.
+Manual-custodian cases exercise the shipped bridge path. Separate shared-hook cases
+deploy the parent and fee child on local forks through the production deployment
+helper, configure `hook = collector`, `beneficiary = Ethereum Sticky share token`
+and `projectId = reward group`, then use an unrelated caller to distribute and
+submit rewards. Receipt must only credit the selected pending bucket; the outbox
+cannot change until a separate delivery call. These cases check principal/fee
+receipt separation, the requested REV fraction and remainder, atomic retry after
+insufficient fees, and the actual source leaf before reusing the destination proof.
+The four-chain deployment case compares the full hook/child runtime and addresses,
+checks receiver prediction parity, and proves the six existing singleton runtimes
+remain unchanged.
+
+Generic source cases launch ordinary projects with IDs above `3` through deployed
+core. The OP tests cover zero native backing, zero ERC-20 backing, and positive
+six-decimal USDC.e backing through a real registered OP sucker. The positive case
+supplies bounded test USDC.e inventory with `deal`; payment, project issuance,
+treasury cashout, project-token burning, selected outbox, canonical L2 bridge token
+burn and emitted root all execute real contracts. A foreign-address backing
+mapping models registry-owner setup where necessary. These generic transport
+cases qualify source submission only: they do not create a destination project
+or prove ERC-20 withdrawal finalization or L1 escrow release.
+
+[StickySourceCredits.t.sol](StickySourceCredits.t.sol) tests the real controller's
+credits-before-callback path for another generic source. A missing ERC-20 blocks
+delivery while preserving the pending bucket and actual credits. Deploying the
+project's ERC-20 permits partial and full permissionless settlement, preserving
+ordinary holders' credits and funding the existing Sticky reward ledger exactly.
+
 These local deployments do not establish live collector configuration or a running
 keeper. Unsent manual leaves are also tested for their
 source-chain emergency-beneficiary limitation. See the

@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {IJBController} from "@bananapus/core-v6/src/interfaces/IJBController.sol";
 import {IJBDirectory} from "@bananapus/core-v6/src/interfaces/IJBDirectory.sol";
 import {IJBMultiTerminal} from "@bananapus/core-v6/src/interfaces/IJBMultiTerminal.sol";
+import {IJBSuckerRegistry} from "@bananapus/suckers-v6/src/interfaces/IJBSuckerRegistry.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 import {StickyAutoStick} from "../../../src/StickyAutoStick.sol";
@@ -35,7 +36,8 @@ abstract contract StickyJbxDeployedFork is StickyRealProjectFork {
         context.core = StickyCoreDeployment({
             controller: IJBController(_checkedAddress(manifest, "controller")),
             directory: IJBDirectory(_checkedAddress(manifest, "directory")),
-            terminal: IJBMultiTerminal(_checkedAddress(manifest, "terminal"))
+            terminal: IJBMultiTerminal(_checkedAddress(manifest, "terminal")),
+            registry: IJBSuckerRegistry(address(0))
         });
         context.suite = StickyDeploymentAddresses({
             deployer: _checkedAddress(manifest, "deployer"),
@@ -43,7 +45,9 @@ abstract contract StickyJbxDeployedFork is StickyRealProjectFork {
             distributor: _checkedAddress(manifest, "distributor"),
             rewardReceiver: _checkedAddress(manifest, "rewardReceiver"),
             rewardReceiverFactory: _checkedAddress(manifest, "rewardReceiverFactory"),
-            autoStick: _checkedAddress(manifest, "autoStick")
+            autoStick: _checkedAddress(manifest, "autoStick"),
+            sourceCollector: address(0),
+            sourceFeePayer: address(0)
         });
         _checkedAddress(manifest, "create2Factory");
         StickyDeployer deployer = StickyDeployer(context.suite.deployer);
@@ -107,6 +111,8 @@ abstract contract StickyJbxDeployedFork is StickyRealProjectFork {
         returns (uint256 forkId)
     {
         forkId = vm.createSelectFork({urlOrAlias: rpcAlias, blockNumber: forkBlock});
+        // Fork selection and later rolls mutate NUMBER within this test call; use the cheatcode's uncached read.
+        uint256 currentBlock = vm.getBlockNumber();
         assertEq(block.chainid, chainId, "fork chain identity");
         string memory byHash =
             vm.rpcJson("eth_getBlockByHash", string.concat('["', vm.toString(expectedHash), '",false]'));
@@ -119,7 +125,7 @@ abstract contract StickyJbxDeployedFork is StickyRealProjectFork {
             // Foundry already models Arbitrum's L1-style NUMBER opcode. RPC height remains the Nitro block number.
             // The pinned canonical hash binds both fields; do not roll the fork to a synthetic EVM height.
             uint256 evmBlockNumber = vm.parseUint(vm.parseJsonString(canonical, ".l1BlockNumber"));
-            assertEq(block.number, evmBlockNumber, "Arbitrum EVM L1 block number");
+            assertEq(currentBlock, evmBlockNumber, "Arbitrum EVM L1 block number");
             // BLOCKHASH accepts EVM L1-style numbers here, not Nitro RPC heights. Validate the RPC parent header
             // directly rather than confusing these two independent block-number domains.
             string memory parent =
@@ -127,7 +133,7 @@ abstract contract StickyJbxDeployedFork is StickyRealProjectFork {
             assertEq(vm.parseJsonBytes32(parent, ".hash"), parentHash, "Arbitrum RPC parent hash");
             assertEq(vm.parseUint(vm.parseJsonString(parent, ".number")), forkBlock - 1, "Arbitrum RPC parent height");
         } else {
-            assertEq(block.number, forkBlock, "fork EVM and RPC block height");
+            assertEq(currentBlock, forkBlock, "fork EVM and RPC block height");
             assertEq(blockhash(forkBlock - 1), parentHash, "fork parent identity");
         }
     }

@@ -23,6 +23,8 @@ export const contracts = [
   { name: 'StickyRewardReceiver', field: 'rewardReceiver', args: ['distributor'] },
   { name: 'StickyRewardReceiverFactory', field: 'rewardReceiverFactory', args: ['rewardReceiver'] },
   { name: 'StickyAutoStick', field: 'autoStick', args: ['deployer', 'distributor'] },
+  { name: 'StickySourceCollector', field: 'sourceCollector', args: ['registry', 'tokens', 'rewardReceiverFactory'] },
+  { name: 'StickySourceFeePayer', field: 'sourceFeePayer', args: [], child: true },
 ];
 
 // One Etherscan v2 key serves every chain.
@@ -38,6 +40,12 @@ export async function emit(group, {
   const childEnv = { ...env, FOUNDRY_PROFILE: 'deploy' };
   for (const [alias, chainId, , folder] of networks[group]) {
     const manifest = JSON.parse(read(`deployments/${folder}/verified.json`, 'utf8'));
+    // Reject an incomplete live manifest before explorer requests or artifact writes for this chain.
+    for (const { field } of contracts) {
+      if (!/^0x[\da-fA-F]{40}$/.test(manifest[field] || '') || /^0x0{40}$/i.test(manifest[field])) {
+        throw new Error(`${alias}: no verified ${field} deployment address.`);
+      }
+    }
     for (const contract of contracts) {
       const address = manifest[contract.field];
       const artifact = JSON.parse(read(`out/${contract.name}.sol/${contract.name}.json`, 'utf8'));

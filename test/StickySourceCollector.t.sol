@@ -2,13 +2,17 @@
 pragma solidity 0.8.28;
 
 import {IJBCashOutTerminal} from "@bananapus/core-v6/src/interfaces/IJBCashOutTerminal.sol";
+import {IJBController} from "@bananapus/core-v6/src/interfaces/IJBController.sol";
 import {IJBDirectory} from "@bananapus/core-v6/src/interfaces/IJBDirectory.sol";
+import {IJBSplitHook} from "@bananapus/core-v6/src/interfaces/IJBSplitHook.sol";
 import {IJBTerminal} from "@bananapus/core-v6/src/interfaces/IJBTerminal.sol";
 import {IJBTokens} from "@bananapus/core-v6/src/interfaces/IJBTokens.sol";
 import {JBConstants} from "@bananapus/core-v6/src/libraries/JBConstants.sol";
 import {JBFees} from "@bananapus/core-v6/src/libraries/JBFees.sol";
 import {JBCashOutHookSpecification} from "@bananapus/core-v6/src/structs/JBCashOutHookSpecification.sol";
 import {JBRuleset} from "@bananapus/core-v6/src/structs/JBRuleset.sol";
+import {JBSplit} from "@bananapus/core-v6/src/structs/JBSplit.sol";
+import {JBSplitHookContext} from "@bananapus/core-v6/src/structs/JBSplitHookContext.sol";
 import {JBSucker} from "@bananapus/suckers-v6/src/JBSucker.sol";
 import {JBSuckerState} from "@bananapus/suckers-v6/src/enums/JBSuckerState.sol";
 import {IJBSucker} from "@bananapus/suckers-v6/src/interfaces/IJBSucker.sol";
@@ -16,1287 +20,1595 @@ import {IJBSuckerRegistry} from "@bananapus/suckers-v6/src/interfaces/IJBSuckerR
 import {JBOutboxTree} from "@bananapus/suckers-v6/src/structs/JBOutboxTree.sol";
 import {JBRemoteToken} from "@bananapus/suckers-v6/src/structs/JBRemoteToken.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Test} from "forge-std/Test.sol";
 
+import {StickyRewardReceiver} from "../src/StickyRewardReceiver.sol";
+import {StickyRewardReceiverFactory} from "../src/StickyRewardReceiverFactory.sol";
 import {StickySourceCollector} from "../src/StickySourceCollector.sol";
 import {StickySourceFeePayer} from "../src/StickySourceFeePayer.sol";
+import {IStickyDistributor} from "../src/interfaces/IStickyDistributor.sol";
+import {IStickyRewardReceiverFactory} from "../src/interfaces/IStickyRewardReceiverFactory.sol";
 
 import {StickyPricingToken} from "./helpers/StickyPricingToken.sol";
+import {StickySourceCaller} from "./helpers/StickySourceCaller.sol";
+import {StickySourceController} from "./helpers/StickySourceController.sol";
+import {StickySourceDistributor} from "./helpers/StickySourceDistributor.sol";
+import {StickySourceSucker} from "./helpers/StickySourceSucker.sol";
+import {StickySourceToken} from "./helpers/StickySourceToken.sol";
+import {StickySourceTokens} from "./helpers/StickySourceTokens.sol";
 
-/// @notice A stateful source sucker double that transfers principal and models outbox and retained-fee changes.
-/// @dev Read-only route identity is mocked separately; money and outbox mutations use real EVM state for rollback.
-// The fixture stays beside its sole consumer.
-// forge-lint: disable-next-line(multi-contract-file)
-contract StickySourceSuckerStub {
-    //*********************************************************************//
-    // --------------------------- custom errors ------------------------- //
-    //*********************************************************************//
-
-    /// @notice Thrown when this scenario rejects transport or a refund.
-    error StickySourceSuckerStub_Rejected();
-
-    //*********************************************************************//
-    // --------------- public immutable stored properties ---------------- //
-    //*********************************************************************//
-
-    /// @notice The token minted by a successful fee payment.
-    StickyPricingToken public immutable FEE_TOKEN;
-
-    /// @notice The source principal transferred during preparation.
-    StickyPricingToken public immutable SOURCE_TOKEN;
-
-    //*********************************************************************//
-    // --------------------- public stored properties -------------------- //
-    //*********************************************************************//
-
-    /// @notice The source allowance observed before preparation spends it.
-    uint256 public allowanceAtPrepare;
-
-    /// @notice The allowance remaining when transport is submitted.
-    uint256 public allowanceAtSend;
-
-    /// @notice The receiver encoded in the prepared leaf.
-    bytes32 public beneficiaryPrepared;
-
-    /// @notice The account whose retained fee was last claimed.
-    address public claimedAccount;
-
-    /// @notice The recipient passed to the retained-fee claim.
-    address public claimedBeneficiary;
-
-    /// @notice The collector that most recently prepared a leaf.
-    address public collector;
-
-    /// @notice The attribution metadata encoded in the leaf.
-    bytes32 public metadataPrepared;
-
-    /// @notice The cashout minimum passed to prepare.
-    uint256 public minimumPrepared;
-
-    /// @notice The number of prepare calls completed.
-    uint256 public prepareCalls;
-
-    /// @notice The amount of principal pulled during the last prepare.
-    uint256 public principalPrepared;
-
-    /// @notice The number of nested collector calls attempted.
-    uint256 public reentryAttempts;
-
-    /// @notice The nested collector call's revert data.
-    bytes public reentryReason;
-
-    /// @notice Whether a nested collector call succeeded.
-    bool public reentrySucceeded;
-
-    /// @notice The retained fee credit owed to each caller.
-    /// @custom:param account The account that initiated the fee payment.
-    mapping(address account => uint256 amount) public retainedToRemoteFeeOf;
-
-    /// @notice The account that submitted transport.
-    address public sender;
-
-    /// @notice The ETH attached to the transport submission.
-    uint256 public sendValue;
-
-    /// @notice The token selected for preparation.
-    address public tokenPrepared;
-
-    /// @notice The token selected for transport.
-    address public tokenSent;
-
-    //*********************************************************************//
-    // -------------------- internal stored properties ------------------- //
-    //*********************************************************************//
-
-    /// @notice Whether the fee payment creates refundable credit instead of tokens.
-    bool internal _failFee;
-
-    /// @notice Whether a retained-fee claim reverts.
-    bool internal _failRefund;
-
-    /// @notice Whether transport reverts after fee-side effects.
-    bool internal _failTransport;
-
-    /// @notice Whether transport leaves the newest leaf unsent.
-    bool internal _leaveUnsent;
-
-    /// @notice The number of leaves added by each prepare.
-    uint256 internal _leavesAdded = 1;
-
-    /// @notice The native outbox tracked by the mock.
-    JBOutboxTree internal _outbox;
-
-    /// @notice Source principal delivered to the collector during fee payment.
-    uint256 internal _principalDuringFee;
-
-    /// @notice The fee receipt issued to the child payer.
-    uint256 internal _receipt;
-
-    /// @notice Whether preparation attempts to reenter the collector.
-    bool internal _reenterPrepare;
-
-    /// @notice Whether fee payment attempts to reenter the collector.
-    bool internal _reenterSend;
-
-    /// @notice Whether a refund incorrectly leaves one wei of retained credit.
-    bool internal _residualRefund;
-
-    //*********************************************************************//
-    // -------------------------- constructor ---------------------------- //
-    //*********************************************************************//
-
-    /// @notice Binds the actual ERC-20 balances exercised by the stub.
-    /// @param sourceToken The token pulled from the collector.
-    /// @param feeToken The token issued for the caller's fee.
-    constructor(StickyPricingToken sourceToken, StickyPricingToken feeToken) {
-        SOURCE_TOKEN = sourceToken;
-        FEE_TOKEN = feeToken;
-    }
-
-    //*********************************************************************//
-    // ---------------------- external transactions ---------------------- //
-    //*********************************************************************//
-
-    /// @notice Pays the caller's retained credit to its specified beneficiary.
-    /// @param beneficiary The account receiving the failed-fee refund.
-    function claimRetainedToRemoteFee(address payable beneficiary) external {
-        if (_failRefund) revert StickySourceSuckerStub_Rejected();
-        uint256 amount = retainedToRemoteFeeOf[msg.sender];
-        claimedAccount = msg.sender;
-        claimedBeneficiary = beneficiary;
-        // Clear before the callback, matching the canonical sucker's refund ordering.
-        retainedToRemoteFeeOf[msg.sender] = _residualRefund ? 1 : 0;
-        // A rejecting beneficiary must unwind the whole source transaction.
-        // forge-lint: disable-next-line(low-level-calls,arbitrary-send-eth)
-        (bool success,) = beneficiary.call{value: amount}("");
-        if (!success) revert StickySourceSuckerStub_Rejected();
-    }
-
-    /// @notice Pulls real principal and appends the configured number of native leaves.
-    /// @param projectTokenCount The amount of source principal to pull.
-    /// @param beneficiary The destination receiver encoded in the leaf.
-    /// @param minTokensReclaimed The native cashout floor.
-    /// @param token The backing asset selected by the collector.
-    /// @param metadata The attribution metadata committed to the leaf.
-    function prepare(
-        uint256 projectTokenCount,
-        bytes32 beneficiary,
-        uint256 minTokensReclaimed,
-        address token,
-        bytes32 metadata
-    )
-        external
-    {
-        collector = msg.sender;
-        allowanceAtPrepare = SOURCE_TOKEN.allowance({owner: msg.sender, spender: address(this)});
-        SafeERC20.safeTransferFrom({
-            token: IERC20(address(SOURCE_TOKEN)), from: msg.sender, to: address(this), value: projectTokenCount
-        });
-        beneficiaryPrepared = beneficiary;
-        metadataPrepared = metadata;
-        minimumPrepared = minTokensReclaimed;
-        principalPrepared = projectTokenCount;
-        tokenPrepared = token;
-        prepareCalls++;
-        if (_reenterPrepare) _attemptReentry(0);
-        // Mutate a frontier slot as well as its counters so rollback checks cover the complete outbox.
-        _outbox.tree.branch[0] = keccak256(abi.encode(projectTokenCount, beneficiary, minTokensReclaimed, metadata));
-        _outbox.tree.count += _leavesAdded;
-        _outbox.balance += minTokensReclaimed;
-    }
-
-    /// @notice Seeds already prepared leaves and the count transported before this attempt.
-    /// @param count The existing leaf count.
-    /// @param sent The existing transported leaf count.
-    /// @param balance The native backing already queued for transport.
-    /// @param nonce The outbox's previous transport nonce.
-    function setOutbox(uint256 count, uint192 sent, uint256 balance, uint64 nonce) external {
-        _outbox.tree.count = count;
-        _outbox.numberOfClaimsSent = sent;
-        _outbox.balance = balance;
-        _outbox.nonce = nonce;
-        // A nonzero prior frontier must survive every reverted prepare and transport.
-        _outbox.tree.branch[0] = keccak256(abi.encode(count, sent, balance, nonce));
-    }
-
-    /// @notice Selects malformed preparation and reentry behavior.
-    /// @param leavesAdded The number of leaves to append per call.
-    /// @param reenter Whether preparation attempts a nested send.
-    function setPrepareBehavior(uint256 leavesAdded, bool reenter) external {
-        _leavesAdded = leavesAdded;
-        _reenterPrepare = reenter;
-    }
-
-    /// @notice Selects failed or incomplete refund behavior.
-    /// @param fail Whether the claim reverts.
-    /// @param residual Whether the claim leaves one wei of credit.
-    function setRefundBehavior(bool fail, bool residual) external {
-        _failRefund = fail;
-        _residualRefund = residual;
-    }
-
-    /// @notice Seeds existing retained credit to test that another caller cannot consume it.
-    /// @param account The account owning the seeded credit.
-    /// @param amount The retained amount.
-    function setRetainedFee(address account, uint256 amount) external {
-        retainedToRemoteFeeOf[account] = amount;
-    }
-
-    /// @notice Selects fee, transport, and callback behavior for the next send.
-    /// @param failFee Whether fee payment fails and retains ETH.
-    /// @param failTransport Whether transport reverts after fee processing.
-    /// @param leaveUnsent Whether transport omits the newest leaf.
-    /// @param receipt The fee-token receipt issued to the child.
-    /// @param principal The source principal delivered to the collector by a fee callback.
-    /// @param reenter Whether fee payment attempts to reenter the collector.
-    function setSendBehavior(
-        bool failFee,
-        bool failTransport,
-        bool leaveUnsent,
-        uint256 receipt,
-        uint256 principal,
-        bool reenter
-    )
-        external
-    {
-        _failFee = failFee;
-        _failTransport = failTransport;
-        _leaveUnsent = leaveUnsent;
-        _receipt = receipt;
-        _principalDuringFee = principal;
-        _reenterSend = reenter;
-    }
-
-    /// @notice Models fee effects and transport completion in the same transaction.
-    /// @param token The backing asset whose outbox is submitted.
-    function toRemote(address token) external payable {
-        sender = msg.sender;
-        sendValue = msg.value;
-        tokenSent = token;
-        allowanceAtSend = SOURCE_TOKEN.allowance({owner: collector, spender: address(this)});
-        // These are separate recipients even when source principal and the fee receipt use the same ERC-20.
-        if (_principalDuringFee != 0) SOURCE_TOKEN.mint({account: collector, amount: _principalDuringFee});
-        if (_failFee) retainedToRemoteFeeOf[msg.sender] += msg.value;
-        else if (_receipt != 0) FEE_TOKEN.mint({account: msg.sender, amount: _receipt});
-        if (_reenterSend) _attemptReentry(msg.value);
-        if (_failTransport) revert StickySourceSuckerStub_Rejected();
-        // An older root can be sent successfully without including the just-prepared leaf.
-        _outbox.numberOfClaimsSent = SafeCast.toUint192(_outbox.tree.count - (_leaveUnsent ? 1 : 0));
-        _outbox.balance = 0;
-        _outbox.nonce++;
-    }
-
-    //*********************************************************************//
-    // ----------------------- external views ---------------------------- //
-    //*********************************************************************//
-
-    /// @notice Returns the stateful native outbox.
-    /// @param token The backing asset being queried.
-    /// @return outbox The current tree and transported count.
-    function outboxOf(address token) external view returns (JBOutboxTree memory outbox) {
-        if (token != JBConstants.NATIVE_TOKEN) revert StickySourceSuckerStub_Rejected();
-        return _outbox;
-    }
-
-    //*********************************************************************//
-    // ---------------------- internal transactions ---------------------- //
-    //*********************************************************************//
-
-    /// @notice Records the exact result of a nested send without hiding the outer transaction's behavior.
-    /// @param value The ETH forwarded by the callback.
-    function _attemptReentry(uint256 value) internal {
-        reentryAttempts++;
-        try StickySourceCollector(collector).send{value: value}() returns (uint256) {
-            reentrySucceeded = true;
-        } catch (bytes memory reason) {
-            reentryReason = reason;
-        }
-    }
-}
-
-/// @notice Calls the collector and can reject or reenter a failed-fee refund.
-// The fixture stays beside its sole consumer.
-// forge-lint: disable-next-line(multi-contract-file)
-contract StickySourceCaller {
-    /// @notice Thrown when this caller rejects its refund.
-    error StickySourceCaller_RejectRefund();
-
-    /// @notice The collector invoked by this caller.
-    StickySourceCollector public immutable COLLECTOR;
-
-    /// @notice Whether the refund callback refuses ETH.
-    bool public rejectRefund;
-
-    /// @notice Whether the refund callback attempts a nested source send.
-    bool public reenter;
-
-    /// @notice The revert data returned by a nested source send.
-    bytes public reentryReason;
-
-    /// @notice Whether the nested source send succeeded.
-    bool public reentrySucceeded;
-
-    /// @notice The total refunds accepted by the caller.
-    uint256 public refunded;
-
-    /// @notice Binds the one collector this caller exercises.
-    /// @param collector The collector under test.
-    constructor(StickySourceCollector collector) {
-        COLLECTOR = collector;
-    }
-
-    /// @notice Accepts or rejects a refund and optionally attempts to reenter the source operation.
-    receive() external payable {
-        if (rejectRefund) revert StickySourceCaller_RejectRefund();
-        refunded += msg.value;
-        if (reenter) {
-            // Disable before calling so a missing guard cannot create an unbounded recursive fixture.
-            reenter = false;
-            try COLLECTOR.send{value: msg.value}() returns (uint256) {
-                reentrySucceeded = true;
-            } catch (bytes memory reason) {
-                reentryReason = reason;
-            }
-        }
-    }
-
-    /// @notice Selects the refund callback's behavior.
-    /// @param reject Whether the callback rejects the refund.
-    /// @param attemptReentry Whether the callback calls send again.
-    function configure(bool reject, bool attemptReentry) external {
-        rejectRefund = reject;
-        reenter = attemptReentry;
-    }
-
-    /// @notice Sends the attached fee through the fixed collector.
-    /// @return leafIndex The prepared leaf index returned by the collector.
-    function send() external payable returns (uint256 leafIndex) {
-        return COLLECTOR.send{value: msg.value}();
-    }
-}
-
-/// @notice Permissionless source submission preserves principal, isolates fee receipts and rolls failures back.
-// The stateful fixtures are private to this test file.
-// forge-lint: disable-next-line(multi-contract-file)
+/// @notice Attributed reserve custody remains conserved across callbacks, partial delivery and retries.
+/// @dev Tokens, credits, controller failure/burn, outboxes and receiver settlement mutate real EVM state. Route
+/// registry/directory reads and cashout quotes are configured explicitly; live fork tests own actual bridge proof.
 contract StickySourceCollectorTest is Test {
     //*********************************************************************//
     // ------------------------ internal constants ----------------------- //
     //*********************************************************************//
 
-    /// @notice The initial reserved principal held by the collector.
+    /// @notice Reserved principal used by deterministic custody cases.
     uint256 internal constant _AMOUNT = 100e18;
 
-    /// @notice The current registry fee attached to each source send.
+    /// @notice The caller-funded registry submission fee.
     uint256 internal constant _FEE = 0.001 ether;
 
-    /// @notice Native backing returned by the cashout preview.
+    /// @notice The gross native cashout quote used by ordinary tests.
     uint256 internal constant _PREVIEW = 2 ether;
 
-    /// @notice The fee-token receipt produced by a successful fee payment.
+    /// @notice The caller's fee-project token receipt.
     uint256 internal constant _RECEIPT = 5e18;
-
-    /// @notice Additional reserved principal delivered during a fee callback.
-    uint256 internal constant _RESERVED = 7e18;
 
     //*********************************************************************//
     // -------------------- internal stored properties ------------------- //
     //*********************************************************************//
 
-    /// @notice The unrelated account that pays the source send fee.
+    /// @notice The unrelated delivery caller.
     address internal _caller;
 
-    /// @notice The source collector under test.
+    /// @notice The shared source hook under test.
     StickySourceCollector internal _collector;
 
-    /// @notice The directory resolving the source native terminal.
+    /// @notice The current source controller, including caught hook failures.
+    StickySourceController internal _controller;
+
+    /// @notice Canonical directory identity whose views are mocked.
     address internal _directory;
 
-    /// @notice The standard token issued as a fee receipt.
-    StickyPricingToken internal _feeToken;
+    /// @notice Observed destination funding through real receivers.
+    StickySourceDistributor internal _distributor;
 
-    /// @notice The source project being collected.
-    uint256 internal _projectId;
+    /// @notice The real destination receiver factory.
+    StickyRewardReceiverFactory internal _factory;
 
-    /// @notice The fixed receiver on Ethereum.
-    address internal _receiver;
+    /// @notice Source project 1's token, also used for fee receipts.
+    StickySourceToken internal _one;
 
-    /// @notice The registry authorizing the source sucker and quoting the fee.
+    /// @notice Canonical registry identity whose views are mocked.
     address internal _registry;
 
-    /// @notice The standard token holding reserved source principal.
-    StickyPricingToken internal _sourceToken;
+    /// @notice An arbitrary source project's ERC-20.
+    StickySourceToken internal _seventySeven;
 
-    /// @notice The stateful native sucker double.
-    StickySourceSuckerStub internal _sucker;
+    /// @notice The first Ethereum holder pool.
+    address internal _stickyA;
 
-    /// @notice The source native terminal whose preview is queried.
+    /// @notice The second Ethereum holder pool.
+    address internal _stickyB;
+
+    /// @notice Project 3's ordinary delivery route.
+    StickySourceSucker internal _sucker;
+
+    /// @notice The current cashout terminal identity.
     address internal _terminal;
 
-    /// @notice The registry resolving source and fee ERC-20 identities.
-    address internal _tokens;
+    /// @notice Source project 3's token.
+    StickySourceToken internal _three;
+
+    /// @notice Stateful token and credit custody registry.
+    StickySourceTokens internal _tokens;
+
+    //*********************************************************************//
+    // -------------------------- public views --------------------------- //
+    //*********************************************************************//
+
+    /// @notice Deployment binds canonical dependencies and gives only this parent access to its fee child.
+    function test_constructorBindsSharedDependencies() public view {
+        assertEq(address(_collector.REGISTRY()), _registry);
+        assertEq(address(_collector.DIRECTORY()), _directory);
+        assertEq(address(_collector.TOKENS()), address(_tokens));
+        assertEq(address(_collector.RECEIVER_FACTORY()), address(_factory));
+        assertEq(_collector.FEE_PAYER().COLLECTOR(), address(_collector));
+        assertEq(_collector.DESTINATION_CHAIN_ID(), 1);
+    }
+
+    /// @notice The hook exposes the controller's expected split-hook interface without claiming every interface.
+    function test_supportsSplitHookInterface() public view {
+        assertTrue(_collector.supportsInterface(type(IJBSplitHook).interfaceId));
+        assertTrue(_collector.supportsInterface(type(IERC165).interfaceId));
+        assertFalse(_collector.supportsInterface(0xffffffff));
+    }
 
     //*********************************************************************//
     // ----------------------- public transactions ----------------------- //
     //*********************************************************************//
 
-    /// @notice Creates an Optimism project 3 route with distinct source and fee tokens.
+    /// @notice Creates canonical bindings, real receiver custody and three independent source projects.
     function setUp() public {
-        _caller = makeAddr("source fee payer");
-        _directory = makeAddr("source directory");
-        _receiver = makeAddr("Ethereum reward receiver");
-        _registry = makeAddr("source sucker registry");
-        _terminal = makeAddr("source native terminal");
-        _tokens = makeAddr("source tokens registry");
         vm.chainId(10);
-        vm.deal({account: _caller, newBalance: 10 ether});
-        _setUpProject(3);
+        _caller = makeAddr("permissionless delivery caller");
+        _stickyA = makeAddr("Ethereum holder pool A");
+        _stickyB = makeAddr("Ethereum holder pool B");
+        _directory = makeAddr("canonical directory");
+        _registry = makeAddr("canonical sucker registry");
+        _terminal = makeAddr("current cashout terminal");
+        vm.etch({target: _directory, newRuntimeBytecode: hex"00"});
+        vm.etch({target: _registry, newRuntimeBytecode: hex"00"});
+        vm.etch({target: _terminal, newRuntimeBytecode: hex"00"});
+        vm.deal({account: _caller, newBalance: 100 ether});
+        _tokens = new StickySourceTokens();
+        _controller = new StickySourceController(_tokens);
+        _one = new StickySourceToken();
+        _three = new StickySourceToken();
+        _seventySeven = new StickySourceToken();
+        _bindProject({projectId: 1, token: _one});
+        _bindProject({projectId: 3, token: _three});
+        _bindProject({projectId: 77, token: _seventySeven});
+        vm.mockCall({
+            callee: _registry, data: abi.encodeCall(IJBSuckerRegistry.DIRECTORY, ()), returnData: abi.encode(_directory)
+        });
+        _mockFee(_FEE);
+        _distributor = new StickySourceDistributor();
+        StickyRewardReceiver receiver = new StickyRewardReceiver(IStickyDistributor(address(_distributor)));
+        _factory = new StickyRewardReceiverFactory(receiver);
+        _collector = new StickySourceCollector({
+            registry: IJBSuckerRegistry(_registry),
+            tokens: IJBTokens(address(_tokens)),
+            receiverFactory: IStickyRewardReceiverFactory(address(_factory))
+        });
+        _sucker = _newRoute(3);
     }
 
-    /// @notice Repeated unrelated callers conserve principal and their own fees across donations, callbacks and
-    /// retries.
-    /// @param seed Entropy for positive bounded additions, donations, callback reserves, fees and receipts.
-    /// @param sameToken Whether source rewards and caller fee receipts share project 1's ERC-20.
-    function testFuzz_sendConservesAcrossCallerSequences(bytes32 seed, bool sameToken) public {
-        if (sameToken) _setUpProject(1);
+    /// @notice A destructive incoming-token callback cannot consume prior allocations or conceal a custody decrease.
+    function test_acceptanceCustodyDecreasePreservesPriorAllocations() public {
+        _queueDefault(200e18);
+        _three.setTransferCallback({
+            target: address(_three),
+            data: abi.encodeCall(StickySourceToken.burn, (address(_collector), 150e18)),
+            rejectOnFailure: true
+        });
+        _queueDefault(_AMOUNT);
+        assertEq(
+            _controller.rejectionReason(),
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_UnexpectedReceipt.selector,
+                uint256(3),
+                uint256(200e18),
+                uint256(150e18),
+                uint256(200e18),
+                uint256(200e18)
+            )
+        );
+        assertEq(_controller.rejectedCallbacks(), 1);
+        assertEq(_controller.burned(), _AMOUNT);
+        assertEq(_collector.totalPendingOf(3), 200e18);
+        assertEq(_collector.pendingOf({sourceProjectId: 3, stickyToken: _stickyA, groupId: 0}), 200e18);
+        assertEq(_three.balanceOf(address(_collector)), 200e18);
+        assertEq(_three.totalSupply(), 200e18);
+    }
+
+    /// @notice Acceptance only attributes custody and does not touch terminals or bridge outboxes.
+    function test_acceptanceDoesNotDependOnDeliveryReadiness() public {
+        _sucker.setRoute({routeState: JBSuckerState.DEPRECATED, chainId: 1, remotePeer: bytes32(uint256(1))});
+        _mockTerminal({projectId: 3, backing: JBConstants.NATIVE_TOKEN, terminal: address(0)});
+        _queue({projectId: 3, stickyToken: _stickyA, groupId: 0, amount: _AMOUNT});
+        assertEq(_collector.pendingOf({sourceProjectId: 3, stickyToken: _stickyA, groupId: 0}), _AMOUNT);
+        assertEq(_three.balanceOf(address(_collector)), _AMOUNT);
+        assertEq(_sucker.prepareCalls(), 0);
+        assertEq(_sucker.sendValue(), 0);
+        assertEq(_three.allowance({owner: address(_collector), spender: address(_sucker)}), 0);
+    }
+
+    /// @notice Any source project and chain can attribute reserves to distinct Ethereum groups.
+    function test_acceptanceIsNotRestrictedToFeeOrRevProjects() public {
+        vm.chainId(25_555);
+        _queue({projectId: 77, stickyToken: _stickyB, groupId: 4000, amount: _AMOUNT});
+        assertEq(_collector.pendingOf({sourceProjectId: 77, stickyToken: _stickyB, groupId: 4000}), _AMOUNT);
+        assertEq(_collector.totalPendingOf(77), _AMOUNT);
+        assertEq(_collector.totalPendingOf(3), 0);
+        assertEq(_seventySeven.balanceOf(address(_collector)), _AMOUNT);
+    }
+
+    /// @notice Combined custody deltas count nested credits separately from an outer ERC-20 receipt.
+    function test_acceptanceNestedCreditsDoNotReduceOuterErc20Allocation() public {
+        JBSplitHookContext memory nested = _context({projectId: 3, stickyToken: _stickyB, groupId: 4000, amount: 7e18});
+        nested.token = address(0);
+        _three.setTransferCallback({
+            target: address(_controller),
+            data: abi.encodeCall(StickySourceController.distribute, (nested)),
+            rejectOnFailure: true
+        });
+        _queue({projectId: 3, stickyToken: _stickyA, groupId: 0, amount: _AMOUNT});
+        assertEq(_collector.pendingOf({sourceProjectId: 3, stickyToken: _stickyA, groupId: 0}), _AMOUNT);
+        assertEq(_collector.pendingOf({sourceProjectId: 3, stickyToken: _stickyB, groupId: 4000}), 7e18);
+        assertEq(_collector.totalPendingOf(3), _AMOUNT + 7e18);
+        assertEq(_tokens.creditBalanceOf({holder: address(_collector), projectId: 3}), 7e18);
+        assertEq(_three.balanceOf(address(_collector)), _AMOUNT);
+        assertEq(_controller.burned(), 0);
+        assertEq(_controller.rejectedCallbacks(), 0);
+    }
+
+    /// @notice A valid allocation to another project survives a token-triggered nested distribution.
+    function test_acceptanceNestedCrossProjectDoesNotBurnReserves() public {
+        JBSplitHookContext memory nested =
+            _context({projectId: 77, stickyToken: _stickyB, groupId: 4000, amount: 23e18});
+        _three.setTransferCallback({
+            target: address(_controller),
+            data: abi.encodeCall(StickySourceController.distribute, (nested)),
+            rejectOnFailure: true
+        });
+        _queue({projectId: 3, stickyToken: _stickyA, groupId: 0, amount: _AMOUNT});
+        assertEq(_collector.pendingOf({sourceProjectId: 3, stickyToken: _stickyA, groupId: 0}), _AMOUNT);
+        assertEq(_collector.pendingOf({sourceProjectId: 77, stickyToken: _stickyB, groupId: 4000}), 23e18);
+        assertEq(_three.balanceOf(address(_collector)), _AMOUNT);
+        assertEq(_seventySeven.balanceOf(address(_collector)), 23e18);
+        assertEq(_controller.acceptedCallbacks(), 2);
+        assertEq(_controller.rejectedCallbacks(), 0);
+        assertEq(_controller.burned(), 0);
+    }
+
+    /// @notice A transfer burn cannot create liabilities larger than the actual ERC-20 receipt.
+    function test_acceptanceUsesMeasuredReceipt() public {
+        _three.setTransferFee(17e18);
+        _queue({projectId: 3, stickyToken: _stickyA, groupId: 0, amount: _AMOUNT});
+        assertEq(_collector.pendingOf({sourceProjectId: 3, stickyToken: _stickyA, groupId: 0}), 83e18);
+        assertEq(_collector.totalPendingOf(3), 83e18);
+        assertEq(_three.balanceOf(address(_collector)), 83e18);
+        assertEq(_three.totalSupply(), 83e18);
+        assertEq(_controller.burned(), 0);
+    }
+
+    /// @notice A controller's cached credits context remains valid after that source deploys its ERC-20.
+    function test_cachedCreditContextAcceptedAfterTokenDeployment() public {
+        JBSplitHookContext memory context =
+            _context({projectId: 77, stickyToken: _stickyA, groupId: 0, amount: _AMOUNT});
+        context.token = address(0);
+        _controller.distribute(context);
+        assertEq(_collector.pendingOf({sourceProjectId: 77, stickyToken: _stickyA, groupId: 0}), _AMOUNT);
+        assertEq(_tokens.creditBalanceOf({holder: address(_collector), projectId: 77}), _AMOUNT);
+        assertEq(_seventySeven.balanceOf(address(_collector)), 0);
+        assertEq(_controller.rejectedCallbacks(), 0);
+    }
+
+    /// @notice Missing canonical dependencies cannot establish the shared custody boundary.
+    function test_constructorRejectsMissingBindings() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_InvalidDependency.selector, address(0))
+        );
+        new StickySourceCollector({
+            registry: IJBSuckerRegistry(address(0)),
+            tokens: IJBTokens(address(_tokens)),
+            receiverFactory: IStickyRewardReceiverFactory(address(_factory))
+        });
+        vm.expectRevert(
+            abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_InvalidDependency.selector, address(0))
+        );
+        new StickySourceCollector({
+            registry: IJBSuckerRegistry(_registry),
+            tokens: IJBTokens(address(0)),
+            receiverFactory: IStickyRewardReceiverFactory(address(_factory))
+        });
+        vm.expectRevert(
+            abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_InvalidDependency.selector, address(0))
+        );
+        new StickySourceCollector({
+            registry: IJBSuckerRegistry(_registry),
+            tokens: IJBTokens(address(_tokens)),
+            receiverFactory: IStickyRewardReceiverFactory(address(0))
+        });
+    }
+
+    /// @notice Credits and tokens jointly back all buckets while unrelated donated custody remains unassigned.
+    function test_creditsAndErc20MaterializationPreserveOtherBuckets() public {
+        _tokens.setToken({projectId: 77, token: address(0)});
+        _queue({projectId: 77, stickyToken: _stickyA, groupId: 0, amount: _AMOUNT});
+        _tokens.seedCredit({holder: address(_collector), projectId: 77, amount: 9e18});
+        _tokens.setToken({projectId: 77, token: address(_seventySeven)});
+        _queue({projectId: 77, stickyToken: _stickyB, groupId: 4000, amount: 20e18});
+        StickySourceSucker route = _newRoute(77);
+        _mockPreview({route: route, projectId: 77, amount: 30e18, backing: JBConstants.NATIVE_TOKEN, gross: _PREVIEW});
+        _sendTo({
+            projectId: 77,
+            stickyToken: _stickyA,
+            groupId: 0,
+            amount: 30e18,
+            route: route,
+            backing: JBConstants.NATIVE_TOKEN,
+            value: _FEE
+        });
+        assertEq(_collector.pendingOf({sourceProjectId: 77, stickyToken: _stickyA, groupId: 0}), 70e18);
+        assertEq(_collector.pendingOf({sourceProjectId: 77, stickyToken: _stickyB, groupId: 4000}), 20e18);
+        assertEq(_collector.totalPendingOf(77), 90e18);
+        assertEq(_tokens.totalBalanceOf({holder: address(_collector), projectId: 77}), 99e18);
+        assertEq(_tokens.creditBalanceOf({holder: address(_collector), projectId: 77}), 99e18);
+        assertEq(_seventySeven.balanceOf(address(_collector)), 0);
+    }
+
+    /// @notice Queueing credits does not require a token; later partial delivery materializes only its shortfall.
+    function test_creditsQueueBeforeTokenAndDeliverAfterDeployment() public {
+        _tokens.setToken({projectId: 77, token: address(0)});
+        _queue({projectId: 77, stickyToken: _stickyA, groupId: 0, amount: _AMOUNT});
+        StickySourceSucker route = _newRoute(77);
+        _mockPreview({route: route, projectId: 77, amount: 25e18, backing: JBConstants.NATIVE_TOKEN, gross: _PREVIEW});
+        bytes32 beforeState = _stateHash(route);
+        vm.expectRevert(
+            abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_NoToken.selector, uint256(77))
+        );
+        _sendTo({
+            projectId: 77,
+            stickyToken: _stickyA,
+            groupId: 0,
+            amount: 25e18,
+            route: route,
+            backing: JBConstants.NATIVE_TOKEN,
+            value: _FEE
+        });
+        assertEq(_stateHash(route), beforeState);
+        _tokens.setToken({projectId: 77, token: address(_seventySeven)});
+        _sendTo({
+            projectId: 77,
+            stickyToken: _stickyA,
+            groupId: 0,
+            amount: 25e18,
+            route: route,
+            backing: JBConstants.NATIVE_TOKEN,
+            value: _FEE
+        });
+        assertEq(_collector.pendingOf({sourceProjectId: 77, stickyToken: _stickyA, groupId: 0}), 75e18);
+        assertEq(_tokens.creditBalanceOf({holder: address(_collector), projectId: 77}), 75e18);
+        assertEq(_seventySeven.balanceOf(address(_collector)), 0);
+        assertEq(route.principalPrepared(), 25e18);
+    }
+
+    /// @notice A nonexistent credit claim cannot manufacture unbacked source liabilities.
+    function test_creditsRejectUnbackedContext() public {
+        JBSplitHookContext memory context =
+            _context({projectId: 77, stickyToken: _stickyA, groupId: 0, amount: _AMOUNT});
+        context.token = address(0);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InsufficientCustody.selector,
+                uint256(77),
+                uint256(0),
+                _AMOUNT
+            )
+        );
+        _dispatch(context);
+        assertEq(_collector.totalPendingOf(77), 0);
+    }
+
+    /// @notice A fee-payment callback can queue more principal into the same hook without a caught burn.
+    function test_feeCallbackQueuesSameTokenPrincipalForLaterDelivery() public {
+        StickySourceSucker route = _newRoute(1);
+        _queue({projectId: 1, stickyToken: _stickyA, groupId: 0, amount: _AMOUNT});
+        JBSplitHookContext memory callback = _context({projectId: 1, stickyToken: _stickyA, groupId: 0, amount: 7e18});
+        route.setCallback({
+            target: address(_controller),
+            data: abi.encodeCall(StickySourceController.distribute, (callback)),
+            duringPrepare: false
+        });
+        _mockPreview({route: route, projectId: 1, amount: _AMOUNT, backing: JBConstants.NATIVE_TOKEN, gross: _PREVIEW});
+        _sendTo({
+            projectId: 1,
+            stickyToken: _stickyA,
+            groupId: 0,
+            amount: _AMOUNT,
+            route: route,
+            backing: JBConstants.NATIVE_TOKEN,
+            value: _FEE
+        });
+        assertEq(_collector.pendingOf({sourceProjectId: 1, stickyToken: _stickyA, groupId: 0}), 7e18);
+        assertEq(_collector.totalPendingOf(1), 7e18);
+        assertEq(_one.balanceOf(address(_collector)), 7e18);
+        assertEq(_one.balanceOf(_caller), _RECEIPT);
+        assertEq(_one.balanceOf(address(_collector.FEE_PAYER())), 0);
+        assertEq(_controller.burned(), 0);
+        assertEq(_controller.rejectedCallbacks(), 0);
+        assertEq(_controller.acceptedCallbacks(), 2);
+    }
+
+    /// @notice Underpayment, missing receipt token and old retained credits cannot consume any pending principal.
+    function test_feeFailuresPreservePendingCustody() public {
+        _queueDefault(_AMOUNT);
+        _mockDefaultPreview(_AMOUNT);
+        bytes32 beforeState = _stateHash(_sucker);
+        vm.expectRevert(
+            abi.encodeWithSelector(StickySourceFeePayer.StickySourceFeePayer_InsufficientFee.selector, _FEE - 1, _FEE)
+        );
+        _sendTo({
+            projectId: 3,
+            stickyToken: _stickyA,
+            groupId: 0,
+            amount: _AMOUNT,
+            route: _sucker,
+            backing: JBConstants.NATIVE_TOKEN,
+            value: _FEE - 1
+        });
+        assertEq(_stateHash(_sucker), beforeState);
         address child = address(_collector.FEE_PAYER());
-        address firstCaller = _caller;
-        address secondCaller = makeAddr("second sequence caller");
-        uint256 principalDelivered = _AMOUNT;
-        uint256 childDonations;
-        uint256 firstReceipts;
-        uint256 secondReceipts;
-        uint256 feesPaid;
-        // Each sequence begins with an older unsent frontier and unrelated native donations.
-        _sucker.setOutbox({count: 7, sent: 3, balance: 1 ether, nonce: 4});
-        vm.deal({account: address(_collector), newBalance: 2 ether});
-        vm.deal({account: child, newBalance: 3 ether});
-        vm.deal({account: secondCaller, newBalance: 10 ether});
-
-        // Every input includes successful fee payment, a refund, and a repeated caller selected by the seed.
-        for (uint256 i; i < 3; i++) {
-            uint256 entropy = uint256(keccak256(abi.encode(seed, i)));
-            uint256 addition = bound(entropy, 1, 1e24);
-            uint256 donation = bound(entropy >> 32, 1, 1e24);
-            uint256 callbackReserve = bound(entropy >> 64, 1, 1e24);
-            uint256 receipt = i == 1 ? 0 : bound(entropy >> 96, 1, 1e24);
-            uint256 fee = bound(entropy >> 128, 1, 1 ether);
-            uint256 gross = bound(entropy >> 192, 1, 100 ether);
-            _sourceToken.mint({account: address(_collector), amount: addition});
-            _feeToken.mint({account: child, amount: donation});
-            principalDelivered += addition;
-            childDonations += donation;
-            uint256 principalBefore = _sourceToken.balanceOf(address(_collector));
-            uint256 preparedBefore = _sourceToken.balanceOf(address(_sucker));
-            _mockPreview({amount: principalBefore, gross: gross, terminal: _terminal});
-            _mockFee(fee);
-            _caller = i == 0 || (i == 2 && uint256(seed) % 2 == 0) ? firstCaller : secondCaller;
-            uint256 callerNativeBefore = _caller.balance;
-            _sucker.setSendBehavior({
-                failFee: i == 1,
-                failTransport: true,
-                leaveUnsent: false,
-                receipt: receipt,
-                principal: callbackReserve,
-                reenter: false
-            });
-
-            // Fail after receipt or retained-credit creation, proving prior successful sends survive intact.
-            bytes32 beforeState = _stateHash();
-            vm.prank(_caller);
-            vm.expectRevert(StickySourceSuckerStub.StickySourceSuckerStub_Rejected.selector);
-            _collector.send{value: fee}();
-            assertEq(_stateHash(), beforeState);
-            assertEq(_feeToken.balanceOf(firstCaller), firstReceipts);
-            assertEq(_feeToken.balanceOf(secondCaller), secondReceipts);
-
-            _sucker.setSendBehavior({
-                failFee: i == 1,
-                failTransport: false,
-                leaveUnsent: false,
-                receipt: receipt,
-                principal: callbackReserve,
-                reenter: false
-            });
-            vm.prank(_caller);
-            uint256 index = _collector.send{value: fee}();
-            principalDelivered += callbackReserve;
-            if (_caller == firstCaller) firstReceipts += receipt;
-            else secondReceipts += receipt;
-            if (i != 1) feesPaid += fee;
-
-            // Principal moves to the sucker; reserves arriving during fee payment remain for the next send.
-            assertEq(_sourceToken.balanceOf(address(_sucker)), preparedBefore + principalBefore);
-            assertEq(_sourceToken.balanceOf(address(_collector)), callbackReserve);
-            assertEq(
-                _sourceToken.balanceOf(address(_sucker)) + _sourceToken.balanceOf(address(_collector)),
-                principalDelivered
-            );
-            assertEq(_feeToken.balanceOf(child), childDonations);
-            assertEq(_feeToken.balanceOf(firstCaller), firstReceipts);
-            assertEq(_feeToken.balanceOf(secondCaller), secondReceipts);
-            uint256 feeInventory = childDonations + firstReceipts + secondReceipts;
-            assertEq(_sourceToken.totalSupply(), principalDelivered + (sameToken ? feeInventory : 0));
-            if (!sameToken) assertEq(_feeToken.totalSupply(), feeInventory);
-            assertEq(_caller.balance, callerNativeBefore - (i == 1 ? 0 : fee));
-            assertEq(address(_sucker).balance, feesPaid);
-            assertEq(address(_collector).balance, 2 ether);
-            assertEq(child.balance, 3 ether);
-            assertEq(_sucker.retainedToRemoteFeeOf(child), 0);
-            assertEq(_sourceToken.allowance({owner: address(_collector), spender: address(_sucker)}), 0);
-            assertEq(_sucker.beneficiaryPrepared(), bytes32(uint256(uint160(_receiver))));
-            assertEq(index, 7 + i);
-            JBOutboxTree memory outbox = _sucker.outboxOf(JBConstants.NATIVE_TOKEN);
-            assertEq(outbox.tree.count, 8 + i);
-            assertEq(outbox.numberOfClaimsSent, 8 + i);
-            assertEq(outbox.nonce, 5 + i);
-            assertEq(outbox.balance, 0);
-        }
-        // A fuzz input cannot pass by exercising only revert paths.
-        assertEq(_sucker.prepareCalls(), 3);
-    }
-
-    /// @notice A scheduled retirement remains usable while the sucker still accepts preparation and submission.
-    function test_constructorAcceptsPendingDeprecation() public {
-        vm.mockCall({
-            callee: address(_sucker),
-            data: abi.encodeCall(IJBSucker.state, ()),
-            returnData: abi.encode(JBSuckerState.DEPRECATION_PENDING)
-        });
-        StickySourceCollector collector = _deploy();
-        assertEq(address(collector.SUCKER()), address(_sucker));
-        _sourceToken.mint({account: address(collector), amount: _AMOUNT});
-        vm.prank(_caller);
-        assertEq(collector.send{value: _FEE}(), 0);
-        assertEq(_sourceToken.balanceOf(address(collector)), 0);
-    }
-
-    /// @notice Each supported source chain accepts the fixed Ethereum route.
-    function test_constructorAcceptsSupportedChains() public {
-        uint256[3] memory chains = [uint256(10), uint256(8453), uint256(42_161)];
-        for (uint256 i; i < chains.length; i++) {
-            vm.chainId(chains[i]);
-            StickySourceCollector collector = _deploy();
-            assertEq(collector.PROJECT_ID(), _projectId);
-            assertEq(collector.RECEIVER(), _receiver);
-            assertEq(address(collector.SOURCE_TOKEN()), address(_sourceToken));
-            assertEq(address(collector.SUCKER()), address(_sucker));
-        }
-    }
-
-    /// @notice The child is bound to its collector, fixed sucker and fee-token identity.
-    function test_constructorBindsFeePayer() public view {
-        assertEq(address(_collector.FEE_PAYER().COLLECTOR()), address(_collector));
-        assertEq(address(_collector.FEE_PAYER().SUCKER()), address(_sucker));
-        assertEq(address(_collector.FEE_PAYER().FEE_TOKEN()), address(_feeToken));
-    }
-
-    /// @notice Route identity requires deployed source and fee-token code, not merely nonzero addresses.
-    function test_constructorRejectsCodeLessTokens() public {
-        vm.mockCall({
-            callee: _tokens, data: abi.encodeCall(IJBTokens.tokenOf, (_projectId)), returnData: abi.encode(_caller)
-        });
-        vm.expectRevert(
+        _sucker.setRetainedFee({account: child, amount: 1});
+        _expectDefaultAtomicRevert(
             abi.encodeWithSelector(
-                StickySourceCollector.StickySourceCollector_InvalidTokens.selector, _caller, address(_feeToken)
+                StickySourceFeePayer.StickySourceFeePayer_RetainedFee.selector, address(_sucker), uint256(1)
             )
         );
-        _deploy();
-    }
-
-    /// @notice A fully deprecated route cannot create a collector that has no way to send its balance.
-    function test_constructorRejectsDeprecatedSucker() public {
-        vm.mockCall({
-            callee: address(_sucker),
-            data: abi.encodeCall(IJBSucker.state, ()),
-            returnData: abi.encode(JBSuckerState.DEPRECATED)
-        });
-        vm.expectRevert(
+        _sucker.setRetainedFee({account: child, amount: 0});
+        _sucker.setRetainedTransport({account: child, amount: 1});
+        _expectDefaultAtomicRevert(
             abi.encodeWithSelector(
-                StickySourceCollector.StickySourceCollector_SuckerNotSending.selector,
+                StickySourceFeePayer.StickySourceFeePayer_RetainedTransportPayment.selector,
                 address(_sucker),
-                JBSuckerState.DEPRECATED
+                uint256(1)
             )
         );
-        _deploy();
-    }
-
-    /// @notice Missing source or fee ERC-20 identities reject deployment.
-    function test_constructorRejectsMissingTokens() public {
-        vm.mockCall({
-            callee: _tokens, data: abi.encodeCall(IJBTokens.tokenOf, (_projectId)), returnData: abi.encode(address(0))
-        });
-        vm.expectRevert(
+        _sucker.setRetainedTransport({account: child, amount: 0});
+        _tokens.setToken({projectId: 1, token: address(0)});
+        _expectDefaultAtomicRevert(
             abi.encodeWithSelector(
-                StickySourceCollector.StickySourceCollector_InvalidTokens.selector, address(0), address(_feeToken)
-            )
-        );
-        _deploy();
-        vm.mockCall({
-            callee: _tokens,
-            data: abi.encodeCall(IJBTokens.tokenOf, (_projectId)),
-            returnData: abi.encode(address(_sourceToken))
-        });
-        vm.mockCall({callee: _tokens, data: abi.encodeCall(IJBTokens.tokenOf, (1)), returnData: abi.encode(address(0))});
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                StickySourceCollector.StickySourceCollector_InvalidTokens.selector, address(_sourceToken), address(0)
-            )
-        );
-        _deploy();
-    }
-
-    /// @notice Disabled, emergency, and non-native remote mappings reject deployment.
-    function test_constructorRejectsNativeMapping() public {
-        _mockMapping({
-            enabled: false, emergency: false, remoteToken: bytes32(uint256(uint160(JBConstants.NATIVE_TOKEN)))
-        });
-        vm.expectRevert(_nativeRouteError());
-        _deploy();
-        _mockMapping({enabled: true, emergency: true, remoteToken: bytes32(uint256(uint160(JBConstants.NATIVE_TOKEN)))});
-        vm.expectRevert(_nativeRouteError());
-        _deploy();
-        _mockMapping({enabled: true, emergency: false, remoteToken: bytes32(uint256(uint160(address(_sourceToken))))});
-        vm.expectRevert(_nativeRouteError());
-        _deploy();
-    }
-
-    /// @notice The source sucker must charge the fixed protocol fee project.
-    function test_constructorRejectsOtherFeeProject() public {
-        vm.mockCall({
-            callee: address(_sucker),
-            data: abi.encodeWithSignature("FEE_PROJECT_ID()"),
-            returnData: abi.encode(uint256(3))
-        });
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                StickySourceCollector.StickySourceCollector_InvalidProject.selector, address(_sucker), _projectId
-            )
-        );
-        _deploy();
-    }
-
-    /// @notice A non-Ethereum peer rejects deployment.
-    function test_constructorRejectsOtherPeerChain() public {
-        vm.mockCall({
-            callee: address(_sucker),
-            data: abi.encodeCall(IJBSucker.peerChainId, ()),
-            returnData: abi.encode(uint256(10))
-        });
-        vm.expectRevert(_nativeRouteError());
-        _deploy();
-    }
-
-    /// @notice Only projects 1 and 3 can use this collector.
-    function test_constructorRejectsOtherProject() public {
-        vm.mockCall({
-            callee: address(_sucker), data: abi.encodeCall(IJBSucker.projectId, ()), returnData: abi.encode(uint256(2))
-        });
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                StickySourceCollector.StickySourceCollector_InvalidProject.selector, address(_sucker), uint256(2)
-            )
-        );
-        _deploy();
-    }
-
-    /// @notice A sending-disabled route cannot create a collector that has no way to send its balance.
-    function test_constructorRejectsSendingDisabledSucker() public {
-        vm.mockCall({
-            callee: address(_sucker),
-            data: abi.encodeCall(IJBSucker.state, ()),
-            returnData: abi.encode(JBSuckerState.SENDING_DISABLED)
-        });
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                StickySourceCollector.StickySourceCollector_SuckerNotSending.selector,
+                StickySourceFeePayer.StickySourceFeePayer_InvalidFeeToken.selector,
                 address(_sucker),
-                JBSuckerState.SENDING_DISABLED
-            )
-        );
-        _deploy();
-    }
-
-    /// @notice An unregistered sucker rejects deployment even if its other route getters agree.
-    function test_constructorRejectsUnregisteredSucker() public {
-        vm.mockCall({
-            callee: _registry,
-            data: abi.encodeCall(IJBSuckerRegistry.isSuckerOf, (_projectId, address(_sucker))),
-            returnData: abi.encode(false)
-        });
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                StickySourceCollector.StickySourceCollector_InvalidProject.selector, address(_sucker), _projectId
-            )
-        );
-        _deploy();
-    }
-
-    /// @notice Ethereum and unrelated chains cannot deploy a source collector.
-    function test_constructorRejectsUnsupportedChains() public {
-        vm.chainId(1);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                StickySourceCollector.StickySourceCollector_InvalidRoute.selector,
                 uint256(1),
-                address(_sucker),
-                _receiver
-            )
-        );
-        _deploy();
-        vm.chainId(137);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                StickySourceCollector.StickySourceCollector_InvalidRoute.selector,
-                uint256(137),
-                address(_sucker),
-                _receiver
-            )
-        );
-        _deploy();
-    }
-
-    /// @notice A missing peer or code-less source cannot establish a valid native route.
-    function test_constructorRejectsZeroPeerOrCodeLessSucker() public {
-        vm.mockCall({
-            callee: address(_sucker), data: abi.encodeCall(IJBSucker.peer, ()), returnData: abi.encode(bytes32(0))
-        });
-        vm.expectRevert(_nativeRouteError());
-        _deploy();
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                StickySourceCollector.StickySourceCollector_InvalidRoute.selector, uint256(10), _caller, _receiver
-            )
-        );
-        new StickySourceCollector({sucker: JBSucker(payable(_caller)), receiver: _receiver});
-    }
-
-    /// @notice A zero destination cannot receive bridged principal.
-    function test_constructorRejectsZeroReceiver() public {
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                StickySourceCollector.StickySourceCollector_InvalidRoute.selector,
-                uint256(10),
-                address(_sucker),
                 address(0)
             )
         );
-        new StickySourceCollector({sucker: JBSucker(payable(address(_sucker))), receiver: address(0)});
     }
 
-    /// @notice Only the fixed collector can invoke its fee payer.
+    /// @notice Consuming an old fee-token donation makes the whole source submission revert.
+    function test_feePayerPreservesDonationFloor() public {
+        _queueDefault(_AMOUNT);
+        _mockDefaultPreview(_AMOUNT);
+        address child = address(_collector.FEE_PAYER());
+        _one.mint({account: child, amount: 7e18});
+        _sucker.setConsumedDonation(10e18);
+        _expectDefaultAtomicRevert(
+            abi.encodeWithSelector(
+                StickySourceFeePayer.StickySourceFeePayer_DecreasedBalance.selector,
+                address(_one),
+                uint256(7e18),
+                uint256(2e18)
+            )
+        );
+        assertEq(_one.balanceOf(child), 7e18);
+    }
+
+    /// @notice Only the fixed collector can invoke its dynamic-route fee payer.
     function test_feePayerRejectsOtherCallers() public {
         StickySourceFeePayer child = _collector.FEE_PAYER();
-        vm.prank(_caller);
         vm.expectRevert(
-            abi.encodeWithSelector(StickySourceFeePayer.StickySourceFeePayer_Unauthorized.selector, _caller)
+            abi.encodeWithSelector(StickySourceFeePayer.StickySourceFeePayer_Unauthorized.selector, address(this))
         );
-        child.send{value: _FEE}(payable(_caller));
-        assertEq(_sucker.sender(), address(0));
-        assertEq(_sourceToken.balanceOf(address(_collector)), _AMOUNT);
-    }
-
-    /// @notice Donated child tokens are excluded from each caller's newly issued fee receipt.
-    function test_sendExcludesChildDonationsAcrossCallers() public {
-        address child = address(_collector.FEE_PAYER());
-        _feeToken.mint({account: child, amount: _RESERVED});
-        _send();
-        assertEq(_feeToken.balanceOf(_caller), _RECEIPT);
-        assertEq(_feeToken.balanceOf(child), _RESERVED);
-
-        address nextCaller = makeAddr("next source fee payer");
-        vm.deal({account: nextCaller, newBalance: _FEE});
-        _sourceToken.mint({account: address(_collector), amount: _AMOUNT});
-        vm.prank(nextCaller);
-        _collector.send{value: _FEE}();
-        assertEq(_feeToken.balanceOf(nextCaller), _RECEIPT);
-        assertEq(_feeToken.balanceOf(_caller), _RECEIPT);
-        assertEq(_feeToken.balanceOf(child), _RESERVED);
-    }
-
-    /// @notice Forced ETH on either custody address is neither needed nor swept by an ordinary send.
-    function test_sendIgnoresForcedEthDonations() public {
-        address child = address(_collector.FEE_PAYER());
-        vm.deal({account: address(_collector), newBalance: 2 ether});
-        vm.deal({account: child, newBalance: 3 ether});
-        uint256 callerBefore = _caller.balance;
-        _send();
-        assertEq(address(_collector).balance, 2 ether);
-        assertEq(child.balance, 3 ether);
-        assertEq(_caller.balance, callerBefore - _FEE);
-        assertEq(_sucker.sendValue(), _FEE);
-    }
-
-    /// @notice A successful send includes existing leaves plus this send's fixed-beneficiary leaf.
-    function test_sendIncludesNewLeafAfterPreexistingOutbox() public {
-        _sucker.setOutbox({count: 7, sent: 3, balance: 1 ether, nonce: 4});
-        vm.expectCall(address(_sourceToken), abi.encodeCall(IERC20.approve, (address(_sucker), uint256(0))));
-        uint256 leafIndex = _send();
-        assertEq(leafIndex, 7);
-        JBOutboxTree memory outbox = _sucker.outboxOf(JBConstants.NATIVE_TOKEN);
-        assertEq(outbox.tree.count, 8);
-        assertEq(outbox.numberOfClaimsSent, 8);
-        assertEq(outbox.balance, 0);
-        assertEq(outbox.nonce, 5);
-        assertEq(_sucker.allowanceAtPrepare(), _AMOUNT);
-        assertEq(_sucker.allowanceAtSend(), 0);
-        assertEq(_sourceToken.allowance({owner: address(_collector), spender: address(_sucker)}), 0);
-        assertEq(_sucker.principalPrepared(), _AMOUNT);
-        assertEq(_sucker.beneficiaryPrepared(), bytes32(uint256(uint160(_receiver))));
-        assertEq(_sucker.metadataPrepared(), bytes32(0));
-        assertEq(_sucker.tokenPrepared(), JBConstants.NATIVE_TOKEN);
-        assertEq(_sucker.tokenSent(), JBConstants.NATIVE_TOKEN);
-        assertEq(_sucker.minimumPrepared(), _PREVIEW - JBFees.standardFeeAmountFrom(_PREVIEW));
-        assertEq(_sucker.sender(), address(_collector.FEE_PAYER()));
-        assertEq(_sucker.sendValue(), _FEE);
-        assertEq(_sourceToken.balanceOf(address(_collector)), 0);
-        assertEq(_sourceToken.balanceOf(address(_sucker)), _AMOUNT);
-        assertEq(_feeToken.balanceOf(_caller), _RECEIPT);
-    }
-
-    /// @notice Project 1 principal arriving during its own fee payment cannot become the caller's receipt.
-    function test_sendIsolatesReservedPrincipalWithSameFeeToken() public {
-        _setUpProject(1);
-        _sucker.setSendBehavior({
-            failFee: false,
-            failTransport: false,
-            leaveUnsent: false,
-            receipt: _RECEIPT,
-            principal: _RESERVED,
-            reenter: false
+        child.send({
+            sucker: JBSucker(payable(address(_sucker))),
+            backingToken: JBConstants.NATIVE_TOKEN,
+            beneficiary: payable(_caller)
         });
-        _send();
-        assertEq(_sourceToken.balanceOf(address(_collector)), _RESERVED);
-        assertEq(_sourceToken.balanceOf(_caller), _RECEIPT);
-        assertEq(_sourceToken.balanceOf(address(_collector.FEE_PAYER())), 0);
-        assertEq(_sourceToken.balanceOf(address(_sucker)), _AMOUNT);
     }
 
-    /// @notice Failed fee payment refunds the current caller and leaves no child credit.
-    function test_sendRefundsOnlyNewRetainedFee() public {
-        _configureFailedFee();
-        // Another account's retained credit is neither rejected nor claimed by this fee payer.
-        _sucker.setRetainedFee({account: _caller, amount: _RESERVED});
-        uint256 balanceBefore = _caller.balance;
-        _send();
-        assertEq(_caller.balance, balanceBefore);
-        assertEq(_sucker.claimedAccount(), address(_collector.FEE_PAYER()));
-        assertEq(_sucker.claimedBeneficiary(), _caller);
-        assertEq(_sucker.retainedToRemoteFeeOf(address(_collector.FEE_PAYER())), 0);
-        assertEq(_sucker.retainedToRemoteFeeOf(_caller), _RESERVED);
-        assertEq(_feeToken.balanceOf(_caller), 0);
-        assertEq(_sucker.outboxOf(JBConstants.NATIVE_TOKEN).numberOfClaimsSent, 1);
-    }
-
-    /// @notice Zero source balance and a zero native preview cannot create an empty reward leaf.
-    function test_sendRejectsEmptyOrZeroPreview() public {
-        vm.prank(address(_collector));
-        bool transferred = _sourceToken.transfer({to: _caller, value: _AMOUNT});
-        assertTrue(transferred);
-        vm.expectRevert(
+    /// @notice Rejected receipt transfers and failed or incomplete refunds unwind the entire send.
+    function test_feeSettlementFailuresAreAtomic() public {
+        _queueDefault(_AMOUNT);
+        _mockDefaultPreview(_AMOUNT);
+        _sucker.setBehavior({failFee: true, failTransport: false, leaveUnsent: false, receipt: 0, transportRefund: 0});
+        _sucker.setRefundBehavior({failFeeRefund: true, failTransportRefund: false, residual: false});
+        _expectDefaultAtomicRevert(abi.encodeWithSelector(StickySourceSucker.StickySourceSucker_Rejected.selector));
+        _sucker.setRefundBehavior({failFeeRefund: false, failTransportRefund: false, residual: true});
+        _expectDefaultAtomicRevert(
             abi.encodeWithSelector(
-                StickySourceCollector.StickySourceCollector_EmptyBalance.selector, address(_sourceToken)
+                StickySourceFeePayer.StickySourceFeePayer_RetainedFee.selector, address(_sucker), uint256(1)
             )
         );
-        _send();
-        _sourceToken.mint({account: address(_collector), amount: _AMOUNT});
-        _mockPreview({amount: _AMOUNT, gross: 0, terminal: _terminal});
-        _expectAtomicRevert(
-            abi.encodeWithSelector(
-                StickySourceCollector.StickySourceCollector_ZeroReclaim.selector, _AMOUNT, uint256(0)
-            )
-        );
+        _sucker.setRefundBehavior({failFeeRefund: false, failTransportRefund: false, residual: false});
+        _sucker.setBehavior({
+            failFee: false, failTransport: false, leaveUnsent: false, receipt: _RECEIPT, transportRefund: 0
+        });
+        vm.mockCallRevert({
+            callee: address(_one),
+            data: abi.encodeCall(IERC20.transfer, (_caller, _RECEIPT)),
+            revertData: abi.encodeWithSelector(StickySourceSucker.StickySourceSucker_Rejected.selector)
+        });
+        _expectDefaultAtomicRevert(abi.encodeWithSelector(StickySourceSucker.StickySourceSucker_Rejected.selector));
     }
 
-    /// @notice A send can neither underpay nor overpay the exact current registry fee.
-    function test_sendRejectsIncorrectFee() public {
-        vm.prank(_caller);
-        vm.expectRevert(
-            abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_IncorrectFee.selector, _FEE - 1, _FEE)
-        );
-        _collector.send{value: _FEE - 1}();
-        vm.prank(_caller);
-        vm.expectRevert(
-            abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_IncorrectFee.selector, _FEE + 1, _FEE)
-        );
-        _collector.send{value: _FEE + 1}();
-        assertEq(_sourceToken.balanceOf(address(_collector)), _AMOUNT);
-        assertEq(_sucker.prepareCalls(), 0);
-    }
-
-    /// @notice Missing native terminal fails before any source principal leaves custody.
-    function test_sendRejectsMissingTerminal() public {
+    /// @notice A claim returning no ERC-20 tokens cannot silently consume a queued credit allocation.
+    function test_materializationDeltaMustMatchClaim() public {
+        _tokens.setToken({projectId: 77, token: address(0)});
+        _queue({projectId: 77, stickyToken: _stickyA, groupId: 0, amount: _AMOUNT});
+        _tokens.setToken({projectId: 77, token: address(_seventySeven)});
+        StickySourceSucker route = _newRoute(77);
+        _mockPreview({route: route, projectId: 77, amount: _AMOUNT, backing: JBConstants.NATIVE_TOKEN, gross: _PREVIEW});
         vm.mockCall({
-            callee: _directory,
-            data: abi.encodeCall(IJBDirectory.primaryTerminalOf, (_projectId, JBConstants.NATIVE_TOKEN)),
-            returnData: abi.encode(address(0))
+            callee: address(_controller),
+            data: abi.encodeCall(IJBController.claimTokensFor, (address(_collector), 77, _AMOUNT, address(_collector))),
+            returnData: ""
         });
-        _expectAtomicRevert(
-            abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_NoTerminal.selector, _projectId)
+        bytes32 beforeState = _stateHash(route);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_UnexpectedClaimBalance.selector,
+                uint256(77),
+                _AMOUNT,
+                uint256(0)
+            )
         );
-    }
-
-    /// @notice Preexisting child credit is not attributed to the next unrelated fee payer.
-    function test_sendRejectsPreexistingChildCredit() public {
-        _sucker.setRetainedFee({account: address(_collector.FEE_PAYER()), amount: _FEE});
-        _expectAtomicRevert(
-            abi.encodeWithSelector(StickySourceFeePayer.StickySourceFeePayer_RetainedFee.selector, _FEE)
-        );
-        assertEq(_sucker.retainedToRemoteFeeOf(address(_collector.FEE_PAYER())), _FEE);
-    }
-
-    /// @notice Both prepare and fee callbacks hit the collector's reentrancy guard.
-    function test_sendRejectsReentryDuringPrepareAndFeePayment() public {
-        _sucker.setPrepareBehavior({leavesAdded: 1, reenter: true});
-        _sucker.setSendBehavior({
-            failFee: false,
-            failTransport: false,
-            leaveUnsent: false,
-            receipt: _RECEIPT,
-            principal: _RESERVED,
-            reenter: true
+        _sendTo({
+            projectId: 77,
+            stickyToken: _stickyA,
+            groupId: 0,
+            amount: _AMOUNT,
+            route: route,
+            backing: JBConstants.NATIVE_TOKEN,
+            value: _FEE
         });
-        _send();
-        assertEq(_sucker.reentryAttempts(), 2);
-        assertFalse(_sucker.reentrySucceeded());
-        assertEq(_sucker.reentryReason(), abi.encodeWithSelector(ReentrancyGuard.ReentrancyGuardReentrantCall.selector));
-        assertEq(_sucker.prepareCalls(), 1);
-        assertEq(_sourceToken.balanceOf(address(_collector)), _RESERVED);
+        assertEq(_stateHash(route), beforeState);
     }
 
-    /// @notice The caller cannot start another send while its failed-fee refund is being delivered.
-    function test_sendRejectsReentryDuringRefund() public {
-        _configureFailedFee();
-        StickySourceCaller caller = new StickySourceCaller(_collector);
-        caller.configure({reject: false, attemptReentry: true});
+    /// @notice The refund beneficiary cannot initiate another delivery while its first delivery is active.
+    function test_refundReentryIsBlocked() public {
+        _queueDefault(_AMOUNT);
+        _mockDefaultPreview(_AMOUNT);
+        _sucker.setBehavior({failFee: true, failTransport: false, leaveUnsent: false, receipt: 0, transportRefund: 0});
+        StickySourceCaller caller = new StickySourceCaller();
+        caller.configure({reject: false, target: address(_collector), data: _sendData(1)});
         vm.deal({account: address(this), newBalance: _FEE});
-        caller.send{value: _FEE}();
+        caller.execute{value: _FEE}({target: address(_collector), data: _sendData(_AMOUNT)});
         assertEq(caller.refunded(), _FEE);
         assertFalse(caller.reentrySucceeded());
         assertEq(caller.reentryReason(), abi.encodeWithSelector(ReentrancyGuard.ReentrancyGuardReentrantCall.selector));
         assertEq(_sucker.prepareCalls(), 1);
     }
 
-    /// @notice A mapping changed after construction is rejected before preparing another leaf.
-    function test_sendRejectsRemappedNativeToken() public {
-        _mockMapping({enabled: true, emergency: false, remoteToken: bytes32(uint256(uint160(address(_sourceToken))))});
-        _expectAtomicRevert(_nativeRouteError());
+    /// @notice Refund rejection cannot strand a prepared leaf and a later unrelated caller can retry.
+    function test_refundRejectionRollsBackAndAllowsRetry() public {
+        _queueDefault(_AMOUNT);
+        _mockDefaultPreview(_AMOUNT);
+        _sucker.setBehavior({failFee: true, failTransport: false, leaveUnsent: false, receipt: 0, transportRefund: 0});
+        StickySourceCaller caller = new StickySourceCaller();
+        caller.configure({reject: true, target: address(0), data: ""});
+        vm.deal({account: address(this), newBalance: _FEE});
+        bytes32 beforeState = _stateHash(_sucker);
+        vm.expectRevert(StickySourceSucker.StickySourceSucker_Rejected.selector);
+        caller.execute{value: _FEE}({target: address(_collector), data: _sendData(_AMOUNT)});
+        assertEq(_stateHash(_sucker), beforeState);
+        assertEq(caller.refunded(), 0);
+        _sendDefault(_AMOUNT);
+        assertEq(_collector.totalPendingOf(3), 0);
+        assertEq(_sucker.outboxOf(JBConstants.NATIVE_TOKEN).numberOfClaimsSent, 1);
     }
 
-    /// @notice A route retired after construction rejects sending without changing balances or the prior outbox.
-    function test_sendRejectsRetiredSuckerAtomically() public {
-        _sucker.setOutbox({count: 7, sent: 3, balance: 1 ether, nonce: 4});
+    /// @notice The controller fixture exposes the real burn consequence of a rejected reserve hook allocation.
+    function test_rejectedSplitBurnsUnconsumedAllocation() public {
+        JBSplitHookContext memory context = _context({projectId: 3, stickyToken: _stickyA, groupId: 0, amount: _AMOUNT});
+        context.groupId = 42;
+        _controller.distribute(context);
+        assertEq(_controller.rejectedCallbacks(), 1);
+        assertEq(_controller.burned(), _AMOUNT);
+        assertEq(_three.totalSupply(), 0);
+        assertEq(_collector.totalPendingOf(3), 0);
+    }
+
+    /// @notice Reserve-group, hook, decimal, token and destination mismatches fail before accepting custody.
+    function test_rejectsMalformedSplitContexts() public {
+        JBSplitHookContext memory context = _context({projectId: 3, stickyToken: _stickyA, groupId: 0, amount: _AMOUNT});
+        context.groupId = 42;
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InvalidSplit.selector,
+                uint256(3),
+                uint256(42),
+                address(_collector),
+                uint256(18)
+            )
+        );
+        _dispatch(context);
+        context.groupId = 1;
+        context.split.hook = IJBSplitHook(_caller);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InvalidSplit.selector,
+                uint256(3),
+                uint256(1),
+                _caller,
+                uint256(18)
+            )
+        );
+        _dispatch(context);
+        context.split.hook = IJBSplitHook(address(_collector));
+        context.decimals = 6;
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InvalidSplit.selector,
+                uint256(3),
+                uint256(1),
+                address(_collector),
+                uint256(6)
+            )
+        );
+        _dispatch(context);
+        context.decimals = 18;
+        context.token = address(_one);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_TokenMismatch.selector,
+                uint256(3),
+                address(_one),
+                address(_three)
+            )
+        );
+        _dispatch(context);
+        context.token = address(_three);
+        context.split.beneficiary = payable(address(0));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickyRewardReceiverFactory.StickyRewardReceiverFactory_InvalidStickyToken.selector, address(0)
+            )
+        );
+        _dispatch(context);
+        context.split.beneficiary = payable(_stickyA);
+        context.split.projectId = 666;
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickyRewardReceiverFactory.StickyRewardReceiverFactory_InvalidGroupId.selector, uint256(666)
+            )
+        );
+        _dispatch(context);
+        assertEq(_collector.totalPendingOf(3), 0);
+        assertEq(_three.totalSupply(), 0);
+    }
+
+    /// @notice Reserve acceptance cannot silently retain a caller's native currency.
+    function test_rejectsNativeValueDuringAcceptance() public {
+        JBSplitHookContext memory context = _context({projectId: 3, stickyToken: _stickyA, groupId: 0, amount: _AMOUNT});
+        vm.deal({account: address(_controller), newBalance: 1});
+        vm.prank(address(_controller));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_UnexpectedNativeValue.selector, uint256(1)
+            )
+        );
+        _collector.processSplitWith{value: 1}(context);
+        assertEq(address(_collector).balance, 0);
+        assertEq(_collector.totalPendingOf(3), 0);
+    }
+
+    /// @notice Ethereum sends use the settlement path and remote chains cannot execute Ethereum settlement.
+    function test_rejectsWrongDeliveryChain() public {
+        _queueDefault(_AMOUNT);
+        bytes32 beforeState = _stateHash(_sucker);
+        vm.expectRevert(
+            abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_DestinationOnly.selector, uint256(10))
+        );
+        _collector.settle({sourceProjectId: 3, stickyToken: _stickyA, groupId: 0, amount: 1});
+        assertEq(_stateHash(_sucker), beforeState);
+        vm.chainId(1);
+        vm.expectRevert(
+            abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_SourceOnly.selector, uint256(1))
+        );
+        _sendDefault(1);
+        assertEq(_stateHash(_sucker), beforeState);
+    }
+
+    /// @notice Only the current controller may attribute a source project's custody.
+    function test_requiresCurrentController() public {
+        JBSplitHookContext memory context = _context({projectId: 3, stickyToken: _stickyA, groupId: 0, amount: _AMOUNT});
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_Unauthorized.selector,
+                uint256(3),
+                address(this),
+                address(_controller)
+            )
+        );
+        _collector.processSplitWith(context);
+        StickySourceController next = new StickySourceController(_tokens);
+        _tokens.setController({projectId: 3, controller: address(next)});
         vm.mockCall({
-            callee: address(_sucker),
-            data: abi.encodeCall(IJBSucker.state, ()),
-            returnData: abi.encode(JBSuckerState.SENDING_DISABLED)
+            callee: _directory,
+            data: abi.encodeCall(IJBDirectory.controllerOf, (3)),
+            returnData: abi.encode(address(next))
         });
-        _expectAtomicRevert(
+        _controller.distribute(context);
+        assertEq(_controller.burned(), _AMOUNT);
+        assertEq(_collector.pendingOf({sourceProjectId: 3, stickyToken: _stickyA, groupId: 0}), 0);
+        next.distribute(context);
+        assertEq(_collector.pendingOf({sourceProjectId: 3, stickyToken: _stickyA, groupId: 0}), _AMOUNT);
+        assertEq(next.rejectedCallbacks(), 0);
+    }
+
+    /// @notice Only attributed positive amounts can leave a selected destination bucket.
+    function test_sendCannotSpendAnotherBucketOrDonations() public {
+        _queueDefault(20e18);
+        _queue({projectId: 3, stickyToken: _stickyB, groupId: 4000, amount: 30e18});
+        _three.mint({account: address(_collector), amount: _AMOUNT});
+        bytes32 beforeState = _stateHash(_sucker);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InsufficientPending.selector,
+                uint256(3),
+                _stickyA,
+                uint256(0),
+                uint256(21e18),
+                uint256(20e18)
+            )
+        );
+        _sendDefault(21e18);
+        vm.expectRevert(
+            abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_InvalidAmount.selector, uint256(0))
+        );
+        _sendDefault(0);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InsufficientPending.selector,
+                uint256(3),
+                _stickyA,
+                uint256(4000),
+                uint256(1),
+                uint256(0)
+            )
+        );
+        _sendTo({
+            projectId: 3,
+            stickyToken: _stickyA,
+            groupId: 4000,
+            amount: 1,
+            route: _sucker,
+            backing: JBConstants.NATIVE_TOKEN,
+            value: _FEE
+        });
+        assertEq(_stateHash(_sucker), beforeState);
+        assertEq(_three.balanceOf(address(_collector)), 150e18);
+    }
+
+    /// @notice Callback-driven outgoing calls cannot consume inventory while incoming custody is being measured.
+    function test_sendDuringAcceptanceIsRejected() public {
+        _queueDefault(_AMOUNT);
+        _three.setTransferCallback({target: address(_collector), data: _sendData(1), rejectOnFailure: false});
+        _queueDefault(7e18);
+        assertFalse(_three.callbackSucceeded());
+        assertEq(
+            _three.callbackReason(),
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InboundTransfer.selector, address(_three), uint256(1)
+            )
+        );
+        assertEq(_collector.pendingOf({sourceProjectId: 3, stickyToken: _stickyA, groupId: 0}), _AMOUNT + 7e18);
+        assertEq(_three.balanceOf(address(_collector)), _AMOUNT + 7e18);
+        assertEq(_sucker.prepareCalls(), 0);
+    }
+
+    /// @notice A mapped ERC-20 backing route uses its own units and mapping rather than a native-token restriction.
+    function test_sendGenericMappedBacking() public {
+        StickyPricingToken backing = new StickyPricingToken(6);
+        _sucker.setMapping({
+            backing: address(backing),
+            remoteToken: JBRemoteToken({enabled: true, emergencyHatch: false, minGas: 123, addr: bytes32(uint256(456))})
+        });
+        _mockTerminal({projectId: 3, backing: address(backing), terminal: _terminal});
+        _queueDefault(_AMOUNT);
+        _mockPreview({route: _sucker, projectId: 3, amount: _AMOUNT, backing: address(backing), gross: 2_500_000});
+        _sendTo({
+            projectId: 3,
+            stickyToken: _stickyA,
+            groupId: 0,
+            amount: _AMOUNT,
+            route: _sucker,
+            backing: address(backing),
+            value: _FEE
+        });
+        assertEq(_sucker.tokenPrepared(), address(backing));
+        assertEq(_sucker.tokenSent(), address(backing));
+        assertEq(_sucker.minimumPrepared(), 2_500_000 - JBFees.standardFeeAmountFrom(2_500_000));
+        assertEq(_sucker.outboxOf(address(backing)).numberOfClaimsSent, 1);
+        assertEq(_sucker.outboxOf(JBConstants.NATIVE_TOKEN).tree.count, 0);
+    }
+
+    /// @notice Partial delivery preserves other destinations, projects and unsolicited source-token donations.
+    function test_sendPartialBucketPreservesAllOtherCustody() public {
+        _queueDefault(_AMOUNT);
+        _queue({projectId: 3, stickyToken: _stickyB, groupId: 4000, amount: 200e18});
+        _queue({projectId: 77, stickyToken: _stickyA, groupId: 0, amount: 50e18});
+        _three.mint({account: address(_collector), amount: 13e18});
+        _mockDefaultPreview(40e18);
+        _sendDefault(40e18);
+        assertEq(_collector.pendingOf({sourceProjectId: 3, stickyToken: _stickyA, groupId: 0}), 60e18);
+        assertEq(_collector.pendingOf({sourceProjectId: 3, stickyToken: _stickyB, groupId: 4000}), 200e18);
+        assertEq(_collector.totalPendingOf(3), 260e18);
+        assertEq(_three.balanceOf(address(_collector)), 273e18);
+        assertEq(_collector.pendingOf({sourceProjectId: 77, stickyToken: _stickyA, groupId: 0}), 50e18);
+        assertEq(_seventySeven.balanceOf(address(_collector)), 50e18);
+        assertEq(
+            _sucker.beneficiaryPrepared(),
+            bytes32(uint256(uint160(_factory.predictReceiverOf({stickyToken: _stickyA, groupId: 0}))))
+        );
+        assertEq(_sucker.allowanceAtPrepare(), 40e18);
+        assertEq(_sucker.allowanceAtSend(), 0);
+        assertEq(_three.allowance({owner: address(_collector), spender: address(_sucker)}), 0);
+    }
+
+    /// @notice An upstream capacity rejection does not prevent a caller from retrying with smaller partial amounts.
+    function test_sendPartialRetryAfterUpstreamCapacityRejection() public {
+        _queueDefault(_AMOUNT);
+        _mockDefaultPreview(_AMOUNT);
+        vm.mockCallRevert({
+            callee: address(_sucker),
+            data: abi.encodeCall(
+                IJBSucker.prepare,
+                (
+                    _AMOUNT,
+                    bytes32(uint256(uint160(_factory.predictReceiverOf({stickyToken: _stickyA, groupId: 0})))),
+                    _PREVIEW - JBFees.standardFeeAmountFrom(_PREVIEW),
+                    JBConstants.NATIVE_TOKEN,
+                    bytes32(0)
+                )
+            ),
+            revertData: abi.encodeWithSelector(StickySourceSucker.StickySourceSucker_Rejected.selector)
+        });
+        bytes32 beforeState = _stateHash(_sucker);
+        vm.expectRevert(StickySourceSucker.StickySourceSucker_Rejected.selector);
+        _sendDefault(_AMOUNT);
+        assertEq(_stateHash(_sucker), beforeState);
+        _mockDefaultPreview(40e18);
+        _sendDefault(40e18);
+        assertEq(_collector.pendingOf({sourceProjectId: 3, stickyToken: _stickyA, groupId: 0}), 60e18);
+    }
+
+    /// @notice Canonical registry, directory, token and source bindings cannot be replaced by self-reported routes.
+    function test_sendRejectsForgedBindings() public {
+        _queueDefault(_AMOUNT);
+        _mockDefaultPreview(_AMOUNT);
+        _registerRoute({route: _sucker, projectId: 3, registered: false});
+        _expectDefaultAtomicRevert(_invalidRouteError());
+        _registerRoute({route: _sucker, projectId: 3, registered: true});
+        string[3] memory getters = ["REGISTRY()", "DIRECTORY()", "TOKENS()"];
+        address[3] memory originals = [_registry, _directory, address(_tokens)];
+        for (uint256 i; i < getters.length; i++) {
+            vm.mockCall({
+                callee: address(_sucker), data: abi.encodeWithSignature(getters[i]), returnData: abi.encode(_caller)
+            });
+            _expectDefaultAtomicRevert(_invalidRouteError());
+            vm.mockCall({
+                callee: address(_sucker),
+                data: abi.encodeWithSignature(getters[i]),
+                returnData: abi.encode(originals[i])
+            });
+        }
+        vm.mockCall({
+            callee: address(_sucker), data: abi.encodeCall(IJBSucker.projectId, ()), returnData: abi.encode(uint256(77))
+        });
+        _expectDefaultAtomicRevert(_invalidRouteError());
+    }
+
+    /// @notice A loss of aggregate custody cannot let one bucket spend backing owed to another destination.
+    function test_sendRejectsInsolventAggregateCustody() public {
+        _queueDefault(20e18);
+        _queue({projectId: 3, stickyToken: _stickyB, groupId: 4000, amount: 80e18});
+        _three.burn({account: address(_collector), amount: 1e18});
+        _mockDefaultPreview(1e18);
+        bytes32 beforeState = _stateHash(_sucker);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InsufficientCustody.selector,
+                uint256(3),
+                uint256(99e18),
+                uint256(100e18)
+            )
+        );
+        _sendDefault(1e18);
+        assertEq(_stateHash(_sucker), beforeState);
+        assertEq(_sucker.prepareCalls(), 0);
+    }
+
+    /// @notice Mapping, peer and lifecycle failures restore the queued bucket before any delivery commits.
+    function test_sendRejectsInvalidRouteStates() public {
+        _queueDefault(_AMOUNT);
+        _mockDefaultPreview(_AMOUNT);
+        _sucker.setRoute({routeState: JBSuckerState.ENABLED, chainId: 10, remotePeer: bytes32(uint256(1))});
+        _expectDefaultAtomicRevert(_invalidRouteError());
+        _sucker.setRoute({routeState: JBSuckerState.ENABLED, chainId: 1, remotePeer: bytes32(0)});
+        _expectDefaultAtomicRevert(_invalidRouteError());
+        _sucker.setRoute({routeState: JBSuckerState.DEPRECATED, chainId: 1, remotePeer: bytes32(uint256(1))});
+        _expectDefaultAtomicRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_SuckerNotSending.selector,
+                address(_sucker),
+                JBSuckerState.DEPRECATED
+            )
+        );
+        _sucker.setRoute({routeState: JBSuckerState.ENABLED, chainId: 1, remotePeer: bytes32(uint256(1))});
+        _sucker.setMapping({
+            backing: JBConstants.NATIVE_TOKEN,
+            remoteToken: JBRemoteToken({enabled: false, emergencyHatch: false, minGas: 0, addr: bytes32(uint256(1))})
+        });
+        _expectDefaultAtomicRevert(_invalidMappingError());
+        _sucker.setMapping({
+            backing: JBConstants.NATIVE_TOKEN,
+            remoteToken: JBRemoteToken({enabled: true, emergencyHatch: true, minGas: 0, addr: bytes32(uint256(1))})
+        });
+        _expectDefaultAtomicRevert(_invalidMappingError());
+        _sucker.setMapping({
+            backing: JBConstants.NATIVE_TOKEN,
+            remoteToken: JBRemoteToken({enabled: true, emergencyHatch: false, minGas: 0, addr: bytes32(0)})
+        });
+        _expectDefaultAtomicRevert(_invalidMappingError());
+    }
+
+    /// @notice A missing current backing terminal cannot destroy accepted reserves.
+    function test_sendRejectsMissingTerminal() public {
+        _queueDefault(_AMOUNT);
+        _mockTerminal({projectId: 3, backing: JBConstants.NATIVE_TOKEN, terminal: address(0)});
+        _expectDefaultAtomicRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_NoTerminal.selector, uint256(3), JBConstants.NATIVE_TOKEN
+            )
+        );
+    }
+
+    /// @notice Reentry from either preparation or fee payment cannot consume a second queued allocation.
+    function test_sendRejectsOutgoingReentry() public {
+        _queueDefault(_AMOUNT);
+        _mockDefaultPreview(50e18);
+        _sucker.setCallback({target: address(_collector), data: _sendData(1), duringPrepare: true});
+        _sendDefault(50e18);
+        assertFalse(_sucker.callbackSucceeded());
+        assertEq(
+            _sucker.callbackReason(), abi.encodeWithSelector(ReentrancyGuard.ReentrancyGuardReentrantCall.selector)
+        );
+        _sucker.setCallback({target: address(_collector), data: _sendData(1), duringPrepare: false});
+        _sendDefault(50e18);
+        assertFalse(_sucker.callbackSucceeded());
+        assertEq(
+            _sucker.callbackReason(), abi.encodeWithSelector(ReentrancyGuard.ReentrancyGuardReentrantCall.selector)
+        );
+        assertEq(_sucker.prepareCalls(), 2);
+        assertEq(_collector.totalPendingOf(3), 0);
+    }
+
+    /// @notice A caller can replace a retired registered route while keeping the same attributed inventory.
+    function test_sendReplacesRetiredRoute() public {
+        _queueDefault(_AMOUNT);
+        _sucker.setRoute({routeState: JBSuckerState.SENDING_DISABLED, chainId: 1, remotePeer: bytes32(uint256(1))});
+        bytes32 beforeState = _stateHash(_sucker);
+        vm.expectRevert(
             abi.encodeWithSelector(
                 StickySourceCollector.StickySourceCollector_SuckerNotSending.selector,
                 address(_sucker),
                 JBSuckerState.SENDING_DISABLED
             )
         );
+        _sendDefault(_AMOUNT);
+        assertEq(_stateHash(_sucker), beforeState);
+        StickySourceSucker replacement = _newRoute(3);
+        _mockPreview({
+            route: replacement, projectId: 3, amount: _AMOUNT, backing: JBConstants.NATIVE_TOKEN, gross: _PREVIEW
+        });
+        _sendTo({
+            projectId: 3,
+            stickyToken: _stickyA,
+            groupId: 0,
+            amount: _AMOUNT,
+            route: replacement,
+            backing: JBConstants.NATIVE_TOKEN,
+            value: _FEE
+        });
+        assertEq(_collector.totalPendingOf(3), 0);
+        assertEq(_sucker.prepareCalls(), 0);
+        assertEq(replacement.outboxOf(JBConstants.NATIVE_TOKEN).numberOfClaimsSent, 1);
     }
 
-    /// @notice The collector rejects either zero or multiple appended leaves and rolls the transfer back.
-    function test_sendRequiresExactlyOnePreparedLeaf() public {
-        _sucker.setPrepareBehavior({leavesAdded: 0, reenter: false});
-        _expectAtomicRevert(
+    /// @notice Every prepared call must append exactly one new leaf and actually include it in a sent root.
+    function test_sendRequiresPreparedLeafInclusion() public {
+        _queueDefault(_AMOUNT);
+        _mockDefaultPreview(_AMOUNT);
+        _sucker.setOutbox({backing: JBConstants.NATIVE_TOKEN, count: 7, sent: 3, balance: 1 ether, nonce: 4});
+        _sucker.setPrepareBehavior({leavesAdded: 0, failPrepare: false});
+        _expectDefaultAtomicRevert(
             abi.encodeWithSelector(
-                StickySourceCollector.StickySourceCollector_UnexpectedLeafCount.selector, uint256(1), uint256(0)
+                StickySourceCollector.StickySourceCollector_UnexpectedLeafCount.selector, uint256(8), uint256(7)
             )
         );
-        _sucker.setPrepareBehavior({leavesAdded: 2, reenter: false});
-        _expectAtomicRevert(
+        _sucker.setPrepareBehavior({leavesAdded: 2, failPrepare: false});
+        _expectDefaultAtomicRevert(
             abi.encodeWithSelector(
-                StickySourceCollector.StickySourceCollector_UnexpectedLeafCount.selector, uint256(1), uint256(2)
+                StickySourceCollector.StickySourceCollector_UnexpectedLeafCount.selector, uint256(8), uint256(9)
             )
         );
-    }
-
-    /// @notice A failed refund claim or nonzero residual credit unwinds the whole attempt.
-    function test_sendRollsBackFailedOrIncompleteRefund() public {
-        _configureFailedFee();
-        _sucker.setOutbox({count: 7, sent: 3, balance: 1 ether, nonce: 4});
-        _sucker.setRefundBehavior({fail: true, residual: false});
-        _expectAtomicRevert(abi.encodeWithSelector(StickySourceSuckerStub.StickySourceSuckerStub_Rejected.selector));
-        _sucker.setRefundBehavior({fail: false, residual: true});
-        _expectAtomicRevert(
-            abi.encodeWithSelector(StickySourceFeePayer.StickySourceFeePayer_RetainedFee.selector, uint256(1))
-        );
-        assertEq(_sucker.retainedToRemoteFeeOf(address(_collector.FEE_PAYER())), 0);
-    }
-
-    /// @notice A source-token rejection during preparation restores the granted approval and existing outbox.
-    function test_sendRollsBackFailedPrincipalPull() public {
-        _sucker.setOutbox({count: 7, sent: 3, balance: 1 ether, nonce: 4});
-        vm.mockCallRevert({
-            callee: address(_sourceToken),
-            data: abi.encodeCall(IERC20.transferFrom, (address(_collector), address(_sucker), _AMOUNT)),
-            revertData: abi.encodeWithSelector(StickySourceSuckerStub.StickySourceSuckerStub_Rejected.selector)
+        _sucker.setPrepareBehavior({leavesAdded: 1, failPrepare: false});
+        _sucker.setBehavior({
+            failFee: false, failTransport: false, leaveUnsent: true, receipt: _RECEIPT, transportRefund: 0
         });
-        _expectAtomicRevert(abi.encodeWithSelector(StickySourceSuckerStub.StickySourceSuckerStub_Rejected.selector));
-    }
-
-    /// @notice A rejected allowance cleanup unwinds the completed prepare before transport can be submitted.
-    function test_sendRollsBackRejectedAllowanceReset() public {
-        _sucker.setOutbox({count: 7, sent: 3, balance: 1 ether, nonce: 4});
-        vm.mockCallRevert({
-            callee: address(_sourceToken),
-            data: abi.encodeCall(IERC20.approve, (address(_sucker), uint256(0))),
-            revertData: abi.encodeWithSelector(StickySourceSuckerStub.StickySourceSuckerStub_Rejected.selector)
-        });
-        _expectAtomicRevert(abi.encodeWithSelector(StickySourceSuckerStub.StickySourceSuckerStub_Rejected.selector));
-    }
-
-    /// @notice A rejected fee receipt transfer restores principal, callback reserves, fee tokens and the outbox.
-    function test_sendRollsBackRejectedFeeTokenTransfer() public {
-        _sucker.setOutbox({count: 7, sent: 3, balance: 1 ether, nonce: 4});
-        _sucker.setSendBehavior({
-            failFee: false,
-            failTransport: false,
-            leaveUnsent: false,
-            receipt: _RECEIPT,
-            principal: _RESERVED,
-            reenter: false
-        });
-        vm.mockCallRevert({
-            callee: address(_feeToken),
-            data: abi.encodeCall(IERC20.transfer, (_caller, _RECEIPT)),
-            revertData: abi.encodeWithSelector(StickySourceSuckerStub.StickySourceSuckerStub_Rejected.selector)
-        });
-        _expectAtomicRevert(abi.encodeWithSelector(StickySourceSuckerStub.StickySourceSuckerStub_Rejected.selector));
-    }
-
-    /// @notice A caller rejecting its refund cannot strand principal; another caller can retry.
-    function test_sendRollsBackRejectingRefundAndAllowsRetry() public {
-        _configureFailedFee();
-        _sucker.setOutbox({count: 7, sent: 3, balance: 1 ether, nonce: 4});
-        StickySourceCaller caller = new StickySourceCaller(_collector);
-        caller.configure({reject: true, attemptReentry: false});
-        vm.deal({account: address(this), newBalance: _FEE});
-        bytes32 beforeState = _stateHash();
-        vm.expectRevert(StickySourceSuckerStub.StickySourceSuckerStub_Rejected.selector);
-        caller.send{value: _FEE}();
-        assertEq(_stateHash(), beforeState);
-        assertEq(caller.refunded(), 0);
-        _send();
-        assertEq(_sourceToken.balanceOf(address(_collector)), 0);
-        assertEq(_sucker.outboxOf(JBConstants.NATIVE_TOKEN).numberOfClaimsSent, 8);
-    }
-
-    /// @notice A transport revert also unwinds its already-issued receipts and callback-delivered principal.
-    function test_sendRollsBackTransportFailure() public {
-        _sucker.setOutbox({count: 7, sent: 3, balance: 1 ether, nonce: 4});
-        _sucker.setSendBehavior({
-            failFee: false,
-            failTransport: true,
-            leaveUnsent: false,
-            receipt: _RECEIPT,
-            principal: _RESERVED,
-            reenter: false
-        });
-        _expectAtomicRevert(abi.encodeWithSelector(StickySourceSuckerStub.StickySourceSuckerStub_Rejected.selector));
-    }
-
-    /// @notice Sending only an older root fails the inclusion postcondition and unwinds fee processing.
-    function test_sendRollsBackUnsentPreparedLeaf() public {
-        _sucker.setOutbox({count: 7, sent: 3, balance: 1 ether, nonce: 4});
-        _sucker.setSendBehavior({
-            failFee: false,
-            failTransport: false,
-            leaveUnsent: true,
-            receipt: _RECEIPT,
-            principal: _RESERVED,
-            reenter: false
-        });
-        _expectAtomicRevert(
+        _expectDefaultAtomicRevert(
             abi.encodeWithSelector(
                 StickySourceCollector.StickySourceCollector_UnsentLeaf.selector, uint256(7), uint256(7)
             )
         );
-    }
-
-    /// @notice Each send resolves the current terminal, fee and full balance instead of a constructor-time quote.
-    function test_sendUsesFreshTerminalFeeAndPreview() public {
-        address currentTerminal = makeAddr("replacement native terminal");
-        uint256 amount = _AMOUNT + _RESERVED;
-        uint256 gross = _PREVIEW + 1 ether;
-        uint256 fee = _FEE + 1;
-        _sourceToken.mint({account: address(_collector), amount: _RESERVED});
-        vm.mockCall({
-            callee: _directory,
-            data: abi.encodeCall(IJBDirectory.primaryTerminalOf, (_projectId, JBConstants.NATIVE_TOKEN)),
-            returnData: abi.encode(currentTerminal)
+        _sucker.setBehavior({
+            failFee: false, failTransport: false, leaveUnsent: false, receipt: _RECEIPT, transportRefund: 0
         });
-        _mockFee(fee);
-        _mockPreview({amount: amount, gross: gross, terminal: currentTerminal});
-        vm.expectCall(currentTerminal, _previewData(amount));
-        vm.prank(_caller);
-        _collector.send{value: fee}();
-        assertEq(_sucker.principalPrepared(), amount);
-        assertEq(_sucker.minimumPrepared(), gross - JBFees.standardFeeAmountFrom(gross));
-        assertEq(_sucker.sendValue(), fee);
+        assertEq(_sendDefault(_AMOUNT), 7);
+        assertEq(_sucker.outboxOf(JBConstants.NATIVE_TOKEN).numberOfClaimsSent, 8);
+        assertEq(_sucker.outboxOf(JBConstants.NATIVE_TOKEN).nonce, 5);
     }
 
-    /// @notice A one-wei positive cashout remains usable and is not rounded down to a zero minimum.
-    function test_sendUsesPositiveDustFloor() public {
-        _mockPreview({amount: _AMOUNT, gross: 1, terminal: _terminal});
-        _send();
-        assertEq(_sucker.minimumPrepared(), 1);
-    }
-
-    /// @notice A zero registry fee submits the outbox without charging the caller or claiming a refund.
-    function test_sendWithZeroFee() public {
-        _mockFee(0);
-        _sucker.setSendBehavior({
-            failFee: false, failTransport: false, leaveUnsent: false, receipt: 0, principal: 0, reenter: false
+    /// @notice Token-pull and allowance-cleanup rejection unwind accepted inventory and the complete prior outbox.
+    function test_sendRollsBackPrincipalPullAndApprovalCleanup() public {
+        _queueDefault(_AMOUNT);
+        _mockDefaultPreview(_AMOUNT);
+        _sucker.setPrepareBehavior({leavesAdded: 1, failPrepare: true});
+        _expectDefaultAtomicRevert(abi.encodeWithSelector(StickySourceSucker.StickySourceSucker_Rejected.selector));
+        _sucker.setPrepareBehavior({leavesAdded: 1, failPrepare: false});
+        vm.mockCallRevert({
+            callee: address(_three),
+            data: abi.encodeCall(IERC20.approve, (address(_sucker), uint256(0))),
+            revertData: abi.encodeWithSelector(StickySourceSucker.StickySourceSucker_Rejected.selector)
         });
-        vm.prank(_caller);
-        _collector.send();
-        assertEq(_sucker.sendValue(), 0);
-        assertEq(_sucker.claimedAccount(), address(0));
+        _expectDefaultAtomicRevert(abi.encodeWithSelector(StickySourceSucker.StickySourceSucker_Rejected.selector));
+    }
+
+    /// @notice A failed transport restores callback allocations as well as the selected bucket and minted receipts.
+    function test_sendRollsBackTransportAndCallbackAcceptance() public {
+        _queueDefault(_AMOUNT);
+        _mockDefaultPreview(_AMOUNT);
+        JBSplitHookContext memory callback =
+            _context({projectId: 77, stickyToken: _stickyB, groupId: 4000, amount: 7e18});
+        _sucker.setCallback({
+            target: address(_controller),
+            data: abi.encodeCall(StickySourceController.distribute, (callback)),
+            duringPrepare: false
+        });
+        _sucker.setBehavior({
+            failFee: false, failTransport: true, leaveUnsent: false, receipt: _RECEIPT, transportRefund: 0
+        });
+        _expectDefaultAtomicRevert(abi.encodeWithSelector(StickySourceSucker.StickySourceSucker_Rejected.selector));
+        assertEq(_collector.totalPendingOf(77), 0);
+        assertEq(_seventySeven.totalSupply(), 0);
+    }
+
+    /// @notice Token count can be reminted remotely even when its freshly quoted backing is zero.
+    function test_sendSupportsZeroBackingAndPendingDeprecation() public {
+        _queueDefault(_AMOUNT);
+        _sucker.setRoute({routeState: JBSuckerState.DEPRECATION_PENDING, chainId: 1, remotePeer: bytes32(uint256(1))});
+        _mockPreview({route: _sucker, projectId: 3, amount: _AMOUNT, backing: JBConstants.NATIVE_TOKEN, gross: 0});
+        _sendDefault(_AMOUNT);
+        assertEq(_sucker.minimumPrepared(), 0);
+        assertEq(_sucker.principalPrepared(), _AMOUNT);
         assertEq(_sucker.outboxOf(JBConstants.NATIVE_TOKEN).numberOfClaimsSent, 1);
+        assertEq(_collector.totalPendingOf(3), 0);
+    }
+
+    /// @notice Delivery resolves the current terminal, registry fee and quote rather than caching setup-time values.
+    function test_sendUsesCurrentTerminalFeeAndQuote() public {
+        _queueDefault(_AMOUNT);
+        _terminal = makeAddr("replacement primary cashout terminal");
+        vm.etch({target: _terminal, newRuntimeBytecode: hex"00"});
+        _mockTerminal({projectId: 3, backing: JBConstants.NATIVE_TOKEN, terminal: _terminal});
+        _mockFee(_FEE + 11);
+        _mockPreview({
+            route: _sucker, projectId: 3, amount: _AMOUNT, backing: JBConstants.NATIVE_TOKEN, gross: 17 ether
+        });
+        _sendTo({
+            projectId: 3,
+            stickyToken: _stickyA,
+            groupId: 0,
+            amount: _AMOUNT,
+            route: _sucker,
+            backing: JBConstants.NATIVE_TOKEN,
+            value: _FEE + 11
+        });
+        assertEq(_sucker.sendValue(), _FEE + 11);
+        assertEq(_sucker.minimumPrepared(), 17 ether - JBFees.standardFeeAmountFrom(17 ether));
+        assertEq(_collector.totalPendingOf(3), 0);
+    }
+
+    /// @notice Incoming token callbacks cannot settle partially measured custody.
+    function test_settleDuringAcceptanceIsRejected() public {
+        vm.chainId(1);
+        _queueDefault(_AMOUNT);
+        _three.setTransferCallback({
+            target: address(_collector),
+            data: abi.encodeCall(StickySourceCollector.settle, (3, _stickyA, 0, 1)),
+            rejectOnFailure: false
+        });
+        _queueDefault(7e18);
+        assertFalse(_three.callbackSucceeded());
+        assertEq(
+            _three.callbackReason(),
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InboundTransfer.selector, address(_three), uint256(1)
+            )
+        );
+        assertEq(_collector.totalPendingOf(3), _AMOUNT + 7e18);
+        assertEq(_distributor.fundedOf({stickyToken: _stickyA, groupId: 0, token: IERC20(address(_three))}), 0);
+    }
+
+    /// @notice Destination rejection restores the bucket, receiver donations and undeployed clone state.
+    function test_settleFailureRollsBackReceiverCreationAndTransfer() public {
+        vm.chainId(1);
+        _queueDefault(_AMOUNT);
+        address receiver = _factory.predictReceiverOf({stickyToken: _stickyA, groupId: 0});
+        _three.mint({account: receiver, amount: 9e18});
+        _distributor.setRejectFunding(true);
+        bytes32 beforeState = _stateHash(_sucker);
+        vm.expectRevert(StickySourceDistributor.StickySourceDistributor_Rejected.selector);
+        _collector.settle({sourceProjectId: 3, stickyToken: _stickyA, groupId: 0, amount: _AMOUNT});
+        assertEq(_stateHash(_sucker), beforeState);
+        assertEq(receiver.code.length, 0);
+        assertEq(_factory.receiverOf({stickyToken: _stickyA, groupId: 0}), address(0));
+        assertEq(_three.balanceOf(receiver), 9e18);
+        _distributor.setRejectFunding(false);
+        assertEq(
+            _collector.settle({sourceProjectId: 3, stickyToken: _stickyA, groupId: 0, amount: _AMOUNT}), _AMOUNT + 9e18
+        );
+    }
+
+    /// @notice Ethereum delivery funds the chosen receiver, including preexisting receiver arrivals, atomically.
+    function test_settleUsesRealReceiverAndPreservesOtherBuckets() public {
+        vm.chainId(1);
+        _queueDefault(_AMOUNT);
+        _queue({projectId: 3, stickyToken: _stickyB, groupId: 4000, amount: 30e18});
+        address receiver = _factory.predictReceiverOf({stickyToken: _stickyA, groupId: 0});
+        _three.mint({account: receiver, amount: 9e18});
+        _three.mint({account: address(_collector), amount: 13e18});
+        vm.prank(_caller);
+        assertEq(_collector.settle({sourceProjectId: 3, stickyToken: _stickyA, groupId: 0, amount: 40e18}), 49e18);
+        assertEq(_distributor.fundedOf({stickyToken: _stickyA, groupId: 0, token: IERC20(address(_three))}), 49e18);
+        assertEq(_collector.pendingOf({sourceProjectId: 3, stickyToken: _stickyA, groupId: 0}), 60e18);
+        assertEq(_collector.pendingOf({sourceProjectId: 3, stickyToken: _stickyB, groupId: 4000}), 30e18);
+        assertEq(_three.balanceOf(address(_collector)), 103e18);
+        assertEq(_three.balanceOf(receiver), 0);
+        assertEq(_factory.receiverOf({stickyToken: _stickyA, groupId: 0}), receiver);
+    }
+
+    /// @notice A failed fee payment and transport overpayment return only this caller's fresh credits.
+    function test_transportAndRegistryRefundsAreIsolated() public {
+        _queueDefault(_AMOUNT);
+        _mockDefaultPreview(_AMOUNT);
+        address child = address(_collector.FEE_PAYER());
+        _one.mint({account: child, amount: 7e18});
+        vm.deal({account: child, newBalance: 3 ether});
+        _sucker.setBehavior({
+            failFee: true, failTransport: false, leaveUnsent: false, receipt: 0, transportRefund: 0.015 ether
+        });
+        uint256 beforeBalance = _caller.balance;
+        _sendTo({
+            projectId: 3,
+            stickyToken: _stickyA,
+            groupId: 0,
+            amount: _AMOUNT,
+            route: _sucker,
+            backing: JBConstants.NATIVE_TOKEN,
+            value: _FEE + 0.02 ether
+        });
+        assertEq(_caller.balance, beforeBalance - 0.005 ether);
+        assertEq(_one.balanceOf(child), 7e18);
+        assertEq(child.balance, 3 ether);
+        assertEq(_sucker.retainedToRemoteFeeOf(child), 0);
+        assertEq(_sucker.retainedTransportPaymentRefundOf(child), 0);
+        assertEq(_sucker.claimedAccount(), child);
+        assertEq(_sucker.claimedBeneficiary(), _caller);
+        assertEq(_sucker.claimedTransportAccount(), child);
+        assertEq(_sucker.claimedTransportBeneficiary(), _caller);
+    }
+
+    /// @notice Both failing and incomplete transport refunds restore custody and earlier outbox state.
+    function test_transportRefundFailuresAreAtomic() public {
+        _queueDefault(_AMOUNT);
+        _mockDefaultPreview(_AMOUNT);
+        _sucker.setBehavior({
+            failFee: false, failTransport: false, leaveUnsent: false, receipt: _RECEIPT, transportRefund: 0.01 ether
+        });
+        _sucker.setRefundBehavior({failFeeRefund: false, failTransportRefund: true, residual: false});
+        bytes32 beforeState = _stateHash(_sucker);
+        vm.expectRevert(StickySourceSucker.StickySourceSucker_Rejected.selector);
+        _sendTo({
+            projectId: 3,
+            stickyToken: _stickyA,
+            groupId: 0,
+            amount: _AMOUNT,
+            route: _sucker,
+            backing: JBConstants.NATIVE_TOKEN,
+            value: _FEE + 0.01 ether
+        });
+        assertEq(_stateHash(_sucker), beforeState);
+        _sucker.setRefundBehavior({failFeeRefund: false, failTransportRefund: false, residual: true});
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceFeePayer.StickySourceFeePayer_RetainedTransportPayment.selector,
+                address(_sucker),
+                uint256(1)
+            )
+        );
+        _sendTo({
+            projectId: 3,
+            stickyToken: _stickyA,
+            groupId: 0,
+            amount: _AMOUNT,
+            route: _sucker,
+            backing: JBConstants.NATIVE_TOKEN,
+            value: _FEE + 0.01 ether
+        });
+        assertEq(_stateHash(_sucker), beforeState);
+    }
+
+    /// @notice A zero registry fee needs no receipt ERC-20 and still refunds excess transport payment atomically.
+    function test_zeroFeeWithoutFeeTokenCanSubmitAndRefundTransport() public {
+        _queueDefault(_AMOUNT);
+        _mockDefaultPreview(50e18);
+        _mockFee(0);
+        _tokens.setToken({projectId: 1, token: address(0)});
+        address child = address(_collector.FEE_PAYER());
+        vm.deal({account: child, newBalance: 3 ether});
+        vm.deal({account: address(_collector), newBalance: 2 ether});
+        _sucker.setBehavior({failFee: false, failTransport: false, leaveUnsent: false, receipt: 0, transportRefund: 0});
+        uint256 beforeBalance = _caller.balance;
+        _sendTo({
+            projectId: 3,
+            stickyToken: _stickyA,
+            groupId: 0,
+            amount: 50e18,
+            route: _sucker,
+            backing: JBConstants.NATIVE_TOKEN,
+            value: 0
+        });
+        assertEq(_caller.balance, beforeBalance);
+        _sucker.setBehavior({
+            failFee: false, failTransport: false, leaveUnsent: false, receipt: 0, transportRefund: 0.015 ether
+        });
+        _sendTo({
+            projectId: 3,
+            stickyToken: _stickyA,
+            groupId: 0,
+            amount: 50e18,
+            route: _sucker,
+            backing: JBConstants.NATIVE_TOKEN,
+            value: 0.02 ether
+        });
+        assertEq(_caller.balance, beforeBalance - 0.005 ether);
+        assertEq(child.balance, 3 ether);
+        assertEq(address(_collector).balance, 2 ether);
+        assertEq(_sucker.retainedToRemoteFeeOf(child), 0);
+        assertEq(_sucker.retainedTransportPaymentRefundOf(child), 0);
+        assertEq(_collector.totalPendingOf(3), 0);
+        assertEq(_sucker.outboxOf(JBConstants.NATIVE_TOKEN).numberOfClaimsSent, 2);
+    }
+
+    /// @notice Independently queued destinations retain their exact liabilities across partial sends and retries.
+    /// @param seed Entropy for principal, donations, callback reserves and partial amounts.
+    /// @param sameToken Whether principal and fee receipts use the same project token.
+    function testFuzz_bucketConservationAcrossCallers(bytes32 seed, bool sameToken) public {
+        uint256 projectId = sameToken ? 1 : 3;
+        StickySourceToken token = sameToken ? _one : _three;
+        StickySourceSucker route = sameToken ? _newRoute(1) : _sucker;
+        address child = address(_collector.FEE_PAYER());
+        address firstCaller = _caller;
+        address secondCaller = makeAddr("second delivery caller");
+        vm.deal({account: secondCaller, newBalance: 100 ether});
+        vm.deal({account: address(_collector), newBalance: 2 ether});
+        vm.deal({account: child, newBalance: 3 ether});
+        uint256 expectedA;
+        uint256 expectedB;
+        uint256 donatedPrincipal;
+        uint256 donatedFees;
+        uint256 firstReceipts;
+        uint256 secondReceipts;
+        uint256 burnedPrincipal;
+        uint256 issuedPrincipal;
+        for (uint256 i; i < 3; i++) {
+            uint256 entropy = uint256(keccak256(abi.encode(seed, i)));
+            uint256 allocation = bound(entropy, 2, 1e24);
+            uint256 reserve = bound(entropy >> 64, 1, 1e24);
+            uint256 donation = bound(entropy >> 128, 1, 1e20);
+            uint256 sent = bound(entropy >> 192, 1, allocation);
+            _queue({projectId: projectId, stickyToken: _stickyA, groupId: 0, amount: allocation});
+            expectedA += allocation;
+            issuedPrincipal += allocation;
+            token.mint({account: address(_collector), amount: donation});
+            donatedPrincipal += donation;
+            _one.mint({account: child, amount: donation});
+            donatedFees += donation;
+            JBSplitHookContext memory callback =
+                _context({projectId: projectId, stickyToken: _stickyB, groupId: 4000, amount: reserve});
+            route.setCallback({
+                target: address(_controller),
+                data: abi.encodeCall(StickySourceController.distribute, (callback)),
+                duringPrepare: false
+            });
+            _mockPreview({
+                route: route, projectId: projectId, amount: sent, backing: JBConstants.NATIVE_TOKEN, gross: _PREVIEW
+            });
+            _caller = i == 0 || (i == 2 && uint256(seed) % 2 == 0) ? firstCaller : secondCaller;
+            route.setBehavior({
+                failFee: i == 1, failTransport: true, leaveUnsent: false, receipt: _RECEIPT, transportRefund: 0
+            });
+            bytes32 beforeState = _stateHash(route);
+            vm.expectRevert(StickySourceSucker.StickySourceSucker_Rejected.selector);
+            _sendTo({
+                projectId: projectId,
+                stickyToken: _stickyA,
+                groupId: 0,
+                amount: sent,
+                route: route,
+                backing: JBConstants.NATIVE_TOKEN,
+                value: _FEE
+            });
+            assertEq(_stateHash(route), beforeState);
+            route.setBehavior({
+                failFee: i == 1, failTransport: false, leaveUnsent: false, receipt: _RECEIPT, transportRefund: 0
+            });
+            uint256 nativeBefore = _caller.balance;
+            assertEq(
+                _sendTo({
+                    projectId: projectId,
+                    stickyToken: _stickyA,
+                    groupId: 0,
+                    amount: sent,
+                    route: route,
+                    backing: JBConstants.NATIVE_TOKEN,
+                    value: _FEE
+                }),
+                i
+            );
+            expectedA -= sent;
+            expectedB += reserve;
+            issuedPrincipal += reserve;
+            burnedPrincipal += sent;
+            if (i != 1) {
+                if (_caller == firstCaller) firstReceipts += _RECEIPT;
+                else secondReceipts += _RECEIPT;
+            }
+            assertEq(_collector.pendingOf({sourceProjectId: projectId, stickyToken: _stickyA, groupId: 0}), expectedA);
+            assertEq(
+                _collector.pendingOf({sourceProjectId: projectId, stickyToken: _stickyB, groupId: 4000}), expectedB
+            );
+            assertEq(_collector.totalPendingOf(projectId), expectedA + expectedB);
+            assertEq(token.balanceOf(address(_collector)), expectedA + expectedB + donatedPrincipal);
+            assertEq(_one.balanceOf(child), donatedFees);
+            assertEq(_one.balanceOf(firstCaller), firstReceipts);
+            assertEq(_one.balanceOf(secondCaller), secondReceipts);
+            uint256 feeInventory = donatedFees + firstReceipts + secondReceipts;
+            assertEq(
+                token.totalSupply(),
+                issuedPrincipal + donatedPrincipal - burnedPrincipal + (sameToken ? feeInventory : 0)
+            );
+            if (!sameToken) assertEq(_one.totalSupply(), feeInventory);
+            assertEq(_caller.balance, nativeBefore - (i == 1 ? 0 : _FEE));
+            assertEq(address(_collector).balance, 2 ether);
+            assertEq(child.balance, 3 ether);
+            assertEq(token.allowance({owner: address(_collector), spender: address(route)}), 0);
+            assertEq(route.retainedToRemoteFeeOf(child), 0);
+            assertEq(route.outboxOf(JBConstants.NATIVE_TOKEN).tree.count, i + 1);
+            assertEq(route.outboxOf(JBConstants.NATIVE_TOKEN).numberOfClaimsSent, i + 1);
+            assertEq(_controller.burned(), 0);
+            assertEq(_controller.rejectedCallbacks(), 0);
+        }
+        assertEq(route.prepareCalls(), 3);
+    }
+
+    /// @notice Same-project nesting cannot double-book the inner allocation, including when buckets coincide.
+    /// @param rawOuter The outer reserve allocation.
+    /// @param rawInner The nested reserve allocation.
+    /// @param sameDestination Whether both allocations reward the same holder pool.
+    function testFuzz_nestedAcceptanceConserves(uint96 rawOuter, uint96 rawInner, bool sameDestination) public {
+        uint256 outer = bound(rawOuter, 1, 1e24);
+        uint256 inner = bound(rawInner, 1, 1e24);
+        address nestedDestination = sameDestination ? _stickyA : _stickyB;
+        JBSplitHookContext memory nested =
+            _context({projectId: 3, stickyToken: nestedDestination, groupId: 0, amount: inner});
+        _three.setTransferCallback({
+            target: address(_controller),
+            data: abi.encodeCall(StickySourceController.distribute, (nested)),
+            rejectOnFailure: true
+        });
+        _queue({projectId: 3, stickyToken: _stickyA, groupId: 0, amount: outer});
+        assertTrue(_three.callbackSucceeded());
+        assertEq(_controller.acceptedCallbacks(), 2);
+        assertEq(_controller.rejectedCallbacks(), 0);
+        assertEq(_controller.burned(), 0);
+        assertEq(
+            _collector.pendingOf({sourceProjectId: 3, stickyToken: _stickyA, groupId: 0}),
+            outer + (sameDestination ? inner : 0)
+        );
+        assertEq(
+            _collector.pendingOf({sourceProjectId: 3, stickyToken: _stickyB, groupId: 0}), sameDestination ? 0 : inner
+        );
+        assertEq(_collector.totalPendingOf(3), outer + inner);
+        assertEq(_three.balanceOf(address(_collector)), outer + inner);
+        assertEq(_three.totalSupply(), outer + inner);
     }
 
     //*********************************************************************//
     // ---------------------- internal transactions ---------------------- //
     //*********************************************************************//
 
-    /// @notice Configures a best-effort fee failure with successful transport.
-    function _configureFailedFee() internal {
-        _sucker.setSendBehavior({
-            failFee: true, failTransport: false, leaveUnsent: false, receipt: 0, principal: 0, reenter: false
+    /// @notice Establishes one project's mutable canonical controller and ERC-20 identity.
+    /// @param projectId The source project.
+    /// @param token The source token.
+    function _bindProject(uint256 projectId, StickySourceToken token) internal {
+        _tokens.setToken({projectId: projectId, token: address(token)});
+        _tokens.setController({projectId: projectId, controller: address(_controller)});
+        vm.mockCall({
+            callee: _directory,
+            data: abi.encodeCall(IJBDirectory.controllerOf, (projectId)),
+            returnData: abi.encode(address(_controller))
         });
+        _mockTerminal({projectId: projectId, backing: JBConstants.NATIVE_TOKEN, terminal: _terminal});
     }
 
-    /// @notice Deploys a collector against the currently configured route.
-    /// @return collector The freshly deployed collector.
-    function _deploy() internal returns (StickySourceCollector collector) {
-        return new StickySourceCollector({sucker: JBSucker(payable(address(_sucker))), receiver: _receiver});
+    /// @notice Calls the collector directly with the authenticated controller identity.
+    /// @param context The exact context whose guard is exercised.
+    function _dispatch(JBSplitHookContext memory context) internal {
+        vm.prank(address(_controller));
+        _collector.processSplitWith(context);
     }
 
-    /// @notice Verifies a failed send restores balances, fee credits, allowances and the outbox.
-    /// @param reason The exact expected failure, excluding unrelated fixture errors.
-    function _expectAtomicRevert(bytes memory reason) internal {
-        bytes32 beforeState = _stateHash();
+    /// @notice Verifies that the specified rejected delivery leaves all modeled economic state untouched.
+    /// @param reason The exact expected failure, excluding unrelated downstream errors.
+    function _expectDefaultAtomicRevert(bytes memory reason) internal {
+        bytes32 beforeState = _stateHash(_sucker);
         vm.expectRevert(reason);
-        _send();
-        assertEq(_stateHash(), beforeState);
+        _sendDefault(_AMOUNT);
+        assertEq(_stateHash(_sucker), beforeState);
     }
 
-    /// @notice Configures the current registry fee without freezing it in the stateful mock.
-    /// @param fee The required ETH payment.
+    /// @notice Sets the exact ordinary source cashout quote.
+    /// @param amount The project-token atoms being quoted.
+    function _mockDefaultPreview(uint256 amount) internal {
+        _mockPreview({route: _sucker, projectId: 3, amount: amount, backing: JBConstants.NATIVE_TOKEN, gross: _PREVIEW});
+    }
+
+    /// @notice Sets the registry fee observed independently by the child and sucker fixture.
+    /// @param fee The caller's required fee in wei.
     function _mockFee(uint256 fee) internal {
         vm.mockCall({
             callee: _registry, data: abi.encodeCall(IJBSuckerRegistry.toRemoteFee, ()), returnData: abi.encode(fee)
         });
     }
 
-    /// @notice Configures the native mapping read during construction and before every send.
-    /// @param enabled Whether the mapping accepts prepares.
-    /// @param emergency Whether the emergency hatch has been opened.
-    /// @param remoteToken The mapped Ethereum asset.
-    function _mockMapping(bool enabled, bool emergency, bytes32 remoteToken) internal {
-        vm.mockCall({
-            callee: address(_sucker),
-            data: abi.encodeCall(IJBSucker.remoteTokenFor, (JBConstants.NATIVE_TOKEN)),
-            returnData: abi.encode(
-                JBRemoteToken({enabled: enabled, emergencyHatch: emergency, minGas: 0, addr: remoteToken})
-            )
-        });
-    }
-
-    /// @notice Configures only the exact expected preview arguments, so mismatched payer context cannot pass.
-    /// @param amount The collector's current full source balance.
-    /// @param gross The quoted native backing before the standard fee bound.
-    /// @param terminal The current primary native terminal.
-    function _mockPreview(uint256 amount, uint256 gross, address terminal) internal {
+    /// @notice Mocks only the actual sucker holder/beneficiary cashout context, including backing units.
+    /// @param route The source sucker.
+    /// @param projectId The source project.
+    /// @param amount The source-token atoms to cash out.
+    /// @param backing The mapped cashout asset.
+    /// @param gross The quoted backing atoms before the maximum fee deduction.
+    function _mockPreview(
+        StickySourceSucker route,
+        uint256 projectId,
+        uint256 amount,
+        address backing,
+        uint256 gross
+    )
+        internal
+    {
         JBRuleset memory ruleset;
         vm.mockCall({
-            callee: terminal,
-            data: _previewData(amount),
+            callee: _terminal,
+            data: abi.encodeCall(
+                IJBCashOutTerminal.previewCashOutFrom,
+                (address(route), projectId, amount, backing, payable(address(route)), bytes(""))
+            ),
             returnData: abi.encode(ruleset, gross, uint256(0), new JBCashOutHookSpecification[](0))
         });
     }
 
-    /// @notice Sends from the unrelated fee payer using the ordinary registry fee.
-    /// @return leafIndex The prepared leaf's outbox index.
-    function _send() internal returns (uint256 leafIndex) {
-        vm.prank(_caller);
-        return _collector.send{value: _FEE}();
-    }
-
-    /// @notice Creates a fixed route and funds it with source principal.
-    /// @param projectId The supported source project, also selecting whether its token equals the fee token.
-    function _setUpProject(uint256 projectId) internal {
-        _projectId = projectId;
-        _sourceToken = new StickyPricingToken(18);
-        _feeToken = projectId == 1 ? _sourceToken : new StickyPricingToken(18);
-        _sucker = new StickySourceSuckerStub({sourceToken: _sourceToken, feeToken: _feeToken});
-        vm.mockCall({
-            callee: address(_sucker),
-            data: abi.encodeCall(IJBSucker.state, ()),
-            returnData: abi.encode(JBSuckerState.ENABLED)
-        });
-        vm.mockCall({
-            callee: address(_sucker), data: abi.encodeWithSignature("DIRECTORY()"), returnData: abi.encode(_directory)
-        });
-        vm.mockCall({
-            callee: address(_sucker), data: abi.encodeWithSignature("TOKENS()"), returnData: abi.encode(_tokens)
-        });
-        vm.mockCall({
-            callee: address(_sucker), data: abi.encodeWithSignature("REGISTRY()"), returnData: abi.encode(_registry)
-        });
-        vm.mockCall({
-            callee: address(_sucker),
-            data: abi.encodeWithSignature("FEE_PROJECT_ID()"),
-            returnData: abi.encode(uint256(1))
-        });
-        vm.mockCall({
-            callee: address(_sucker), data: abi.encodeCall(IJBSucker.projectId, ()), returnData: abi.encode(projectId)
-        });
-        vm.mockCall({
-            callee: address(_sucker),
-            data: abi.encodeCall(IJBSucker.peerChainId, ()),
-            returnData: abi.encode(uint256(1))
-        });
-        vm.mockCall({
-            callee: address(_sucker),
-            data: abi.encodeCall(IJBSucker.peer, ()),
-            returnData: abi.encode(bytes32(uint256(uint160(makeAddr("Ethereum peer sucker")))))
-        });
-        vm.mockCall({
-            callee: _registry,
-            data: abi.encodeCall(IJBSuckerRegistry.isSuckerOf, (projectId, address(_sucker))),
-            returnData: abi.encode(true)
-        });
-        vm.mockCall({
-            callee: _tokens, data: abi.encodeCall(IJBTokens.tokenOf, (1)), returnData: abi.encode(address(_feeToken))
-        });
-        vm.mockCall({
-            callee: _tokens,
-            data: abi.encodeCall(IJBTokens.tokenOf, (projectId)),
-            returnData: abi.encode(address(_sourceToken))
-        });
+    /// @notice Configures the canonical current primary terminal for one backing asset.
+    /// @param projectId The source project.
+    /// @param backing The source backing asset.
+    /// @param terminal The current terminal, or zero when unavailable.
+    function _mockTerminal(uint256 projectId, address backing, address terminal) internal {
         vm.mockCall({
             callee: _directory,
-            data: abi.encodeCall(IJBDirectory.primaryTerminalOf, (projectId, JBConstants.NATIVE_TOKEN)),
-            returnData: abi.encode(IJBTerminal(_terminal))
+            data: abi.encodeCall(IJBDirectory.primaryTerminalOf, (projectId, backing)),
+            returnData: abi.encode(terminal)
         });
-        _mockMapping({
-            enabled: true, emergency: false, remoteToken: bytes32(uint256(uint160(JBConstants.NATIVE_TOKEN)))
+    }
+
+    /// @notice Deploys a real-state source fixture and registers its default native mapping.
+    /// @param projectId The route's source project.
+    /// @return route The newly configured source route.
+    function _newRoute(uint256 projectId) internal returns (StickySourceSucker route) {
+        route = new StickySourceSucker({
+            registry: IJBSuckerRegistry(_registry),
+            directory: IJBDirectory(_directory),
+            tokens: _tokens,
+            sourceProjectId: projectId
         });
-        _mockFee(_FEE);
-        _mockPreview({amount: _AMOUNT, gross: _PREVIEW, terminal: _terminal});
-        _collector = _deploy();
-        _sourceToken.mint({account: address(_collector), amount: _AMOUNT});
-        _sucker.setSendBehavior({
-            failFee: false, failTransport: false, leaveUnsent: false, receipt: _RECEIPT, principal: 0, reenter: false
+        _registerRoute({route: route, projectId: projectId, registered: true});
+        route.setMapping({
+            backing: JBConstants.NATIVE_TOKEN,
+            remoteToken: JBRemoteToken({
+                enabled: true,
+                emergencyHatch: false,
+                minGas: 0,
+                addr: bytes32(uint256(uint160(JBConstants.NATIVE_TOKEN)))
+            })
+        });
+        route.setBehavior({
+            failFee: false, failTransport: false, leaveUnsent: false, receipt: _RECEIPT, transportRefund: 0
+        });
+    }
+
+    /// @notice Issues custody through the controller's actual allowance and caught-revert model.
+    /// @param projectId The source project.
+    /// @param stickyToken The Ethereum holder pool.
+    /// @param groupId Its reward group.
+    /// @param amount The reserve allocation.
+    function _queue(uint256 projectId, address stickyToken, uint256 groupId, uint256 amount) internal {
+        _controller.distribute(
+            _context({projectId: projectId, stickyToken: stickyToken, groupId: groupId, amount: amount})
+        );
+    }
+
+    /// @notice Issues and distributes the ordinary project-3 allocation.
+    /// @param amount The allocation in project-token atoms.
+    function _queueDefault(uint256 amount) internal {
+        _queue({projectId: 3, stickyToken: _stickyA, groupId: 0, amount: amount});
+    }
+
+    /// @notice Sets only this route's canonical registry membership.
+    /// @param route The source route being admitted or rejected.
+    /// @param projectId The canonical source project.
+    /// @param registered Whether the registry admits that route.
+    function _registerRoute(StickySourceSucker route, uint256 projectId, bool registered) internal {
+        vm.mockCall({
+            callee: _registry,
+            data: abi.encodeCall(IJBSuckerRegistry.isSuckerOf, (projectId, address(route))),
+            returnData: abi.encode(registered)
+        });
+    }
+
+    /// @notice Delivers one ordinary project-3 amount from the unrelated caller.
+    /// @param amount The attributed amount to deliver.
+    /// @return index The prepared leaf index.
+    function _sendDefault(uint256 amount) internal returns (uint256 index) {
+        return _sendTo({
+            projectId: 3,
+            stickyToken: _stickyA,
+            groupId: 0,
+            amount: amount,
+            route: _sucker,
+            backing: JBConstants.NATIVE_TOKEN,
+            value: _FEE
+        });
+    }
+
+    /// @notice Delivers the exact selected bucket, route and value as the unrelated caller.
+    /// @param projectId The source project.
+    /// @param stickyToken The Ethereum holder pool.
+    /// @param groupId The reward group.
+    /// @param amount The positive attributed amount.
+    /// @param route The chosen registered route.
+    /// @param backing The route's backing asset.
+    /// @param value The supplied registry fee plus transport budget.
+    /// @return index The prepared leaf index.
+    function _sendTo(
+        uint256 projectId,
+        address stickyToken,
+        uint256 groupId,
+        uint256 amount,
+        StickySourceSucker route,
+        address backing,
+        uint256 value
+    )
+        internal
+        returns (uint256 index)
+    {
+        vm.prank(_caller);
+        return _collector.send{value: value}({
+            sourceProjectId: projectId,
+            stickyToken: stickyToken,
+            groupId: groupId,
+            amount: amount,
+            sucker: JBSucker(payable(address(route))),
+            backingToken: backing
         });
     }
 
@@ -1304,54 +1616,115 @@ contract StickySourceCollectorTest is Test {
     // ------------------------- internal views -------------------------- //
     //*********************************************************************//
 
-    /// @notice Encodes the complete configured route context expected in a rejected native binding.
-    /// @return reason The error carrying the fixture's peer and remote-token mapping.
-    function _nativeRouteError() internal view returns (bytes memory reason) {
-        JBSucker sucker = JBSucker(payable(address(_sucker)));
+    /// @notice Builds the actual reserved-split encoding for one attributed destination.
+    /// @param projectId The source project.
+    /// @param stickyToken The destination holder pool.
+    /// @param groupId The destination reward group.
+    /// @param amount The source reserve allocation.
+    /// @return context The authenticated controller's callback context.
+    function _context(
+        uint256 projectId,
+        address stickyToken,
+        uint256 groupId,
+        uint256 amount
+    )
+        internal
+        view
+        returns (JBSplitHookContext memory context)
+    {
+        return JBSplitHookContext({
+            token: address(_tokens.tokenOf(projectId)),
+            amount: amount,
+            decimals: 18,
+            projectId: projectId,
+            groupId: 1,
+            split: JBSplit({
+                percent: 1_000_000_000,
+                projectId: SafeCast.toUint64(groupId),
+                beneficiary: payable(stickyToken),
+                preferAddToBalance: false,
+                lockedUntil: 0,
+                hook: IJBSplitHook(address(_collector))
+            })
+        });
+    }
+
+    /// @notice Encodes the complete rejected mapping configured by a route-guard test.
+    /// @return reason The backing asset and all mapping fields rejected by the collector.
+    function _invalidMappingError() internal view returns (bytes memory reason) {
         return abi.encodeWithSelector(
-            StickySourceCollector.StickySourceCollector_InvalidNativeRoute.selector,
+            StickySourceCollector.StickySourceCollector_InvalidMapping.selector,
             address(_sucker),
-            sucker.peerChainId(),
-            sucker.peer(),
-            sucker.remoteTokenFor(JBConstants.NATIVE_TOKEN)
+            JBConstants.NATIVE_TOKEN,
+            _sucker.remoteTokenFor(JBConstants.NATIVE_TOKEN)
         );
     }
 
-    /// @notice Encodes the sucker's actual cashout context rather than the collector's token custody context.
-    /// @param amount The amount of source tokens being cashed out.
-    /// @return data The expected terminal preview calldata.
-    function _previewData(uint256 amount) internal view returns (bytes memory data) {
+    /// @notice Encodes the canonical route-binding error expected for the ordinary project-3 route.
+    /// @return reason The exact project and route rejected by the collector.
+    function _invalidRouteError() internal view returns (bytes memory reason) {
+        return abi.encodeWithSelector(
+            StickySourceCollector.StickySourceCollector_InvalidRoute.selector, uint256(3), address(_sucker)
+        );
+    }
+
+    /// @notice Encodes the ordinary delivery used by adversarial callbacks.
+    /// @param amount The selected bucket amount.
+    /// @return data The collector's exact send calldata.
+    function _sendData(uint256 amount) internal view returns (bytes memory data) {
         return abi.encodeCall(
-            IJBCashOutTerminal.previewCashOutFrom,
-            (address(_sucker), _projectId, amount, JBConstants.NATIVE_TOKEN, payable(address(_sucker)), bytes(""))
+            StickySourceCollector.send,
+            (3, _stickyA, 0, amount, JBSucker(payable(address(_sucker))), JBConstants.NATIVE_TOKEN)
         );
     }
 
-    /// @notice Hashes the money and outbox state that must remain unchanged after a failed attempt.
-    /// @return state The combined state digest.
-    function _stateHash() internal view returns (bytes32 state) {
+    /// @notice Captures custody, supply, liabilities, allowances, refunds and the prior frontier for atomicity checks.
+    /// @param route The source route whose mutable state must be restored.
+    /// @return state A digest of the independently observable economic state.
+    function _stateHash(StickySourceSucker route) internal view returns (bytes32 state) {
         address child = address(_collector.FEE_PAYER());
-        bytes32 balances = keccak256(
-            abi.encode(
-                _sourceToken.balanceOf(address(_collector)),
-                _sourceToken.balanceOf(address(_sucker)),
-                _sourceToken.totalSupply(),
-                _feeToken.balanceOf(_caller),
-                _feeToken.balanceOf(child),
-                _feeToken.totalSupply(),
-                _caller.balance,
-                address(_sucker).balance,
-                address(_collector).balance,
-                child.balance
-            )
-        );
+        bytes32 custody;
+        uint256[3] memory projects = [uint256(1), uint256(3), uint256(77)];
+        for (uint256 i; i < projects.length; i++) {
+            uint256 projectId = projects[i];
+            IERC20 token = IERC20(address(_tokens.tokenOf(projectId)));
+            custody = keccak256(
+                abi.encode(
+                    custody,
+                    _collector.pendingOf({sourceProjectId: projectId, stickyToken: _stickyA, groupId: 0}),
+                    _collector.pendingOf({sourceProjectId: projectId, stickyToken: _stickyB, groupId: 4000}),
+                    _collector.totalPendingOf(projectId),
+                    _tokens.creditBalanceOf({holder: address(_collector), projectId: projectId}),
+                    _tokens.totalBalanceOf({holder: address(_collector), projectId: projectId})
+                )
+            );
+            if (address(token) != address(0)) {
+                custody = keccak256(
+                    abi.encode(
+                        custody,
+                        token.totalSupply(),
+                        token.balanceOf(_caller),
+                        token.balanceOf(child),
+                        token.balanceOf(address(route)),
+                        token.allowance({owner: address(_collector), spender: address(route)})
+                    )
+                );
+            }
+        }
         return keccak256(
             abi.encode(
-                balances,
-                _sourceToken.allowance({owner: address(_collector), spender: address(_sucker)}),
-                _sucker.outboxOf(JBConstants.NATIVE_TOKEN),
-                _sucker.retainedToRemoteFeeOf(child),
-                _sucker.prepareCalls()
+                custody,
+                _caller.balance,
+                address(route).balance,
+                address(_collector).balance,
+                child.balance,
+                route.outboxOf(JBConstants.NATIVE_TOKEN),
+                route.retainedToRemoteFeeOf(child),
+                route.retainedTransportPaymentRefundOf(child),
+                route.prepareCalls(),
+                _controller.acceptedCallbacks(),
+                _controller.rejectedCallbacks(),
+                _controller.burned()
             )
         );
     }

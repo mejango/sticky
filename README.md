@@ -7,7 +7,9 @@ Sticky shares are not a promise to redeem one underlying token each. Their issua
 ## Documentation
 
 - [Production review](AUDIT_REPORT.md): findings, fixes, validation, and remaining release limits.
-- [Source collector audit](SOURCE_COLLECTOR_AUDIT.md): source custody, permissionless submission, fee isolation, documentation/style review and remaining deployment assumptions.
+- [Shared omnichain split hook](tasks/omnichain-split-hook.md): current design, implementation gates and deployment requirements.
+- [Omnichain split-hook review](OMNICHAIN_SPLIT_HOOK_REVIEW.md): current source review, verification evidence and remaining release gates.
+- [Historical source collector audit](SOURCE_COLLECTOR_AUDIT.md): fixed-route predecessor review; its results do not certify the shared-hook redesign.
 - [Sticky JBX qualification](tasks/sticky-jbx-qualification.md): deployed JBX custody tests, V6 reserved-reward routing, source collectors and live setup boundaries.
 
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — contracts, accounting flows, and trust boundaries.
@@ -70,7 +72,9 @@ Auto-stick is best effort. The distributor permits anyone to collect to the hold
 
 For cross-chain rewards, `StickyRewardReceiverFactory` predicts and clones a `StickyRewardReceiver` for each destination Sticky token and reward group. Separate receiving addresses keep arrivals attributed to the intended reward pool and weighting. Rewards may arrive before that receiver is deployed; anyone can call `settleFor(...)` to fund the distributor with its ERC-20 balance. Transport requires a supported bridge route for the reward token, independently of the Sticky project. Identical receiver addresses across chains require the same factory address, destination Sticky-token address, and group; using common salts alone does not establish parity. Share tokens are deployed with CREATE2 under a salt bound to the launcher and the launch arguments, and `predictStickyTokenOf(launcher, projectId, ...)` returns the address a launch produces; the project ID is part of the token's creation code, so predict against the ID the launch will receive, or route rewards after the launch confirms. See [the architecture rationale](ARCHITECTURE.md#why-a-receiver-and-a-factory) for the receiver/factory split and the per-project price feed.
 
-For V6 project 1 or 3 reserves on OP, Base or Arbitrum, `StickySourceCollector` can be the plain split recipient. After authorized split setup, anyone can pay the registry fee and call `send()` to prepare and submit its held rewards to a fixed Ethereum receiver. Its constructor-created `StickySourceFeePayer` separates caller fee receipts from reserved principal. Neither contract has an owner, route change or rescue operation. Native finalization, destination claim and settlement still need transactions; permissionless execution does not supply a keeper. Follow [the source-collector setup and verification recipe](DEPLOYMENT.md#source-collectors).
+`StickySourceCollector` provides a shared reserved-token split hook for V6 projects. Use the same configuration on Ethereum, OP, Base and Arbitrum: `hook = collector`, `beneficiary = Ethereum Sticky share token`, and `split.projectId = reward group`. The authenticated source project comes from the controller's callback context. Acceptance only queues that allocation; it does not bridge or fund a reward round, including on Ethereum. Anyone can later settle a positive partial amount on Ethereum or submit it from another chain through an approved source-project route to the predicted Ethereum receiver. Credits accepted before the source ERC-20 exists remain queued until it can be claimed. The Ethereum reward ERC-20 must exist before a remote arrival is claimed because receivers settle ERC-20 balances only.
+
+The constructor-created `StickySourceFeePayer` keeps caller fee receipts and transport refunds separate from queued reward principal. No recurring Safe custody or signature is needed after authorized split setup. The shared hook and its deployment integration require their own review and verified execution; historical fixed-route test results and existing singleton manifests do not establish that this hook is live. Follow [the source-collector setup and verification recipe](DEPLOYMENT.md#source-collectors). Contract changes remain in PRs through review, deployment and verification, and require explicit approval of the final PR before merge.
 
 ## Contracts
 
@@ -84,8 +88,8 @@ For V6 project 1 or 3 reserves on OP, Base or Arbitrum, `StickySourceCollector` 
 | `StickyAutoStick` | Opt-in reward collection and compounding for the same holder and project across chosen reward groups. |
 | `StickyRewardReceiverFactory` | Predicts/deploys reward receivers per Sticky token and group and settles their balances into the distributor. |
 | `StickyRewardReceiver` | Holds arriving reward tokens for one destination Sticky token and group and its bound distributor. |
-| `StickySourceCollector` | Lets anyone submit one V6 project's reserved rewards from a fixed native source route to a fixed Ethereum receiver; its fee-payer child isolates caller fee receipts. |
-| `StickySourceFeePayer` | Only-parent child that submits the fixed sucker's outbox and returns the current send's fee receipts/refund to its caller; never a reserved-split recipient. |
+| `StickySourceCollector` | Shared reserved-token split hook with attributed custody per source project, Ethereum Sticky token and group; permissionless partial local settlement or registered-route submission. |
+| `StickySourceFeePayer` | Only-parent child that submits the validated route and returns that send's fee-token increase, retained registry fee and transport refund to its caller; never a split recipient. |
 
 The deployer, hook, distributor and AutoStick accept core's ERC-2771 forwarder, so a sponsor can relay a launch or a holder's trust updates, auto-stick settings, claims and funding on the signer's behalf. Staking and unstaking already relay through the core terminal.
 
@@ -119,7 +123,7 @@ The maintained web client is the Next app in `web/`. See [its guide](web/README.
 
 ## Deploy
 
-Follow [DEPLOYMENT.md](DEPLOYMENT.md) for the complete Sphinx workflow, eight RPC aliases, trusted core artifacts, credentials, and post-execution verification. Production scripts use the canonical CREATE2 factory and reuse existing deployments only after checking runtime code and immutable bindings. They fail on unexpected code or configuration.
+Follow [DEPLOYMENT.md](DEPLOYMENT.md) for the complete Sphinx workflow, eight RPC aliases, trusted core/sucker artifacts, credentials, and post-execution verification. Production scripts use the canonical CREATE2 factory and reuse existing deployments only after checking runtime code and immutable bindings. They fail on unexpected code or configuration.
 
 ```sh
 # Load the intended RPC configuration and rehearse without broadcasting:

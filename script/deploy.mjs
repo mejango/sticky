@@ -42,10 +42,13 @@ export function preflight(group, env = process.env, read = readFileSync) {
   if (!networks[group]) throw new Error('Network group must be testnets or mainnets.');
   const errors = [];
   const root = env.NANA_CORE_DEPLOYMENT_PATH || 'node_modules/@bananapus/core-v6/deployments';
+  const suckerRoot = env.NANA_SUCKERS_DEPLOYMENT_PATH || 'node_modules/@bananapus/suckers-v6/deployments';
   for (const [alias, chainId, variable, folder] of networks[group]) {
     if (!env[variable]?.trim()) errors.push(`${alias}: missing ${variable}`);
-    for (const name of ['JBController', 'JBDirectory', 'JBMultiTerminal']) {
-      const file = `${root}/${folder}/${name}.json`;
+    for (const [artifactRoot, name] of [
+      ...['JBController', 'JBDirectory', 'JBMultiTerminal'].map(name => [root, name]), [suckerRoot, 'JBSuckerRegistry'],
+    ]) {
+      const file = `${artifactRoot}/${folder}/${name}.json`;
       try {
         const artifact = JSON.parse(read(file, 'utf8'));
         if (!/^0x[\da-fA-F]{40}$/.test(artifact.address || '') || /^0x0{40}$/.test(artifact.address)) {
@@ -61,13 +64,18 @@ export function preflight(group, env = process.env, read = readFileSync) {
 }
 
 // The manifest fields every chain of a group must predict identically; the core binds the same addresses everywhere.
-export const suite = ['deployer', 'hook', 'distributor', 'rewardReceiver', 'rewardReceiverFactory', 'autoStick'];
+export const suite = ['deployer', 'hook', 'distributor', 'rewardReceiver', 'rewardReceiverFactory', 'autoStick', 'sourceCollector', 'sourceFeePayer'];
 
 // Every chain of a group must predict one suite.
 export function requireOneAddressPerGroup(group, kind, read = readFileSync) {
   let expected;
   for (const [alias, , , folder] of networks[group]) {
     const manifest = JSON.parse(read(`deployments/${folder}/${kind}.json`, 'utf8'));
+    for (const field of suite) {
+      if (!/^0x[\da-fA-F]{40}$/.test(manifest[field] || '') || /^0x0{40}$/i.test(manifest[field])) {
+        throw new Error(`${alias}: missing or invalid ${field} deployment address.`);
+      }
+    }
     const identity = suite.map(field => `${field}=${String(manifest[field]).toLowerCase()}`).join(' ');
     expected ??= identity;
     if (identity !== expected) throw new Error(`${alias} predicts a different deployment than the rest of ${group}: ${identity}`);

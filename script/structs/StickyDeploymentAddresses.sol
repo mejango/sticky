@@ -8,6 +8,8 @@ pragma solidity ^0.8.0;
 /// @custom:member rewardReceiver The reward receiver implementation the factory clones.
 /// @custom:member rewardReceiverFactory The reward receiver factory.
 /// @custom:member autoStick The opt-in compounding adapter.
+/// @custom:member sourceCollector The shared reserved-token split hook.
+/// @custom:member sourceFeePayer The collector's constructor-created fee custodian.
 // forge-lint: disable-next-line(pascal-case-struct)
 struct StickyDeploymentAddresses {
     address deployer;
@@ -16,4 +18,6 @@ struct StickyDeploymentAddresses {
     address rewardReceiver;
     address rewardReceiverFactory;
     address autoStick;
+    address sourceCollector;
+    address sourceFeePayer;
 }

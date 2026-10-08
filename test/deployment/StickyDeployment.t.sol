@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow.sol";
+import {JBSuckerRegistry} from "@bananapus/suckers-v6/src/JBSuckerRegistry.sol";
 
 import {StickyDeployment} from "../../script/helpers/StickyDeployment.sol";
 import {MockArt} from "../../script/mocks/MockArt.sol";
@@ -9,6 +10,8 @@ import {StickyDeployer} from "../../src/StickyDeployer.sol";
 import {StickyDistributor} from "../../src/StickyDistributor.sol";
 import {StickyHook} from "../../src/StickyHook.sol";
 import {StickyPriceFeed} from "../../src/StickyPriceFeed.sol";
+import {StickySourceCollector} from "../../src/StickySourceCollector.sol";
+import {StickySourceFeePayer} from "../../src/StickySourceFeePayer.sol";
 import {StickyToken} from "../../src/StickyToken.sol";
 
 import {StickyCoreDeployment} from "../../script/structs/StickyCoreDeployment.sol";
@@ -59,8 +62,18 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         super.setUp();
         vm.warp(1_800_000_000);
         _deployment = new StickyDeploymentHarness();
-        _core =
-            StickyCoreDeployment({controller: jbController(), directory: jbDirectory(), terminal: jbMultiTerminal()});
+        _core = StickyCoreDeployment({
+            controller: jbController(),
+            directory: jbDirectory(),
+            registry: new JBSuckerRegistry({
+                directory: jbDirectory(),
+                permissions: jbPermissions(),
+                prices: jbPrices(),
+                initialOwner: address(this),
+                trustedForwarder: trustedForwarder()
+            }),
+            terminal: jbMultiTerminal()
+        });
         vm.etch(
             _deployment.DETERMINISTIC_FACTORY(),
             hex"7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3"
@@ -167,9 +180,10 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         vm.chainId(11_155_111);
         // forge-lint: disable-next-line(literal-instead-of-constant)
         string memory root = _writeCoreArtifacts(11_155_111);
-        StickyCoreDeployment memory loaded = _deployment.loadCore(root);
+        StickyCoreDeployment memory loaded = _deployment.loadCoreFrom({root: root, suckerRoot: root});
         assertEq(address(loaded.controller), address(_core.controller));
         assertEq(address(loaded.terminal), address(_core.terminal));
+        assertEq(address(loaded.registry), address(_core.registry));
     }
 
     function test_manifestDistinguishesRpcBlockFromEvmHeight() public {
@@ -218,6 +232,28 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         vm.expectPartialRevert(StickyDeployment.StickyDeployment_BindingMismatch.selector);
         // forge-lint: disable-next-line(unused-return)
         _deployment.deployFor(_core);
+    }
+
+    function test_rejectsConsistentlyWrongSourceCollectorBinding() public {
+        StickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
+        StickySourceCollector different = new StickySourceCollector({
+            registry: _core.registry,
+            tokens: _core.controller.TOKENS(),
+            receiverFactory: StickySourceCollector(deployed.sourceCollector).RECEIVER_FACTORY()
+        });
+        vm.etch(deployed.sourceCollector, address(different).code);
+        _deployment.verifyRuntime({name: "StickySourceCollector", target: deployed.sourceCollector});
+        vm.expectPartialRevert(StickyDeployment.StickyDeployment_BindingMismatch.selector);
+        _deployment.verify({core: _core, deployed: deployed});
+    }
+
+    function test_rejectsConsistentlyWrongSourceFeePayerBinding() public {
+        StickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
+        StickySourceFeePayer different = new StickySourceFeePayer();
+        vm.etch(deployed.sourceFeePayer, address(different).code);
+        _deployment.verifyRuntime({name: "StickySourceFeePayer", target: deployed.sourceFeePayer});
+        vm.expectPartialRevert(StickyDeployment.StickyDeployment_BindingMismatch.selector);
+        _deployment.verify({core: _core, deployed: deployed});
     }
 
     function test_rejectsControllerWithoutProjectLaunchAuthorization() public {
@@ -329,12 +365,19 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         string memory root = _writeCoreArtifacts(1);
         vm.expectPartialRevert(StickyDeployment.StickyDeployment_ChainMismatch.selector);
         // forge-lint: disable-next-line(unused-return)
-        _deployment.loadCore(root);
+        _deployment.loadCoreFrom({root: root, suckerRoot: root});
     }
 
     function test_rejectsWrongCoreBindingBeforeAnyDeployment() public {
         // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.mockCall(address(_core.terminal), abi.encodeWithSignature("DIRECTORY()"), abi.encode(address(0xdead)));
+        vm.expectPartialRevert(StickyDeployment.StickyDeployment_BindingMismatch.selector);
+        // forge-lint: disable-next-line(unused-return)
+        _deployment.deployFor(_core);
+    }
+
+    function test_rejectsWrongRegistryDirectoryBeforeAnyDeployment() public {
+        vm.mockCall(address(_core.registry), abi.encodeWithSignature("DIRECTORY()"), abi.encode(address(0xdead)));
         vm.expectPartialRevert(StickyDeployment.StickyDeployment_BindingMismatch.selector);
         // forge-lint: disable-next-line(unused-return)
         _deployment.deployFor(_core);
@@ -374,6 +417,21 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         }
     }
 
+    function test_sourceCollectorBindsCanonicalDependenciesAndItsOnlyFeePayer() public {
+        StickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
+        StickySourceCollector collector = StickySourceCollector(deployed.sourceCollector);
+        assertEq(address(collector.REGISTRY()), address(_core.registry));
+        assertEq(address(collector.TOKENS()), address(_core.controller.TOKENS()));
+        assertEq(address(collector.DIRECTORY()), address(_core.directory));
+        assertEq(address(collector.RECEIVER_FACTORY()), deployed.rewardReceiverFactory);
+        assertEq(address(collector.FEE_PAYER()), deployed.sourceFeePayer);
+        assertEq(StickySourceFeePayer(deployed.sourceFeePayer).COLLECTOR(), deployed.sourceCollector);
+        assertEq(deployed.sourceFeePayer, vm.computeCreateAddress({deployer: deployed.sourceCollector, nonce: 1}));
+        assertEq(_deployment.STICKY_SALT(), bytes32("StickyDeployerV6"));
+        assertEq(_deployment.AUTO_STICK_SALT(), bytes32("StickyAutoStickV6"));
+        assertEq(_deployment.SOURCE_COLLECTOR_SALT(), bytes32("StickySourceCollectorV6"));
+    }
+
     function test_verifiedManifestRecordsAllRuntimeHashes() public {
         // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.chainId(11_155_111);
@@ -384,6 +442,13 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         assertEq(vm.parseJsonAddress(json, ".deployer"), deployed.deployer);
         assertEq(vm.parseJsonBytes32(json, ".hookCodehash"), deployed.hook.codehash);
         assertEq(vm.parseJsonBytes32(json, ".autoStickCodehash"), deployed.autoStick.codehash);
+        assertEq(vm.parseJsonAddress(json, ".registry"), address(_core.registry));
+        assertEq(vm.parseJsonAddress(json, ".tokens"), address(_core.controller.TOKENS()));
+        assertEq(vm.parseJsonAddress(json, ".sourceCollector"), deployed.sourceCollector);
+        assertEq(vm.parseJsonBytes32(json, ".sourceCollectorCodehash"), deployed.sourceCollector.codehash);
+        assertEq(vm.parseJsonAddress(json, ".sourceFeePayer"), deployed.sourceFeePayer);
+        assertEq(vm.parseJsonBytes32(json, ".sourceFeePayerCodehash"), deployed.sourceFeePayer.codehash);
+        assertEq(vm.parseJsonBytes32(json, ".sourceCollectorSalt"), _deployment.SOURCE_COLLECTOR_SALT());
         // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(vm.parseJsonUint(json, ".chainId"), 11_155_111);
         assertEq(vm.parseJsonString(json, ".kind"), "test");
@@ -415,5 +480,6 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         _writeArtifact(root, "JBController", address(_core.controller), chainId);
         _writeArtifact(root, "JBDirectory", address(_core.directory), chainId);
         _writeArtifact(root, "JBMultiTerminal", address(_core.terminal), chainId);
+        _writeArtifact({root: root, name: "JBSuckerRegistry", target: address(_core.registry), chainId: chainId});
     }
 }

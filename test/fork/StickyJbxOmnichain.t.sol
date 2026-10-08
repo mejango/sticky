@@ -6,19 +6,28 @@ import {IJBMultiTerminal} from "@bananapus/core-v6/src/interfaces/IJBMultiTermin
 import {IJBTerminal} from "@bananapus/core-v6/src/interfaces/IJBTerminal.sol";
 import {IJBSplitHook} from "@bananapus/core-v6/src/interfaces/IJBSplitHook.sol";
 import {JBConstants} from "@bananapus/core-v6/src/libraries/JBConstants.sol";
+import {JBAccountingContext} from "@bananapus/core-v6/src/structs/JBAccountingContext.sol";
 import {JBRuleset} from "@bananapus/core-v6/src/structs/JBRuleset.sol";
+import {JBRulesetConfig} from "@bananapus/core-v6/src/structs/JBRulesetConfig.sol";
 import {JBRulesetMetadata} from "@bananapus/core-v6/src/structs/JBRulesetMetadata.sol";
 import {JBSplit} from "@bananapus/core-v6/src/structs/JBSplit.sol";
 import {JBSplitGroup} from "@bananapus/core-v6/src/structs/JBSplitGroup.sol";
+import {JBTerminalConfig} from "@bananapus/core-v6/src/structs/JBTerminalConfig.sol";
 import {JBArbitrumSucker} from "@bananapus/suckers-v6/src/JBArbitrumSucker.sol";
 import {JBOptimismSucker} from "@bananapus/suckers-v6/src/JBOptimismSucker.sol";
 import {JBSucker} from "@bananapus/suckers-v6/src/JBSucker.sol";
+import {IJBSuckerDeployer} from "@bananapus/suckers-v6/src/interfaces/IJBSuckerDeployer.sol";
+import {IJBSuckerRegistry} from "@bananapus/suckers-v6/src/interfaces/IJBSuckerRegistry.sol";
 import {JBClaim} from "@bananapus/suckers-v6/src/structs/JBClaim.sol";
 import {JBLeaf} from "@bananapus/suckers-v6/src/structs/JBLeaf.sol";
 import {JBMessageRoot} from "@bananapus/suckers-v6/src/structs/JBMessageRoot.sol";
 import {JBOutboxTree} from "@bananapus/suckers-v6/src/structs/JBOutboxTree.sol";
+import {JBSuckerDeployerConfig} from "@bananapus/suckers-v6/src/structs/JBSuckerDeployerConfig.sol";
+import {JBTokenMapping} from "@bananapus/suckers-v6/src/structs/JBTokenMapping.sol";
 import {MerkleLib} from "@bananapus/suckers-v6/src/utils/MerkleLib.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Bytes} from "@openzeppelin/contracts/utils/Bytes.sol";
 import {Vm} from "forge-std/Vm.sol";
@@ -26,7 +35,11 @@ import {Vm} from "forge-std/Vm.sol";
 import {StickyDistributor} from "../../src/StickyDistributor.sol";
 import {StickyRewardReceiverFactory} from "../../src/StickyRewardReceiverFactory.sol";
 import {StickySourceCollector} from "../../src/StickySourceCollector.sol";
+import {StickySourceFeePayer} from "../../src/StickySourceFeePayer.sol";
 import {StickyToken} from "../../src/StickyToken.sol";
+import {StickyCoreDeployment} from "../../script/structs/StickyCoreDeployment.sol";
+import {StickyDeploymentAddresses} from "../../script/structs/StickyDeploymentAddresses.sol";
+import {StickyDeploymentHarness} from "../deployment/StickyDeploymentHarness.sol";
 import {StickyJbxDeployedFork} from "./helpers/StickyJbxDeployedFork.sol";
 import {StickyJbxArbitrumTransport} from "./helpers/StickyJbxArbitrumTransport.sol";
 import {StickyJbxOptimismTransport} from "./helpers/StickyJbxOptimismTransport.sol";
@@ -39,7 +52,9 @@ import {StickyRealProjectContext} from "./helpers/StickyRealProjectFork.sol";
 /// Finalized messenger context is modeled; test ETH funds real terminal payments and fees. No reward token,
 /// project backing storage, bridge escrow, or deployed code is fabricated. These tests do not establish withdrawal
 /// consensus/finality, a production collector deployment, or a live relayer service. Collector cases deploy the
-/// reviewed local implementation on each pinned fork and require no privileged caller after split configuration.
+/// local implementation on each pinned fork and require no privileged caller after split configuration. The generic
+/// positive ERC-20 case supplies bounded USDC.e input through `deal`, then executes actual payment and bridge burning;
+/// it qualifies source submission only and makes no claim about counterpart setup or ERC-20 withdrawal finalization.
 contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumTransport, StickyJbxOptimismTransport {
     /// @notice The pinned source contracts and actual reserved-token custodian.
     struct Source {
@@ -65,9 +80,15 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
     }
 
     uint256 internal constant _REV_RESERVED_REWARD_PERCENT = 263_157_895;
+
+    /// @notice The Ethereum USDC counterpart selected for generic six-decimal backing routes.
+    address internal constant _ETHEREUM_USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+
+    /// @notice The canonical OP bridged USDC used to exercise real ERC-20 cashout and source transport.
+    address internal constant _OP_USDCE = 0x7F5c764cBc14f9669B88837ca1490cCa17c31607;
+
     bytes32 internal constant _INSERTED_LEAF =
         keccak256("InsertToOutboxTree(bytes32,address,bytes32,uint256,bytes32,uint256,uint256,bytes32,address)");
-    bytes32 internal constant _COLLECTOR_SEND = keccak256("Send(uint256,uint256,uint256,uint256,uint256,address)");
     bytes32 internal constant _TOKEN_TRANSFER = keccak256("Transfer(address,address,uint256)");
 
     uint256 internal constant _NATIVE_INPUT = 0.01 ether;
@@ -115,12 +136,12 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         assertFalse(_sticky.SOULBOUND(), "user-provisional transferable shares");
     }
 
-    /// @notice Actual Ethereum project 1 reserved issuance can fund the distributor through its supported split hook.
+    /// @notice Actual Ethereum project 1 reserves enter the shared hook before permissionless settlement.
     function test_ethereumProjectOne_reservedSplitHookToJbxHolder() public {
         _localReserved(1);
     }
 
-    /// @notice Actual Ethereum project 3 reserved issuance can fund the distributor through its supported split hook.
+    /// @notice Actual Ethereum project 3 reserves enter the shared hook before permissionless settlement.
     function test_ethereumProjectThree_reservedSplitHookToJbxHolder() public {
         _localReserved(_REV_PROJECT);
     }
@@ -156,33 +177,49 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
     }
 
     /// @notice An unrelated caller distributes and sends OP JBP6 reserves after a fork-only full-reserve setup.
-    function test_optimismProjectOne_permissionlessCollectorToEthereumJbx() public {
+    function test_optimismProjectOne_permissionlessSplitHookToEthereumJbx() public {
         _remoteCollected(_OPTIMISM, 1);
     }
 
     /// @notice An unrelated caller sends OP REV's approved reward fraction while preserving the Safe remainder.
-    function test_optimismProjectThree_permissionlessCollectorToEthereumJbx() public {
+    function test_optimismProjectThree_permissionlessSplitHookToEthereumJbx() public {
         _remoteCollected(_OPTIMISM, _REV_PROJECT);
     }
 
     /// @notice An unrelated caller distributes and sends Base JBP6 reserves after a fork-only full-reserve setup.
-    function test_baseProjectOne_permissionlessCollectorToEthereumJbx() public {
+    function test_baseProjectOne_permissionlessSplitHookToEthereumJbx() public {
         _remoteCollected(_BASE, 1);
     }
 
     /// @notice An unrelated caller sends Base REV's approved reward fraction while preserving the Safe remainder.
-    function test_baseProjectThree_permissionlessCollectorToEthereumJbx() public {
+    function test_baseProjectThree_permissionlessSplitHookToEthereumJbx() public {
         _remoteCollected(_BASE, _REV_PROJECT);
     }
 
     /// @notice An unrelated caller distributes and sends Arbitrum JBP6 reserves after a fork-only full-reserve setup.
-    function test_arbitrumProjectOne_permissionlessCollectorToEthereumJbx() public {
+    function test_arbitrumProjectOne_permissionlessSplitHookToEthereumJbx() public {
         _remoteCollected(_ARBITRUM, 1);
     }
 
     /// @notice An unrelated caller sends Arbitrum REV's approved reward fraction while preserving the Safe remainder.
-    function test_arbitrumProjectThree_permissionlessCollectorToEthereumJbx() public {
+    function test_arbitrumProjectThree_permissionlessSplitHookToEthereumJbx() public {
         _remoteCollected(_ARBITRUM, _REV_PROJECT);
+    }
+
+    /// @notice An ordinary project with no backing can deliver its reserved token count through a native route.
+    function test_genericProject_zeroNativeBackingPermissionlessSplitHook() public {
+        _genericCollected(JBConstants.NATIVE_TOKEN, 0);
+    }
+
+    /// @notice A selected ERC-20 mapping can submit zero-backed project tokens without confusing ETH fee units.
+    function test_genericProject_zeroErc20BackingPermissionlessSplitHook() public {
+        _genericCollected(_OP_USDCE, 0);
+    }
+
+    /// @notice Six-decimal backing is paid, cashed out and burned by the deployed canonical OP standard bridge.
+    /// @dev Only initial test USDC.e inventory is supplied by `deal`; actual core and bridge accounting execute.
+    function test_genericProject_positiveErc20BackingPermissionlessSplitHook() public {
+        _genericCollected(_OP_USDCE, 123_456_789);
     }
 
     /// @notice Local emergency exit remints to the remote-beneficiary address, not the preparing Safe.
@@ -210,6 +247,37 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         source.sucker.exitThroughEmergencyHatch(claimData);
     }
 
+    /// @notice The production deployment owner gives all four chains identical hook and fee-child identities.
+    function test_sameSplitHookAndReceiverAddressOnAllFourChains() public {
+        uint256[4] memory chains = [uint256(1), _OPTIMISM, _BASE, _ARBITRUM];
+        address expectedCollector;
+        address expectedFeePayer;
+        bytes32 expectedCollectorHash;
+        bytes32 expectedFeePayerHash;
+        for (uint256 i = 0; i < chains.length; ++i) {
+            Source memory source = _source(chains[i], 1);
+            StickySourceCollector collector = _deployCollector(source);
+            address feePayer = address(collector.FEE_PAYER());
+            if (i == 0) {
+                expectedCollector = address(collector);
+                expectedFeePayer = feePayer;
+                expectedCollectorHash = address(collector).codehash;
+                expectedFeePayerHash = feePayer.codehash;
+            }
+            assertEq(address(collector), expectedCollector, "same configured reserved split hook");
+            assertEq(feePayer, expectedFeePayer, "same parent-bound fee child");
+            assertEq(address(collector).codehash, expectedCollectorHash, "same full hook runtime");
+            assertEq(feePayer.codehash, expectedFeePayerHash, "same full fee-child runtime");
+            assertEq(
+                StickyRewardReceiverFactory(_ethereum.suite.rewardReceiverFactory).predictReceiverOf({
+                    stickyToken: address(_sticky), groupId: 0
+                }),
+                _receiver,
+                "same Ethereum reward destination despite absent remote Sticky token"
+            );
+        }
+    }
+
     /// @notice A dispatched leaf cannot recover locally and later mint again on Ethereum.
     function test_sentReservedLeafCannotExitLocally() public {
         Source memory source = _source(_OPTIMISM, _REV_PROJECT);
@@ -223,70 +291,92 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         source.sucker.exitThroughEmergencyHatch(claimData);
     }
 
-    /// @notice Uses a supported local split hook after an actual authorized current-ruleset edit.
+    /// @notice Uses the same shared reserved hook and receiver settlement path on the destination chain.
+    /// @param projectId The deployed Ethereum reward project issuing the reserved allocation.
     function _localReserved(uint256 projectId) internal {
         Source memory source = _source(1, projectId);
         _flushReserved(source);
-        JBSplit[] memory splits = new JBSplit[](1);
-        splits[0] = JBSplit({
-            percent: uint32(JBConstants.SPLITS_TOTAL_PERCENT),
-            projectId: 0,
-            beneficiary: payable(address(_sticky)),
-            preferAddToBalance: false,
-            lockedUntil: 0,
-            hook: IJBSplitHook(address(_distributor))
-        });
-        JBSplitGroup[] memory groups = new JBSplitGroup[](1);
-        groups[0] = JBSplitGroup({groupId: _RESERVED_GROUP, splits: splits});
-        vm.prank(source.custodian);
-        source.controller.setSplitGroupsOf(projectId, source.rulesetId, groups);
-        uint256 reward = _issueReserved(source);
-        uint256 supplyBefore = source.token.totalSupply();
+        StickySourceCollector collector = _deployCollector(source);
         uint256 distributorBefore = source.token.balanceOf(address(_distributor));
+        uint256 reward = _fundCollector(source, collector);
+        assertEq(source.token.balanceOf(address(_distributor)), distributorBefore, "acceptance only queues custody");
+        assertEq(source.token.balanceOf(_receiver), 0, "acceptance does not transfer to the receiver");
         vm.prank(_keeper);
-        assertEq(source.controller.sendReservedTokensToSplitsOf(projectId), reward);
-        assertEq(source.token.totalSupply(), supplyBefore + reward, "reserved issuance actually minted");
+        collector.settle({sourceProjectId: projectId, stickyToken: address(_sticky), groupId: 0, amount: reward});
+        assertEq(collector.pendingOf(projectId, address(_sticky), 0), 0, "the selected destination bucket settles");
+        assertEq(collector.totalPendingOf(projectId), 0, "no outstanding liability after local delivery");
+        assertEq(source.token.balanceOf(address(collector)), 0);
+        assertEq(source.token.balanceOf(_receiver), 0, "receiver immediately funds the existing distributor");
         assertEq(
-            source.token.balanceOf(address(_distributor)), distributorBefore + reward, "actual hook pulled reserves"
+            source.token.balanceOf(address(_distributor)), distributorBefore + reward, "settlement funds holder rewards"
         );
         assertEq(source.controller.pendingReservedTokenBalanceOf(projectId), 0);
         _vestCollectAndRedeem(source.token, reward);
     }
 
     /// @notice Configures only the initial fork split, then uses unrelated callers throughout recurring delivery.
+    /// @param chainId The remote source chain whose real route delivers to Ethereum.
+    /// @param projectId The deployed source reward project issuing the reserved allocation.
     function _remoteCollected(uint256 chainId, uint256 projectId) internal {
         Source memory source = _source(chainId, projectId);
         _flushReserved(source);
-        StickySourceCollector collector = new StickySourceCollector({sucker: source.sucker, receiver: _receiver});
+        StickySourceCollector collector = _deployCollector(source);
+        JBOutboxTree memory beforeAcceptance = source.sucker.outboxOf(JBConstants.NATIVE_TOKEN);
         uint256 reward = _fundCollector(source, collector);
         JBOutboxTree memory beforeOutbox = source.sucker.outboxOf(JBConstants.NATIVE_TOKEN);
+        assertEq(abi.encode(beforeOutbox), abi.encode(beforeAcceptance), "reserved callback only accepts custody");
         uint256 supplyBefore = source.token.totalSupply();
         uint256 nativeBefore = address(source.sucker).balance;
-        uint256 callerFeeTokensBefore = collector.FEE_PAYER().FEE_TOKEN().balanceOf(_keeper);
+        uint256 callerFeeTokensBefore = _feeToken(source).balanceOf(_keeper);
         uint256 fee = source.sucker.REGISTRY().toRemoteFee();
-        vm.deal(_keeper, fee + 1);
+        assertGt(fee, 0, "pinned registry requires a fee");
+        vm.deal(_keeper, fee);
         vm.expectRevert(
-            abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_IncorrectFee.selector, fee + 1, fee)
+            abi.encodeWithSelector(StickySourceFeePayer.StickySourceFeePayer_InsufficientFee.selector, fee - 1, fee)
         );
         vm.prank(_keeper);
-        // Only the newly constructed fixed-route collector receives the deliberately incorrect fee.
-        // forge-lint: disable-next-line(arbitrary-send-eth)
-        collector.send{value: fee + 1}();
+        // This local deployment receives deliberately insufficient caller funds; all custody must roll back.
+        // forge-lint: disable-next-item(arbitrary-send-eth)
+        collector.send{value: fee - 1}({
+            sourceProjectId: projectId,
+            stickyToken: address(_sticky),
+            groupId: 0,
+            amount: reward,
+            sucker: source.sucker,
+            backingToken: JBConstants.NATIVE_TOKEN
+        });
         assertEq(source.token.balanceOf(address(collector)), reward, "bad fee preserves all reserved principal");
+        assertEq(collector.pendingOf(projectId, address(_sticky), 0), reward, "failed send preserves attribution");
+        assertEq(collector.totalPendingOf(projectId), reward, "failed send preserves aggregate liabilities");
         assertEq(abi.encode(source.sucker.outboxOf(JBConstants.NATIVE_TOKEN)), abi.encode(beforeOutbox));
         vm.deal(_keeper, fee);
         vm.recordLogs();
         if (chainId == _ARBITRUM) _startArbitrumMessageCapture();
         vm.prank(_keeper);
         // The unrelated keeper supplies only the exact live registry fee, never source tokens or an approval.
-        // forge-lint: disable-next-line(arbitrary-send-eth)
-        uint256 index = collector.send{value: fee}();
+        // forge-lint: disable-next-item(arbitrary-send-eth)
+        uint256 index = collector.send{value: fee}({
+            sourceProjectId: projectId,
+            stickyToken: address(_sticky),
+            groupId: 0,
+            amount: reward,
+            sucker: source.sucker,
+            backingToken: JBConstants.NATIVE_TOKEN
+        });
         ArbitrumMessage memory arbMessage;
         if (chainId == _ARBITRUM) {
             arbMessage = _finishArbitrumMessageCapture(JBArbitrumSucker(payable(address(source.sucker))));
         }
         Vm.Log[] memory logs = vm.getRecordedLogs();
-        JBClaim memory claimData = _collectorClaim(logs, source, collector, beforeOutbox, reward);
+        JBClaim memory claimData = _collectorClaim({
+            logs: logs,
+            source: source,
+            collector: collector,
+            beforeOutbox: beforeOutbox,
+            reward: reward,
+            backingToken: JBConstants.NATIVE_TOKEN
+        });
+        assertGt(claimData.leaf.terminalTokenAmount, 0, "existing reward projects reclaim real native backing");
         assertEq(index, claimData.leaf.index);
         _assertCollectorTokenConservation(logs, source, collector, reward, supplyBefore, callerFeeTokensBefore);
         assertEq(
@@ -303,6 +393,9 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
     }
 
     /// @notice Routes the approved fraction through the actual controller and accounts for every minted reserve atom.
+    /// @param source The deployed source project and authorized split custodian.
+    /// @param collector The shared hook accepting the selected Sticky reward allocation.
+    /// @return reward The actual project-token atoms attributed to the selected Sticky pool.
     function _fundCollector(Source memory source, StickySourceCollector collector) internal returns (uint256 reward) {
         uint256 percent =
             source.projectId == _REV_PROJECT ? _REV_RESERVED_REWARD_PERCENT : JBConstants.SPLITS_TOTAL_PERCENT;
@@ -312,10 +405,10 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         splits[0] = JBSplit({
             percent: uint32(percent),
             projectId: 0,
-            beneficiary: payable(address(collector)),
+            beneficiary: payable(address(_sticky)),
             preferAddToBalance: false,
             lockedUntil: 0,
-            hook: IJBSplitHook(address(0))
+            hook: IJBSplitHook(address(collector))
         });
         if (splits.length > 1) {
             // forge-lint: disable-next-item(unsafe-typecast)
@@ -350,6 +443,13 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         assertGt(reward, 0);
         assertEq(source.token.balanceOf(address(collector)), reward, "actual reserved share reaches collector");
         assertEq(
+            collector.pendingOf(source.projectId, address(_sticky), 0), reward, "hook credits only its destination"
+        );
+        assertEq(collector.totalPendingOf(source.projectId), reward, "aggregate debt equals accepted real reserves");
+        assertEq(
+            source.token.allowance(address(source.controller), address(collector)), 0, "controller clears approval"
+        );
+        assertEq(
             source.token.balanceOf(source.custodian), safeBefore + safeShare, "Safe keeps exact unallocated remainder"
         );
         assertEq(
@@ -361,12 +461,20 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
     }
 
     /// @notice Derives the claim only from the actual sucker's emitted leaf and the pre-send tree frontier.
+    /// @param logs The actual source logs emitted during preparation and submission.
+    /// @param source The source project and registered sucker responsible for the leaf.
+    /// @param collector The shared hook whose custody was prepared.
+    /// @param beforeOutbox The selected backing asset's Merkle frontier before preparation.
+    /// @param reward The attributed project-token amount selected for delivery.
+    /// @param backingToken The selected local backing token or native-token sentinel.
+    /// @return claimData The emitted leaf and proof against the resulting source root.
     function _collectorClaim(
         Vm.Log[] memory logs,
         Source memory source,
         StickySourceCollector collector,
         JBOutboxTree memory beforeOutbox,
-        uint256 reward
+        uint256 reward,
+        address backingToken
     )
         internal
         view
@@ -380,12 +488,11 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
             ) continue;
             assertEq(entry.topics.length, 3);
             assertEq(entry.topics[1], bytes32(uint256(uint160(_receiver))));
-            assertEq(entry.topics[2], bytes32(uint256(uint160(JBConstants.NATIVE_TOKEN))));
+            assertEq(entry.topics[2], bytes32(uint256(uint160(backingToken))));
             InsertedLeaf memory inserted = abi.decode(entry.data, (InsertedLeaf));
             assertEq(inserted.caller, address(collector), "collector itself prepared the source leaf");
             assertEq(inserted.index, beforeOutbox.tree.count);
             assertEq(inserted.projectTokenCount, reward);
-            assertGt(inserted.terminalTokenAmount, 0);
             assertEq(inserted.metadata, bytes32(0), "fixed collector leaf attribution");
             JBLeaf memory leaf = JBLeaf({
                 index: inserted.index,
@@ -395,6 +502,7 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
                 metadata: inserted.metadata
             });
             claimData = _claimAgainstFrontier(leaf, beforeOutbox);
+            claimData.token = backingToken;
             assertEq(
                 inserted.hashed,
                 keccak256(abi.encode(reward, leaf.terminalTokenAmount, leaf.beneficiary, leaf.metadata))
@@ -406,6 +514,12 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
     }
 
     /// @notice Separates principal burn from actual fee-related minting on project 1, without a synthetic supply model.
+    /// @param logs The actual source logs emitted during preparation and submission.
+    /// @param source The source project and registered delivery route.
+    /// @param collector The shared hook whose principal and liabilities must remain backed.
+    /// @param reward The selected project-token principal burned during preparation.
+    /// @param supplyBefore The source ERC-20 supply immediately before submission.
+    /// @param callerFeeTokensBefore The delivery caller's fee-token balance before submission.
     function _assertCollectorTokenConservation(
         Vm.Log[] memory logs,
         Source memory source,
@@ -420,17 +534,16 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         uint256 minted = 0;
         uint256 burned = 0;
         uint256 feeReceipt = 0;
-        uint256 sendEvents = 0;
+        IERC20 feeToken = _feeToken(source);
+        address feePayer = address(collector.FEE_PAYER());
         for (uint256 i = 0; i < logs.length; ++i) {
             Vm.Log memory entry = logs[i];
-            if (entry.emitter == address(collector) && entry.topics.length != 0 && entry.topics[0] == _COLLECTOR_SEND) {
-                assertEq(entry.topics.length, 3);
-                assertEq(entry.topics[2], bytes32(uint256(uint160(_keeper))), "send identifies the unrelated fee payer");
-                (uint256 projectTokenCount,, uint256 paidFeeTokens,) =
-                    abi.decode(entry.data, (uint256, uint256, uint256, uint256));
-                assertEq(projectTokenCount, reward);
-                feeReceipt = paidFeeTokens;
-                ++sendEvents;
+            if (
+                entry.emitter == address(feeToken) && entry.topics.length == 3 && entry.topics[0] == _TOKEN_TRANSFER
+                    && entry.topics[1] == bytes32(uint256(uint160(feePayer)))
+                    && entry.topics[2] == bytes32(uint256(uint160(_keeper)))
+            ) {
+                feeReceipt += abi.decode(entry.data, (uint256));
             }
 
             if (
@@ -440,23 +553,305 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
             if (entry.topics[1] == bytes32(0)) minted += amount;
             if (entry.topics[2] == bytes32(0)) burned += amount;
         }
-        assertEq(sendEvents, 1, "one actual collector submission result");
         assertEq(
-            collector.FEE_PAYER().FEE_TOKEN().balanceOf(_keeper),
+            feeToken.balanceOf(_keeper),
             callerFeeTokensBefore + feeReceipt,
             "exact fee receipt reaches the current source caller"
         );
         assertEq(burned, reward, "exact reserved principal burned by the actual token");
         assertEq(source.token.totalSupply(), supplyBefore + minted - burned, "fee minting cannot mask principal burn");
-        assertEq(source.token.balanceOf(address(collector)), 0, "fee receipts do not return to principal custody");
+        assertEq(
+            source.token.balanceOf(address(collector)),
+            collector.pendingOf(source.projectId, address(_sticky), 0),
+            "any callback reserves remain attributed instead of becoming caller fee receipts"
+        );
+        assertEq(
+            collector.totalPendingOf(source.projectId),
+            collector.pendingOf(source.projectId, address(_sticky), 0),
+            "fresh callback custody remains backed"
+        );
         assertEq(
             source.token.allowance(address(collector), address(source.sucker)), 0, "no standing principal allowance"
         );
-        address feePayer = address(collector.FEE_PAYER());
-        assertEq(
-            collector.FEE_PAYER().FEE_TOKEN().balanceOf(feePayer), 0, "fresh fee receipt reaches the current caller"
-        );
+        assertEq(feeToken.balanceOf(feePayer), 0, "fresh fee receipt reaches the current caller");
         assertEq(source.sucker.retainedToRemoteFeeOf(feePayer), 0, "no retained caller fee remains");
+        assertEq(source.sucker.retainedTransportPaymentRefundOf(feePayer), 0, "no retained transport refund remains");
+    }
+
+    /// @notice Uses the production deployment helper while proving all six existing singletons remain untouched.
+    /// @param source The pinned source contracts supplying canonical deployment dependencies.
+    /// @return collector The locally deployed and verified shared reserved split hook.
+    function _deployCollector(Source memory source) internal returns (StickySourceCollector collector) {
+        StickyCoreDeployment memory core = StickyCoreDeployment({
+            controller: source.controller,
+            directory: source.controller.DIRECTORY(),
+            terminal: IJBMultiTerminal(address(source.terminal)),
+            registry: block.chainid == 1 ? _checkedSucker(1, 1, _OPTIMISM).REGISTRY() : source.sucker.REGISTRY()
+        });
+        StickyDeploymentHarness harness = new StickyDeploymentHarness();
+        StickyDeploymentAddresses memory predicted = harness.predict(core);
+        address[6] memory existing = [
+            predicted.deployer,
+            predicted.hook,
+            predicted.distributor,
+            predicted.rewardReceiver,
+            predicted.rewardReceiverFactory,
+            predicted.autoStick
+        ];
+        bytes32[6] memory previousHashes;
+        for (uint256 i = 0; i < existing.length; ++i) {
+            assertGt(existing[i].code.length, 0, "the historical Sticky singleton already exists");
+            previousHashes[i] = existing[i].codehash;
+        }
+        StickyDeploymentAddresses memory deployed = harness.deployFor(core);
+        for (uint256 i = 0; i < existing.length; ++i) {
+            assertEq(existing[i].codehash, previousHashes[i], "the deployment preserves all existing runtime code");
+        }
+        assertEq(abi.encode(deployed), abi.encode(predicted), "production deployment agrees with its prediction");
+        assertEq(deployed.rewardReceiverFactory, _ethereum.suite.rewardReceiverFactory, "shared receiver factory");
+        collector = StickySourceCollector(deployed.sourceCollector);
+        assertEq(address(collector.FEE_PAYER()), deployed.sourceFeePayer, "verified child binding");
+        assertTrue(collector.supportsInterface(type(IJBSplitHook).interfaceId), "reserved split-hook interface");
+    }
+
+    /// @notice Qualifies a generic source through actual core cashout and bridge submission for the chosen backing.
+    /// @dev This source-only fixture does not launch a counterpart project or model ERC-20 withdrawal finalization.
+    /// @param backingToken The local native sentinel or canonical OP USDC.e contract.
+    /// @param backingAmount The actual terminal payment, in backing-token atoms; zero uses owner issuance instead.
+    function _genericCollected(address backingToken, uint256 backingAmount) internal {
+        Source memory canonical = _source({chainId: _OPTIMISM, projectId: 1});
+        StickySourceCollector collector = _deployCollector(canonical);
+        Source memory source =
+            _launchGenericSource({canonical: canonical, collector: collector, backingToken: backingToken});
+        uint256 reward;
+        if (backingAmount == 0) {
+            uint256 issuance = 100 ether;
+            vm.prank(source.custodian);
+            assertEq(
+                source.controller
+                    .mintTokensOf({
+                        projectId: source.projectId,
+                        tokenCount: issuance,
+                        beneficiary: _payer,
+                        memo: "zero-backed reward",
+                        useReservedPercent: true
+                    }),
+                issuance / 2
+            );
+            reward = issuance / 2;
+        } else {
+            IERC20 token = IERC20(backingToken);
+            // Supply only bounded test input. Payment, backing, project issuance and bridge burn use real contracts.
+            deal(backingToken, _payer, backingAmount);
+            vm.startPrank(_payer);
+            assertTrue(token.approve({spender: address(source.terminal), value: backingAmount}));
+            uint256 issued = source.terminal
+                .pay({
+                    projectId: source.projectId,
+                    token: backingToken,
+                    amount: backingAmount,
+                    beneficiary: _payer,
+                    minReturnedTokens: 1,
+                    memo: "six-decimal backing qualification",
+                    metadata: ""
+                });
+            vm.stopPrank();
+            assertEq(token.balanceOf(_payer), 0, "the real terminal received all test backing");
+            reward = source.controller.pendingReservedTokenBalanceOf(source.projectId);
+            assertEq(source.token.balanceOf(_payer), issued, "actual project token issuance from the payment");
+            assertGt(reward, 0);
+        }
+        vm.prank(_keeper);
+        assertEq(source.controller.sendReservedTokensToSplitsOf(source.projectId), reward);
+        assertEq(collector.pendingOf(source.projectId, address(_sticky), 0), reward, "generic reserve attribution");
+        assertEq(collector.totalPendingOf(source.projectId), reward);
+        assertEq(source.token.balanceOf(address(collector)), reward);
+        JBOutboxTree memory beforeOutbox = source.sucker.outboxOf(backingToken);
+        assertEq(beforeOutbox.tree.count, 0, "acceptance does not prepare a bridge leaf");
+        uint256 supplyBefore = source.token.totalSupply();
+        uint256 backingBefore = IJBMultiTerminal(address(source.terminal))
+            .STORE()
+            .balanceOf(address(source.terminal), source.projectId, backingToken);
+        assertEq(backingBefore, backingAmount, "actual core treasury accounting");
+        uint256 backingSupplyBefore = backingToken == JBConstants.NATIVE_TOKEN ? 0 : IERC20(backingToken).totalSupply();
+        uint256 fee = source.sucker.REGISTRY().toRemoteFee();
+        vm.deal(_keeper, fee);
+        vm.recordLogs();
+        vm.prank(_keeper);
+        // The unrelated caller supplies registry fees only, with no approval or reward-token inventory.
+        // forge-lint: disable-next-item(arbitrary-send-eth)
+        uint256 index = collector.send{value: fee}({
+            sourceProjectId: source.projectId,
+            stickyToken: address(_sticky),
+            groupId: 0,
+            amount: reward,
+            sucker: source.sucker,
+            backingToken: backingToken
+        });
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        JBClaim memory claimData = _collectorClaim({
+            logs: logs,
+            source: source,
+            collector: collector,
+            beforeOutbox: beforeOutbox,
+            reward: reward,
+            backingToken: backingToken
+        });
+        assertEq(index, 0, "first leaf of the new generic route");
+        assertEq(claimData.leaf.index, index);
+        assertEq(source.token.totalSupply(), supplyBefore - reward, "actual generic source-token burn");
+        assertEq(source.token.balanceOf(address(collector)), 0);
+        assertEq(collector.pendingOf(source.projectId, address(_sticky), 0), 0);
+        assertEq(collector.totalPendingOf(source.projectId), 0);
+        assertEq(source.token.allowance(address(collector), address(source.sucker)), 0);
+        JBOutboxTree memory afterOutbox = source.sucker.outboxOf(backingToken);
+        assertEq(afterOutbox.tree.count, 1);
+        assertEq(afterOutbox.numberOfClaimsSent, 1, "exact generic leaf included in the dispatched root");
+        assertEq(afterOutbox.balance, 0);
+        bytes32 remoteToken = source.sucker.remoteTokenFor(backingToken).addr;
+        OpMessage memory message = _captureOpMessageFor({
+            logs: logs, source: JBOptimismSucker(payable(address(source.sucker))), value: 0, remoteToken: remoteToken
+        });
+        JBMessageRoot memory root = abi.decode(Bytes.slice(message.data, _SELECTOR_BYTES), (JBMessageRoot));
+        assertEq(root.amount, claimData.leaf.terminalTokenAmount, "actual backing count in captured remote root");
+        assertEq(
+            root.remoteRoot.root,
+            MerkleLib.branchRoot(
+                keccak256(
+                    abi.encode(reward, claimData.leaf.terminalTokenAmount, claimData.leaf.beneficiary, bytes32(0))
+                ),
+                claimData.proof,
+                index
+            ),
+            "captured message includes the selected Sticky beneficiary and exact project-token count"
+        );
+        assertEq(
+            IJBMultiTerminal(address(source.terminal))
+                .STORE()
+                .balanceOf(address(source.terminal), source.projectId, backingToken),
+            backingBefore - claimData.leaf.terminalTokenAmount,
+            "actual treasury debit equals the source bridge amount"
+        );
+        if (backingAmount == 0) {
+            assertEq(claimData.leaf.terminalTokenAmount, 0, "zero backing still carries positive project-token count");
+        } else {
+            assertGt(claimData.leaf.terminalTokenAmount, 0);
+            assertLt(
+                claimData.leaf.terminalTokenAmount, backingAmount, "half issuance cannot consume all treasury backing"
+            );
+            assertEq(
+                IERC20(backingToken).totalSupply(),
+                backingSupplyBefore - claimData.leaf.terminalTokenAmount,
+                "canonical L2 bridge burns exactly the reclaimed USDC.e atoms"
+            );
+            assertEq(IERC20(backingToken).balanceOf(address(source.sucker)), 0, "no source backing left in sucker");
+            assertEq(
+                IERC20(backingToken)
+                    .allowance(
+                        address(source.sucker), address(JBOptimismSucker(payable(address(source.sucker))).OPBRIDGE())
+                    ),
+                0,
+                "no standing bridge allowance"
+            );
+        }
+        if (backingToken != JBConstants.NATIVE_TOKEN) {
+            assertEq(
+                source.sucker.outboxOf(JBConstants.NATIVE_TOKEN).tree.count, 0, "ERC-20 send never uses native outbox"
+            );
+        }
+    }
+
+    /// @notice Launches a generic project and installs a real registered OP route with the selected backing mapping.
+    /// @param canonical The deployed V6 core contracts and canonical source registry.
+    /// @param collector The shared reserved split hook.
+    /// @param backingToken The actual backing asset accepted by the new source project.
+    /// @return source The newly configured generic source project and its canonical native transport implementation.
+    function _launchGenericSource(
+        Source memory canonical,
+        StickySourceCollector collector,
+        address backingToken
+    )
+        internal
+        returns (Source memory source)
+    {
+        source.forkId = canonical.forkId;
+        source.controller = canonical.controller;
+        source.terminal = canonical.terminal;
+        source.custodian = makeAddr("generic source project owner");
+        IJBSuckerRegistry registry = canonical.sucker.REGISTRY();
+        JBRulesetConfig[] memory rulesets = new JBRulesetConfig[](1);
+        rulesets[0].weight = 1 ether;
+        rulesets[0].metadata.reservedPercent = JBConstants.MAX_RESERVED_PERCENT / 2;
+        rulesets[0].metadata.allowOwnerMinting = true;
+        rulesets[0].metadata.scopeCashOutsToLocalBalances = true;
+        // Juicebox's token-derived currency intentionally keeps the low four address bytes.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        uint32 currency = uint32(uint160(backingToken));
+        rulesets[0].metadata.baseCurrency = currency;
+        JBSplit[] memory splits = new JBSplit[](1);
+        splits[0] = JBSplit({
+            percent: JBConstants.SPLITS_TOTAL_PERCENT,
+            projectId: 0,
+            beneficiary: payable(address(_sticky)),
+            preferAddToBalance: false,
+            lockedUntil: 0,
+            hook: IJBSplitHook(address(collector))
+        });
+        rulesets[0].splitGroups = new JBSplitGroup[](1);
+        rulesets[0].splitGroups[0] = JBSplitGroup({groupId: _RESERVED_GROUP, splits: splits});
+        JBAccountingContext[] memory contexts = new JBAccountingContext[](1);
+        contexts[0] = JBAccountingContext({
+            token: backingToken,
+            decimals: backingToken == JBConstants.NATIVE_TOKEN ? 18 : IERC20Metadata(backingToken).decimals(),
+            currency: currency
+        });
+        JBTerminalConfig[] memory terminals = new JBTerminalConfig[](1);
+        terminals[0] = JBTerminalConfig({terminal: source.terminal, accountingContextsToAccept: contexts});
+        uint256 creationFee = source.controller.PROJECTS().creationFee();
+        vm.deal(address(this), address(this).balance + creationFee);
+        // Only the checked canonical controller receives the fork-local project creation fee.
+        // forge-lint: disable-next-item(arbitrary-send-eth)
+        source.projectId = source.controller.launchProjectFor{value: creationFee}({
+            owner: source.custodian,
+            projectUri: "",
+            rulesetConfigurations: rulesets,
+            terminalConfigurations: terminals,
+            memo: ""
+        });
+        assertGt(source.projectId, _REV_PROJECT, "generic project is outside the two initial reward sources");
+        vm.prank(source.custodian);
+        source.token = IERC20(
+            address(
+                source.controller
+                    .deployERC20For({
+                        projectId: source.projectId, name: "Generic source", symbol: "GEN", salt: bytes32(0)
+                    })
+            )
+        );
+        bytes32 remoteToken = bytes32(uint256(uint160(backingToken == _OP_USDCE ? _ETHEREUM_USDC : backingToken)));
+        if (backingToken == _OP_USDCE && !registry.tokenMappingIsAllowed(backingToken, 1, remoteToken)) {
+            // A foreign-address economic mapping requires registry-owner setup, separate from recurring delivery.
+            vm.prank(Ownable(address(registry)).owner());
+            registry.allowTokenMapping({localToken: backingToken, remoteChainId: 1, remoteToken: remoteToken});
+        }
+        string memory deployerArtifact =
+            vm.readFile("node_modules/@bananapus/suckers-v6/deployments/optimism/JBOptimismSuckerDeployer.json");
+        address deployer = vm.parseJsonAddress(deployerArtifact, ".address");
+        assertTrue(registry.suckerDeployerIsAllowed(deployer), "existing canonical transport builder");
+        JBTokenMapping[] memory mappings = new JBTokenMapping[](1);
+        mappings[0] = JBTokenMapping({localToken: backingToken, minGas: 200_000, remoteToken: remoteToken});
+        JBSuckerDeployerConfig[] memory configurations = new JBSuckerDeployerConfig[](1);
+        configurations[0] =
+            JBSuckerDeployerConfig({deployer: IJBSuckerDeployer(deployer), peer: bytes32(0), mappings: mappings});
+        vm.prank(source.custodian);
+        address[] memory suckers = registry.deploySuckersFor({
+            projectId: source.projectId, salt: keccak256("generic source qualification"), configurations: configurations
+        });
+        source.sucker = JBSucker(payable(suckers[0]));
+        assertTrue(registry.isSuckerOf(source.projectId, address(source.sucker)));
+        assertEq(source.sucker.peerChainId(), 1);
+        assertTrue(source.sucker.isMapped(backingToken));
+        assertEq(source.sucker.remoteTokenFor(backingToken).addr, remoteToken);
     }
 
     /// @notice Exercises a native source route end-to-end, retaining its explicit current-custodian boundary.
@@ -806,6 +1201,13 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         return IJBMultiTerminal(address(source.terminal))
             .STORE()
             .balanceOf(address(source.terminal), source.projectId, JBConstants.NATIVE_TOKEN);
+    }
+
+    /// @notice Resolves the route's actual fee-project ERC-20 independently from the reward project token.
+    /// @param source The registered source route whose fee project supplies the receipt token.
+    /// @return feeToken The deployed fee-project ERC-20 for this route.
+    function _feeToken(Source memory source) internal view returns (IERC20 feeToken) {
+        return IERC20(address(source.sucker.TOKENS().tokenOf(source.sucker.FEE_PROJECT_ID())));
     }
 
     /// @notice Addresses the one committed census entry for a project on a specific chain.

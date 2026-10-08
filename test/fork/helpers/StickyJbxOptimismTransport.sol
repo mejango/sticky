@@ -90,6 +90,27 @@ abstract contract StickyJbxOptimismTransport is Test {
         view
         returns (OpMessage memory message)
     {
+        return _captureOpMessageFor({
+            logs: logs, source: source, value: value, remoteToken: bytes32(uint256(uint160(JBConstants.NATIVE_TOKEN)))
+        });
+    }
+
+    /// @notice Captures a real sucker-root message while distinguishing ERC-20 backing from native message value.
+    /// @param logs The actual source logs recorded around submission.
+    /// @param source The registered L2 sucker submitting the root.
+    /// @param value The native value attached to the messenger call, zero for ERC-20-backed roots.
+    /// @param remoteToken The selected remote backing token encoded in the root.
+    /// @return message The complete emitted messenger call for the sucker root.
+    function _captureOpMessageFor(
+        Vm.Log[] memory logs,
+        JBOptimismSucker source,
+        uint256 value,
+        bytes32 remoteToken
+    )
+        internal
+        view
+        returns (OpMessage memory message)
+    {
         assertTrue(
             block.chainid == _OP_TRANSPORT_OPTIMISM_CHAIN_ID || block.chainid == _OP_TRANSPORT_BASE_CHAIN_ID,
             "capture must be on Optimism or Base"
@@ -127,12 +148,12 @@ abstract contract StickyJbxOptimismTransport is Test {
             });
             assertEq(entry.topics[1], peer, "captured target must be the source peer");
             assertEq(entry.data, abi.encode(sender, data, nonce, minimumGas), "exact source event encoding");
-            assertEq(message.value, value, "actual emitted native value must equal the sent outbox balance");
+            assertEq(message.value, value, "actual emitted native value must equal the expected messenger value");
             assertEq(nonce >> 240, 1, "version-1 messenger nonce");
-            _checkOpRoot(message);
+            _checkOpRoot({message: message, remoteToken: remoteToken});
             ++count;
         }
-        assertEq(count, 1, "exactly one actual native root message must be captured");
+        assertEq(count, 1, "exactly one actual sucker root message must be captured");
     }
 
     /// @notice Supplies a finalized Portal context and executes the real L1 messenger with existing escrow.
@@ -146,7 +167,7 @@ abstract contract StickyJbxOptimismTransport is Test {
         address portal = _opPortal(destination);
         IStickyJbxOpMessenger messenger = IStickyJbxOpMessenger(address(destination.OPMESSENGER()));
         assertEq(destination.peer(), bytes32(uint256(uint160(message.sender))), "captured source must be the peer");
-        _checkOpRoot(message);
+        _checkOpRoot({message: message, remoteToken: bytes32(uint256(uint160(JBConstants.NATIVE_TOKEN)))});
 
         uint256 escrowBefore = portal.balance;
         uint256 harnessBefore = address(this).balance;
@@ -240,14 +261,20 @@ abstract contract StickyJbxOptimismTransport is Test {
         );
     }
 
-    /// @notice Requires the captured bytes to carry exactly one native sucker root and its actual bridged value.
-    function _checkOpRoot(OpMessage memory message) private pure {
+    /// @notice Requires exact source calldata and checks the backing asset independently of native transport value.
+    /// @param message The complete emitted source call.
+    /// @param remoteToken The expected remote backing token, encoded as bytes32.
+    function _checkOpRoot(OpMessage memory message, bytes32 remoteToken) private pure {
         // Intentionally select the first four bytes; canonical re-encoding below checks the full payload.
         // forge-lint: disable-next-line(unsafe-typecast)
-        assertEq(bytes4(message.data), JBSucker.fromRemote.selector, "native root delivery only");
+        assertEq(bytes4(message.data), JBSucker.fromRemote.selector, "sucker root delivery only");
         JBMessageRoot memory root = abi.decode(Bytes.slice({buffer: message.data, start: 4}), (JBMessageRoot));
-        assertEq(root.token, bytes32(uint256(uint160(JBConstants.NATIVE_TOKEN))), "native root token");
-        assertEq(root.amount, message.value, "actual native root amount");
+        assertEq(root.token, remoteToken, "selected remote backing token");
+        if (remoteToken == bytes32(uint256(uint160(JBConstants.NATIVE_TOKEN)))) {
+            assertEq(root.amount, message.value, "actual native root amount");
+        } else {
+            assertEq(message.value, 0, "ERC-20 backing is transported separately from the native messenger value");
+        }
         assertEq(message.data, abi.encodeCall(JBSucker.fromRemote, (root)), "preserve complete source root calldata");
     }
 }

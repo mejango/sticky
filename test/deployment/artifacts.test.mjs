@@ -7,6 +7,8 @@ import { networks, suite } from '../../script/deploy.mjs';
 const code = '0x6080604052';
 const addresses = {
   controller: '0x' + '11'.repeat(20), directory: '0x' + '22'.repeat(20), terminal: '0x' + '33'.repeat(20),
+  registry: '0x' + '44'.repeat(20), tokens: '0x' + '55'.repeat(20),
+  sourceCollector: '0x' + 'a7'.repeat(20), sourceFeePayer: '0x' + 'a8'.repeat(20),
   deployer: '0x' + 'a1'.repeat(20), hook: '0x' + 'a2'.repeat(20), distributor: '0x' + 'a3'.repeat(20),
   rewardReceiver: '0x' + 'a6'.repeat(20), rewardReceiverFactory: '0x' + 'a4'.repeat(20), autoStick: '0x' + 'a5'.repeat(20),
 };
@@ -18,6 +20,8 @@ const expectedArgs = {
   StickyRewardReceiver: [addresses.distributor],
   StickyRewardReceiverFactory: [addresses.rewardReceiver],
   StickyAutoStick: [addresses.deployer, addresses.distributor],
+  StickySourceCollector: [addresses.registry, addresses.tokens, addresses.rewardReceiverFactory],
+  StickySourceFeePayer: [],
 };
 
 function artifact(name) {
@@ -49,8 +53,9 @@ function fixture(group, { revision = 'abc123' } = {}) {
         if (searchParams.get('action') === 'getcontractcreation') {
           const address = searchParams.get('contractaddresses');
           const name = contracts.find(contract => addresses[contract.field] === address).name;
-          const child = name === 'StickyHook';
-          return { result: [{ txHash: `0xtx-${child ? 'StickyDeployer' : name}`,
+          const parent = name === 'StickyHook' ? 'StickyDeployer' : name === 'StickySourceFeePayer' ? 'StickySourceCollector' : undefined;
+          const child = Boolean(parent);
+          return { result: [{ txHash: `0xtx-${parent ?? name}`,
             creationBytecode: child ? undefined : `${code}${expectedArgs[name].map(word).join('')}` }] };
         }
         return { result: { blockHash: '0x' + 'bb'.repeat(32), transactionHash: searchParams.get('txhash') } };
@@ -85,13 +90,15 @@ for (const group of Object.keys(networks)) {
       }
       // The hook is created by the deployer's constructor, so its receipt is the deployer's creation transaction.
       assert.equal(written[`deployments/${folder}/StickyHook.json`].receipt.transactionHash, '0xtx-StickyDeployer');
+      assert.equal(written[`deployments/${folder}/StickySourceFeePayer.json`].receipt.transactionHash, '0xtx-StickySourceCollector');
     }
     assert.equal(verified.length, networks[group].length * contracts.length);
     for (const { command, args } of verified) {
       assert.equal(command, 'forge');
       assert.equal(args[0], 'verify-contract');
       const name = args[2].split(':')[1];
-      assert.deepEqual(args.slice(-2), ['--constructor-args', `0x${expectedArgs[name].map(word).join('')}`]);
+      if (expectedArgs[name].length) assert.deepEqual(args.slice(-2), ['--constructor-args', `0x${expectedArgs[name].map(word).join('')}`]);
+      else assert.ok(!args.includes('--constructor-args'), 'the child constructor takes no arguments');
       assert.ok(args.includes('--via-ir') && args.includes('--skip-is-verified-check'));
       assert.ok(!args.includes('--broadcast'));
     }
@@ -148,4 +155,31 @@ test('constructor bindings are encoded from the manifest and rejected when the c
   const compiled = JSON.parse(readFileSync('out/StickyDistributor.sol/StickyDistributor.json', 'utf8'));
   assert.deepEqual(compiled.abi.find(entry => entry.type === 'constructor').inputs.map(input => input.type),
     ['address', 'address', 'address', 'uint256', 'uint256', 'uint48']);
+});
+
+
+test('six deployed singleton creation bytes and constructor bindings stay unchanged', () => {
+  const manifest = JSON.parse(readFileSync('deployments/ethereum/verified.json', 'utf8'));
+  for (const contract of contracts.filter(contract => !contract.name.startsWith('StickySource'))) {
+    const compiled = JSON.parse(readFileSync(`out/${contract.name}.sol/${contract.name}.json`, 'utf8'));
+    const deployed = JSON.parse(readFileSync(`deployments/ethereum/${contract.name}.json`, 'utf8'));
+    assert.equal(compiled.bytecode.object.toLowerCase(), deployed.bytecode.toLowerCase(), contract.name);
+    assert.deepEqual(constructorArgs(contract, manifest, compiled).args.map(String).map(value => value.toLowerCase()),
+      deployed.args.map(String).map(value => value.toLowerCase()), contract.name);
+  }
+});
+
+test('an old live manifest cannot emit undeployed source singleton artifacts', async () => {
+  const setup = fixture('mainnets');
+  const read = setup.options.read;
+  setup.options.read = file => {
+    if (!file.endsWith('/verified.json')) return read(file);
+    const manifest = JSON.parse(read(file));
+    delete manifest.sourceCollector;
+    delete manifest.sourceFeePayer;
+    return JSON.stringify(manifest);
+  };
+  await assert.rejects(emit('mainnets', setup.options), /no verified sourceCollector deployment address/);
+  assert.deepEqual(setup.written, {}, 'an incomplete live manifest must stop before any artifact write');
+  assert.equal(setup.fetched.length, 0);
 });
