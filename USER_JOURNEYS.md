@@ -10,6 +10,7 @@ This repo owns staking-with-streaks for ERC-20 tokens on Juicebox V6: permanentl
 - **Holder**: stakes to signal commitment, redeems under the project's fixed cash out curve, tracks their streak, and optionally compounds rewards.
 - **Granter** (protocol or partner): stakes on holders' behalf as rewards, frictionlessly.
 - **Funder**: sends reward tokens to a sticky token's holders, on the same chain or from another chain.
+- **Source split operator / delivery caller**: the authorized source operator directs reserves to a fixed collector; any caller can then submit and complete delivery without recurring Safe signatures.
 - **Indexer / reward engine**: consumes events and views to compute reward math off-chain.
 
 ## Key Surfaces
@@ -19,6 +20,7 @@ This repo owns staking-with-streaks for ERC-20 tokens on Juicebox V6: permanentl
 - `JBMultiTerminal.cashOutTokensOf` (core): unstake.
 - `StickyHook` views/events: all balance, streak, tranche, and trust data.
 - `StickyDistributor.fund` / `collectVestedRewards` (with an optional `groupId`), `StickyAutoStick`, `StickyRewardReceiverFactory`: rewards.
+- `StickySourceCollector.send`: permissionless source submission for a fixed V6 project, native route and Ethereum reward receiver.
 
 ## Journey 1: Launch a sticky project
 
@@ -69,6 +71,18 @@ Through a split: set `hook = distributor`, `beneficiary = stickyToken`, and `pro
 Rewards vest over four weekly rounds and have a two-year claim window before unclaimed inventory can be recycled. Vesting needs a transaction: call `beginVesting(hook, groupId, tokenIds, tokens)`, or use `collectVestedRewards(hook, groupId, ...)` to collect vested rewards and begin eligible allocations. Tenure claims read the holder's live tranches, so they must be claimed while those tranches are still held; an exit first forfeits them to the pot. Anyone may collect on a holder's behalf to that holder's address. A holder calling directly may choose their own beneficiary. Auto-stick always collects to the holder.
 
 Other chain: call `StickyRewardReceiverFactory.predictReceiverOf(destinationStickyToken, groupId)` on the destination chain. Address parity across chains requires a matching factory address, destination Sticky-token address, and group; common salts alone are insufficient. Verify the destination reward token and its supported bridge route, then bridge with that receiver as beneficiary. Once the ERC-20 arrival is claimable on the destination, complete the bridge claim and call `settleFor(destinationStickyToken, groupId, destinationRewardToken)`. The receiver can receive tokens before deployment. Anyone may settle, so funding belongs to the round current when settlement executes. The Sticky project needs no sucker deployment of its own; the reward token needs the route. Receivers provide no recovery path for an incorrect destination or unsupported asset.
+
+### Reserved rewards through a source collector
+
+**Actors:** authorized source split operator for setup, then any delivery caller.
+
+**Intent:** deliver V6 project 1 or 3 reserves from OP, Base or Arbitrum to the fixed Ethereum reward pool without recurring Safe custody or signatures.
+
+Before funding, confirm the actual Ethereum share token and receiver, authenticate the source native route independently, and verify a deployed collector and its fee child using [the setup recipe](DEPLOYMENT.md#source-collectors). The constructor checks only a nonzero receiver and consistency of the supplied route. The source operator configures the collector parent as a plain reserved-split beneficiary; naming the fee child can misattribute rewards as a caller's fee receipt.
+
+Anyone may then call the source controller to distribute pending reserves, read the collector's balance and the registry's exact native fee, and call `send()` with that fee as `msg.value`. The caller cannot select an amount or destination: the collector prepares its entry balance with an execution-time positive native cashout minimum, clears the allowance, submits the outbox and verifies inclusion of its leaf. Receipt tokens or a failed fee-payment refund from the separate child go to that caller; reserves delivered to the parent during fee callbacks remain for a later send.
+
+A stale fee, empty balance, zero reclaim, unavailable route, failed preparation/submission or rejected receipt/refund reverts the entire source transaction. Another caller can retry after a transient failure. No one can rescue an unsubmitted balance if the permanent route becomes unusable. A successful `Send` event identifies the source leaf; it is not proof of destination arrival. Complete native finalization and the sucker claim to the fixed receiver, then use the same settlement and holder-collection path described above. Permissionless execution still requires someone to send these transactions; the contracts do not operate a keeper.
 
 ## Journey 6: Compound rewards
 

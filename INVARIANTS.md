@@ -44,9 +44,19 @@ These guarantees apply to projects launched by `StickyDeployer`, using the confi
 8. Failure cannot leave a partially completed auto-stick transaction. Permissionless prior collection can leave rewards safely in the holder's wallet and make a later compound ineligible.
 9. Rewards allocated to the distributor's own address are never transferred out or erased. Collecting them to the distributor recycles the unlocked amount into the current round of the same hook, group and token; any other token ID collected to the distributor reverts. Custody and the accounted balance are unchanged by a recycle.
 
-## Verification map
+## Source reward collection
 
-Source collectors fix one source project token, native sucker and Ethereum receiver. Successful `send()` appends exactly one leaf, clears source allowance and includes that leaf in the sent count; failures restore principal and prior outbox state. The fee child can only submit for its parent and returns only its own new receipt/refund to the caller. Callback-delivered reserves stay in the parent. These properties are checked by `test/StickySourceCollector.t.sol` and the collector cases in `test/fork/StickyJbxOmnichain.t.sol`; the latter additionally bind canonical deployed routes.
+These invariants assume the deployment independently authenticates the canonical native sucker and Ethereum receiver, and every source split names the collector parent. Constructor membership checks alone do not establish that identity.
+
+1. A collector fixes one V6 source project, source ERC-20, native sucker and Ethereum receiver. Callers cannot change the amount policy, destination, backing token or metadata. Construction and sends require `ENABLED` or `DEPRECATION_PENDING` sucker state and an enabled, non-emergency native mapping bound to Ethereum.
+2. `send()` uses the parent balance captured at entry. Its positive reclaim minimum equals the current terminal's gross native cashout preview for the sucker holder/beneficiary, less the standard protocol fee; it does not quote destination token issuance. It grants exactly the captured source-token allowance and clears it after preparation.
+3. Preparation appends exactly one fixed-receiver leaf to the captured frontier. Successful submission advances the sent count beyond that leaf's index; unrelated fee callbacks may append or submit other leaves afterward. A preparation, transport, fee transfer/refund or postcondition failure restores source principal, allowances and the pre-call outbox state atomically.
+4. Only the immutable parent may call the fee payer. Its fee token and sucker are fixed, and it has no allowance over parent inventory. The parent's reentrancy guard spans preparation, fee payment, token-receipt transfer and native refund callbacks.
+5. The caller supplies exactly the current registry fee in native wei. Only the fee child's same-call fee-token increase and newly retained native refund return to that caller. Preexisting token donations are excluded; tokens deliberately donated to the child during submission enter that increase. The delta authenticates no token provenance. Preexisting retained credit or residual credit after a claim causes a revert.
+6. Reserved rewards delivered during fee payment remain in the parent for a later send. They never form part of the fee child's measured receipt. Neither contract has an owner, arbitrary call, asset rescue or route mutation.
+7. Source submission does not imply native finality, destination claim, receiver settlement or holder collection. Those paths retain their own proofs and transaction requirements; a successful submission cannot be undone by this collector.
+
+## Verification map
 
 | Surface | Tests |
 | --- | --- |
@@ -56,4 +66,5 @@ Source collectors fix one source project token, native sucker and Ethereum recei
 | Callback ordering | `test/StickyPricingCallbacks.t.sol` |
 | Core and reward integration | `test/Sticky_Integration.t.sol`, `test/StickyRewards_Regression.t.sol`, `test/StickyAutoStick_Unit.t.sol` |
 | Deployment identity and restart | `test/deployment/` |
+| Source reward custody, fee isolation and atomic submission | `test/StickySourceCollector.t.sol`; deployed route identities and six inbound lanes in `test/fork/StickyJbxOmnichain.t.sol` |
 | Quotes, configuration, and transaction recovery | `web/test/lib/sticky-quotes.test.ts`, `web/test/deployment-env.test.ts`, `web/test/transactions/`, `web/test/lib/sticky-launch-session.test.ts`, `web/test/lib/sticky-bridge-journal.test.ts` |
