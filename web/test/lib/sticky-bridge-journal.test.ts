@@ -5,9 +5,9 @@ import { buildBridgePrepareTx } from '@bananapus/nana-sdk-core/v6'
 import { maxUint256, pad, zeroAddress, type Address, type Hex } from 'viem'
 import { bridgeCalldata, type BridgeMovement, type BridgeRoute } from '@/lib/sticky-bridge'
 import {
-  assertPendingBridgeWrite, bridgeStorageKey, discardBridgeDraft, readBridgeRecords, readPendingBridgeWrite, reconcileBridgeRecord,
+  assertPendingBridgeWrite, bridgeStorageKey, createPendingBridgeWrite, discardBridgeDraft, readBridgeRecords, readPendingBridgeWrite, reconcileBridgeRecord,
   restoreBridgeWrite, saveBridgeRecords, savePendingBridgeWrite, storeBridgeWrite, updateBridgeRecords, withBridgeLock,
-  readWatchedBridgeRoutes, saveWatchedBridgeRoute,
+  readWatchedBridgeRoutes, saveWatchedBridgeRoute, savePendingBridgeSubmission, retryPendingBridgeSubmission,
   type BridgeRecord, type PendingBridgeWrite,
 } from '@/lib/sticky-bridge-journal'
 
@@ -138,6 +138,104 @@ describe('pool-scoped bridge route recovery hints', () => {
 })
 
 describe('new bridge durable intent and source recovery', () => {
+  it.each([false, true])('retains an exact returned hash through repeated save failures and retries its raw commit (Safe %s)', safeProposal => {
+    const original = createPendingBridgeWrite({ owner, request: storeBridgeWrite(request) })
+    let raw: string | null = null, writable = true
+    const storage = { getItem: () => raw, setItem: (_key: string, value: string) => {
+      if (!writable) throw new Error('Storage unavailable')
+      raw = value
+    } }
+    savePendingBridgeWrite(owner, original, storage)
+    writable = false
+    for (let attempt = 0; attempt < 2; attempt++) expect(() => savePendingBridgeSubmission(original, H(90), safeProposal, storage)).toThrow('Storage unavailable')
+    const submitted = readPendingBridgeWrite(owner, storage)!
+    expect(submitted).toEqual({ ...original, hash: H(90), safeProposal })
+    expect(JSON.parse(raw!)).toEqual(original)
+    expect(() => assertPendingBridgeWrite(submitted, storage)).toThrow('changed')
+    expect(() => retryPendingBridgeSubmission(submitted, storage)).toThrow('Storage unavailable')
+    expect(readPendingBridgeWrite(owner, { ...storage })).toEqual(original)
+    expect(() => savePendingBridgeSubmission(original, H(91), safeProposal, storage)).toThrow('changed')
+    writable = true
+    retryPendingBridgeSubmission(submitted, storage)
+    expect(JSON.parse(raw!)).toEqual(submitted)
+    expect(() => assertPendingBridgeWrite(submitted, storage)).not.toThrow()
+    savePendingBridgeWrite(owner, null, storage)
+    expect(readPendingBridgeWrite(owner, storage)).toBeNull()
+  })
+  it.each(['id', 'hash', 'metadata'] as const)('never overlays or retries a retained reply after the raw %s changes', field => {
+    const original = createPendingBridgeWrite({ owner, request: storeBridgeWrite(request), recordKey: key, metadata })
+    let raw = JSON.stringify(original)
+    const storage = { getItem: () => raw, setItem: vi.fn(() => { throw new Error('Storage unavailable') }) }
+    expect(() => savePendingBridgeSubmission(original, H(90), false, storage)).toThrow('Storage unavailable')
+    const submitted = readPendingBridgeWrite(owner, storage)!
+    const replacement = { ...original, [field]: field === 'id' ? crypto.randomUUID() : H(91) }
+    raw = JSON.stringify(replacement)
+    expect(() => retryPendingBridgeSubmission(submitted, storage)).toThrow('changed')
+    expect(readPendingBridgeWrite(owner, storage)).toEqual(replacement)
+    expect(() => retryPendingBridgeSubmission(submitted, storage)).toThrow('changed')
+    expect(storage.setItem).toHaveBeenCalledOnce()
+    expect(JSON.parse(raw)).toEqual(replacement)
+  })
+  it.each([false, true])('keeps an unreadable submission private until its exact reservation can be read (replaced %s)', replaced => {
+    const original = createPendingBridgeWrite({ owner, request: storeBridgeWrite(request) })
+    const submitted = { ...original, hash: H(90), safeProposal: true }
+    let readable = false, raw = JSON.stringify(original)
+    const storage = { getItem: () => {
+      if (!readable) throw new Error('Storage unavailable')
+      return raw
+    }, setItem: vi.fn((_key: string, value: string) => { raw = value }) }
+    for (let attempt = 0; attempt < 2; attempt++) expect(() => savePendingBridgeSubmission(original, H(90), true, storage)).toThrow('Storage unavailable')
+    expect(() => readPendingBridgeWrite(owner, storage)).toThrow('Storage unavailable')
+    expect(() => retryPendingBridgeSubmission(submitted, storage)).toThrow('Storage unavailable')
+    expect(storage.setItem).not.toHaveBeenCalled()
+    const replacement = { ...original, id: crypto.randomUUID() }
+    if (replaced) raw = JSON.stringify(replacement)
+    readable = true
+    expect(readPendingBridgeWrite(owner, storage)).toEqual(replaced ? replacement : submitted)
+    if (replaced) expect(() => retryPendingBridgeSubmission(submitted, storage)).toThrow('changed')
+    else {
+      retryPendingBridgeSubmission(submitted, storage)
+      expect(JSON.parse(raw)).toEqual(submitted)
+    }
+  })
+  it('does not let an older unreadable repair overwrite a newer attempt’s retained reply', () => {
+    const older = createPendingBridgeWrite({ owner, request: storeBridgeWrite(request) })
+    const newer = createPendingBridgeWrite({ owner, request: storeBridgeWrite(request) })
+    let readable = true
+    const storage = { getItem: () => {
+      if (!readable) throw new Error('Storage unavailable')
+      return JSON.stringify(newer)
+    }, setItem: () => { throw new Error('Storage unavailable') } }
+    expect(() => savePendingBridgeSubmission(newer, H(91), false, storage)).toThrow('Storage unavailable')
+    readable = false
+    expect(() => savePendingBridgeSubmission(older, H(90), false, storage)).toThrow('Storage unavailable')
+    readable = true
+    expect(readPendingBridgeWrite(owner, storage)).toEqual({ ...newer, hash: H(91), safeProposal: false })
+    expect(() => retryPendingBridgeSubmission({ ...older, hash: H(90), safeProposal: false }, storage)).toThrow('changed')
+  })
+  it('binds returned hashes to unique full reservations while preserving readable legacy records', () => {
+    const legacy = { owner, request: storeBridgeWrite(request), recordKey: key, metadata }
+    savePendingBridgeWrite(owner, legacy)
+    expect(readPendingBridgeWrite(owner)).toEqual(legacy)
+    expect(() => savePendingBridgeSubmission(legacy, H(90))).toThrow('changed')
+    const original = createPendingBridgeWrite(legacy)
+    const replacement = createPendingBridgeWrite(legacy)
+    expect(original.id).not.toBe(replacement.id)
+    savePendingBridgeWrite(owner, original)
+    const submitted = savePendingBridgeSubmission(original, H(90), false)
+    expect(savePendingBridgeSubmission(original, H(90), false)).toEqual(submitted)
+    for (const next of [replacement, { ...replacement, hash: H(91) }, { ...original, metadata: H(99) }]) {
+      savePendingBridgeWrite(owner, next)
+      expect(() => savePendingBridgeSubmission(original, H(90), false)).toThrow('changed')
+      expect(readPendingBridgeWrite(owner)).toEqual(next)
+    }
+    savePendingBridgeWrite(owner, null)
+    expect(() => savePendingBridgeSubmission(original, H(90))).toThrow('changed')
+  })
+  it.each(['', 'old-attempt', 7])('rejects a malformed optional reservation identity (%s)', id => {
+    localStorage.setItem(`sticky:bridge:pending:v1:${owner.toLowerCase()}`, JSON.stringify({ owner, request: storeBridgeWrite(request), id }))
+    expect(() => readPendingBridgeWrite(owner)).toThrow('Saved bridge recovery')
+  })
   it('wallet-action:queue-cross-chain-rewards round-trips exact calldata, identity and approval-free request without losing integer precision', () => {
     saveBridgeRecords(key, [record])
     expect(readBridgeRecords(key)).toEqual([record])
@@ -173,6 +271,7 @@ describe('new bridge durable intent and source recovery', () => {
     expect(readPendingBridgeWrite(owner, storage)).toEqual(snapshot)
   })
   it.each<[string, (held: PendingBridgeWrite) => PendingBridgeWrite]>([
+    ['reservation despite identical calldata', held => ({ ...held, id: crypto.randomUUID() })],
     ['hash despite identical calldata', held => ({ ...held, hash: H(91) })],
     ['Safe routing flag', held => ({ ...held, safeProposal: true })],
     ['chain', held => ({ ...held, request: { ...held.request, chainId: 10 } })],

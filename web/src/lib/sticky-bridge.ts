@@ -4,6 +4,7 @@ import {
   CCIP_SUCKER_TRANSPORT_VALUES, classifySuckerMovement, findSuckerTransportValue,
   insertToSuckerOutboxEvent, jbSuckerV6ViewAbi, suckerBranchRoot, suckerBytes32ToAddress,
   suckerHashPair, suckerLeafHash, suckerLeafProof, suckerZeroHashes,
+  verifySuckerDestinationMint,
   type JBLeaf, type JBLeafProof,
 } from '@bananapus/nana-sdk-core/v6'
 import { readSafeAppExecution, safeExecutionRunsCalls } from '@bananapus/nana-sdk-core/safe-service'
@@ -261,6 +262,10 @@ export function createStickyBridge(clientFor: (chainId: number) => PublicClient 
     address(owner); address(receiver)
     if (amount <= 0n || !isHash(metadata) || metadata === zeroHash) throw new Error('A positive bridge amount and unique transfer reference are required.')
     await validateRoute(route, { sending: true, preparing: true })
+    await verifySuckerDestinationMint(client(route.destination), {
+      chainId: route.destination.chainId, projectId: BigInt(route.destinationProjectId),
+      sucker: route.destinationSucker, beneficiary: receiver, tokenCount: amount,
+    })
     await movements(route, receiver)
     const { source, sourceSucker, sourceToken, backingToken, terminal } = route
     const projectId = BigInt(route.sourceProjectId)

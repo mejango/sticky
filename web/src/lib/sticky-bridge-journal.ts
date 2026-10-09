@@ -26,6 +26,8 @@ export type BridgeRecord = {
 }
 export type BridgeStorage = Pick<Storage, 'getItem' | 'setItem'>
 export type PendingBridgeWrite = {
+  /** New attempts are distinct even when their calldata is identical. Legacy records omit this. */
+  id?: string
   owner: Address
   request: StoredBridgeWrite
   hash?: Hex
@@ -166,6 +168,7 @@ export async function reconcileBridgeRecord(
   key: string,
   record: BridgeRecord,
   rows: BridgeMovement[],
+  expected?: PendingBridgeWrite,
 ) {
   let found: BridgeMovement | undefined
   const pending = readPendingBridgeWrite(record.owner)
@@ -174,29 +177,81 @@ export async function reconcileBridgeRecord(
     try { await api.verifySource(record.route, row, record.owner, record.prepareData, submission); found = row; break } catch { /* Keep the historical record until its exact source succeeds. */ }
   }
   if (found && (found.leaf.projectTokenCount !== BigInt(record.amount) || found.leaf.beneficiary.toLowerCase() !== `0x${record.receiver.slice(2).toLowerCase().padStart(64, '0')}`)) throw new Error('The recovered bridge leaf does not match the saved transfer.')
-  await updateBridgeRecord(key, record.metadata, current => found
-    ? { ...current, sourceHash: found.sourceHash, sourceVerified: true, leafIndex: String(found.leaf.index), status: found.status, steps: [] }
-    : { ...current, sourceVerified: false, status: 'recover' })
+  await updateBridgeRecord(key, record.metadata, current => {
+    if (expected) assertPendingBridgeWrite(expected)
+    return found
+      ? { ...current, sourceHash: found.sourceHash, sourceVerified: true, leafIndex: String(found.leaf.index), status: found.status, steps: [] }
+      : { ...current, sourceVerified: false, status: 'recover' }
+  })
   return !!found
 }
 
 const pendingKey = (owner: Address) => `sticky:bridge:pending:v1:${owner.toLowerCase()}`
-export function readPendingBridgeWrite(owner: Address, storage: BridgeStorage = localStorage): PendingBridgeWrite | null {
+// A failed hash commit survives component remounts only while its exact durable reservation stands.
+const retainedSubmissions = new WeakMap<BridgeStorage, Map<string, { original: string; submitted: string }>>()
+export function createPendingBridgeWrite(value: Omit<PendingBridgeWrite, 'id' | 'hash' | 'safeProposal'>): PendingBridgeWrite {
+  return { ...value, id: crypto.randomUUID() }
+}
+function readStoredPendingBridgeWrite(owner: Address, storage: BridgeStorage): PendingBridgeWrite | null {
   const raw = storage.getItem(pendingKey(owner))
   if (raw === null || raw === 'null') return null
   let value: PendingBridgeWrite
   try { value = JSON.parse(raw) } catch { throw new Error(FAILED) }
-  if (!value || value.owner?.toLowerCase() !== owner.toLowerCase() || !validWrite(value.request) || (value.hash !== undefined && !isHash(value.hash)) || (value.metadata !== undefined && !isHash(value.metadata)) || (value.safeProposal !== undefined && typeof value.safeProposal !== 'boolean') || ((value.recordKey === undefined) !== (value.metadata === undefined)) || (value.recordKey !== undefined && typeof value.recordKey !== 'string')) throw new Error(FAILED)
+  if (!value || (value.id !== undefined && (typeof value.id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.id))) || value.owner?.toLowerCase() !== owner.toLowerCase() || !validWrite(value.request) || (value.hash !== undefined && !isHash(value.hash)) || (value.metadata !== undefined && !isHash(value.metadata)) || (value.safeProposal !== undefined && typeof value.safeProposal !== 'boolean') || ((value.recordKey === undefined) !== (value.metadata === undefined)) || (value.recordKey !== undefined && typeof value.recordKey !== 'string')) throw new Error(FAILED)
   return value
+}
+export function readPendingBridgeWrite(owner: Address, storage: BridgeStorage = localStorage): PendingBridgeWrite | null {
+  const current = readStoredPendingBridgeWrite(owner, storage)
+  const retained = retainedSubmissions.get(storage)?.get(pendingKey(owner))
+  if (retained && JSON.stringify(current) === retained.original) return JSON.parse(retained.submitted)
+  retainedSubmissions.get(storage)?.delete(pendingKey(owner))
+  return current
 }
 /** Under `withBridgeLock`, require the exact saved snapshot before recovering or clearing its write. */
 export function assertPendingBridgeWrite(expected: PendingBridgeWrite, storage: BridgeStorage = localStorage): void {
-  const current = readPendingBridgeWrite(expected.owner, storage)
+  const current = readStoredPendingBridgeWrite(expected.owner, storage)
   if (JSON.stringify(current) !== JSON.stringify(expected)) throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
+}
+/** Attach only this attempt's actual wallet reply; a repeated commit is harmless. Legacy records need their own evidence. */
+export function savePendingBridgeSubmission(expected: PendingBridgeWrite, hash: Hex, safeProposal?: boolean, storage: BridgeStorage = localStorage): PendingBridgeWrite {
+  const submitted = { ...expected, hash, safeProposal }
+  const key = pendingKey(expected.owner)
+  const retained = retainedSubmissions.get(storage)?.get(key)
+  if (!expected.id || expected.hash || !isHash(hash) ||
+    (retained?.original === JSON.stringify(expected) && retained.submitted !== JSON.stringify(submitted))) {
+    throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
+  }
+  const remember = () => {
+    if (!retainedSubmissions.has(storage)) retainedSubmissions.set(storage, new Map())
+    retainedSubmissions.get(storage)!.set(key, { original: JSON.stringify(expected), submitted: JSON.stringify(submitted) })
+  }
+  let current: PendingBridgeWrite | null
+  try { current = readStoredPendingBridgeWrite(expected.owner, storage) } catch (reason) {
+    // Private evidence only: later reads must match the raw reservation before exposing this reply.
+    if (!retained || retained.original === JSON.stringify(expected)) remember()
+    throw reason
+  }
+  if (JSON.stringify(current) !== JSON.stringify(expected) && JSON.stringify(current) !== JSON.stringify(submitted)) {
+    throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
+  }
+  remember()
+  savePendingBridgeWrite(expected.owner, submitted, storage)
+  return submitted
+}
+/** Under the owner lock, retry only the trusted reply retained for this exact raw reservation. */
+export function retryPendingBridgeSubmission(expected: PendingBridgeWrite, storage: BridgeStorage = localStorage): void {
+  const current = readStoredPendingBridgeWrite(expected.owner, storage)
+  if (JSON.stringify(current) === JSON.stringify(expected)) return
+  const retained = retainedSubmissions.get(storage)?.get(pendingKey(expected.owner))
+  if (!retained || JSON.stringify(current) !== retained.original || JSON.stringify(expected) !== retained.submitted || !expected.hash) {
+    throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
+  }
+  savePendingBridgeSubmission(JSON.parse(retained.original), expected.hash, expected.safeProposal, storage)
 }
 /** Persist before any wallet call; clearing requires an explicit rejection or canonical exact-call proof. */
 export function savePendingBridgeWrite(owner: Address, value: PendingBridgeWrite | null, storage: BridgeStorage = localStorage) {
   const encoded = JSON.stringify(value)
   storage.setItem(pendingKey(owner), encoded)
   if (storage.getItem(pendingKey(owner)) !== encoded) throw new Error('Bridge recovery could not be saved. No new transfer will be submitted.')
+  if (retainedSubmissions.get(storage)?.get(pendingKey(owner))?.original !== encoded) retainedSubmissions.get(storage)?.delete(pendingKey(owner))
 }

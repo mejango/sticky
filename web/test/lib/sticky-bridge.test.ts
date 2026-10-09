@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { getJBContractAddress } from '@bananapus/nana-sdk-core'
+import { getJBContractAddress, jbControllerAbi, jbDirectoryAbi } from '@bananapus/nana-sdk-core'
 import { buildBridgePrepareTx, suckerBranchRoot, suckerLeafHash, suckerLeafProof, SUCKER_EMPTY_TREE_ROOT } from '@bananapus/nana-sdk-core/v6'
 import { createPublicClient, custom, decodeFunctionData, encodeFunctionData, getAddress, keccak256, pad, parseAbi, toEventSelector, zeroHash, type Address, type Hex, type PublicClient } from 'viem'
 import { bridgeCalldata, bridgeMinimumOutput, BRIDGE_NATIVE_TOKEN, createStickyBridge, type BridgeRoute } from '@/lib/sticky-bridge'
@@ -64,6 +64,8 @@ function fixture(changes: Partial<typeof initial> = {}) {
       if (method !== 'eth_call') throw new Error(`Unexpected ${method}`)
       const tx = parameters[0] as { data: Hex; value?: Hex }
       const selector = tx.data.slice(0, 10)
+      if (selector === encodeFunctionData({ abi: jbDirectoryAbi, functionName: 'controllerOf', args: [22n] }).slice(0, 10)) return abi(A(80))
+      if (selector === encodeFunctionData({ abi: jbControllerAbi, functionName: 'mintTokensOf', args: [22n, 1000n, receiver, '', false] }).slice(0, 10)) return abi(1000)
       if (selector === SEL.isSuckerOf) return abi(state.membership)
       if (selector === SEL.peer) return abi(source ? route.destinationSucker : state.badPeer ? A(555) : route.sourceSucker)
       if (selector === SEL.peerChainId) return abi(source ? route.destination.chainId : route.source.chainId)

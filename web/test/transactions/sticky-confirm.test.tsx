@@ -12,7 +12,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { parseAbi, type Address } from 'viem'
+import { encodeFunctionData, parseAbi, type Address } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const displayQueries = new QueryClient()
@@ -22,7 +22,7 @@ vi.mock('@tanstack/react-query', async importOriginal => ({
 }))
 
 const mocks = vi.hoisted(() => ({
-  publicClient: { simulateContract: vi.fn(), estimateContractGas: vi.fn() },
+  publicClient: { simulateContract: vi.fn(), estimateContractGas: vi.fn(), getChainId: vi.fn(), getTransaction: vi.fn(), getTransactionReceipt: vi.fn(), getBlock: vi.fn() },
   receipt: { data: undefined, isError: false } as {
     data?: { status: 'success' | 'reverted'; transactionHash: string }
     isError: boolean
@@ -67,10 +67,12 @@ const request = {
   chainId: 8453,
   address: HOOK,
   abi: parseAbi(['function setTrustedSenderFor(uint256 projectId, address sender, bool trusted)']),
-  functionName: 'setTrustedSenderFor',
+  functionName: 'setTrustedSenderFor' as const,
   args: [23n, ALICE, true] as const,
   label: 'Trust a sender',
 }
+const BLOCK_HASH = `0x${'ed'.repeat(32)}` as const
+const walletReceipt = () => ({ status: 'success' as const, transactionHash: HASH, blockNumber: 12n, blockHash: BLOCK_HASH, transactionIndex: 0, from: ALICE, to: HOOK, logs: [] })
 const STEPS = [{ title: 'Trust the sender' }]
 
 let host: HTMLDivElement
@@ -84,6 +86,10 @@ beforeEach(() => {
   mocks.switchChain.mockResolvedValue(undefined)
   mocks.publicClient.simulateContract.mockResolvedValue({ request: { address: HOOK, functionName: 'setTrustedSenderFor' } })
   mocks.publicClient.estimateContractGas.mockResolvedValue(50_000n)
+  mocks.publicClient.getChainId.mockResolvedValue(8453)
+  mocks.publicClient.getTransactionReceipt.mockImplementation(async () => mocks.receipt.data)
+  mocks.publicClient.getTransaction.mockImplementation(async () => ({ ...walletReceipt(), hash: HASH, input: encodeFunctionData(request) }))
+  mocks.publicClient.getBlock.mockResolvedValue({ number: 12n, hash: BLOCK_HASH })
   mocks.writeContract.mockResolvedValue(HASH)
   host = document.createElement('div')
   document.body.append(host)
@@ -136,7 +142,7 @@ describe('a confirmed send', () => {
     expect(mocks.writeContract).toHaveBeenCalledOnce()
     expect(dialog()!.querySelector('a')).toBeNull()
 
-    mocks.receipt = { data: { status: 'success', transactionHash: HASH }, isError: false }
+    mocks.receipt = { data: walletReceipt(), isError: false }
     await act(async () => root.render(<TrustFlow onDone={onDone} />))
 
     const link = dialog()!.querySelector('a')!

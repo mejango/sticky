@@ -14,7 +14,7 @@ import { useWallet } from '@/hooks/useWallet'
 import { parseAmount } from '@/lib/sticky-amount'
 import { createStickyBridge } from '@/lib/sticky-bridge'
 import {
-  assertPendingBridgeWrite, readPendingBridgeWrite, savePendingBridgeWrite, saveWatchedBridgeRoute,
+  assertPendingBridgeWrite, createPendingBridgeWrite, readPendingBridgeWrite, retryPendingBridgeSubmission, savePendingBridgeWrite, savePendingBridgeSubmission, saveWatchedBridgeRoute,
   storeBridgeWrite, withBridgeLock, type PendingBridgeWrite,
 } from '@/lib/sticky-bridge-journal'
 import type { CollectorSource } from '@/lib/sticky-collector'
@@ -26,7 +26,7 @@ import { chainName } from '@/lib/urn'
 
 const delivery = createStickyCollectorDelivery()
 const bridge = createStickyBridge()
-type Review = { identity: string; owner: Address; delivery: CollectorDelivery; rows: TxConfirmRow[] }
+type Review = { identity: string; owner: Address; delivery: CollectorDelivery; rows: TxConfirmRow[]; attempt?: PendingBridgeWrite }
 const changed = 'The wallet, pool or allocation changed. Review this delivery again.'
 
 /** A source allocation is already held by the collector. Anyone may pay to deliver it to its fixed home pool. */
@@ -116,28 +116,40 @@ export function CollectorFlow({ source, info, onSettled }: {
     const current = active
     await run(async () => {
       if (readPendingBridgeWrite(current.owner)) throw new Error('Recover the pending transaction before sending again.')
-      const held: PendingBridgeWrite = { owner: current.owner, request: storeBridgeWrite(current.delivery.request) }
-      const undo = async () => { savePendingBridgeWrite(current.owner, null) }
+      const held = createPendingBridgeWrite({ owner: current.owner, request: storeBridgeWrite(current.delivery.request) })
+      setReview({ ...current, attempt: held })
+      let reserved = false
+      const undo = async () => { assertPendingBridgeWrite(held); savePendingBridgeWrite(current.owner, null) }
       assertCurrent(current.identity)
       // useSafeTx can adopt an existing Safe proposal without invoking beforeWrite.
       if (source.bridgeRoute) saveWatchedBridgeRoute(info.chainId, info.stToken, groupId, source.bridgeRoute)
-      const hash = await tx.send(current.delivery.request, {
+      await tx.send(current.delivery.request, {
         reviewedAccount: current.owner, reviewedInParent: true,
         reverify: async () => { assertCurrent(current.identity); await delivery.reverify(current.delivery, current.owner); assertCurrent(current.identity) },
-        beforeWrite: async () => {
-          assertCurrent(current.identity)
-          try {
-            savePendingBridgeWrite(current.owner, held)
-          } catch (reason) { savePendingBridgeWrite(current.owner, null); throw reason }
+        durableRecovery: {
+          reserve: async () => {
+            assertCurrent(current.identity)
+            try {
+              savePendingBridgeWrite(current.owner, held)
+              reserved = true
+            } catch (reason) {
+              try { if (readPendingBridgeWrite(current.owner)) await undo() } catch { /* Preserve another attempt or unreadable storage. */ }
+              throw reason
+            }
+          },
+          releaseUnsubmitted: undo,
+          submitted: (hash, safeProposal) => {
+            if (!reserved && !readPendingBridgeWrite(current.owner)) { savePendingBridgeWrite(current.owner, held); reserved = true }
+            savePendingBridgeSubmission(held, hash, safeProposal)
+          },
         },
-        onBeforeWriteAborted: undo, onWriteRejected: undo,
       })
-      if (hash) savePendingBridgeWrite(current.owner, { ...held, hash, safeProposal: tx.isSafe })
       setPending(readPendingBridgeWrite(current.owner))
     })
   }
   async function recover(hash: Hex, held: PendingBridgeWrite) {
     assertCurrent(identity)
+    retryPendingBridgeSubmission(held)
     assertPendingBridgeWrite(held)
     const kind = collectorWriteKind(source, held)
     if (!kind) throw new Error('Recover this pending action in its original bridge or allocation panel.')
@@ -147,6 +159,7 @@ export function CollectorFlow({ source, info, onSettled }: {
       held.hash ? { hash: held.hash, safeProposal: held.safeProposal } : undefined,
     )
     assertCurrent(identity)
+    assertPendingBridgeWrite(held)
     if (outcome.success && kind === 'send' && source.bridgeRoute) {
       saveWatchedBridgeRoute(info.chainId, info.stToken, groupId, source.bridgeRoute)
     }
@@ -161,17 +174,20 @@ export function CollectorFlow({ source, info, onSettled }: {
   useEffect(() => {
     if (tx.phase !== 'success' || !tx.hash || !active || handledHash.current === tx.hash) return
     const current = active, hash = tx.hash
-    handledHash.current = hash
+    const submissionHash = tx.submissionHash, safeProposal = tx.submissionIsSafe
     void withBridgeLock(async () => {
       assertCurrent(current.identity)
-      const held = readPendingBridgeWrite(current.owner)
+      let held = readPendingBridgeWrite(current.owner)
       if (!held) return
+      if (!current.attempt || !(submissionHash ?? held.hash)) throw new Error('The original wallet attempt is unavailable. Recover its saved transaction before continuing.')
+      held = savePendingBridgeSubmission(current.attempt, (submissionHash ?? held.hash)!, submissionHash ? safeProposal : held.safeProposal)
       await recover(hash, held)
+      handledHash.current = hash
       setReview(null); tx.reset(); await refresh()
     }, true).catch(reason => setError((reason as Error).message))
     // Process each canonical hash once against its frozen allocation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tx.phase, tx.hash, active])
+  }, [tx.phase, tx.hash, tx.submissionHash, tx.submissionIsSafe, active])
 
   function closeReview() { setReview(null); tx.dismiss(); void refresh() }
   const ours = pending ? collectorWriteKind(source, pending) : null
