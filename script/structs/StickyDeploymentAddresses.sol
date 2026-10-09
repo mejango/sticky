@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-/// @notice Deterministic addresses for the Sticky singleton deployment.
+/// @notice Deterministic shared singleton addresses and one destination-bound collector family.
+/// @custom:member destinationChainId The pool home chain permanently bound by the source collector.
 /// @custom:member deployer The project factory.
 /// @custom:member hook The factory's constructor-created accounting hook.
 /// @custom:member distributor The shared reward distributor.
@@ -12,6 +13,7 @@ pragma solidity ^0.8.0;
 /// @custom:member sourceFeePayer The collector's constructor-created fee custodian.
 // forge-lint: disable-next-line(pascal-case-struct)
 struct StickyDeploymentAddresses {
+    uint256 destinationChainId;
     address deployer;
     address hook;
     address distributor;

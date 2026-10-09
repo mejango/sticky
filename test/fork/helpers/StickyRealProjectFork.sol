@@ -145,7 +145,7 @@ abstract contract StickyRealProjectFork is Test {
         context.nativeTerminal =
             context.core.directory.primaryTerminalOf({projectId: underlyingProjectId, token: JBConstants.NATIVE_TOKEN});
         assertGt(address(context.nativeTerminal).code.length, 0, "native payment route must already exist");
-        context.suite = deployment.deployFor(context.core);
+        context.suite = deployment.deployFor({core: context.core, destinationChainId: 1});
         deployment.verify({core: context.core, deployed: context.suite});
     }
 

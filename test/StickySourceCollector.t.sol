@@ -91,10 +91,10 @@ contract StickySourceCollectorTest is Test {
     /// @notice An arbitrary source project's ERC-20.
     StickySourceToken internal _seventySeven;
 
-    /// @notice The first Ethereum holder pool.
+    /// @notice The first home-chain holder pool.
     address internal _stickyA;
 
-    /// @notice The second Ethereum holder pool.
+    /// @notice The second home-chain holder pool.
     address internal _stickyB;
 
     /// @notice Project 3's ordinary delivery route.
@@ -138,8 +138,8 @@ contract StickySourceCollectorTest is Test {
     function setUp() public {
         vm.chainId(10);
         _caller = makeAddr("permissionless delivery caller");
-        _stickyA = makeAddr("Ethereum holder pool A");
-        _stickyB = makeAddr("Ethereum holder pool B");
+        _stickyA = makeAddr("home-chain holder pool A");
+        _stickyB = makeAddr("home-chain holder pool B");
         _directory = makeAddr("canonical directory");
         _registry = makeAddr("canonical sucker registry");
         _terminal = makeAddr("current cashout terminal");
@@ -162,11 +162,7 @@ contract StickySourceCollectorTest is Test {
         _distributor = new StickySourceDistributor();
         StickyRewardReceiver receiver = new StickyRewardReceiver(IStickyDistributor(address(_distributor)));
         _factory = new StickyRewardReceiverFactory(receiver);
-        _collector = new StickySourceCollector({
-            registry: IJBSuckerRegistry(_registry),
-            tokens: IJBTokens(address(_tokens)),
-            receiverFactory: IStickyRewardReceiverFactory(address(_factory))
-        });
+        _collector = _newCollector(1);
         _sucker = _newRoute(3);
     }
 
@@ -210,7 +206,7 @@ contract StickySourceCollectorTest is Test {
         assertEq(_three.allowance({owner: address(_collector), spender: address(_sucker)}), 0);
     }
 
-    /// @notice Any source project and chain can attribute reserves to distinct Ethereum groups.
+    /// @notice Any source project and chain can attribute reserves to distinct home-chain groups.
     function test_acceptanceIsNotRestrictedToFeeOrRevProjects() public {
         vm.chainId(25_555);
         _queue({projectId: 77, stickyToken: _stickyB, groupId: 4000, amount: _AMOUNT});
@@ -289,7 +285,8 @@ contract StickySourceCollectorTest is Test {
         new StickySourceCollector({
             registry: IJBSuckerRegistry(address(0)),
             tokens: IJBTokens(address(_tokens)),
-            receiverFactory: IStickyRewardReceiverFactory(address(_factory))
+            receiverFactory: IStickyRewardReceiverFactory(address(_factory)),
+            destinationChainId: 1
         });
         vm.expectRevert(
             abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_InvalidDependency.selector, address(0))
@@ -297,7 +294,8 @@ contract StickySourceCollectorTest is Test {
         new StickySourceCollector({
             registry: IJBSuckerRegistry(_registry),
             tokens: IJBTokens(address(0)),
-            receiverFactory: IStickyRewardReceiverFactory(address(_factory))
+            receiverFactory: IStickyRewardReceiverFactory(address(_factory)),
+            destinationChainId: 1
         });
         vm.expectRevert(
             abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_InvalidDependency.selector, address(0))
@@ -305,8 +303,19 @@ contract StickySourceCollectorTest is Test {
         new StickySourceCollector({
             registry: IJBSuckerRegistry(_registry),
             tokens: IJBTokens(address(_tokens)),
-            receiverFactory: IStickyRewardReceiverFactory(address(0))
+            receiverFactory: IStickyRewardReceiverFactory(address(0)),
+            destinationChainId: 1
         });
+    }
+
+    /// @notice Every collector must bind a real destination namespace before it can accept any custody.
+    function test_constructorRejectsZeroDestinationChain() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InvalidDestinationChainId.selector, uint256(0)
+            )
+        );
+        _newCollector(0);
     }
 
     /// @notice Credits and tokens jointly back all buckets while unrelated donated custody remains unassigned.
@@ -386,6 +395,64 @@ contract StickySourceCollectorTest is Test {
         );
         _dispatch(context);
         assertEq(_collector.totalPendingOf(77), 0);
+    }
+
+    /// @notice Identical source, share-token and group keys in different destination families cannot share custody.
+    function test_destinationFamiliesIsolateMatchingBucketKeys() public {
+        StickySourceCollector ethereumCollector = _collector;
+        _queueDefault(70e18);
+        StickySourceCollector baseCollector = _newCollector(8453);
+        _collector = baseCollector;
+        _queueDefault(_AMOUNT);
+        StickySourceSucker baseRoute = _newRoute(3);
+        baseRoute.setRoute({routeState: JBSuckerState.ENABLED, chainId: 8453, remotePeer: bytes32(uint256(1))});
+        _mockPreview({
+            route: baseRoute, projectId: 3, amount: 30e18, backing: JBConstants.NATIVE_TOKEN, gross: _PREVIEW
+        });
+
+        // A partial send spends only the family selected by the configured split hook address.
+        _sendTo({
+            projectId: 3,
+            stickyToken: _stickyA,
+            groupId: 0,
+            amount: 30e18,
+            route: baseRoute,
+            backing: JBConstants.NATIVE_TOKEN,
+            value: _FEE
+        });
+        assertEq(baseCollector.pendingOf({sourceProjectId: 3, stickyToken: _stickyA, groupId: 0}), 70e18);
+        assertEq(ethereumCollector.pendingOf({sourceProjectId: 3, stickyToken: _stickyA, groupId: 0}), 70e18);
+        assertEq(_three.balanceOf(address(baseCollector)), 70e18);
+        assertEq(_three.balanceOf(address(ethereumCollector)), 70e18);
+        assertNotEq(address(baseCollector.FEE_PAYER()), address(ethereumCollector.FEE_PAYER()));
+
+        // The other family's matching bucket cannot cover an attempted overdraft.
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InsufficientPending.selector,
+                uint256(3),
+                _stickyA,
+                uint256(0),
+                uint256(71e18),
+                uint256(70e18)
+            )
+        );
+        _sendTo({
+            projectId: 3,
+            stickyToken: _stickyA,
+            groupId: 0,
+            amount: 71e18,
+            route: baseRoute,
+            backing: JBConstants.NATIVE_TOKEN,
+            value: _FEE
+        });
+        _collector = ethereumCollector;
+        _mockDefaultPreview(20e18);
+        _sendDefault(20e18);
+        assertEq(ethereumCollector.totalPendingOf(3), 50e18);
+        assertEq(baseCollector.totalPendingOf(3), 70e18);
+        assertEq(_three.balanceOf(address(ethereumCollector)), 50e18);
+        assertEq(_three.balanceOf(address(baseCollector)), 70e18);
     }
 
     /// @notice A fee-payment callback can queue more principal into the same hook without a caught burn.
@@ -484,7 +551,7 @@ contract StickySourceCollectorTest is Test {
 
     /// @notice Only the fixed collector can invoke its dynamic-route fee payer.
     function test_feePayerRejectsOtherCallers() public {
-        StickySourceFeePayer child = _collector.FEE_PAYER();
+        StickySourceFeePayer child = StickySourceFeePayer(address(_collector.FEE_PAYER()));
         vm.expectRevert(
             abi.encodeWithSelector(StickySourceFeePayer.StickySourceFeePayer_Unauthorized.selector, address(this))
         );
@@ -681,7 +748,7 @@ contract StickySourceCollectorTest is Test {
         assertEq(_collector.totalPendingOf(3), 0);
     }
 
-    /// @notice Ethereum sends use the settlement path and remote chains cannot execute Ethereum settlement.
+    /// @notice Home-chain sends use local settlement and remote chains cannot execute that settlement.
     function test_rejectsWrongDeliveryChain() public {
         _queueDefault(_AMOUNT);
         bytes32 beforeState = _stateHash(_sucker);
@@ -1085,6 +1152,28 @@ contract StickySourceCollectorTest is Test {
         assertEq(_collector.totalPendingOf(3), 0);
     }
 
+    /// @notice A non-Ethereum destination accepts only its exact registered peer, including when Ethereum sends.
+    function test_sendUsesConfiguredDestinationWithoutEthereumFallback() public {
+        _collector = _newCollector(8453);
+        vm.chainId(1);
+        _queueDefault(_AMOUNT);
+        _mockDefaultPreview(_AMOUNT);
+
+        // The default Ethereum route cannot redirect a Base-bound bucket, even though it is registered.
+        _expectDefaultAtomicRevert(_invalidRouteError());
+        _sucker.setRoute({routeState: JBSuckerState.ENABLED, chainId: 42_161, remotePeer: bytes32(uint256(1))});
+        _expectDefaultAtomicRevert(_invalidRouteError());
+        _sucker.setRoute({routeState: JBSuckerState.ENABLED, chainId: 8453, remotePeer: bytes32(uint256(1))});
+
+        // Choosing the exact destination changes only transport; the split's fixed receiver remains the beneficiary.
+        assertEq(_sendDefault(_AMOUNT), 0);
+        address receiver = _factory.predictReceiverOf({stickyToken: _stickyA, groupId: 0});
+        assertEq(_sucker.beneficiaryPrepared(), bytes32(uint256(uint160(receiver))));
+        assertEq(_collector.totalPendingOf(3), 0);
+        assertEq(_three.balanceOf(address(_collector)), 0);
+        assertEq(_sucker.outboxOf(JBConstants.NATIVE_TOKEN).numberOfClaimsSent, 1);
+    }
+
     /// @notice Delivery resolves the current terminal, registry fee and quote rather than caching setup-time values.
     function test_sendUsesCurrentTerminalFeeAndQuote() public {
         _queueDefault(_AMOUNT);
@@ -1150,7 +1239,42 @@ contract StickySourceCollectorTest is Test {
         );
     }
 
-    /// @notice Ethereum delivery funds the chosen receiver, including preexisting receiver arrivals, atomically.
+    /// @notice Local settlement follows the configured home chain and preserves the existing reward-group encoding.
+    function test_settleUsesConfiguredHomeChainAndGroup() public {
+        _collector = _newCollector(8453);
+        vm.chainId(8453);
+        _queue({projectId: 3, stickyToken: _stickyA, groupId: 4000, amount: _AMOUNT});
+        _queueDefault(30e18);
+        address receiver = _factory.predictReceiverOf({stickyToken: _stickyA, groupId: 4000});
+        _three.mint({account: receiver, amount: 9e18});
+
+        // The receiver's existing inventory joins only the unchanged tenure-group bucket's delivery.
+        assertEq(_collector.DESTINATION_CHAIN_ID(), 8453);
+        vm.prank(_caller);
+        assertEq(_collector.settle({sourceProjectId: 3, stickyToken: _stickyA, groupId: 4000, amount: 40e18}), 49e18);
+        assertEq(_distributor.fundedOf({stickyToken: _stickyA, groupId: 4000, token: IERC20(address(_three))}), 49e18);
+        assertEq(_distributor.fundedOf({stickyToken: _stickyA, groupId: 0, token: IERC20(address(_three))}), 0);
+        assertEq(_collector.pendingOf({sourceProjectId: 3, stickyToken: _stickyA, groupId: 4000}), 60e18);
+        assertEq(_collector.pendingOf({sourceProjectId: 3, stickyToken: _stickyA, groupId: 0}), 30e18);
+        assertEq(_collector.totalPendingOf(3), 90e18);
+        assertEq(_three.balanceOf(address(_collector)), 90e18);
+        assertEq(_three.balanceOf(receiver), 0);
+
+        // Neither remote sending from the home nor local settlement on Ethereum can bypass that binding.
+        vm.expectRevert(
+            abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_SourceOnly.selector, uint256(8453))
+        );
+        _sendDefault(1);
+        vm.chainId(1);
+        vm.expectRevert(
+            abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_DestinationOnly.selector, uint256(1))
+        );
+        _collector.settle({sourceProjectId: 3, stickyToken: _stickyA, groupId: 4000, amount: 1});
+        assertEq(_collector.totalPendingOf(3), 90e18);
+        assertEq(_three.balanceOf(address(_collector)), 90e18);
+    }
+
+    /// @notice Local delivery funds the chosen receiver, including preexisting receiver arrivals, atomically.
     function test_settleUsesRealReceiverAndPreservesOtherBuckets() public {
         vm.chainId(1);
         _queueDefault(_AMOUNT);
@@ -1511,6 +1635,18 @@ contract StickySourceCollectorTest is Test {
         });
     }
 
+    /// @notice Deploys one destination family with the same canonical custody and receiver dependencies.
+    /// @param destinationChainId The home chain bound into this collector's immutable configuration.
+    /// @return collector The newly deployed collector and its isolated fee child.
+    function _newCollector(uint256 destinationChainId) internal returns (StickySourceCollector collector) {
+        return new StickySourceCollector({
+            registry: IJBSuckerRegistry(_registry),
+            tokens: IJBTokens(address(_tokens)),
+            receiverFactory: IStickyRewardReceiverFactory(address(_factory)),
+            destinationChainId: destinationChainId
+        });
+    }
+
     /// @notice Deploys a real-state source fixture and registers its default native mapping.
     /// @param projectId The route's source project.
     /// @return route The newly configured source route.
@@ -1538,7 +1674,7 @@ contract StickySourceCollectorTest is Test {
 
     /// @notice Issues custody through the controller's actual allowance and caught-revert model.
     /// @param projectId The source project.
-    /// @param stickyToken The Ethereum holder pool.
+    /// @param stickyToken The home-chain holder pool.
     /// @param groupId Its reward group.
     /// @param amount The reserve allocation.
     function _queue(uint256 projectId, address stickyToken, uint256 groupId, uint256 amount) internal {
@@ -1582,7 +1718,7 @@ contract StickySourceCollectorTest is Test {
 
     /// @notice Delivers the exact selected bucket, route and value as the unrelated caller.
     /// @param projectId The source project.
-    /// @param stickyToken The Ethereum holder pool.
+    /// @param stickyToken The home-chain holder pool.
     /// @param groupId The reward group.
     /// @param amount The positive attributed amount.
     /// @param route The chosen registered route.

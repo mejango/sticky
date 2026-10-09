@@ -12,6 +12,7 @@ import {JBSplitGroupIds} from "@bananapus/core-v6/src/libraries/JBSplitGroupIds.
 import {JBSplitHookContext} from "@bananapus/core-v6/src/structs/JBSplitHookContext.sol";
 import {JBSucker} from "@bananapus/suckers-v6/src/JBSucker.sol";
 import {JBSuckerState} from "@bananapus/suckers-v6/src/enums/JBSuckerState.sol";
+import {IJBSucker} from "@bananapus/suckers-v6/src/interfaces/IJBSucker.sol";
 import {IJBSuckerRegistry} from "@bananapus/suckers-v6/src/interfaces/IJBSuckerRegistry.sol";
 import {JBRemoteToken} from "@bananapus/suckers-v6/src/structs/JBRemoteToken.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -22,18 +23,22 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {StickySourceFeePayer} from "./StickySourceFeePayer.sol";
 
 import {IStickyRewardReceiverFactory} from "./interfaces/IStickyRewardReceiverFactory.sol";
+import {IStickySourceCollector} from "./interfaces/IStickySourceCollector.sol";
+import {IStickySourceFeePayer} from "./interfaces/IStickySourceFeePayer.sol";
 
-/// @notice Accepts V6 reserved project tokens for permissionless delivery to Ethereum Sticky reward receivers.
-/// @dev Set the reserved split's hook to this contract, beneficiary to the Ethereum Sticky share token, and projectId
+/// @notice Accepts V6 reserved project tokens for permissionless delivery to Sticky reward receivers on one configured
+/// home chain.
+/// @dev Set the reserved split's hook to this contract, beneficiary to the home-chain Sticky share token, and projectId
 /// to its reward group. Acceptance only records attributed custody; bridge fees, transport and settlement are separate
 /// calls so their failures cannot reject a valid reserved allocation. Credits can wait here for the source ERC-20.
 /// @dev Each source project, Sticky token and group has its own pending balance. Callers cannot redirect that balance,
 /// spend another bucket or claim unattributed donations. Canonical project and transport dependencies still govern
-/// issuance and delivery. The Ethereum reward ERC-20 and intended Sticky receiver must be usable before remote claims.
-/// @dev There is no owner, upgrade, withdrawal or general rescue. A caller may select another registered Ethereum route
-/// when one stops sending; if none is usable, rewards remain queued. Native finality and destination claims are
-/// separate.
-contract StickySourceCollector is IJBSplitHook, ReentrancyGuard {
+/// issuance and delivery. The home-chain reward ERC-20 and intended Sticky receiver must be usable before remote
+/// claims.
+/// @dev There is no owner, upgrade, withdrawal or general rescue. A caller may select another registered route to that
+/// home chain when one stops sending; if none is usable, rewards remain queued. Native finality and destination claims
+/// are separate.
+contract StickySourceCollector is IStickySourceCollector, ReentrancyGuard {
     // A library that safely pulls allocated rewards and limits each sucker to one delivery's approved amount.
     using SafeERC20 for IERC20;
 
@@ -41,7 +46,7 @@ contract StickySourceCollector is IJBSplitHook, ReentrancyGuard {
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
 
-    /// @notice Thrown when an Ethereum-only settlement is called on another chain.
+    /// @notice Thrown when a home-chain settlement is called on another chain.
     /// @param chainId The chain on which settlement was attempted.
     error StickySourceCollector_DestinationOnly(uint256 chainId);
 
@@ -58,7 +63,7 @@ contract StickySourceCollector is IJBSplitHook, ReentrancyGuard {
 
     /// @notice Thrown when a delivery exceeds its own bucket instead of spending another destination's allocation.
     /// @param sourceProjectId The project whose rewards were requested.
-    /// @param stickyToken The Ethereum Sticky share token whose holders receive this bucket.
+    /// @param stickyToken The home-chain Sticky share token whose holders receive this bucket.
     /// @param groupId The bucket's reward group.
     /// @param requested The requested project-token atoms.
     /// @param pending The project-token atoms attributed to this bucket.
@@ -74,16 +79,21 @@ contract StickySourceCollector is IJBSplitHook, ReentrancyGuard {
     /// @param dependency The dependency that has no deployed code.
     error StickySourceCollector_InvalidDependency(address dependency);
 
+    /// @notice Thrown when no destination chain is configured, so queued rewards cannot have an undefined home.
+    /// @param destinationChainId The invalid destination chain ID.
+    error StickySourceCollector_InvalidDestinationChainId(uint256 destinationChainId);
+
     /// @notice Thrown when the chosen backing asset cannot be sent through the sucker's current mapping.
     /// @param sucker The selected source sucker.
     /// @param backingToken The source terminal token selected for cashout and transport.
     /// @param remoteToken The current mapping, including its destination, enabled flag and emergency state.
-    error StickySourceCollector_InvalidMapping(JBSucker sucker, address backingToken, JBRemoteToken remoteToken);
+    error StickySourceCollector_InvalidMapping(IJBSucker sucker, address backingToken, JBRemoteToken remoteToken);
 
-    /// @notice Thrown when a supplied sucker does not bind this source project to the canonical Ethereum route system.
+    /// @notice Thrown when a supplied sucker does not bind this source project to the configured destination through
+    /// the canonical route system.
     /// @param sourceProjectId The project whose registered route was required.
     /// @param sucker The supplied source sucker.
-    error StickySourceCollector_InvalidRoute(uint256 sourceProjectId, JBSucker sucker);
+    error StickySourceCollector_InvalidRoute(uint256 sourceProjectId, IJBSucker sucker);
 
     /// @notice Thrown when a callback does not describe this hook's V6 reserved-token split.
     /// @param sourceProjectId The context's source project.
@@ -101,14 +111,15 @@ contract StickySourceCollector is IJBSplitHook, ReentrancyGuard {
     /// @param sourceProjectId The project whose queued credits cannot yet be delivered.
     error StickySourceCollector_NoToken(uint256 sourceProjectId);
 
-    /// @notice Thrown when a remote send is requested on Ethereum, where local settlement is used instead.
+    /// @notice Thrown when a remote send is requested on the configured home chain, where local settlement is used
+    /// instead.
     /// @param chainId The chain on which remote delivery was attempted.
     error StickySourceCollector_SourceOnly(uint256 chainId);
 
     /// @notice Thrown when the chosen sucker's sending phase has ended and another usable route is required.
     /// @param sucker The selected source sucker.
     /// @param state The sucker's current deprecation state.
-    error StickySourceCollector_SuckerNotSending(JBSucker sucker, JBSuckerState state);
+    error StickySourceCollector_SuckerNotSending(IJBSucker sucker, JBSuckerState state);
 
     /// @notice Thrown when a non-credit callback names a different token from the source project's registered ERC-20.
     /// @param sourceProjectId The context's source project.
@@ -158,112 +169,46 @@ contract StickySourceCollector is IJBSplitHook, ReentrancyGuard {
     error StickySourceCollector_UnsentLeaf(uint256 index, uint256 sentCount);
 
     //*********************************************************************//
-    // ------------------------------- events ---------------------------- //
-    //*********************************************************************//
-
-    /// @notice Emitted when an authenticated reserved allocation enters its destination's pending custody.
-    /// @param sourceProjectId The source project whose ERC-20 tokens or credits arrived.
-    /// @param stickyToken The Ethereum Sticky share token whose holders receive the allocation.
-    /// @param groupId The destination reward group.
-    /// @param receiver The predicted Ethereum receiver bound to that Sticky token and group.
-    /// @param amount The newly accepted project-token atoms, excluding nested accepted allocations.
-    /// @param caller The source controller that authenticated the split.
-    event Queue(
-        uint256 indexed sourceProjectId,
-        address indexed stickyToken,
-        uint256 indexed groupId,
-        address receiver,
-        uint256 amount,
-        address caller
-    );
-
-    /// @notice Emitted after a queued allocation's leaf is included in a submitted source outbox root.
-    /// @param sourceProjectId The source project whose rewards were prepared.
-    /// @param stickyToken The Ethereum Sticky share token whose holders receive the rewards.
-    /// @param groupId The destination reward group.
-    /// @param sucker The registered source route used for this submission.
-    /// @param backingToken The terminal token cashed out and transported through the sucker.
-    /// @param index The prepared leaf index used with the sucker's leaf event to construct a destination claim.
-    /// @param projectTokenCount The project-token atoms debited from the selected bucket.
-    /// @param minimumReclaimed The fresh fee-adjusted reclaim minimum, in backing-token atoms; it can be zero.
-    /// @param feeTokenCount The fee-project token atoms returned to the caller for this payment.
-    /// @param refundedFee The failed registry fee returned to the caller, in wei.
-    /// @param refundedTransportPayment The excess transport value returned to the caller, in wei.
-    /// @param caller The account that funded the source submission.
-    event Send(
-        uint256 indexed sourceProjectId,
-        address indexed stickyToken,
-        uint256 indexed groupId,
-        JBSucker sucker,
-        address backingToken,
-        uint256 index,
-        uint256 projectTokenCount,
-        uint256 minimumReclaimed,
-        uint256 feeTokenCount,
-        uint256 refundedFee,
-        uint256 refundedTransportPayment,
-        address caller
-    );
-
-    /// @notice Emitted after an Ethereum allocation and the receiver's existing inventory settle into Sticky rewards.
-    /// @param sourceProjectId The local project whose queued reward tokens were delivered.
-    /// @param stickyToken The Ethereum Sticky share token whose holders receive the rewards.
-    /// @param groupId The destination reward group.
-    /// @param amount The project-token atoms debited from the selected bucket.
-    /// @param settled The total reward-token atoms settled, including existing receiver inventory.
-    /// @param caller The account that executed settlement.
-    event Settle(
-        uint256 indexed sourceProjectId,
-        address indexed stickyToken,
-        uint256 indexed groupId,
-        uint256 amount,
-        uint256 settled,
-        address caller
-    );
-
-    //*********************************************************************//
-    // ------------------------- public constants ------------------------ //
-    //*********************************************************************//
-
-    /// @notice The Ethereum chain ID where every configured Sticky destination is settled.
-    uint256 public constant DESTINATION_CHAIN_ID = 1;
-
-    //*********************************************************************//
     // --------------- public immutable stored properties ---------------- //
     //*********************************************************************//
 
+    /// @notice The home chain where every configured Sticky destination receives and settles its rewards.
+    /// @dev Fixed for this collector, so a permissionless delivery caller cannot change a bucket's destination chain.
+    uint256 public immutable override DESTINATION_CHAIN_ID;
+
     /// @notice The canonical directory used to authenticate controllers and source cashout terminals.
     /// @dev Derived from the supplied canonical sucker registry, whose deployment identity must be verified.
-    IJBDirectory public immutable DIRECTORY;
+    IJBDirectory public immutable override DIRECTORY;
 
     /// @notice The parent-only child that separates callers' fee receipts and refunds from all queued principal.
-    StickySourceFeePayer public immutable FEE_PAYER;
+    IStickySourceFeePayer public immutable override FEE_PAYER;
 
-    /// @notice The receiver factory whose address and implementation match the Ethereum destination factory.
+    /// @notice The receiver factory whose address and implementation match the configured home-chain factory.
     /// @dev Its existing prediction rule owns Sticky-token/group validation and cross-chain receiver identity.
-    IStickyRewardReceiverFactory public immutable RECEIVER_FACTORY;
+    IStickyRewardReceiverFactory public immutable override RECEIVER_FACTORY;
 
     /// @notice The independently bound canonical registry that authenticates every caller-selected sucker.
-    IJBSuckerRegistry public immutable REGISTRY;
+    IJBSuckerRegistry public immutable override REGISTRY;
 
     /// @notice The canonical project-token registry used for ERC-20 identity, held credits and combined custody.
-    IJBTokens public immutable TOKENS;
+    IJBTokens public immutable override TOKENS;
 
     //*********************************************************************//
     // --------------------- public stored properties -------------------- //
     //*********************************************************************//
 
-    /// @notice The accepted project-token atoms awaiting delivery to each Ethereum Sticky token and reward group.
+    /// @notice The accepted project-token atoms awaiting delivery to each home-chain Sticky token and reward group.
     /// @custom:param sourceProjectId The source project whose reserved tokens or credits were accepted.
-    /// @custom:param stickyToken The Ethereum Sticky share token whose holders receive this allocation.
+    /// @custom:param stickyToken The home-chain Sticky share token whose holders receive this allocation.
     /// @custom:param groupId The destination reward group.
     mapping(uint256 sourceProjectId => mapping(address stickyToken => mapping(uint256 groupId => uint256 amount)))
-        public pendingOf;
+        public
+        override pendingOf;
 
     /// @notice The project-token atoms owed across every destination bucket for a source project.
     /// @dev Combined held credits and ERC-20 tokens must cover this amount; donations do not increase it.
     /// @custom:param sourceProjectId The project whose attributed liabilities are totaled.
-    mapping(uint256 sourceProjectId => uint256 amount) public totalPendingOf;
+    mapping(uint256 sourceProjectId => uint256 amount) public override totalPendingOf;
 
     //*********************************************************************//
     // ------------------- transient stored properties ------------------- //
@@ -278,13 +223,22 @@ contract StickySourceCollector is IJBSplitHook, ReentrancyGuard {
     // -------------------------- constructor ---------------------------- //
     //*********************************************************************//
 
-    /// @notice Binds shared reserved-token custody to canonical V6 contracts and Ethereum receiver prediction.
+    /// @notice Binds shared reserved-token custody to canonical V6 contracts and receiver prediction on one home chain.
     /// @dev Identical arguments, initcode and CREATE2 salt give the same hook address across source chains. Dependency
     /// runtime identities and receiver-factory parity must be verified before installing any live split.
     /// @param registry The canonical sucker registry whose directory authenticates source controllers and routes.
     /// @param tokens The canonical project-token registry used by those controllers and suckers.
-    /// @param receiverFactory The existing receiver factory with Ethereum-matching address and implementation.
-    constructor(IJBSuckerRegistry registry, IJBTokens tokens, IStickyRewardReceiverFactory receiverFactory) {
+    /// @param receiverFactory The existing receiver factory with the home-chain factory's address and implementation.
+    /// @param destinationChainId The nonzero home-chain ID shared by every destination bucket in this collector.
+    constructor(
+        IJBSuckerRegistry registry,
+        IJBTokens tokens,
+        IStickyRewardReceiverFactory receiverFactory,
+        uint256 destinationChainId
+    ) {
+        // Every accepted allocation needs one immutable destination before custody can be attributed.
+        if (destinationChainId == 0) revert StickySourceCollector_InvalidDestinationChainId(destinationChainId);
+
         // Refuse missing dependencies before fixing custody and receiver identity for all future allocations.
         if (address(registry).code.length == 0) revert StickySourceCollector_InvalidDependency(address(registry));
         if (address(tokens).code.length == 0) revert StickySourceCollector_InvalidDependency(address(tokens));
@@ -295,6 +249,7 @@ contract StickySourceCollector is IJBSplitHook, ReentrancyGuard {
         if (address(directory).code.length == 0) revert StickySourceCollector_InvalidDependency(address(directory));
 
         // The bindings authenticate live project configuration without installing an owner or route-change permission.
+        DESTINATION_CHAIN_ID = destinationChainId;
         DIRECTORY = directory;
         RECEIVER_FACTORY = receiverFactory;
         REGISTRY = registry;
@@ -309,7 +264,7 @@ contract StickySourceCollector is IJBSplitHook, ReentrancyGuard {
     //*********************************************************************//
 
     /// @notice Accepts and attributes one authenticated reserved split without attempting delivery or charging a fee.
-    /// @dev The split beneficiary is the Ethereum Sticky share token; its projectId is the reward group. ERC-20 pulls
+    /// @dev The split beneficiary is the home-chain Sticky share token; its projectId is the reward group. ERC-20 pulls
     /// measure combined project custody and exclude nested allocations already recorded by this hook. Credit contexts
     /// are valid even if an earlier split deployed the ERC-20 after the controller cached its credit-only token value.
     /// Valid nested acceptance remains available during token callbacks and outbound fee payments.
@@ -371,7 +326,8 @@ contract StickySourceCollector is IJBSplitHook, ReentrancyGuard {
         });
     }
 
-    /// @notice Atomically sends part of one destination bucket through a registered, usable Ethereum sucker route.
+    /// @notice Atomically sends part of one destination bucket through a registered, usable sucker route to the
+    /// configured home chain.
     /// @dev The caller funds the registry fee and any native transport budget. The minimum uses the selected backing
     /// terminal's current gross preview less the maximum standard protocol fee, in backing-token atoms. Zero backing
     /// remains valid because the destination remints the leaf's project-token count. A caller-sensitive custom cashout
@@ -379,10 +335,11 @@ contract StickySourceCollector is IJBSplitHook, ReentrancyGuard {
     /// attempt. Native finality, destination claim and receiver settlement remain separate after source submission
     /// succeeds.
     /// @param sourceProjectId The project whose attributed reserved-token custody is being delivered.
-    /// @param stickyToken The Ethereum Sticky share token whose holders receive the selected bucket.
+    /// @param stickyToken The home-chain Sticky share token whose holders receive the selected bucket.
     /// @param groupId The bucket's destination reward group.
     /// @param amount The positive project-token atoms to send, at most the selected bucket's pending amount.
-    /// @param sucker The project's registered source sucker with an Ethereum peer and usable backing mapping.
+    /// @param sucker The project's registered source sucker with a peer on the configured home chain and usable
+    /// backing mapping.
     /// @param backingToken The source terminal token to cash out and bridge, including a supported mapped ERC-20.
     /// @return leafIndex The newly prepared leaf's index in the selected backing asset's source outbox.
     function send(
@@ -390,11 +347,12 @@ contract StickySourceCollector is IJBSplitHook, ReentrancyGuard {
         address stickyToken,
         uint256 groupId,
         uint256 amount,
-        JBSucker sucker,
+        IJBSucker sucker,
         address backingToken
     )
         external
         payable
+        override
         nonReentrant
         returns (uint256 leafIndex)
     {
@@ -447,11 +405,11 @@ contract StickySourceCollector is IJBSplitHook, ReentrancyGuard {
         });
     }
 
-    /// @notice Delivers part of an Ethereum bucket into its fixed receiver and settles that receiver's full inventory.
+    /// @notice Delivers part of a home-chain bucket into its fixed receiver and settles that receiver's full inventory.
     /// @dev No bridge fee is required. The existing receiver can also hold earlier arrivals, so the returned settled
     /// amount can exceed the amount debited here. Any failed credit claim, transfer or settlement restores the bucket.
-    /// @param sourceProjectId The Ethereum project whose reserved rewards were accepted.
-    /// @param stickyToken The Ethereum Sticky share token whose holders receive the selected bucket.
+    /// @param sourceProjectId The home-chain project whose reserved rewards were accepted.
+    /// @param stickyToken The home-chain Sticky share token whose holders receive the selected bucket.
     /// @param groupId The bucket's destination reward group.
     /// @param amount The positive project-token atoms to deliver from this bucket.
     /// @return settled The reward-token atoms settled, including existing receiver inventory.
@@ -462,6 +420,7 @@ contract StickySourceCollector is IJBSplitHook, ReentrancyGuard {
         uint256 amount
     )
         external
+        override
         nonReentrant
         returns (uint256 settled)
     {
@@ -538,7 +497,7 @@ contract StickySourceCollector is IJBSplitHook, ReentrancyGuard {
 
     /// @notice Debits a positive delivery from only its source project's selected destination bucket.
     /// @param sourceProjectId The project whose pending custody is being spent.
-    /// @param stickyToken The Ethereum Sticky share token identifying the destination.
+    /// @param stickyToken The home-chain Sticky share token identifying the destination.
     /// @param groupId The destination reward group.
     /// @param amount The project-token atoms to debit.
     function _debit(uint256 sourceProjectId, address stickyToken, uint256 groupId, uint256 amount) internal {
@@ -597,14 +556,14 @@ contract StickySourceCollector is IJBSplitHook, ReentrancyGuard {
     /// @param amount The project-token atoms to approve and prepare.
     /// @param sucker The authenticated, sending-enabled source sucker.
     /// @param backingToken The mapped terminal asset being reclaimed and bridged.
-    /// @param receiver The fixed Ethereum receiver predicted for the bucket's Sticky token and group.
+    /// @param receiver The fixed home-chain receiver predicted for the bucket's Sticky token and group.
     /// @return leafIndex The leaf's index in the backing asset's source outbox.
     /// @return minimumReclaimed The conservative preview bound, in backing-token atoms, including zero backing.
     function _prepare(
         uint256 sourceProjectId,
         IERC20 sourceToken,
         uint256 amount,
-        JBSucker sucker,
+        IJBSucker sucker,
         address backingToken,
         address receiver
     )
@@ -672,11 +631,12 @@ contract StickySourceCollector is IJBSplitHook, ReentrancyGuard {
 
     /// @notice Authenticates a usable source route and backing mapping against independently bound canonical contracts.
     /// @dev Sending-enabled pending deprecation is permitted exactly as in the sucker. Peer configuration and actual
-    /// Ethereum reward-token readiness remain source-project setup responsibilities, not caller-selected destinations.
+    /// home-chain reward-token readiness remain source-project setup responsibilities, not caller-selected
+    /// destinations.
     /// @param sourceProjectId The project whose queued rewards are being sent.
     /// @param sucker The supplied registered source route.
     /// @param backingToken The mapped source terminal asset selected for transport.
-    function _requireRoute(uint256 sourceProjectId, JBSucker sucker, address backingToken) internal view {
+    function _requireRoute(uint256 sourceProjectId, IJBSucker sucker, address backingToken) internal view {
         // Authenticate membership before trusting any of the candidate's self-reported protocol bindings.
         if (
             address(sucker).code.length == 0
@@ -684,10 +644,11 @@ contract StickySourceCollector is IJBSplitHook, ReentrancyGuard {
         ) {
             revert StickySourceCollector_InvalidRoute({sourceProjectId: sourceProjectId, sucker: sucker});
         }
+        // The installed sucker interface omits its registry getter; keep that concrete access inside validation.
         if (
-            sucker.projectId() != sourceProjectId || sucker.REGISTRY() != REGISTRY || sucker.DIRECTORY() != DIRECTORY
-                || sucker.TOKENS() != TOKENS || sucker.peerChainId() != DESTINATION_CHAIN_ID
-                || sucker.peer() == bytes32(0)
+            sucker.projectId() != sourceProjectId || JBSucker(payable(address(sucker))).REGISTRY() != REGISTRY
+                || sucker.DIRECTORY() != DIRECTORY || sucker.TOKENS() != TOKENS
+                || sucker.peerChainId() != DESTINATION_CHAIN_ID || sucker.peer() == bytes32(0)
         ) revert StickySourceCollector_InvalidRoute({sourceProjectId: sourceProjectId, sucker: sucker});
 
         // Retired registration can retain mint authority, so sending eligibility needs its own live state check.

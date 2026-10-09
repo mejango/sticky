@@ -47,7 +47,8 @@ abstract contract StickyJbxDeployedFork is StickyRealProjectFork {
             rewardReceiverFactory: _checkedAddress(manifest, "rewardReceiverFactory"),
             autoStick: _checkedAddress(manifest, "autoStick"),
             sourceCollector: address(0),
-            sourceFeePayer: address(0)
+            sourceFeePayer: address(0),
+            destinationChainId: 0
         });
         _checkedAddress(manifest, "create2Factory");
         StickyDeployer deployer = StickyDeployer(context.suite.deployer);

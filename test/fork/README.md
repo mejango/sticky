@@ -108,6 +108,14 @@ The existing [deployment rehearsals](../../DEPLOYMENT.md) cover singleton deploy
 and restart across all eight configured networks. Neither suite broadcasts a
 transaction or creates a Sphinx proposal.
 
+The Base-home hook cases in this suite configure actual project `3` reserved splits
+through a collector bound immutably to Base. One settles a Base-local allocation;
+the other accepts Ethereum reserves, submits through the deployed Ethereum-to-Base
+route, and reuses the same modeled portal boundary before claim, settlement and
+holder rewards. The six existing pool singletons retain their identities. These
+tests qualify that direct route; they do not establish OP-to-Base or
+Arbitrum-to-Base delivery.
+
 ## Deployed Sticky JBX qualification
 
 [StickyJbxLifecycle.t.sol](StickyJbxLifecycle.t.sol) reuses the existing lifecycle
@@ -167,9 +175,14 @@ submit rewards. Receipt must only credit the selected pending bucket; the outbox
 cannot change until a separate delivery call. These cases check principal/fee
 receipt separation, the requested REV fraction and remainder, atomic retry after
 insufficient fees, and the actual source leaf before reusing the destination proof.
-The four-chain deployment case compares the full hook/child runtime and addresses,
-checks receiver prediction parity, and proves the six existing singleton runtimes
-remain unchanged.
+The four-chain deployment cases compare the full hook/child runtime and addresses
+within both the Ethereum-home and Base-home families, check receiver prediction
+parity, and prove the six existing singleton runtimes remain unchanged. Different
+home chains must have different collector and fee-child addresses. A real OP
+reserved-split allocation into a Base-home family stays queued when the caller
+tries its Ethereum peer; the Ethereum-home family cannot spend that allocation.
+Address parity establishes a family identity, not a direct transport path between
+every source and home chain.
 
 Generic source cases launch ordinary projects with IDs above `3` through deployed
 core. The OP tests cover zero native backing, zero ERC-20 backing, and positive

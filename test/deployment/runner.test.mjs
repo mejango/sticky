@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { dependencies, networks, preflight, requireOneAddressPerGroup, run, suite, verifyDependencies } from '../../script/deploy.mjs';
+import { dependencies, destinationChainId, familyDirectory, networks, preflight, requireOneAddressPerGroup, run, suite, verifyDependencies } from '../../script/deploy.mjs';
 
-function fixture(group) {
+function fixture(group, destination = networks[group][0][1]) {
   const env = { SPHINX_ORG_ID: JSON.parse(readFileSync('sphinx.lock')).orgId, SPHINX_API_KEY: 'test-key',
-    SPHINX_MANAGED_BASE_URL: 'https://sphinx.example.test' };
+    SPHINX_MANAGED_BASE_URL: 'https://sphinx.example.test', STICKY_DESTINATION_CHAIN_ID: String(destination) };
   const files = {};
-  const manifest = JSON.stringify(Object.fromEntries(suite.map((field, i) => [field, `0x${String(i + 1).repeat(40)}`])));
+  const addresses = Object.fromEntries(suite.map((field, i) => [field, `0x${String(i + 1).repeat(40)}`]));
   for (const [, chainId, key, folder] of networks[group]) {
     env[key] = 'http://127.0.0.1:8545';
     for (const name of ['JBController', 'JBDirectory', 'JBMultiTerminal']) {
@@ -18,8 +18,11 @@ function fixture(group) {
     files[`node_modules/@bananapus/suckers-v6/deployments/${folder}/JBSuckerRegistry.json`] = JSON.stringify({
       address: '0x' + '34'.repeat(20), chainId: `0x${chainId.toString(16)}`,
     });
-    files[`deployments/${folder}/simulation.json`] = manifest;
-    files[`deployments/${folder}/verified.json`] = manifest;
+    for (const kind of ['simulation', 'verified']) {
+      files[`${familyDirectory(folder, destination)}/${kind}.json`] = JSON.stringify({
+        ...addresses, kind, chainId, destinationChainId: destination,
+      });
+    }
   }
   return { env, files, read: file => files[file] ?? readFileSync(file, 'utf8') };
 }
@@ -43,6 +46,7 @@ for (const group of Object.keys(networks)) {
       calls.push({ command, args, chainId: options.env.STICKY_EXPECTED_CHAIN_ID });
       assert.equal(options.env.FOUNDRY_PROFILE, 'deploy');
       assert.equal(options.env.STICKY_REVISION, 'abc123');
+      assert.equal(options.env.STICKY_DESTINATION_CHAIN_ID, String(networks[group][0][1]));
       if (command === 'forge') {
         assert.equal(options.env.STICKY_RPC_BLOCK_NUMBER, '100');
         assert.equal(options.env.STICKY_RPC_BLOCK_HASH, block.hash);
@@ -89,7 +93,7 @@ test('preflight rejects missing RPCs and mismatched artifacts without leaking va
   const { env, read } = fixture('testnets');
   delete env.RPC_BASE_SEPOLIA;
   assert.throws(() => preflight('testnets', env, read), /missing RPC_BASE_SEPOLIA/);
-  assert.throws(() => preflight('mainnets', env, () => JSON.stringify({ address: '0x' + '12'.repeat(20), chainId: 1 })), /invalid JBController/);
+  assert.throws(() => preflight('mainnets', { ...env, STICKY_DESTINATION_CHAIN_ID: '1' }, () => JSON.stringify({ address: '0x' + '12'.repeat(20), chainId: 1 })), /invalid JBController/);
   assert.throws(() => preflight('unknown'), /Network group/);
 });
 
@@ -107,6 +111,13 @@ test('runner destinations match the Sphinx entrypoint exactly', () => {
     const configured = JSON.parse(line.slice(line.indexOf('['), line.lastIndexOf(']') + 1));
     assert.deepEqual(networks[group].map(([alias]) => alias), configured);
   }
+  const workflow = readFileSync('.github/workflows/test.yml', 'utf8');
+  const destinationInput = workflow.match(/^      destination_chain_id:\n((?:        [^\n]*\n)*)/m)?.[1];
+  assert.ok(destinationInput, 'manual rehearsal exposes the destination selector');
+  assert.match(destinationInput, /^        type: string$/m);
+  assert.match(destinationInput, /^        required: true$/m);
+  assert.doesNotMatch(destinationInput, /^        default:/m, 'a home chain must never be selected implicitly');
+  assert.match(workflow, /^          STICKY_DESTINATION_CHAIN_ID: \$\{\{ inputs\.destination_chain_id \}\}$/m);
 });
 
 
@@ -242,8 +253,9 @@ test('a sphinx.lock Sphinx only reordered is clean; a changed one is not', () =>
 
 test('a chain predicting different addresses stops the group before the Sphinx proposal', () => {
   const setup = fixture('mainnets');
-  setup.files['deployments/base/simulation.json'] = JSON.stringify({ ...JSON.parse(setup.files['deployments/base/simulation.json']), autoStick: '0x' + 'ee'.repeat(20) });
-  assert.throws(() => requireOneAddressPerGroup('mainnets', 'simulation', setup.read), /base predicts a different deployment/);
+  const file = `${familyDirectory('base', 1)}/simulation.json`;
+  setup.files[file] = JSON.stringify({ ...JSON.parse(setup.files[file]), autoStick: '0x' + 'ee'.repeat(20) });
+  assert.throws(() => requireOneAddressPerGroup('mainnets', 'simulation', 1, setup.read), /base predicts a different deployment/);
   assert.throws(() => run('propose', 'mainnets', { ...setup, spawn(command, args) {
     const tool = readOnlyTool(command, args);
     if (tool) return tool;
@@ -258,10 +270,10 @@ test('all chains must contain both source singleton addresses before any group i
     for (const value of [undefined, '0x00', '0x' + '00'.repeat(20)]) {
       const setup = fixture('mainnets');
       for (const [, , , folder] of networks.mainnets) {
-        const file = `deployments/${folder}/simulation.json`;
+        const file = `${familyDirectory(folder, 1)}/simulation.json`;
         setup.files[file] = JSON.stringify({ ...JSON.parse(setup.files[file]), [field]: value });
       }
-      assert.throws(() => requireOneAddressPerGroup('mainnets', 'simulation', setup.read), new RegExp(`invalid ${field}`));
+      assert.throws(() => requireOneAddressPerGroup('mainnets', 'simulation', 1, setup.read), new RegExp(`invalid ${field}`));
     }
   }
 });
@@ -277,4 +289,62 @@ test('registry artifact roots are explicit and wrong registry chain metadata fai
   assert.equal(requested.filter(file => file.startsWith('/reviewed/suckers/')).length, 4);
   assert.throws(() => preflight('mainnets', setup.env, file => file.includes('JBSuckerRegistry')
     ? JSON.stringify({ address: '0x' + '34'.repeat(20), chainId: 999 }) : setup.read(file)), /invalid JBSuckerRegistry/);
+});
+
+test('a destination is explicit, canonical, safe and in the selected source network group', () => {
+  for (const value of [undefined, '', '0', '01', '-1', '+1', '1.0', '1e0', '0x1', ' 1', '1 ', '1\n', '9007199254740993', 1]) {
+    const setup = fixture('mainnets');
+    setup.env.STICKY_DESTINATION_CHAIN_ID = value;
+    assert.throws(() => run('propose', 'mainnets', { ...setup,
+      read() { assert.fail('invalid destination must fail before reading deployment inputs'); },
+      spawn() { assert.fail('invalid destination must fail before any subprocess'); },
+    }), /STICKY_DESTINATION_CHAIN_ID/);
+  }
+  assert.throws(() => destinationChainId('mainnets', { STICKY_DESTINATION_CHAIN_ID: '11155111' }), /belong to mainnets/);
+  assert.throws(() => destinationChainId('testnets', { STICKY_DESTINATION_CHAIN_ID: '1' }), /belong to testnets/);
+  for (const [group, chains] of Object.entries(networks)) {
+    for (const [, id] of chains) assert.equal(destinationChainId(group, { STICKY_DESTINATION_CHAIN_ID: String(id) }), id);
+  }
+  assert.throws(() => familyDirectory('ethereum', '../1'), /Invalid collector destination/);
+});
+
+test('a wrong second-chain destination, source or kind prevents proposal submission', () => {
+  for (const mismatch of [{ destinationChainId: 8453 }, { chainId: 1 }, { kind: 'verified' }, { destinationChainId: undefined }]) {
+    const setup = fixture('mainnets');
+    const file = `${familyDirectory('optimism', 1)}/simulation.json`;
+    setup.files[file] = JSON.stringify({ ...JSON.parse(setup.files[file]), ...mismatch });
+    assert.throws(() => run('propose', 'mainnets', { ...setup, spawn(command, args) {
+      const tool = readOnlyTool(command, args);
+      if (tool) return tool;
+      assert.notEqual(command, 'node_modules/.bin/sphinx', 'mixed-family evidence must not reach proposal submission');
+      return { status: 0 };
+    } }), /optimism: manifest destination, source chain or kind/);
+  }
+});
+
+test('one invocation reads only the selected family and never falls back to a flat manifest', () => {
+  const setup = fixture('mainnets', 8453);
+  const other = fixture('mainnets', 1);
+  Object.assign(setup.files, other.files);
+  const requested = [];
+  run('verify', 'mainnets', { ...setup, read(file) {
+    requested.push(file);
+    return setup.read(file);
+  }, spawn(command, args, options) {
+    const tool = readOnlyTool(command, args);
+    if (tool) return tool;
+    assert.equal(options.env.STICKY_DESTINATION_CHAIN_ID, '8453');
+    return { status: 0 };
+  } });
+  assert.deepEqual(requested.filter(file => file.endsWith('/verified.json')),
+    networks.mainnets.map(([, , , folder]) => `${familyDirectory(folder, 8453)}/verified.json`));
+
+  const selected = `${familyDirectory('ethereum', 8453)}/verified.json`;
+  setup.files['deployments/ethereum/verified.json'] = setup.files[selected];
+  delete setup.files[selected];
+  assert.throws(() => requireOneAddressPerGroup('mainnets', 'verified', 8453, file => {
+    assert.ok(file.includes('/source-collectors/8453/'), 'no flat-manifest fallback');
+    if (!setup.files[file]) throw new Error('missing selected family');
+    return setup.files[file];
+  }), /missing selected family/);
 });

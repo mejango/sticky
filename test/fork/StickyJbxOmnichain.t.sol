@@ -206,9 +206,10 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         _remoteCollected(_ARBITRUM, _REV_PROJECT);
     }
 
-    /// @notice An ordinary project with no backing can deliver its reserved token count through a native route.
-    function test_genericProject_zeroNativeBackingPermissionlessSplitHook() public {
-        _genericCollected(JBConstants.NATIVE_TOKEN, 0);
+    /// @notice Six-decimal backing is paid, cashed out and burned by the deployed canonical OP standard bridge.
+    /// @dev Only initial test USDC.e inventory is supplied by `deal`; actual core and bridge accounting execute.
+    function test_genericProject_positiveErc20BackingPermissionlessSplitHook() public {
+        _genericCollected(_OP_USDCE, 123_456_789);
     }
 
     /// @notice A selected ERC-20 mapping can submit zero-backed project tokens without confusing ETH fee units.
@@ -216,10 +217,68 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         _genericCollected(_OP_USDCE, 0);
     }
 
-    /// @notice Six-decimal backing is paid, cashed out and burned by the deployed canonical OP standard bridge.
-    /// @dev Only initial test USDC.e inventory is supplied by `deal`; actual core and bridge accounting execute.
-    function test_genericProject_positiveErc20BackingPermissionlessSplitHook() public {
-        _genericCollected(_OP_USDCE, 123_456_789);
+    /// @notice An ordinary project with no backing can deliver its reserved token count through a native route.
+    function test_genericProject_zeroNativeBackingPermissionlessSplitHook() public {
+        _genericCollected(JBConstants.NATIVE_TOKEN, 0);
+    }
+
+    /// @notice A Base-home queue on OP cannot use its Ethereum peer or borrow custody from the Ethereum-home hook.
+    /// @dev Identical share-token address bytes deliberately distinguish the family namespace from destination
+    /// readiness; this test neither asserts a Base pool exists at that address nor invents an OP-to-Base route.
+    function test_optimismToBase_rejectsEthereumPeerAndKeepsFamiliesSeparate() public {
+        Source memory source = _source({chainId: _OPTIMISM, projectId: 1});
+        _flushReserved(source);
+        StickySourceCollector baseFamily = _deployCollector({source: source, destinationChainId: _BASE});
+        StickySourceCollector ethereumFamily = _deployCollector({source: source, destinationChainId: 1});
+        uint256 reward = _fundCollector({source: source, collector: baseFamily});
+        assertNotEq(address(baseFamily), address(ethereumFamily));
+        assertEq(ethereumFamily.pendingOf(source.projectId, address(_sticky), 0), 0, "another family has no liability");
+        assertEq(source.token.balanceOf(address(ethereumFamily)), 0, "another family has no custody");
+        JBOutboxTree memory beforeOutbox = source.sucker.outboxOf(JBConstants.NATIVE_TOKEN);
+        uint256 fee = source.sucker.REGISTRY().toRemoteFee();
+        vm.deal(_keeper, fee);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InvalidRoute.selector, source.projectId, source.sucker
+            )
+        );
+        vm.prank(_keeper);
+        // An Ethereum peer cannot stand in for the queued Base destination, even though the route is registered.
+        // forge-lint: disable-next-item(arbitrary-send-eth)
+        baseFamily.send{value: fee}({
+            sourceProjectId: source.projectId,
+            stickyToken: address(_sticky),
+            groupId: 0,
+            amount: reward,
+            sucker: source.sucker,
+            backingToken: JBConstants.NATIVE_TOKEN
+        });
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InsufficientPending.selector,
+                source.projectId,
+                address(_sticky),
+                0,
+                reward,
+                0
+            )
+        );
+        vm.prank(_keeper);
+        // The correct Ethereum route still cannot spend an allocation accepted by the Base-home family.
+        // forge-lint: disable-next-item(arbitrary-send-eth)
+        ethereumFamily.send{value: fee}({
+            sourceProjectId: source.projectId,
+            stickyToken: address(_sticky),
+            groupId: 0,
+            amount: reward,
+            sucker: source.sucker,
+            backingToken: JBConstants.NATIVE_TOKEN
+        });
+        assertEq(baseFamily.pendingOf(source.projectId, address(_sticky), 0), reward, "destination remains queued");
+        assertEq(baseFamily.totalPendingOf(source.projectId), reward, "aggregate liability remains backed");
+        assertEq(source.token.balanceOf(address(baseFamily)), reward, "no custody crosses families");
+        assertEq(source.token.allowance(address(baseFamily), address(source.sucker)), 0);
+        assertEq(abi.encode(source.sucker.outboxOf(JBConstants.NATIVE_TOKEN)), abi.encode(beforeOutbox));
     }
 
     /// @notice Local emergency exit remints to the remote-beneficiary address, not the preparing Safe.
@@ -247,35 +306,14 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         source.sucker.exitThroughEmergencyHatch(claimData);
     }
 
-    /// @notice The production deployment owner gives all four chains identical hook and fee-child identities.
+    /// @notice A Base-home family has the same identity on four sources and differs from the Ethereum-home family.
+    function test_sameBaseHomeSplitHookAddressOnAllFourChains() public {
+        _assertCollectorFamilyParity(_BASE);
+    }
+
+    /// @notice The Ethereum-home family has the same identity on all four qualified source chains.
     function test_sameSplitHookAndReceiverAddressOnAllFourChains() public {
-        uint256[4] memory chains = [uint256(1), _OPTIMISM, _BASE, _ARBITRUM];
-        address expectedCollector;
-        address expectedFeePayer;
-        bytes32 expectedCollectorHash;
-        bytes32 expectedFeePayerHash;
-        for (uint256 i = 0; i < chains.length; ++i) {
-            Source memory source = _source(chains[i], 1);
-            StickySourceCollector collector = _deployCollector(source);
-            address feePayer = address(collector.FEE_PAYER());
-            if (i == 0) {
-                expectedCollector = address(collector);
-                expectedFeePayer = feePayer;
-                expectedCollectorHash = address(collector).codehash;
-                expectedFeePayerHash = feePayer.codehash;
-            }
-            assertEq(address(collector), expectedCollector, "same configured reserved split hook");
-            assertEq(feePayer, expectedFeePayer, "same parent-bound fee child");
-            assertEq(address(collector).codehash, expectedCollectorHash, "same full hook runtime");
-            assertEq(feePayer.codehash, expectedFeePayerHash, "same full fee-child runtime");
-            assertEq(
-                StickyRewardReceiverFactory(_ethereum.suite.rewardReceiverFactory).predictReceiverOf({
-                    stickyToken: address(_sticky), groupId: 0
-                }),
-                _receiver,
-                "same Ethereum reward destination despite absent remote Sticky token"
-            );
-        }
+        _assertCollectorFamilyParity(1);
     }
 
     /// @notice A dispatched leaf cannot recover locally and later mint again on Ethereum.
@@ -296,7 +334,7 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
     function _localReserved(uint256 projectId) internal {
         Source memory source = _source(1, projectId);
         _flushReserved(source);
-        StickySourceCollector collector = _deployCollector(source);
+        StickySourceCollector collector = _deployCollector({source: source, destinationChainId: 1});
         uint256 distributorBefore = source.token.balanceOf(address(_distributor));
         uint256 reward = _fundCollector(source, collector);
         assertEq(source.token.balanceOf(address(_distributor)), distributorBefore, "acceptance only queues custody");
@@ -320,7 +358,7 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
     function _remoteCollected(uint256 chainId, uint256 projectId) internal {
         Source memory source = _source(chainId, projectId);
         _flushReserved(source);
-        StickySourceCollector collector = _deployCollector(source);
+        StickySourceCollector collector = _deployCollector({source: source, destinationChainId: 1});
         JBOutboxTree memory beforeAcceptance = source.sucker.outboxOf(JBConstants.NATIVE_TOKEN);
         uint256 reward = _fundCollector(source, collector);
         JBOutboxTree memory beforeOutbox = source.sucker.outboxOf(JBConstants.NATIVE_TOKEN);
@@ -578,10 +616,55 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         assertEq(source.sucker.retainedTransportPaymentRefundOf(feePayer), 0, "no retained transport refund remains");
     }
 
+    /// @notice Proves deterministic identity within one home family and separation from another family.
+    /// @param destinationChainId The home chain included in every source deployment's constructor arguments.
+    function _assertCollectorFamilyParity(uint256 destinationChainId) internal {
+        uint256[4] memory chains = [uint256(1), _OPTIMISM, _BASE, _ARBITRUM];
+        address expectedCollector;
+        address expectedFeePayer;
+        bytes32 expectedCollectorHash;
+        bytes32 expectedFeePayerHash;
+        Source memory source;
+        for (uint256 i = 0; i < chains.length; ++i) {
+            source = _source(chains[i], 1);
+            StickySourceCollector collector = _deployCollector({source: source, destinationChainId: destinationChainId});
+            address feePayer = address(collector.FEE_PAYER());
+            if (i == 0) {
+                expectedCollector = address(collector);
+                expectedFeePayer = feePayer;
+                expectedCollectorHash = address(collector).codehash;
+                expectedFeePayerHash = feePayer.codehash;
+            }
+            assertEq(address(collector), expectedCollector, "same configured reserved split hook");
+            assertEq(feePayer, expectedFeePayer, "same parent-bound fee child");
+            assertEq(address(collector).codehash, expectedCollectorHash, "same full hook runtime");
+            assertEq(feePayer.codehash, expectedFeePayerHash, "same full fee-child runtime");
+            assertEq(
+                StickyRewardReceiverFactory(_ethereum.suite.rewardReceiverFactory).predictReceiverOf({
+                    stickyToken: address(_sticky), groupId: 0
+                }),
+                _receiver,
+                "same receiver prediction for the family across source chains"
+            );
+        }
+        StickySourceCollector otherFamily =
+            _deployCollector({source: source, destinationChainId: destinationChainId == 1 ? _BASE : 1});
+        assertNotEq(address(otherFamily), expectedCollector, "different home chains have distinct hook addresses");
+        assertNotEq(address(otherFamily.FEE_PAYER()), expectedFeePayer, "fee custody belongs to one home family");
+        assertNotEq(address(otherFamily).codehash, expectedCollectorHash, "runtime binds the selected home chain");
+    }
+
     /// @notice Uses the production deployment helper while proving all six existing singletons remain untouched.
     /// @param source The pinned source contracts supplying canonical deployment dependencies.
+    /// @param destinationChainId The immutable home chain of the collector family.
     /// @return collector The locally deployed and verified shared reserved split hook.
-    function _deployCollector(Source memory source) internal returns (StickySourceCollector collector) {
+    function _deployCollector(
+        Source memory source,
+        uint256 destinationChainId
+    )
+        internal
+        returns (StickySourceCollector collector)
+    {
         StickyCoreDeployment memory core = StickyCoreDeployment({
             controller: source.controller,
             directory: source.controller.DIRECTORY(),
@@ -589,7 +672,8 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
             registry: block.chainid == 1 ? _checkedSucker(1, 1, _OPTIMISM).REGISTRY() : source.sucker.REGISTRY()
         });
         StickyDeploymentHarness harness = new StickyDeploymentHarness();
-        StickyDeploymentAddresses memory predicted = harness.predict(core);
+        StickyDeploymentAddresses memory predicted =
+            harness.predict({core: core, destinationChainId: destinationChainId});
         address[6] memory existing = [
             predicted.deployer,
             predicted.hook,
@@ -603,13 +687,16 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
             assertGt(existing[i].code.length, 0, "the historical Sticky singleton already exists");
             previousHashes[i] = existing[i].codehash;
         }
-        StickyDeploymentAddresses memory deployed = harness.deployFor(core);
+        StickyDeploymentAddresses memory deployed =
+            harness.deployFor({core: core, destinationChainId: destinationChainId});
         for (uint256 i = 0; i < existing.length; ++i) {
             assertEq(existing[i].codehash, previousHashes[i], "the deployment preserves all existing runtime code");
         }
         assertEq(abi.encode(deployed), abi.encode(predicted), "production deployment agrees with its prediction");
         assertEq(deployed.rewardReceiverFactory, _ethereum.suite.rewardReceiverFactory, "shared receiver factory");
         collector = StickySourceCollector(deployed.sourceCollector);
+        assertEq(deployed.destinationChainId, destinationChainId, "manifest identifies the selected family");
+        assertEq(collector.DESTINATION_CHAIN_ID(), destinationChainId, "immutable home-chain binding");
         assertEq(address(collector.FEE_PAYER()), deployed.sourceFeePayer, "verified child binding");
         assertTrue(collector.supportsInterface(type(IJBSplitHook).interfaceId), "reserved split-hook interface");
     }
@@ -620,7 +707,7 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
     /// @param backingAmount The actual terminal payment, in backing-token atoms; zero uses owner issuance instead.
     function _genericCollected(address backingToken, uint256 backingAmount) internal {
         Source memory canonical = _source({chainId: _OPTIMISM, projectId: 1});
-        StickySourceCollector collector = _deployCollector(canonical);
+        StickySourceCollector collector = _deployCollector({source: canonical, destinationChainId: 1});
         Source memory source =
             _launchGenericSource({canonical: canonical, collector: collector, backingToken: backingToken});
         uint256 reward;

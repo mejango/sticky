@@ -1,8 +1,44 @@
 # Omnichain reserved-token split hook review
 
+## Current home-chain revision
+
+Status as of 2026-10-09: the destination-bound implementation has passed the contract, fork, SDK-preview and application checks recorded below. Registry package qualification, final hosted checks and live release gates remain open. This is an internal source/test review, not independent human certification or live deployment evidence. The [accepted home-chain plan](tasks/home-chain-pools.md) and [operative hook plan](tasks/omnichain-split-hook.md) define the scope.
+
+Each Sticky pool has one home chain. Its shares, backing, snapshots, rewards and redemption remain there, while qualified direct routes can deliver reserved project tokens from other chains. The collector appends a nonzero immutable `destinationChainId` to `(registry, tokens, receiverFactory)`. One family has matching addresses across source deployments with the same constructor inputs; another destination has separate custody. Split encoding stays `hook = verified home-chain collector`, `beneficiary = home-chain Sticky share token`, `projectId = reward group`. Local settlement requires the executing chain to match the immutable destination; remote submission requires a registered usable peer on that destination. There is no implicit relay or Ethereum fallback, and native L2-to-L2 delivery remains unsupported without a separately qualified direct route.
+
+The deployment helper selects one family through required `STICKY_DESTINATION_CHAIN_ID`. Full family manifests and the two collector artifacts live under `deployments/<source-network>/source-collectors/<homeChainId>/`; the six existing contract artifacts retain their canonical paths. The [deployment procedure](DEPLOYMENT.md#source-collectors) owns the operational recipe. Public receiver, collector and fee-payer interfaces now own declarations/events and typed interaction boundaries; AutoStick exposes its existing cooldown getters through its interface. The six deployed singletons preserve executable bytecode and normalized public ABI, allowing declaration-only `internalType` changes. No ERC-165 behavior was added.
+
+### Current verification evidence
+
+- **Forks:** 84/84 pass across seven suites in `sticky-home-fork-final.log`. These include non-Ethereum local settlement, qualified Ethereum-to-Base delivery, rejection of an Ethereum peer for an OP-to-Base destination, family separation and same-family parity across Ethereum, OP, Base and Arbitrum, alongside existing JBP6/REV, credit, custody and holder-collection cases.
+- **Local Solidity:** the final exact-source run passes 288 tests across 18 suites without failures or skips (`sticky-home-final-local.log`), including 31 deployment and 54 collector cases. Both collector custody fuzz tests run 4,096 cases each. The final collector-only rerun also passed all 54 before this complete run.
+- **Deployment, interfaces and style:** the final tooling command passes all 69 Node cases: 63 deployment/style cases plus six singleton-preservation cases (`sticky-home-final-tooling.log`). The singleton gate confirms exact compiled creation bytecode, runtime templates and public ABI with only `internalType` metadata excluded. Final formatting, strict compiler/sizes and deployment-entrypoint compilation pass. The factory's raw ABI metadata changes from a concrete receiver type to its interface; the gate does not itself prove live runtime or immutable bindings.
+- **Static analysis:** Slither analyzes 134 contracts with 77 detectors and reports the same 87 existing Low findings, with no High or Medium finding and no collector finding. Passing this analysis does not remove the dependency and economic boundaries described in [RISKS.md](RISKS.md).
+- **Shared SDK:** the full SDK check passes 2,419 tests, types, builds, protocol/wallet boundaries and package budgets. Feature [PR #196](https://github.com/Bananapus/juice-sdk-v4/pull/196) merged as `f46f4cc`; version [PR #197](https://github.com/Bananapus/juice-sdk-v4/pull/197) was subsequently merged by the user as `4c8646ee08ab41dc3536a00180d9b1a4fef25518`. Core 2.26.0 registry publication is still pending. Collector deployment defaults remain empty; existing same-chain distributor semantics are unchanged.
+- **Sticky client with the local SDK preview:** 3,715 unit tests across 162 files and 54 browser cases pass, covering one-target preparation/restored execution, independent pool display and the qualified delivery/recovery flows. A separate production build from an empty output directory passes without warnings or errors (`sticky-home-web-clean-build.log`); the deterministic browser build was also clean. The earlier cached standard build logged missing SDK exports after a same-version preview overlay despite exiting zero and was rejected as evidence. The manifest and lock still pin published core 2.25.0; registry package identity, the exact published pin and its final application checks remain pending.
+
+Fork transport tests model canonical proving/finalization and message delivery; they do not establish consensus finality, elapsed withdrawal periods or a production executor. Source acceptance can retain credits until the source ERC-20 exists, but remote claims still require the destination reward ERC-20 and pool to be ready. Generic backing and replacement routes remain subject to the existing canonical dependency, terminal and asset assumptions. No keeper is installed by this change.
+
+### Current rehearsal and prepared deployment
+
+The [home-chain rehearsal record](tasks/home-chain-rehearsal.json) binds the exact source/script hashes, creation/initcode fingerprints, simulated runtime hashes, constructor arguments and four pinned chain blocks. It records the uncommitted workspace as `d8e0dc549767f6999d387dbe3fc23592f3676ae6-dirty`; the per-file hashes identify the rehearsed content, rather than claiming that the baseline commit contains it. The grouped production helper succeeds on Ethereum, OP, Base and Arbitrum for the Ethereum-home family (`destinationChainId = 1`). This rehearses that family's deployment on four sources, not every destination family or every transport lane.
+
+| Contract | Predicted address on the four rehearsed sources | Simulated runtime hash |
+| --- | --- | --- |
+| Ethereum-home collector | `0x9E5CD51DEe8f8E6B22C2B868C50001f3f6fE6F8a` | `0x121820af7579977bcd33f938a559784657ef7b9dc601e8b32ee3c0d440613119` |
+| Constructor-created fee child | `0x4C84664e1266a56023F6278dA6A0dD704E4ffee3` | `0x9151a7e6e648932ea179da48f9b4dc5b6e7c5284c0296151f6c3a83fcc948e2d` |
+
+[The prepared deployment payload](tasks/home-chain-deployment.json) is one zero-value call per source chain to the canonical deterministic factory; it creates the parent and child together. Both predicted addresses had no code at the observed blocks. Read-only factory estimates are 2,490,425 gas on Ethereum, OP and Base and 2,499,702 on Arbitrum, excluding Safe/Sphinx overhead and network fees. These predictions supersede the historical three-argument collector addresses below. The payload does not configure a source split or create Sticky JBX.
+
+Live deployment, source allocations and merging the final contract [PR #58](https://github.com/mejango/sticky/pull/58) remain unapproved and unexecuted. Post-execution runtime/immutable verification and final hosted checks are also outstanding. Explicit final merge approval is required after deployment and verification. No live collector registry entry, recurring Safe operation, source configuration or keeper activation is implied by passing local checks or by preparing these transactions.
+
+## Historical Ethereum-only review
+
+The record below is preserved from documentation baseline `d8e0dc549767f6999d387dbe3fc23592f3676ae6`, whose rehearsed implementation was `24632c528669f9261c60bb203f65bc3e0d6ac7b6`. Its pass counts, addresses, constructor arguments, hashes and gas estimates apply only to the earlier Ethereum-only collector. They do not qualify the new destination-bound code or provide deployment values for it. [The historical rehearsal JSON](tasks/omnichain-split-hook-rehearsal.json) remains unchanged as evidence of that earlier revision.
+
 Status: local implementation review and four-chain deployment rehearsal complete on `codex/sticky-omnichain-split-hook-20261008`. This is an internal source/test review, not a claim of deployment, independent human certification or bridge finality. The contract PR must remain unmerged until deployment and verification are complete and Jango explicitly approves the final PR.
 
-## Scope and outcome
+### Scope and outcome
 
 `StickySourceCollector` and `StickySourceFeePayer` replace the undeployed fixed-project/fixed-route proposal with one shared reserved-token split hook. The reviewed split encoding is:
 
@@ -18,7 +54,7 @@ The existing receiver factory owns destination prediction and validation. Existi
 
 [Architecture](ARCHITECTURE.md), [invariants](INVARIANTS.md), [risks](RISKS.md), [deployment procedure](DEPLOYMENT.md#source-collectors), and the [checked plan](tasks/omnichain-split-hook.md) own the operative descriptions. The [fixed-route audit](SOURCE_COLLECTOR_AUDIT.md) remains historical evidence and does not qualify this implementation.
 
-## Method and trust boundaries
+### Method and trust boundaries
 
 Reviewed against pinned core `feff600654aee6fb1747dded692f18068b2230a6`, distributor `44d6d5d2e7cca77422ee0ac4909cf42ccf7839b5`, suckers 1.1.2, OpenZeppelin 5.6.1 and Foundry 1.8.1 / Solidity 0.8.28 / Cancun / viaIR / optimizer 200. Independent agents separately reviewed custody, protocol interaction, deployment identity and documentation; root reviewed the full implementation and executed verification serially.
 
@@ -26,7 +62,7 @@ The review traced actual core controller catch-and-burn behavior, credit transfe
 
 Trust remains in canonical dependency identity, registry governance and approved sucker builders, source-project peer configuration, compatible project-token behavior, the backing asset/terminal and underlying bridge. Source acceptance cannot verify remote Ethereum token deployment. The destination reward ERC-20 must exist before a remote claim; the unchanged receiver cannot materialize credits minted directly to it. A positive registry fee requires its fee project's ERC-20; zero-fee submission does not. CCIP LINK payment is not provided.
 
-## Design issues resolved before release
+### Design issues resolved before release
 
 - **Receipt versus delivery:** Core catches reserved hook failures and burns unconsumed ERC-20 allocations. Acceptance therefore performs no transport, fee payment, cashout quote or receiver settlement. Temporary delivery failure restores the selected queue and source custody.
 - **Nested valid allocations:** A blanket inbound reentrancy rejection could make another project's valid allocation burn during a token callback. Valid nested callbacks remain accepted. A transient depth blocks outbound mutation during receipt measurement. Combined custody growth less nested aggregate-liability growth attributes each receipt exactly once.
@@ -37,7 +73,7 @@ Trust remains in canonical dependency identity, registry governance and approved
 
 No demonstrated unresolved blocker was found in the reviewed production source under these dependency assumptions. Verification is still required for the exact final revision and actual deployment.
 
-## Verification evidence
+### Verification evidence
 
 - Four-chain fork suite: **80/80 pass**, including six actual JBP6/REV reserved-hook lanes through modeled native transport, destination claims, settlement and holder collection; Ethereum local settlement; four-chain hook/fee-child address and runtime parity; generic project IDs beyond 1/3; positive USDC.e and zero-backed source sends; real source credits followed by ERC-20 deployment and partial/full settlement.
 - Deployment Solidity suite: **26/26 pass**, including repeat/partial deployment, prior singleton preservation, wrong core/registry/runtime/immutable rejection and complete manifest contents.
@@ -51,7 +87,7 @@ No demonstrated unresolved blocker was found in the reviewed production source u
 
 The fork harness models canonical native proving/finalization and message delivery; it does not establish consensus, elapsed withdrawal periods or a production relayer. The positive USDC.e case proves source-side actual terminal cashout, bridge burn/message and outbox accounting; it does not claim L1 ERC-20 finalization. Generic routes and caller-sensitive custom cashout hooks require their own setup/compatibility qualification.
 
-## Release evidence
+### Release evidence
 
 The committed implementation `24632c528669f9261c60bb203f65bc3e0d6ac7b6` passed the grouped production-helper rehearsal on Ethereum, OP, Base and Arbitrum. Each chain deployed and verified the complete suite in fork state, then repeated the helper to verify reuse. [The recorded rehearsal evidence](tasks/omnichain-split-hook-rehearsal.json) contains canonical block identities, dependency bindings, exact source/init-code/runtime fingerprints and independent RPC gas estimates. A local dependency symlink initially fell outside Foundry’s read permissions; the successful run used the already-permitted core deployment directory after all 12 consumed artifacts were confirmed byte-identical.
 

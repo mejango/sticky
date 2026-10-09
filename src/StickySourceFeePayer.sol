@@ -2,8 +2,12 @@
 pragma solidity 0.8.28;
 
 import {JBSucker} from "@bananapus/suckers-v6/src/JBSucker.sol";
+import {IJBSucker} from "@bananapus/suckers-v6/src/interfaces/IJBSucker.sol";
+import {IJBSuckerExtended} from "@bananapus/suckers-v6/src/interfaces/IJBSuckerExtended.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+
+import {IStickySourceFeePayer} from "./interfaces/IStickySourceFeePayer.sol";
 
 /// @notice Pays a collector's bridge fees separately from its reserved reward principal and returns each caller's
 /// fee tokens and native refunds.
@@ -12,7 +16,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 /// includes any tokens donated during the same call and does not authenticate their mint provenance. Preexisting
 /// token donations and forced native currency remain here. This child has no allowance over parent tokens, native
 /// receive handler, owner, rescue operation or arbitrary-call entrypoint and must never receive reserved splits.
-contract StickySourceFeePayer {
+contract StickySourceFeePayer is IStickySourceFeePayer {
     // A library that safely returns the fee tokens received during this submission.
     using SafeERC20 for IERC20;
 
@@ -63,7 +67,7 @@ contract StickySourceFeePayer {
     /// @notice The only account allowed to submit through this child.
     /// @dev Fixed to the deploying collector, which authenticates each route and supplies its current send caller as
     /// the fee-token and native-refund beneficiary.
-    address public immutable COLLECTOR;
+    address public immutable override COLLECTOR;
 
     //*********************************************************************//
     // -------------------------- constructor ---------------------------- //
@@ -85,9 +89,8 @@ contract StickySourceFeePayer {
     /// registry fee, with any excess supplied to the transport. A positive registry fee requires its project's ERC-20;
     /// a zero fee skips payment and can use a project without an ERC-20. LINK payment is not provided. This child
     /// rejects direct native refunds, causing supported suckers to retain them as its credit; it claims that fresh
-    /// credit
-    /// directly to the beneficiary. A rejected token transfer, refund or credit postcondition reverts the parent's
-    /// complete preparation and submission. The parent's send guard spans every callback.
+    /// credit directly to the beneficiary. A rejected token transfer, refund or credit postcondition reverts the
+    /// parent's complete preparation and submission. The parent's send guard spans every callback.
     /// @param sucker The registered sucker authenticated by the parent for this submission.
     /// @param backingToken The mapped backing asset whose prepared outbox the parent is submitting.
     /// @param beneficiary The original caller of the parent's atomic send.
@@ -95,23 +98,24 @@ contract StickySourceFeePayer {
     /// @return refundedFee The failed registry-fee payment retained during submission and returned, in wei.
     /// @return refundedTransportPayment The excess transport payment retained during submission and returned, in wei.
     function send(
-        JBSucker sucker,
+        IJBSucker sucker,
         address backingToken,
         address payable beneficiary
     )
         external
         payable
+        override
         returns (uint256 feeTokenCount, uint256 refundedFee, uint256 refundedTransportPayment)
     {
         // Route selection and its beneficiary must come from the parent's guarded send.
         if (msg.sender != COLLECTOR) revert StickySourceFeePayer_Unauthorized({caller: msg.sender});
 
-        // The caller funds both fee components; forced native balances cannot subsidize either one.
-        uint256 fee = sucker.REGISTRY().toRemoteFee();
+        // The installed interfaces omit the registry getter; forced native balances cannot subsidize caller fees.
+        uint256 fee = JBSucker(payable(address(sucker))).REGISTRY().toRemoteFee();
         if (msg.value < fee) revert StickySourceFeePayer_InsufficientFee({received: msg.value, minimum: fee});
 
         // Resolve the receipt asset through the authenticated route instead of sharing principal custody.
-        uint256 feeProjectId = sucker.FEE_PROJECT_ID();
+        uint256 feeProjectId = JBSucker(payable(address(sucker))).FEE_PROJECT_ID();
         IERC20 feeToken = IERC20(address(sucker.TOKENS().tokenOf(feeProjectId)));
         bool hasFeeToken = address(feeToken).code.length != 0;
         if (fee != 0 && !hasFeeToken) {
@@ -145,12 +149,14 @@ contract StickySourceFeePayer {
         }
 
         // Return a failed registry payment directly from the sucker without opening native custody here.
-        refundedFee = sucker.retainedToRemoteFeeOf(address(this));
-        if (refundedFee != 0) sucker.claimRetainedToRemoteFee(beneficiary);
+        refundedFee = IJBSuckerExtended(address(sucker)).retainedToRemoteFeeOf(address(this));
+        if (refundedFee != 0) IJBSuckerExtended(address(sucker)).claimRetainedToRemoteFee(beneficiary);
 
         // A rejected direct transport refund is separate credit, also payable only to this submission's caller.
-        refundedTransportPayment = sucker.retainedTransportPaymentRefundOf(address(this));
-        if (refundedTransportPayment != 0) sucker.claimRetainedTransportPaymentRefund(beneficiary);
+        refundedTransportPayment = IJBSuckerExtended(address(sucker)).retainedTransportPaymentRefundOf(address(this));
+        if (refundedTransportPayment != 0) {
+            IJBSuckerExtended(address(sucker)).claimRetainedTransportPaymentRefund(beneficiary);
+        }
 
         // Both claims must finish completely so another submission cannot inherit any of this caller's credit.
         _requireNoRetainedCredit(sucker);
@@ -164,13 +170,13 @@ contract StickySourceFeePayer {
     /// @dev Checking before submission isolates callers; checking after both claims rejects partial refunds or
     /// credit introduced during a refund callback.
     /// @param sucker The authenticated route whose refund balances are checked.
-    function _requireNoRetainedCredit(JBSucker sucker) internal view {
+    function _requireNoRetainedCredit(IJBSucker sucker) internal view {
         // A registry-fee credit must belong entirely to one atomic submission and refund.
-        uint256 retained = sucker.retainedToRemoteFeeOf(address(this));
+        uint256 retained = IJBSuckerExtended(address(sucker)).retainedToRemoteFeeOf(address(this));
         if (retained != 0) revert StickySourceFeePayer_RetainedFee({sucker: address(sucker), amount: retained});
 
         // Transport overpayments have a separate ledger and the same per-submission ownership boundary.
-        retained = sucker.retainedTransportPaymentRefundOf(address(this));
+        retained = IJBSuckerExtended(address(sucker)).retainedTransportPaymentRefundOf(address(this));
         if (retained != 0) {
             revert StickySourceFeePayer_RetainedTransportPayment({sucker: address(sucker), amount: retained});
         }

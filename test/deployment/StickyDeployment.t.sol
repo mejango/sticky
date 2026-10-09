@@ -60,6 +60,7 @@ contract StickyDeploymentTest is TestBaseWorkflow {
 
     function setUp() public override {
         super.setUp();
+        vm.chainId(1);
         vm.warp(1_800_000_000);
         _deployment = new StickyDeploymentHarness();
         _core = StickyCoreDeployment({
@@ -84,15 +85,15 @@ contract StickyDeploymentTest is TestBaseWorkflow {
     }
 
     function test_cleanDeploymentAndRepeatPreserveEveryAddressAndOriginalTimestamp() public {
-        StickyDeploymentAddresses memory predicted = _deployment.predict(_core);
+        StickyDeploymentAddresses memory predicted = _deployment.predict({core: _core, destinationChainId: 1});
         assertEq(predicted.deployer.code.length, 0);
-        StickyDeploymentAddresses memory first = _deployment.deployFor(_core);
+        StickyDeploymentAddresses memory first = _deployment.deployFor({core: _core, destinationChainId: 1});
         assertEq(keccak256(abi.encode(first)), keccak256(abi.encode(predicted)));
         bytes32 firstHash = first.distributor.codehash;
         uint256 firstTimestamp = StickyDistributor(payable(first.distributor)).STARTING_TIMESTAMP();
         vm.warp(block.timestamp + 10 days);
         vm.recordLogs();
-        StickyDeploymentAddresses memory second = _deployment.deployFor(_core);
+        StickyDeploymentAddresses memory second = _deployment.deployFor({core: _core, destinationChainId: 1});
         assertEq(vm.getRecordedLogs().length, 0, "repeat creates no contracts or transactions with logs");
         assertEq(keccak256(abi.encode(first)), keccak256(abi.encode(second)));
         assertEq(second.distributor.codehash, firstHash);
@@ -101,7 +102,7 @@ contract StickyDeploymentTest is TestBaseWorkflow {
     }
 
     function test_deployedFactoryLaunchesTokenWithCanonicalHookAndRegistryBindings() public {
-        StickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
+        StickyDeploymentAddresses memory deployed = _deployment.deployFor({core: _core, destinationChainId: 1});
         StickyDeployer factory = StickyDeployer(deployed.deployer);
         MockArt underlying = new MockArt();
         uint256 fee = jbProjects().creationFee();
@@ -137,8 +138,30 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         _deployment.verify(_core, deployed);
     }
 
+    /// @notice Different homes reuse the six deployed singletons while creating independent bound source families.
+    function test_destinationFamiliesCoexistWithoutChangingSharedSingletons() public {
+        StickyDeploymentAddresses memory ethereum = _deployment.deployFor({core: _core, destinationChainId: 1});
+        bytes32 sourceHash = ethereum.sourceCollector.codehash;
+        bytes32 childHash = ethereum.sourceFeePayer.codehash;
+        StickyDeploymentAddresses memory base = _deployment.deployFor({core: _core, destinationChainId: 8453});
+        assertEq(base.deployer, ethereum.deployer);
+        assertEq(base.hook, ethereum.hook);
+        assertEq(base.distributor, ethereum.distributor);
+        assertEq(base.rewardReceiver, ethereum.rewardReceiver);
+        assertEq(base.rewardReceiverFactory, ethereum.rewardReceiverFactory);
+        assertEq(base.autoStick, ethereum.autoStick);
+        assertNotEq(base.sourceCollector, ethereum.sourceCollector);
+        assertNotEq(base.sourceFeePayer, ethereum.sourceFeePayer);
+        assertEq(StickySourceCollector(ethereum.sourceCollector).DESTINATION_CHAIN_ID(), 1);
+        assertEq(StickySourceCollector(base.sourceCollector).DESTINATION_CHAIN_ID(), 8453);
+        assertEq(ethereum.sourceCollector.codehash, sourceHash);
+        assertEq(ethereum.sourceFeePayer.codehash, childHash);
+        _deployment.verify({core: _core, deployed: ethereum});
+        _deployment.verify({core: _core, deployed: base});
+    }
+
     function test_distributorBindsTheDeployedHookWithProductionPolicy() public {
-        StickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
+        StickyDeploymentAddresses memory deployed = _deployment.deployFor({core: _core, destinationChainId: 1});
         StickyDistributor distributor = StickyDistributor(payable(deployed.distributor));
         assertEq(address(distributor.STICKY_HOOK()), deployed.hook);
         assertEq(distributor.EPOCH_DURATION(), StickyHook(deployed.hook).EPOCH_DURATION());
@@ -175,6 +198,30 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         _deployment.verify(_core, deployed);
     }
 
+    /// @notice An entrypoint has no default family, and a source cannot select a home in another environment.
+    function test_loadDestinationRequiresExplicitMatchingEnvironment() public {
+        string memory previous = vm.envOr({name: "STICKY_DESTINATION_CHAIN_ID", defaultValue: string("")});
+        vm.setEnv({name: "STICKY_DESTINATION_CHAIN_ID", value: ""});
+        vm.expectRevert();
+        // The absent operator choice must stop before any artifact or transaction is created.
+        // forge-lint: disable-next-line(unused-return)
+        _deployment.loadDestinationChainId();
+        vm.setEnv({name: "STICKY_DESTINATION_CHAIN_ID", value: "8453"});
+        assertEq(_deployment.loadDestinationChainId(), 8453);
+        vm.setEnv({name: "STICKY_DESTINATION_CHAIN_ID", value: "11155111"});
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickyDeployment.StickyDeployment_InvalidDestinationChainId.selector, uint256(1), uint256(11_155_111)
+            )
+        );
+        // No mainnet proposal may reuse a testnet family's explicit destination.
+        // forge-lint: disable-next-line(unused-return)
+        _deployment.loadDestinationChainId();
+        vm.chainId(84_532);
+        assertEq(_deployment.loadDestinationChainId(), 11_155_111);
+        vm.setEnv({name: "STICKY_DESTINATION_CHAIN_ID", value: previous});
+    }
+
     function test_loadsFlatCoreArtifactsWithoutForwarder() public {
         // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.chainId(11_155_111);
@@ -184,6 +231,23 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         assertEq(address(loaded.controller), address(_core.controller));
         assertEq(address(loaded.terminal), address(_core.terminal));
         assertEq(address(loaded.registry), address(_core.registry));
+    }
+
+    /// @notice A second family writes its own verified identity without overwriting another family's record.
+    function test_manifestDestinationFamiliesDoNotOverwriteEachOther() public {
+        StickyDeploymentAddresses memory ethereum = _deployment.deployFor({core: _core, destinationChainId: 1});
+        StickyDeploymentAddresses memory base = _deployment.deployFor({core: _core, destinationChainId: 8453});
+        string memory canonical = vm.readFile("deployments/ethereum/verified.json");
+        _deployment.writeManifest({core: _core, deployed: ethereum});
+        string memory first = vm.readFile("deployments/ethereum/source-collectors/1/test.json");
+        _deployment.writeManifest({core: _core, deployed: base});
+        string memory second = vm.readFile("deployments/ethereum/source-collectors/8453/test.json");
+        assertEq(vm.readFile("deployments/ethereum/source-collectors/1/test.json"), first);
+        assertEq(vm.readFile("deployments/ethereum/verified.json"), canonical);
+        assertEq(vm.parseJsonUint({json: first, key: ".destinationChainId"}), 1);
+        assertEq(vm.parseJsonUint({json: second, key: ".destinationChainId"}), 8453);
+        assertEq(vm.parseJsonAddress({json: first, key: ".sourceCollector"}), ethereum.sourceCollector);
+        assertEq(vm.parseJsonAddress({json: second, key: ".sourceCollector"}), base.sourceCollector);
     }
 
     function test_manifestDistinguishesRpcBlockFromEvmHeight() public {
@@ -196,10 +260,10 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         bytes32 rpcBlockHash = keccak256("canonical RPC block");
         // forge-lint: disable-next-line(unsafe-cheatcode)
         vm.setEnv("STICKY_RPC_BLOCK_HASH", vm.toString(rpcBlockHash));
-        StickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
+        StickyDeploymentAddresses memory deployed = _deployment.deployFor({core: _core, destinationChainId: 1});
         _deployment.writeManifest(_core, deployed);
         // forge-lint: disable-next-line(unsafe-cheatcode)
-        string memory json = vm.readFile("deployments/arbitrum/test.json");
+        string memory json = vm.readFile("deployments/arbitrum/source-collectors/1/test.json");
         // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(vm.parseJsonUint(json, ".evmBlockNumber"), 42);
         assertEq(vm.parseJsonUint(json, ".rpcBlockNumber"), 100);
@@ -212,34 +276,35 @@ contract StickyDeploymentTest is TestBaseWorkflow {
 
     function test_partialDeploymentResumesWithoutReplacingFactoryOrHook() public {
         _deployment.deployDeployerOnly(_core);
-        StickyDeploymentAddresses memory predicted = _deployment.predict(_core);
+        StickyDeploymentAddresses memory predicted = _deployment.predict({core: _core, destinationChainId: 1});
         bytes32 deployerHash = predicted.deployer.codehash;
         bytes32 hookHash = predicted.hook.codehash;
         assertGt(predicted.deployer.code.length, 0);
         assertEq(predicted.distributor.code.length, 0);
-        StickyDeploymentAddresses memory resumed = _deployment.deployFor(_core);
+        StickyDeploymentAddresses memory resumed = _deployment.deployFor({core: _core, destinationChainId: 1});
         assertEq(resumed.deployer.codehash, deployerHash);
         assertEq(resumed.hook.codehash, hookHash);
         _deployment.verify(_core, resumed);
     }
 
     function test_rejectsConsistentlyWrongImmutableDependency() public {
-        StickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
+        StickyDeploymentAddresses memory deployed = _deployment.deployFor({core: _core, destinationChainId: 1});
         // A legitimate second factory has identical opcodes and different constructor-created HOOK references.
         StickyDeployer different = new StickyDeployer({controller: _core.controller, terminal: _core.terminal});
         vm.etch(deployed.deployer, address(different).code);
         _deployment.verifyRuntime("StickyDeployer", deployed.deployer);
         vm.expectPartialRevert(StickyDeployment.StickyDeployment_BindingMismatch.selector);
         // forge-lint: disable-next-line(unused-return)
-        _deployment.deployFor(_core);
+        _deployment.deployFor({core: _core, destinationChainId: 1});
     }
 
     function test_rejectsConsistentlyWrongSourceCollectorBinding() public {
-        StickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
+        StickyDeploymentAddresses memory deployed = _deployment.deployFor({core: _core, destinationChainId: 1});
         StickySourceCollector different = new StickySourceCollector({
             registry: _core.registry,
             tokens: _core.controller.TOKENS(),
-            receiverFactory: StickySourceCollector(deployed.sourceCollector).RECEIVER_FACTORY()
+            receiverFactory: StickySourceCollector(deployed.sourceCollector).RECEIVER_FACTORY(),
+            destinationChainId: deployed.destinationChainId
         });
         vm.etch(deployed.sourceCollector, address(different).code);
         _deployment.verifyRuntime({name: "StickySourceCollector", target: deployed.sourceCollector});
@@ -248,7 +313,7 @@ contract StickyDeploymentTest is TestBaseWorkflow {
     }
 
     function test_rejectsConsistentlyWrongSourceFeePayerBinding() public {
-        StickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
+        StickyDeploymentAddresses memory deployed = _deployment.deployFor({core: _core, destinationChainId: 1});
         StickySourceFeePayer different = new StickySourceFeePayer();
         vm.etch(deployed.sourceFeePayer, address(different).code);
         _deployment.verifyRuntime({name: "StickySourceFeePayer", target: deployed.sourceFeePayer});
@@ -264,7 +329,7 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         );
         vm.expectPartialRevert(StickyDeployment.StickyDeployment_BindingMismatch.selector);
         // forge-lint: disable-next-line(unused-return)
-        _deployment.deployFor(_core);
+        _deployment.deployFor({core: _core, destinationChainId: 1});
     }
 
     function test_rejectsDifferentCorePriceRegistriesBeforeAnyDeployment() public {
@@ -272,7 +337,7 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         vm.mockCall(address(_core.terminal.STORE()), abi.encodeWithSignature("PRICES()"), abi.encode(address(0xdead)));
         vm.expectPartialRevert(StickyDeployment.StickyDeployment_BindingMismatch.selector);
         // forge-lint: disable-next-line(unused-return)
-        _deployment.deployFor(_core);
+        _deployment.deployFor({core: _core, destinationChainId: 1});
     }
 
     function test_rejectsDifferentCoreRulesetRegistries() public {
@@ -280,28 +345,40 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         vm.mockCall(address(_core.terminal.STORE()), abi.encodeWithSignature("RULESETS()"), abi.encode(address(0xdead)));
         vm.expectPartialRevert(StickyDeployment.StickyDeployment_BindingMismatch.selector);
         // forge-lint: disable-next-line(unused-return)
-        _deployment.deployFor(_core);
+        _deployment.deployFor({core: _core, destinationChainId: 1});
+    }
+
+    /// @notice A record cannot combine one family's destination with another family's deployed source contracts.
+    function test_rejectsFamilyMixedDeploymentRecord() public {
+        StickyDeploymentAddresses memory deployed = _deployment.deployFor({core: _core, destinationChainId: 1});
+        deployed.destinationChainId = 8453;
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickyDeployment.StickyDeployment_BindingMismatch.selector, deployed.deployer, "CREATE2 predictions"
+            )
+        );
+        _deployment.verify({core: _core, deployed: deployed});
     }
 
     function test_rejectsMismatchedExistingOpcode() public {
-        StickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
+        StickyDeploymentAddresses memory deployed = _deployment.deployFor({core: _core, destinationChainId: 1});
         bytes memory code = deployed.deployer.code;
         code[0] = bytes1(uint8(code[0]) ^ 1);
         vm.etch(deployed.deployer, code);
         vm.expectPartialRevert(StickyDeployment.StickyDeployment_RuntimeMismatch.selector);
         // forge-lint: disable-next-line(unused-return)
-        _deployment.deployFor(_core);
+        _deployment.deployFor({core: _core, destinationChainId: 1});
     }
 
     function test_rejectsMissingCoreCodeBeforeAnyDeployment() public {
         vm.etch(address(_core.terminal), hex"");
         vm.expectPartialRevert(StickyDeployment.StickyDeployment_MissingCode.selector);
         // forge-lint: disable-next-line(unused-return)
-        _deployment.deployFor(_core);
+        _deployment.deployFor({core: _core, destinationChainId: 1});
     }
 
     function test_rejectsNoncanonicalUpperBitsInImmutableAddress() public {
-        StickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
+        StickyDeploymentAddresses memory deployed = _deployment.deployFor({core: _core, destinationChainId: 1});
         // forge-lint: disable-next-line(unsafe-cheatcode)
         string memory json = vm.readFile("out/StickyDeployer.sol/StickyDeployer.json");
         string memory root = ".deployedBytecode.immutableReferences";
@@ -319,7 +396,7 @@ contract StickyDeploymentTest is TestBaseWorkflow {
     }
 
     function test_rejectsOneInconsistentImmutableOccurrence() public {
-        StickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
+        StickyDeploymentAddresses memory deployed = _deployment.deployFor({core: _core, destinationChainId: 1});
         // forge-lint: disable-next-line(unsafe-cheatcode)
         string memory json = vm.readFile("out/StickyDeployer.sol/StickyDeployer.json");
         string memory root = ".deployedBytecode.immutableReferences";
@@ -356,7 +433,25 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         vm.etch(_deployment.DETERMINISTIC_FACTORY(), hex"00");
         vm.expectPartialRevert(StickyDeployment.StickyDeployment_RuntimeMismatch.selector);
         // forge-lint: disable-next-line(unused-return)
-        _deployment.deployFor(_core);
+        _deployment.deployFor({core: _core, destinationChainId: 1});
+    }
+
+    /// @notice Runtime verification must compare the destination getter as well as every dependency address.
+    function test_rejectsWrongCollectorDestinationBinding() public {
+        StickyDeploymentAddresses memory deployed = _deployment.deployFor({core: _core, destinationChainId: 1});
+        vm.mockCall({
+            callee: deployed.sourceCollector,
+            data: abi.encodeWithSignature("DESTINATION_CHAIN_ID()"),
+            returnData: abi.encode(uint256(8453))
+        });
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickyDeployment.StickyDeployment_BindingMismatch.selector,
+                deployed.sourceCollector,
+                "source reward dependencies"
+            )
+        );
+        _deployment.verify({core: _core, deployed: deployed});
     }
 
     function test_rejectsWrongCoreArtifactChain() public {
@@ -373,14 +468,14 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         vm.mockCall(address(_core.terminal), abi.encodeWithSignature("DIRECTORY()"), abi.encode(address(0xdead)));
         vm.expectPartialRevert(StickyDeployment.StickyDeployment_BindingMismatch.selector);
         // forge-lint: disable-next-line(unused-return)
-        _deployment.deployFor(_core);
+        _deployment.deployFor({core: _core, destinationChainId: 1});
     }
 
     function test_rejectsWrongRegistryDirectoryBeforeAnyDeployment() public {
         vm.mockCall(address(_core.registry), abi.encodeWithSignature("DIRECTORY()"), abi.encode(address(0xdead)));
         vm.expectPartialRevert(StickyDeployment.StickyDeployment_BindingMismatch.selector);
         // forge-lint: disable-next-line(unused-return)
-        _deployment.deployFor(_core);
+        _deployment.deployFor({core: _core, destinationChainId: 1});
     }
 
     function test_rejectsWrongRpcChainBeforeReadingArtifacts() public {
@@ -404,22 +499,29 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         vm.setEnv("STICKY_EXPECTED_CHAIN_ID", "0");
     }
 
+    /// @notice Every selected family predicts one address across its source environment without changing shared
+    /// singletons.
     function test_sameArtifactsAndCoreBindingsPredictSameAddressesOnEverySupportedChain() public {
-        bytes32 expected = keccak256(abi.encode(_deployment.predict(_core)));
-        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256[8] memory chainIds = [uint256(1), 10, 8453, 42_161, 11_155_111, 11_155_420, 84_532, 421_614];
-        // forge-lint: disable-next-line(uninitialized-local)
-        for (uint256 i; i < chainIds.length; i++) {
-            // forge-lint: disable-next-line(calls-loop)
-            vm.chainId(chainIds[i]);
-            // forge-lint: disable-next-line(calls-loop)
-            assertEq(keccak256(abi.encode(_deployment.predict(_core))), expected);
+        for (uint256 home; home < chainIds.length; home++) {
+            vm.chainId(chainIds[home]);
+            bytes32 expected =
+                keccak256(abi.encode(_deployment.predict({core: _core, destinationChainId: chainIds[home]})));
+            uint256 firstSource = home < 4 ? 0 : 4;
+            for (uint256 source = firstSource; source < firstSource + 4; source++) {
+                vm.chainId(chainIds[source]);
+                assertEq(
+                    keccak256(abi.encode(_deployment.predict({core: _core, destinationChainId: chainIds[home]}))),
+                    expected
+                );
+            }
         }
     }
 
     function test_sourceCollectorBindsCanonicalDependenciesAndItsOnlyFeePayer() public {
-        StickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
+        StickyDeploymentAddresses memory deployed = _deployment.deployFor({core: _core, destinationChainId: 1});
         StickySourceCollector collector = StickySourceCollector(deployed.sourceCollector);
+        assertEq(collector.DESTINATION_CHAIN_ID(), deployed.destinationChainId);
         assertEq(address(collector.REGISTRY()), address(_core.registry));
         assertEq(address(collector.TOKENS()), address(_core.controller.TOKENS()));
         assertEq(address(collector.DIRECTORY()), address(_core.directory));
@@ -435,10 +537,10 @@ contract StickyDeploymentTest is TestBaseWorkflow {
     function test_verifiedManifestRecordsAllRuntimeHashes() public {
         // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.chainId(11_155_111);
-        StickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
+        StickyDeploymentAddresses memory deployed = _deployment.deployFor({core: _core, destinationChainId: 11_155_111});
         _deployment.writeManifest(_core, deployed);
         // forge-lint: disable-next-line(unsafe-cheatcode)
-        string memory json = vm.readFile("deployments/sepolia/test.json");
+        string memory json = vm.readFile("deployments/sepolia/source-collectors/11155111/test.json");
         assertEq(vm.parseJsonAddress(json, ".deployer"), deployed.deployer);
         assertEq(vm.parseJsonBytes32(json, ".hookCodehash"), deployed.hook.codehash);
         assertEq(vm.parseJsonBytes32(json, ".autoStickCodehash"), deployed.autoStick.codehash);
@@ -452,6 +554,7 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(vm.parseJsonUint(json, ".chainId"), 11_155_111);
         assertEq(vm.parseJsonString(json, ".kind"), "test");
+        assertEq(vm.parseJsonUint(json, ".destinationChainId"), deployed.destinationChainId);
     }
 
     //*********************************************************************//

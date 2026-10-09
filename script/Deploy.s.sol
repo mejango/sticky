@@ -31,6 +31,9 @@ contract Deploy is StickyDeployment, Sphinx {
     /// @notice Verified core dependencies for the current chain.
     StickyCoreDeployment internal _core;
 
+    /// @notice The explicitly selected pool home chain for this proposal's collector family.
+    uint256 internal _destinationChainId;
+
     //*********************************************************************//
     // ----------------------- public transactions ----------------------- //
     //*********************************************************************//
@@ -44,7 +47,7 @@ contract Deploy is StickyDeployment, Sphinx {
 
     /// @notice Collects only missing deployment transactions and validates every new or reused contract.
     function deploy() public sphinx {
-        StickyDeploymentAddresses memory deployed = _deploy(_core);
+        StickyDeploymentAddresses memory deployed = _deploy({core: _core, destinationChainId: _destinationChainId});
         _writeManifest({core: _core, deployed: deployed, kind: "simulation"});
     }
 
@@ -55,6 +58,7 @@ contract Deploy is StickyDeployment, Sphinx {
             revert Deploy_UnexpectedSafe({expected: _EXPECTED_SAFE, actual: actualSafe});
         }
         _core = _loadCore();
+        _destinationChainId = _loadDestinationChainId();
         deploy();
     }
 }

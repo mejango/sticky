@@ -21,9 +21,16 @@ contract StickyDeploymentHarness is StickyDeployment {
 
     /// @notice Deploys, or resumes deploying, the full Sticky suite bound to the given core contracts.
     /// @param core The V6 core contracts the suite binds to.
+    /// @param destinationChainId The selected pool home chain for this collector family.
     /// @return deployed The addresses of the deployed suite.
-    function deployFor(StickyCoreDeployment memory core) external returns (StickyDeploymentAddresses memory deployed) {
-        return _deploy(core);
+    function deployFor(
+        StickyCoreDeployment memory core,
+        uint256 destinationChainId
+    )
+        external
+        returns (StickyDeploymentAddresses memory deployed)
+    {
+        return _deploy({core: core, destinationChainId: destinationChainId});
     }
 
     /// @notice Writes the test manifest for a deployed suite.
@@ -65,6 +72,12 @@ contract StickyDeploymentHarness is StickyDeployment {
         return _loadCoreFrom({root: root, suckerRoot: suckerRoot});
     }
 
+    /// @notice Loads and validates the operator's explicit destination-family environment selection.
+    /// @return destinationChainId The selected home chain in the connected source's network environment.
+    function loadDestinationChainId() external view returns (uint256 destinationChainId) {
+        return _loadDestinationChainId();
+    }
+
     /// @notice Resolves the deployment folder name for a chain.
     /// @param chainId The chain ID to resolve.
     /// @return name The network folder name.
@@ -74,13 +87,17 @@ contract StickyDeploymentHarness is StickyDeployment {
 
     /// @notice Predicts the suite addresses for the given core contracts without deploying.
     /// @param core The V6 core contracts the suite binds to.
+    /// @param destinationChainId The selected pool home chain for this collector family.
     /// @return predicted The predicted suite addresses.
-    function predict(StickyCoreDeployment memory core)
+    function predict(
+        StickyCoreDeployment memory core,
+        uint256 destinationChainId
+    )
         external
         view
         returns (StickyDeploymentAddresses memory predicted)
     {
-        return _predict(core);
+        return _predict({core: core, destinationChainId: destinationChainId});
     }
 
     /// @notice Verifies a deployed suite's runtime code and bindings against the given core contracts.

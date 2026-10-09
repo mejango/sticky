@@ -102,7 +102,7 @@ contract StickySourceCreditsForkTest is StickyJbxDeployedFork {
             vm.readFile("node_modules/@bananapus/suckers-v6/deployments/ethereum/JBSuckerRegistry.json");
         _ethereum.core.registry = IJBSuckerRegistry(vm.parseJsonAddress(registryArtifact, ".address"));
         StickyDeploymentHarness deployment = new StickyDeploymentHarness();
-        StickyDeploymentAddresses memory deployed = deployment.deployFor(_ethereum.core);
+        StickyDeploymentAddresses memory deployed = deployment.deployFor({core: _ethereum.core, destinationChainId: 1});
         assertEq(deployed.deployer, _ethereum.suite.deployer, "existing project factory preserved");
         assertEq(deployed.hook, _ethereum.suite.hook, "existing position accounting preserved");
         assertEq(deployed.distributor, _ethereum.suite.distributor, "existing reward ledger preserved");

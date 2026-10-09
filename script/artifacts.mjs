@@ -8,7 +8,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { networks } from './deploy.mjs';
+import { destinationChainId, familyDirectory, networks, requireOneAddressPerGroup } from './deploy.mjs';
 
 // Core's ERC-2771 forwarder, the same on every chain. The runner's verify step checks each Sticky contract trusts it.
 export const trustedForwarder = '0x3bA60b60933916a7C87D0860DcEE62a0CE34E3e2';
@@ -23,8 +23,8 @@ export const contracts = [
   { name: 'StickyRewardReceiver', field: 'rewardReceiver', args: ['distributor'] },
   { name: 'StickyRewardReceiverFactory', field: 'rewardReceiverFactory', args: ['rewardReceiver'] },
   { name: 'StickyAutoStick', field: 'autoStick', args: ['deployer', 'distributor'] },
-  { name: 'StickySourceCollector', field: 'sourceCollector', args: ['registry', 'tokens', 'rewardReceiverFactory'] },
-  { name: 'StickySourceFeePayer', field: 'sourceFeePayer', args: [], child: true },
+  { name: 'StickySourceCollector', field: 'sourceCollector', args: ['registry', 'tokens', 'rewardReceiverFactory', 'destinationChainId'], family: true },
+  { name: 'StickySourceFeePayer', field: 'sourceFeePayer', args: [], child: true, family: true },
 ];
 
 // One Etherscan v2 key serves every chain.
@@ -37,19 +37,19 @@ export async function emit(group, {
   if (!networks[group]) throw new Error('Network group must be testnets or mainnets.');
   const key = env.ETHERSCAN_API_KEY?.trim();
   if (!key) throw new Error('Missing ETHERSCAN_API_KEY');
+  const destination = destinationChainId(group, env);
+  // Check the entire selected family and every constructor before any explorer request or artifact write.
+  const manifests = requireOneAddressPerGroup(group, 'verified', destination, read);
+  const artifacts = new Map(contracts.map(contract => [contract.name,
+    JSON.parse(read(`out/${contract.name}.sol/${contract.name}.json`, 'utf8'))]));
+  const prepared = manifests.map(context => ({ ...context, records: contracts.map(contract => ({
+    contract, artifact: artifacts.get(contract.name),
+    ...constructorArgs(contract, context.manifest, artifacts.get(contract.name)),
+  })) }));
   const childEnv = { ...env, FOUNDRY_PROFILE: 'deploy' };
-  for (const [alias, chainId, , folder] of networks[group]) {
-    const manifest = JSON.parse(read(`deployments/${folder}/verified.json`, 'utf8'));
-    // Reject an incomplete live manifest before explorer requests or artifact writes for this chain.
-    for (const { field } of contracts) {
-      if (!/^0x[\da-fA-F]{40}$/.test(manifest[field] || '') || /^0x0{40}$/i.test(manifest[field])) {
-        throw new Error(`${alias}: no verified ${field} deployment address.`);
-      }
-    }
-    for (const contract of contracts) {
+  for (const { alias, chainId, folder, manifest, records } of prepared) {
+    for (const { contract, artifact, args, argsHex } of records) {
       const address = manifest[contract.field];
-      const artifact = JSON.parse(read(`out/${contract.name}.sol/${contract.name}.json`, 'utf8'));
-      const { args, argsHex } = constructorArgs(contract, manifest, artifact);
       const creation = await fetchJson(`${explorer}?chainid=${chainId}&module=contract&action=getcontractcreation&contractaddresses=${address}&apikey=${key}`);
       const txHash = creation.result?.[0]?.txHash;
       if (!txHash) throw new Error(`${alias}: no creation transaction for ${contract.name} at ${address}`);
@@ -68,6 +68,7 @@ export async function emit(group, {
         sourceName: `src/${contract.name}.sol`,
         contractName: contract.name,
         chainId: `0x${Number(chainId).toString(16)}`,
+        ...(contract.family ? { destinationChainId: destination } : {}),
         abi: artifact.abi,
         args,
         solcInputHash: createHash('md5').update(artifact.rawMetadata).digest('hex'),
@@ -79,7 +80,8 @@ export async function emit(group, {
         gitDirty: String(manifest.revision).endsWith('-dirty'),
         history: [],
       };
-      write(`deployments/${folder}/${contract.name}.json`, `${JSON.stringify(record, null, '\t')}\n`);
+      const directory = contract.family ? familyDirectory(folder, destination) : `deployments/${folder}`;
+      write(`${directory}/${contract.name}.json`, `${JSON.stringify(record, null, '\t')}\n`);
       console.log(`${alias}: ${contract.name}.json`);
     }
   }
@@ -91,11 +93,27 @@ export function constructorArgs(contract, manifest, artifact) {
   if (inputs.length !== contract.args.length || !inputs.every(input => /^(address|uint\d*)$/.test(input.type))) {
     throw new Error(`The compiled ${contract.name} constructor no longer matches the recorded bindings.`);
   }
-  const args = contract.args.map(arg => {
-    if (typeof arg === 'bigint') return arg.toString();
-    if (/^0x[\da-fA-F]{40}$/.test(arg)) return arg;
-    if (!/^0x[\da-fA-F]{40}$/.test(manifest[arg] || '')) throw new Error(`The manifest records no ${arg} address.`);
-    return manifest[arg];
+  const args = contract.args.map((arg, index) => {
+    const type = inputs[index].type;
+    const value = typeof arg === 'bigint' || /^0x[\da-fA-F]{40}$/.test(arg) ? arg : manifest[arg];
+    if (type === 'address') {
+      if (typeof value !== 'string' || value.length !== 42 || !/^0x[\da-fA-F]{40}$/.test(value)) {
+        throw new Error(`The manifest records no ${arg} address.`);
+      }
+      return value;
+    }
+    const bits = Number(type.slice(4) || 256);
+    if (!Number.isInteger(bits) || bits < 8 || bits > 256 || bits % 8 !== 0
+      || (type !== 'uint' && type !== `uint${bits}`)) {
+      throw new Error(`The compiled ${contract.name} constructor no longer matches the recorded bindings.`);
+    }
+    // ABI integers must be exact decimal values; reject lossy numbers, hex addresses and coercible JS values.
+    if (!['string', 'number', 'bigint'].includes(typeof value)
+      || (typeof value === 'number' && !Number.isSafeInteger(value)) || !/^(0|[1-9]\d*)$/.test(String(value))
+      || BigInt(value).toString() !== String(value) || BigInt(value) >= (1n << BigInt(bits))) {
+      throw new Error(`The manifest records an invalid ${arg} ${type} value.`);
+    }
+    return String(value);
   });
   const argsHex = args.map(value => BigInt(value).toString(16).padStart(64, '0')).join('');
   return { args, argsHex };

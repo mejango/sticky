@@ -1,6 +1,6 @@
 # Deploying Sticky
 
-Sticky uses the same Sphinx proposal workflow and canonical CREATE2 factory as the other Juicebox V6 repositories. The production entrypoint is `script/Deploy.s.sol:Deploy`. `DeployLocal.s.sol` is a disposable demonstration with mintable tokens and different reward durations; it requires `STICKY_LOCAL_DEMO=true` and is not a production deployment.
+Sticky uses the same Sphinx proposal workflow and canonical CREATE2 factory as the other Juicebox V6 repositories. The production entrypoint is `script/Deploy.s.sol:Deploy`. `DeployLocal.s.sol` is a disposable demonstration with mintable tokens and different reward durations; it requires `STICKY_LOCAL_DEMO=true`, deploys the shared six-contract demo without collector families, and is not a production deployment.
 
 ## Reproducible checkout
 
@@ -26,9 +26,13 @@ Keep `remappings.txt` as the source of import mappings. In this workspace, expli
 
 Changing source, compiler settings, dependency versions, or constructor arguments changes CREATE2 predictions. All chains must use the same reviewed checkout, compiler, lockfile, salts, and core dependency addresses to obtain matching singleton and reward receiver addresses. Distributor `STARTING_TIMESTAMP` is chain-specific; it does not enter its CREATE2 init code.
 
+The source collector additionally binds one nonzero destination chain. Matching inputs produce the same collector address across sources for that home chain; a different destination constructor argument produces a different family. A pool has one home chain, and only qualified direct reward routes may feed it. The earlier Ethereum-only rehearsal and addresses are historical evidence and must not be reused for this changed constructor.
+
 ## Configuration and preflight
 
 Copy `.env.example` to `.env`, provide RPC endpoints for the intended network group, configure `SPHINX_ORG_ID`, `SPHINX_API_KEY`, and `SPHINX_MANAGED_BASE_URL` for the existing Sphinx organization, and `ETHERSCAN_API_KEY` (one Etherscan v2 key serves every chain) for the post-execution artifacts. The npm deployment commands select the `deploy` Foundry profile (`isolate = false`), which is compatible with Sphinx and avoids Foundry 1.8.1's isolated Optimism factory-call failure. Local contract tests keep the default isolated execution model; the real-project `fork` profile uses non-isolated execution for the same production artifact inspection as rehearsals. For direct `sphinx` or deployment `forge script` commands, set `FOUNDRY_PROFILE=deploy`. The deployment commands load `.env` with portable POSIX shell syntax and also accept environment variables supplied by CI. Never commit credentials.
+
+Set `STICKY_DESTINATION_CHAIN_ID` explicitly for every source-collector operation. There is no default destination or automatic deployment of every family. For a grouped command, the chosen home must belong to that command's mainnet or testnet group. This selects the family to deploy across sources; it does not establish a usable route from every source to that home.
 
 | Sphinx / RPC alias | Environment variable | Core artifact folder |
 | --- | --- | --- |
@@ -63,6 +67,7 @@ set -a
 . ./.env
 set +a
 export STICKY_REVISION="$(git rev-parse HEAD)"
+export STICKY_DESTINATION_CHAIN_ID=11155111
 npm run deploy:rehearse -- --rpc-url ethereum_sepolia -vv
 ```
 
@@ -84,14 +89,14 @@ The shared source-hook procedure is below. Historical fixed-route collector evid
 
 ## Source collectors
 
-`StickySourceCollector` is a shared singleton in the existing deploy/rehearse/verify/artifact flow, alongside its constructor-created `StickySourceFeePayer`. It is not deployed once per reward project, receiver or route. The six existing suite contracts retain their source and deployment identities. Existing verified manifests predate these two additions and are not evidence that the shared hook exists; the current full-suite checks reject missing source-hook records. This section owns setup and verification. The [current design plan](tasks/omnichain-split-hook.md) owns the implementation scope, while the [Sticky JBX qualification](tasks/sticky-jbx-qualification.md) retains its historical pool-specific evidence.
+`StickySourceCollector` is shared by pools with the same home chain, alongside its constructor-created `StickySourceFeePayer`. Deploy only needed destination families through the existing deploy/rehearse/verify/artifact flow; no per-pool or per-route deployment is required. The six existing suite contracts retain runtime behavior and deployment identities. Declaration-only public-interface changes must preserve executable bytecode, selectors and events; ABI internalType names may become interface types. Existing flat manifests and the prior Ethereum-only collector records do not identify this revised family; there is no automatic migration of that evidence. This section owns setup and verification. The [accepted home-chain plan](tasks/home-chain-pools.md) and [current hook plan](tasks/omnichain-split-hook.md) own the implementation scope, while the [Sticky JBX qualification](tasks/sticky-jbx-qualification.md) retains historical pool-specific evidence.
 
-1. **Bind the destination.** Confirm the Ethereum Sticky launch receipt, underlying token, share token and permanent settings. Predict or deploy the intended group's receiver through the verified factory, then confirm the factory/distributor/token/group bindings. An expected next project ID or a nonzero receiver address is insufficient. For Sticky JBX, zero cashout tax remains provisional until launch; group 0 is a receiver/funding policy, not a permanent restriction on every pool reward. Verify the destination reward ERC-20 before any remote claim: the unchanged receiver cannot claim project credits or settle native currency.
-2. **Authenticate dependencies and rehearse construction.** Independently verify the canonical registry, tokens, directory and receiver factory on every source chain, using reviewed artifacts and live runtime/binding evidence. The shared hook's constructor arguments are `registry`, `tokens`, `receiverFactory`; it derives `DIRECTORY` from the registry and creates the no-argument fee child. Rehearse the complete suite using the grouped commands below. Matching compiler inputs, arguments, canonical CREATE2 factory and `StickySourceCollectorV6` salt are required for the same hook address on Ethereum, OP, Base and Arbitrum. Address parity must be checked, not inferred from a common salt.
-3. **Review, execute and verify the suite.** Complete independent contract review and required checks, then prepare the exact Sphinx proposal for separately authorized execution. Record deployed executable runtimes and every immutable occurrence: parent `DIRECTORY`, `TOKENS`, `REGISTRY`, `RECEIVER_FACTORY`, `FEE_PAYER`; child `COLLECTOR`. Verify that the child is the parent's nonce-1 CREATE child. The manifest records `registry`, `tokens`, `sourceCollector`, `sourceCollectorCodehash`, `sourceFeePayer`, `sourceFeePayerCodehash` and `sourceCollectorSalt`, in addition to the existing suite data. Collect execution receipts and the two explorer artifacts. A source change remains in its PR through review, deployment and verification; merging the final PR requires explicit user approval afterward. Review authority does not authorize deployment or source-split transactions.
-4. **Validate delivery readiness.** For each source project, verify the reward-token identity, usable Ethereum peer, registered route implementation and builder provenance, enabled non-emergency backing mapping, current primary backing terminal, fee-project ERC-20 when the registry fee is positive, and both retained-refund APIs. The [source fixture](test/fork/fixtures/sticky-jbx-sources.json) pins historical project 1 (JBP6) and project 3 (REV) lanes; it is not a whitelist or a substitute for current checks. The hook supports other V6 projects and registered mapped ERC-20 backing. Route state is checked on delivery; `DEPRECATION_PENDING` permits sending only until `deprecatedAfter - _maxMessagingDelay()`. Another registered route with the required canonical bindings and Ethereum peer may replace one that retires. Source credits can be queued before their ERC-20 exists, but delivery waits for that token.
-5. **Authorize split setup.** Read the source project's actual split authority and every current/future stage table. Preserve the chosen remainder and existing locks. Use the same reserved-split fields on every chain, including Ethereum: `hook = verified source collector`, `beneficiary = confirmed Ethereum Sticky share token`, `projectId = reward group`. The callback's source project ID is separate from that reward group. A plain collector beneficiary creates no pending entitlement; the fee child must never receive source allocations. Confirm executed split state, including the table that will handle already-pending reserves. For REV, express the requested allocation against total issuance before converting to the reserved-split denominator; preserve rounding and the remainder. The current JBP6 allocation must be explicitly chosen. This setup creates no recurring Safe custody or signing requirement.
-6. **Exercise bounded acceptance and delivery.** Establish an eligible destination reward snapshot. An unrelated caller distributes pending reserves; confirm `Queue`, `pendingOf` and `totalPendingOf` against combined ERC-20/credit custody. Acceptance must not require a bridge fee or settle immediately, including on Ethereum. On Ethereum, call `settle(sourceProjectId, stickyToken, groupId, amount)` with a positive partial amount. On remote chains, call `send(sourceProjectId, stickyToken, groupId, amount, sucker, backingToken)` with at least the current registry fee plus any native transport budget, paying gas separately. Confirm the selected bucket debit, leaf, zero residual allowance, source burn/backing deltas, sent-root inclusion and caller fee-token/refund amounts. Additional accepted allocations remain queued. Track the source transaction through native proving/finalization, destination claim, receiver settlement and holder collection. Record each receipt and monitoring owner before increasing funding.
+1. **Bind the home-chain pool.** Confirm its single-chain launch receipt, underlying token, share token and permanent settings. Identify it by home chain and share token, not shared name or metadata. Predict or deploy the intended group's receiver through the verified destination factory, then confirm the factory/distributor/token/group bindings. An expected next project ID or a nonzero receiver address is insufficient. Sticky JBX is intended to launch on Ethereum; zero cashout tax remains provisional until launch, and group 0 is a funding policy rather than a permanent restriction on every reward. Verify the destination reward ERC-20 before any remote claim: the unchanged receiver cannot claim project credits or settle native currency.
+2. **Authenticate the family and rehearse construction.** Independently verify the canonical registry, tokens, directory and receiver factory on every participating source, including parity with the home-chain receiver factory. Constructor arguments are `(registry, tokens, receiverFactory, destinationChainId)`, with a nonzero destination; the hook derives `DIRECTORY` from the registry and creates the no-argument fee child. Set `STICKY_DESTINATION_CHAIN_ID` and rehearse the selected family using the commands below. Matching compiler inputs, arguments, canonical CREATE2 factory and `StickySourceCollectorV6` salt are required for parity within that family. The home-chain constructor word separates different families; address parity must be checked, not inferred from a common salt.
+3. **Review, execute and verify the selected family.** Complete independent contract review and required checks, then prepare the exact Sphinx proposal for separately authorized execution. Record runtimes and every immutable occurrence: parent `DIRECTORY`, `TOKENS`, `REGISTRY`, `RECEIVER_FACTORY`, `FEE_PAYER`, `DESTINATION_CHAIN_ID`; child `COLLECTOR`. Verify that the child is the parent's nonce-1 CREATE child. Family manifests include `destinationChainId`, `registry`, `tokens`, `sourceCollector`, `sourceCollectorCodehash`, `sourceFeePayer`, `sourceFeePayerCodehash` and `sourceCollectorSalt`, alongside the existing suite data. They and the two collector artifacts live under `deployments/<source-network>/source-collectors/<homeChainId>/`. Existing six contract artifacts remain at their canonical source-network paths. A source change remains in its PR through review, deployment and verification; merging the final PR requires explicit user approval afterward. Review authority does not authorize deployment or source-split transactions.
+4. **Qualify each direct source/home lane.** For each source project, verify reward-token identity, a usable direct peer on the selected home chain, registered route implementation and builder provenance, enabled non-emergency backing mapping, current primary backing terminal, fee-project ERC-20 when the registry fee is positive, and both retained-refund APIs. The [source fixture](test/fork/fixtures/sticky-jbx-sources.json) pins historical JBP6/REV lanes; it is not a whitelist or proof of L2-to-L2 connectivity. The native topology is an Ethereum hub. Other source/home pairs need a separately qualified direct route; there is no implicit Ethereum relay, and sending plain tokens to an intermediate collector creates no queue. Route state is checked on delivery; `DEPRECATION_PENDING` permits sending only until `deprecatedAfter - _maxMessagingDelay()`. A qualified registered replacement must preserve the same home-chain peer and canonical bindings. Source credits may queue before their ERC-20 exists, but delivery waits for that token.
+5. **Authorize split setup.** Read source split authority and every current/future stage table. Preserve the chosen remainder and existing locks. On the home chain and each qualified source use `hook = verified collector for that home chain`, `beneficiary = confirmed home-chain Sticky share token`, `projectId = reward group`. The callback's source project ID remains separate from the group; no chain ID is packed into this encoding. A plain collector beneficiary creates no pending entitlement, and the fee child must never receive source allocations. Confirm executed split state, including the table handling already-pending reserves. For REV, express the requested allocation against total issuance before converting to the reserved-split denominator; preserve rounding and the remainder. The JBP6 allocation remains a separate decision. This setup creates no recurring Safe custody or signing requirement.
+6. **Exercise bounded acceptance and delivery.** Establish an eligible home-chain reward snapshot. An unrelated caller distributes pending reserves; confirm `Queue`, `pendingOf` and `totalPendingOf` against combined ERC-20/credit custody in the selected family. Acceptance never requires a bridge fee or immediate settlement. On the home chain, call `settle(sourceProjectId, stickyToken, groupId, amount)` with a positive partial amount. On a qualified remote source, call `send(sourceProjectId, stickyToken, groupId, amount, sucker, backingToken)` with at least the registry fee plus native transport budget, paying gas separately. Confirm the selected bucket debit, leaf, zero allowance, source burn/backing deltas, sent-root inclusion and caller receipt/refund amounts. Additional accepted allocations remain queued. Track native proving/finalization, destination claim, receiver settlement and holder collection; record every receipt and monitoring owner before increasing funding.
 
 A rejected acceptance is different from a failed delivery: core catches split-hook failures and can burn unconsumed ERC-20 reserves, while credits already moved to an invalid split remain unattributed. Once accepted, a reverted delivery restores the selected bucket and leaves no partial preparation/submission from that attempt. Retry after resolving its cause and checking the canonical receipt; an RPC timeout is not proof of a revert. A successful `Send` proves source submission, not destination finality. If no compatible route remains, remote rewards stay queued with no rescue or destination reassignment. A successful native withdrawal cannot be recalled. Permissionless operations do not install a keeper or guarantee execution.
 
@@ -103,21 +108,28 @@ without copying credentials, set:
 
 ```sh
 export STICKY_ENV_FILE=../../deploy-all-v6/.env
+export STICKY_DESTINATION_CHAIN_ID=1
 ```
 
 An explicit `STICKY_ENV_FILE` must exist; otherwise commands load the package's
 `.env` when present, or use the current environment. Core artifacts still come
 from the configured core package, independently of the credentials file.
 
+The example above selects the Ethereum-home family for mainnet commands. Set a supported testnet home explicitly, such as `11155111`, before invoking the testnet group; the runner rejects a destination from the other group. Each invocation handles one family.
+
 ```sh
+export STICKY_DESTINATION_CHAIN_ID=11155111
 npm run deploy:preflight:testnets
-npm run deploy:preflight:mainnets
 npm run deploy:rehearse:testnets
-npm run deploy:rehearse:mainnets
 npm run deploy:propose:testnets
-npm run deploy:propose:mainnets
 # Only after the corresponding Sphinx proposal has executed:
 npm run deploy:post:testnets
+
+export STICKY_DESTINATION_CHAIN_ID=1
+npm run deploy:preflight:mainnets
+npm run deploy:rehearse:mainnets
+npm run deploy:propose:mainnets
+# Only after the corresponding Sphinx proposal has executed:
 npm run deploy:post:mainnets
 ```
 
@@ -127,7 +139,7 @@ simulates fresh deployment and restart on every destination. It reads a canonica
 RPC block header and pins Forge to that height; the header number and hash are
 recorded separately from the EVM block height. After the group's rehearsals the
 runner requires every chain to have predicted the same deployer, hook, distributor,
-reward receiver implementation, reward receiver factory, adapter, source collector and source fee payer. Cross-group parity also requires matching canonical dependency addresses. Testnet rehearsal can verify deployment and bindings, but the collector's destination is Ethereum chain ID 1; it does not provide a Sepolia destination-delivery mode.
+reward receiver implementation, reward receiver factory and adapter, plus the source collector and fee payer for the selected destination. It also requires matching `destinationChainId`; different home-chain families deliberately have different collector addresses. A same-family address check is not evidence of direct-route availability.
 Proposal commands require Sphinx credentials, the public project lock, and clean
 core/distributor checkouts at the reviewed commits recorded in `script/deploy.mjs`,
 and rerun the entire group's
@@ -137,12 +149,11 @@ stops the command before proposal submission. `deploy:testnets` and
 a separate step.
 
 `deploy:post:*` runs `deploy:verify:*`, which verifies the group on live RPCs,
-requires the same agreement, and writes `deployments/<network>/verified.json`; it
+requires the same family agreement, and writes `deployments/<network>/source-collectors/<homeChainId>/verified.json`; it
 then runs `deploy:artifacts:*` (`script/artifacts.mjs`), which verifies the eight
 sources on Etherscan and writes `deployments/<network>/StickyDeployer.json`,
 `StickyHook.json`, `StickyDistributor.json`, `StickyRewardReceiver.json`,
-`StickyRewardReceiverFactory.json`
-`StickyAutoStick.json`, `StickySourceCollector.json` and `StickySourceFeePayer.json` in the `sphinx-sol-ct-artifact-1` layout the other V6
+`StickyRewardReceiverFactory.json` and `StickyAutoStick.json` at the canonical network root, plus `StickySourceCollector.json` and `StickySourceFeePayer.json` under that family's `source-collectors/<homeChainId>/` directory, in the `sphinx-sol-ct-artifact-1` layout the other V6
 repositories keep: address, ABI, constructor arguments, creation receipt, bytecode,
 metadata and source revision. It finally runs `web/scripts/sync-deployments.mjs` to regenerate `web/src/lib/sticky-deployments.json`, the addresses and scan start blocks the Next client builds from, so a redeploy reaches the site when its records merge. The constructor arguments come from the bindings the
 verified manifest recorded, and for every factory-deployed contract the explorer's
@@ -166,6 +177,7 @@ The grouped commands record the current Git commit automatically, appending
 `-dirty` when a rehearsal's checkout has changes. Commit the reviewed release and
 rerun its rehearsals before proposal collection; use the identical checkout for
 verification.
+Match each family's recorded revision to that reviewed checkout before publishing artifacts. Source-chain, destination, kind and address validation do not themselves compare `manifest.revision` with the current commit.
 The single-chain `deploy:rehearse` and `deploy:verify` commands remain available
 for diagnosis and accept normal Forge options; source your environment and set
 `STICKY_REVISION` explicitly when using those commands.
@@ -179,11 +191,13 @@ The script keeps the original `StickyDeployerV6` and `StickyAutoStickV6` salts, 
 3. `StickyRewardReceiver`, the implementation every reward receiver is cloned from, bound to that distributor.
 4. `StickyRewardReceiverFactory`, bound to that implementation, which clones and initializes one receiver per Sticky token and reward group.
 5. `StickyAutoStick`, bound to that deployer and distributor.
-6. `StickySourceCollector`, bound to the canonical sucker registry, core token registry and reward receiver factory, which creates its parent-only `StickySourceFeePayer` in its constructor.
+6. The selected home-chain family's `StickySourceCollector`, bound to the canonical sucker registry, core token registry, reward receiver factory and nonzero destination chain, which creates its parent-only `StickySourceFeePayer` in its constructor.
 
 ```sh
+export STICKY_DESTINATION_CHAIN_ID=11155111
 npm run deploy:testnets
 # After the testnet release and all intended mainnet rehearsals are reviewed:
+export STICKY_DESTINATION_CHAIN_ID=1
 npm run deploy:mainnets
 ```
 
@@ -193,15 +207,16 @@ A repeated proposal collection skips existing deployments only after checking th
 
 ## Verification and publication
 
-A rehearsal or Sphinx collection writes `deployments/<network>/simulation.json`. This ignored file describes simulated state and is **not deployment evidence**.
+A rehearsal or Sphinx collection writes `deployments/<network>/source-collectors/<homeChainId>/simulation.json`. This ignored file describes simulated state and is **not deployment evidence**. The corresponding `verified.json` and two collector artifacts use the same family directory. Earlier flat manifests remain untouched and do not qualify the revised destination-bound constructor.
 
 After Sphinx executes, verify the unchanged reviewed compilation against each live RPC:
 
 ```sh
+export STICKY_DESTINATION_CHAIN_ID=11155111
 npm run deploy:verify -- --rpc-url ethereum_sepolia -vv
 ```
 
-`Verify` sends no transactions. It requires the predicted suite to already exist and rechecks runtime code, every immutable dependency, distributor settings, hook prediction, and core bindings. Only then does it write `deployments/<network>/verified.json`, containing the chain context, source revision, addresses, salts, and complete runtime hashes.
+`Verify` sends no transactions. It requires the predicted suite for the selected home to already exist and rechecks runtime code, every immutable dependency including destination chain, distributor settings, hook prediction, and core bindings. Only then does it write the family's `verified.json`, containing source and destination chain identity, source revision, addresses, salts and complete runtime hashes.
 `evmBlockNumber` and `evmParentBlockHash` describe the EVM context. On Arbitrum,
 these are not the L2 RPC block identity. Grouped commands additionally record
 `rpcBlockNumber` and `rpcBlockHash` from the header used to pin their fork. Direct
@@ -209,4 +224,4 @@ single-chain Forge calls do not provide those RPC fields automatically; retain
 their fork context separately. Deployment start blocks for client event discovery
 must come from execution receipts, not verification manifests. `revision: unrecorded` means the operator did not set `STICKY_REVISION`; fill that gap by rerunning with the actual reviewed commit before publishing artifacts.
 
-Retain the executed Sphinx proposal/transaction receipts alongside the verified manifest and the per-contract artifacts `deploy:post:*` writes. Publish only verified artifacts for chains that have executed, and propagate them through the existing V6 artifact distribution process before configuring the website. Confirm all eight suite addresses and their canonical dependency bindings against the manifest; complete those checks and target-chain transaction smoke tests before production cutover. Follow [the Next client deployment guide](web/README.md#deployment) for website configuration. No live deployment or production artifact is implied by files generated during local tests. Contract PRs require explicit approval of the final reviewed, deployed and verified result before merge; neither passing CI nor a deployment approval substitutes for that final approval.
+Retain the executed Sphinx proposal/transaction receipts alongside the verified manifest and the per-contract artifacts `deploy:post:*` writes. Publish only verified artifacts for chains that have executed, and propagate them through the existing V6 artifact distribution process before configuring the website. Collector records must retain both source-chain and destination-chain identity; do not flatten different families into one chain-only address or register predictions as deployed code. Confirm all eight suite addresses and their canonical dependency bindings against the selected family manifest; complete those checks and target-chain transaction smoke tests before production cutover. Follow [the Next client deployment guide](web/README.md#deployment) for website configuration. No live deployment or production artifact is implied by files generated during local tests. Contract PRs require explicit approval of the final reviewed, deployed and verified result before merge; neither passing CI nor a deployment approval substitutes for that final approval.

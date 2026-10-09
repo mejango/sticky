@@ -1,0 +1,120 @@
+{
+  "kind": "read-only fork rehearsal; no deployment or source-split transaction",
+  "sourceRevision": "d8e0dc549767f6999d387dbe3fc23592f3676ae6-dirty",
+  "destinationChainId": 1,
+  "constructorArguments": [
+    "0x7903a854aE91eAf635430D120a1a434085cEf297",
+    "0x1f80d8f057eE36b4C2656D107E4e4558B71bA7D9",
+    "0x41AEC7AacEa4759F2c8AaBD68D4a4C1574A6A737",
+    "1"
+  ],
+  "creationCodeHash": "0x164b7e4fd7023b2fe1ac762333bc8e0a80954c3ae50ecb1c3d0beb4fc19266d6",
+  "initCodeHash": "0xffaa4746f98adbd58a42831e6928bdf188fdf71c1e6d91c29643035365d92b5d",
+  "factoryCalldataHash": "0x4333bc7614576e333fe9e7cd7985c852de990d0beb20470916ce7790b91fe705",
+  "create2Factory": "0x4e59b44847b379578588920cA78FbF26c0B4956C",
+  "sourceCollector": "0x9E5CD51DEe8f8E6B22C2B868C50001f3f6fE6F8a",
+  "sourceFeePayer": "0x4C84664e1266a56023F6278dA6A0dD704E4ffee3",
+  "sourceCollectorCodehash": "0x121820af7579977bcd33f938a559784657ef7b9dc601e8b32ee3c0d440613119",
+  "sourceFeePayerCodehash": "0x9151a7e6e648932ea179da48f9b4dc5b6e7c5284c0296151f6c3a83fcc948e2d",
+  "sourceCollectorSalt": "0x537469636b79536f75726365436f6c6c6563746f725636000000000000000000",
+  "sourceSHA256": {
+    "src/StickyAutoStick.sol": "cdeff6090a9b45e81a07942b97e25c98c7f3ee7afad87d47ce00ed777ce26d4a",
+    "src/StickyDeployer.sol": "4e656a7e9e9103501590fa26b48d437ec1888aa7a8674d2ce0ea3638805ce586",
+    "src/StickyDistributor.sol": "60c422a9d010225e2b1cc414392d249437d90785f1b877a6d3cde031cb203f3d",
+    "src/StickyHook.sol": "21ed3e13c0d9572dd1556b068b897aafc04e6e6899f1962d05a7fa1cba32cb82",
+    "src/StickyPriceFeed.sol": "fd3b3df8d63fa31ef0f1c1447085749335d2d7d64e676d3167f06f7fb4f44d6c",
+    "src/StickyRewardReceiver.sol": "4545f3a7abc9fc6a35444464add42156eb47cbeab687941cdbc9dac90be1b67b",
+    "src/StickyRewardReceiverFactory.sol": "2dd3e5f325209b6b162c96ac4b151d07fa67034e7e9e2c30f2d58ccd3243beab",
+    "src/StickySourceCollector.sol": "fc94a5a42b0686520967f0777109c9bd3d19efeeb4e5c1bc4d88ecd29d36253e",
+    "src/StickySourceFeePayer.sol": "78616219fd26a50f63d5f22b8bb47b301ada60a8f2441b8671f47b921389762e",
+    "src/StickyToken.sol": "3e5a2604039b05ecf6bab553cac4dfe5638bf1f41aa16c2801f9baba57a3b41a",
+    "src/enums/AutoStickStatus.sol": "7b8ea1dfb4f73cb7c76dafec733cb743d1c2c60f9fefe31f2323e3879cb79cbf",
+    "src/interfaces/IStickyAutoStick.sol": "074fef42c05b722252870f2f0d7d9f31eb86dad5ca3264bac35ef180f65a56da",
+    "src/interfaces/IStickyDeployer.sol": "d2cf87fb0d66768081a194a7b1ba0755b508d3bf46697561bd542c818f8cc5a0",
+    "src/interfaces/IStickyDistributor.sol": "5fd12806e63af9316efae53a5e884411e7d3ee8b2df2871db95da6c2e4061a9d",
+    "src/interfaces/IStickyHook.sol": "80e926b0ce1ba521ba93729ba06e33a094ef7e12f31f538323cf5196b6950ab6",
+    "src/interfaces/IStickyRewardReceiver.sol": "4e2a08c23df40c633a1d8b40e5f2ec0461649556511930ef9695332cd17d0d38",
+    "src/interfaces/IStickyRewardReceiverFactory.sol": "ab9af6ed6453d4e7ce47da555a7290b3916cbcf1778e69f072673b861d6f0ae0",
+    "src/interfaces/IStickySourceCollector.sol": "d99b1bf11b6e57fa69bda28e966d4b9ba7d52d3823ac80e2291711f483833504",
+    "src/interfaces/IStickySourceFeePayer.sol": "ca839cf5ddbaddf3a06a54b6d6417770e8acd403f9daf0cb214e7dff503aaa41",
+    "src/interfaces/IStickyToken.sol": "87ffc13e2902a0c25a04fba02224d38cf470809bbe95351d867a24af4d5db116",
+    "src/libraries/StickyPricing.sol": "b590242a0aaf5e43a72b29050baccc9a1032188a865dbfb7078f868b39944d44",
+    "src/structs/AutoStickConfig.sol": "dc13760d8f9042166bec7d558ed71606712c3cf278451a630821090a7331db24",
+    "src/structs/StickyPaySnapshot.sol": "3dea0a2ab1cf87c2b489a595df31c5611fc44665b3e214b5d115303d6a42fd7c",
+    "src/structs/StickyTranche.sol": "d724f7c427816fbe733665258f035450ea1c4841f7b1e9e6a01b39e9fec77f83",
+    "script/Deploy.s.sol": "b9f233e0a4adbc56197c9612ba932d9f31a062342818f260e0009b27a717f3e9",
+    "script/DeployLocal.s.sol": "ec72a219e76938a45a155a76389e8c236f56735810406554c6b26badc0c45c82",
+    "script/Rehearse.s.sol": "c97ba7166f23177d478e5d2353e819bae81f4055f5b4967522bdf9787edb76f7",
+    "script/Verify.s.sol": "e243511d3ce69c91696af6d0eb07fc0335b4b4b36f9379957fa711c875951dc0",
+    "script/helpers/StickyDeployment.sol": "b51d1a107219de1af356a821aa8a0b2932ea26f3f775a0424d2abf63cada3b69",
+    "script/mocks/MockArt.sol": "657e3abcbcb4c495e1d275b75f40e8ec9d93c14d687678858e0e099b2d1aca62",
+    "script/mocks/MockBan.sol": "e1636b931080827f51a0a6a2d73476383a0b425b0ad3e60d62130cb3bb20ddcd",
+    "script/structs/StickyCoreDeployment.sol": "bb6940e6b0c18b354c8bc121b9d5dd5eefbd6ce9317b9a393f6fd13420638551",
+    "script/structs/StickyDeploymentAddresses.sol": "9bdacca43149d54b0ab3bb49cb408afdb442f7fa6c5c07735a8973b970cd3460",
+    "script/structs/StickyImmutableReference.sol": "dda46b3e13d144e67184db20e055fc7455fc4363c32f0759388d42d2c9e8d5fd"
+  },
+  "chains": [
+    {
+      "chainId": 1,
+      "rpcBlockNumber": 26151432,
+      "rpcBlockHash": "0x15780cb6c3b46dbba742b59178a2b6f441ac5b85883b80c0edae9692209963b6",
+      "kind": "simulation",
+      "revision": "d8e0dc549767f6999d387dbe3fc23592f3676ae6-dirty"
+    },
+    {
+      "chainId": 10,
+      "rpcBlockNumber": 157954486,
+      "rpcBlockHash": "0x225e91dd1cf6b2165458be91a99134dbf84fc39cc5bfcf07e2cdf45199ae4203",
+      "kind": "simulation",
+      "revision": "d8e0dc549767f6999d387dbe3fc23592f3676ae6-dirty"
+    },
+    {
+      "chainId": 8453,
+      "rpcBlockNumber": 52359210,
+      "rpcBlockHash": "0x3675bf808ae53b5824a2e3265ee756e39835a96ad35373efa0210a9fd6f37821",
+      "kind": "simulation",
+      "revision": "d8e0dc549767f6999d387dbe3fc23592f3676ae6-dirty"
+    },
+    {
+      "chainId": 42161,
+      "rpcBlockNumber": 513048451,
+      "rpcBlockHash": "0x4e682878a59efff3a091564788fb777c682a60898e556ba0f2b47ca96d371ae9",
+      "kind": "simulation",
+      "revision": "d8e0dc549767f6999d387dbe3fc23592f3676ae6-dirty"
+    }
+  ],
+  "rpcEstimates": [
+    {
+      "chainId": 1,
+      "rpcBlockNumber": 26151432,
+      "collectorAbsentBeforeSimulation": true,
+      "feeChildAbsentBeforeSimulation": true,
+      "estimatedFactoryCallGas": 2490425,
+      "ok": true
+    },
+    {
+      "chainId": 10,
+      "rpcBlockNumber": 157954486,
+      "collectorAbsentBeforeSimulation": true,
+      "feeChildAbsentBeforeSimulation": true,
+      "estimatedFactoryCallGas": 2490425,
+      "ok": true
+    },
+    {
+      "chainId": 8453,
+      "rpcBlockNumber": 52359210,
+      "collectorAbsentBeforeSimulation": true,
+      "feeChildAbsentBeforeSimulation": true,
+      "estimatedFactoryCallGas": 2490425,
+      "ok": true
+    },
+    {
+      "chainId": 42161,
+      "rpcBlockNumber": 513048451,
+      "collectorAbsentBeforeSimulation": true,
+      "feeChildAbsentBeforeSimulation": true,
+      "estimatedFactoryCallGas": 2499702,
+      "ok": true
+    }
+  ]
+}
