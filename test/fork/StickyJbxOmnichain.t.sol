@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {AddressAliasHelper} from "@arbitrum/nitro-contracts/src/libraries/AddressAliasHelper.sol";
 import {IJBController} from "@bananapus/core-v6/src/interfaces/IJBController.sol";
 import {IJBMultiTerminal} from "@bananapus/core-v6/src/interfaces/IJBMultiTerminal.sol";
 import {IJBTerminal} from "@bananapus/core-v6/src/interfaces/IJBTerminal.sol";
@@ -282,11 +283,16 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         uint256 terminalBalanceBefore = address(feeTerminal).balance;
         uint256 supplyBefore = destination.token.totalSupply();
         uint256 keeperBalanceBefore = _keeper.balance;
+        address aliasedFeeChild = AddressAliasHelper.applyL1ToL2Alias(feeChild);
+        uint256 aliasedContribution = 0.02 ether;
+        assertNotEq(aliasedFeeChild, feeChild, "safe Inbox alias differs from raw child");
         assertEq(feeChild.balance, 0, "fresh destination child");
         vm.deal({account: feeChild, newBalance: contribution});
+        vm.deal({account: aliasedFeeChild, newBalance: aliasedContribution});
         vm.prank(_keeper);
         assertEq(destinationCollector.addFeeRefundToBalance(), contribution);
         assertEq(feeChild.balance, 0, "complete raw refund contributed");
+        assertEq(aliasedFeeChild.balance, aliasedContribution, "safe Inbox alias remains outside Sticky control");
         assertEq(_backing(destination), backingBefore + contribution, "project 1 receives exact refund");
         assertEq(address(feeTerminal).balance, terminalBalanceBefore + contribution, "live terminal receives value");
         assertEq(destination.token.totalSupply(), supplyBefore, "add-to-balance mints no JBP6");

@@ -1,0 +1,74 @@
+{
+  "kind": "read-only same-address control rehearsal; no deployment or source-split transaction",
+  "sourceRevision": "fb41b8e830b7d4ab45fb117e1c791c7575c41407",
+  "qualifiedContractCommit": "fb41b8e830b7d4ab45fb117e1c791c7575c41407",
+  "destinationChainId": 42161,
+  "create2Factory": "0x4e59b44847b379578588920cA78FbF26c0B4956C",
+  "sourceCollectorSalt": "0x537469636b79536f75726365436f6c6c6563746f725636000000000000000000",
+  "constructorArguments": [
+    "0x7903a854aE91eAf635430D120a1a434085cEf297",
+    "0x1f80d8f057eE36b4C2656D107E4e4558B71bA7D9",
+    "0x41AEC7AacEa4759F2c8AaBD68D4a4C1574A6A737",
+    "42161"
+  ],
+  "creationCodeHash": "0x06dd8a61dce561039b5468d705bbbe3bbc4c9c8aa81b1add94ea3550113d5b16",
+  "initCodeHash": "0xe0508c25a1b76cd494a976c936ab94ba6a439e18ddda09ff0f408a3fbbf47363",
+  "factoryCalldataHash": "0x4b2b30a13d367d408a8ef626d18ff7e76a969915536c5fa7d80a822957a7b2cd",
+  "sourceCollector": "0x4b17B25AD8DaC175b9B549Bf942b8F7028E8A818",
+  "sourceCollectorCodehash": "0xc1148e4e9d2ba368bf8e848541ad74122659808bc1c72d237939ca6af1645ae5",
+  "sourceFeePayer": "0xd0714f0F6DdeEa9Fe0f6cb327F8BcAE6d5a0B0d6",
+  "sourceFeePayerCodehash": "0x58eafa1dbf66265a04b4e1a8f723d853044deef0dedf17932f555b01071b210f",
+  "chains": [
+    {
+      "chainId": 1,
+      "rpcBlockNumber": 26156149,
+      "rpcBlockHash": "0xf85ba5e1115640e7cfaba501be0b64af7614bcfb3df8d8e649639b9be9566b14",
+      "kind": "simulation",
+      "revision": "fb41b8e830b7d4ab45fb117e1c791c7575c41407",
+      "sourceCollector": "0x4b17B25AD8DaC175b9B549Bf942b8F7028E8A818",
+      "sourceCollectorCodehash": "0xc1148e4e9d2ba368bf8e848541ad74122659808bc1c72d237939ca6af1645ae5",
+      "sourceFeePayer": "0xd0714f0F6DdeEa9Fe0f6cb327F8BcAE6d5a0B0d6",
+      "sourceFeePayerCodehash": "0x58eafa1dbf66265a04b4e1a8f723d853044deef0dedf17932f555b01071b210f"
+    },
+    {
+      "chainId": 10,
+      "rpcBlockNumber": 157982882,
+      "rpcBlockHash": "0xdf5f07d8abba8cbc1fc908e022091eaee150e25f5daa580f8552316f65875fb1",
+      "kind": "simulation",
+      "revision": "fb41b8e830b7d4ab45fb117e1c791c7575c41407",
+      "sourceCollector": "0x4b17B25AD8DaC175b9B549Bf942b8F7028E8A818",
+      "sourceCollectorCodehash": "0xc1148e4e9d2ba368bf8e848541ad74122659808bc1c72d237939ca6af1645ae5",
+      "sourceFeePayer": "0xd0714f0F6DdeEa9Fe0f6cb327F8BcAE6d5a0B0d6",
+      "sourceFeePayerCodehash": "0x58eafa1dbf66265a04b4e1a8f723d853044deef0dedf17932f555b01071b210f"
+    },
+    {
+      "chainId": 8453,
+      "rpcBlockNumber": 52387606,
+      "rpcBlockHash": "0x4b7054d536ed2d3385a951671cd14d85600dbfdc38580a5028468d5e3de10f8d",
+      "kind": "simulation",
+      "revision": "fb41b8e830b7d4ab45fb117e1c791c7575c41407",
+      "sourceCollector": "0x4b17B25AD8DaC175b9B549Bf942b8F7028E8A818",
+      "sourceCollectorCodehash": "0xc1148e4e9d2ba368bf8e848541ad74122659808bc1c72d237939ca6af1645ae5",
+      "sourceFeePayer": "0xd0714f0F6DdeEa9Fe0f6cb327F8BcAE6d5a0B0d6",
+      "sourceFeePayerCodehash": "0x58eafa1dbf66265a04b4e1a8f723d853044deef0dedf17932f555b01071b210f"
+    },
+    {
+      "chainId": 42161,
+      "rpcBlockNumber": 513256766,
+      "rpcBlockHash": "0x98b4e845b95d0ae7ccf16c56419c26e4e792f6ddca2f16e92c48203623c7af00",
+      "kind": "simulation",
+      "revision": "fb41b8e830b7d4ab45fb117e1c791c7575c41407",
+      "sourceCollector": "0x4b17B25AD8DaC175b9B549Bf942b8F7028E8A818",
+      "sourceCollectorCodehash": "0xc1148e4e9d2ba368bf8e848541ad74122659808bc1c72d237939ca6af1645ae5",
+      "sourceFeePayer": "0xd0714f0F6DdeEa9Fe0f6cb327F8BcAE6d5a0B0d6",
+      "sourceFeePayerCodehash": "0x58eafa1dbf66265a04b4e1a8f723d853044deef0dedf17932f555b01071b210f"
+    }
+  ],
+  "checks": {
+    "sameCollectorOnEthereumAndArbitrum": true,
+    "sameFeePayerOnEthereumAndArbitrum": true,
+    "nonceOneChildMatchesPrediction": true,
+    "preFundedChildDeploymentRegression": "test_sourceCollectorBindsCanonicalDependenciesAndItsOnlyFeePayer",
+    "liveProjectOneForkRegression": "test_adversarialEthereumToArbitrum_retryableRefundUsesFeeChild"
+  }
+}

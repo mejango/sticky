@@ -190,8 +190,9 @@ It then deploys the same Arbitrum-home family on the Arbitrum fork, checks equal
 parent and nonce-1 child addresses and the child-to-parent binding, and uses
 `vm.deal` to model only the finalized ArbOS balance credit. A permissionless call
 must add that complete raw balance to project 1 through its live native terminal,
-mint no project tokens and pay nothing to the caller. The test does not execute or
-prove retryable finality. The separate local transport regression proves that
+mint no project tokens and pay nothing to the caller. The same case separately
+funds the computed safe-Inbox alias and proves that balance remains untouched.
+The test does not execute or prove retryable finality. The separate local transport regression proves that
 the gateway request names `feeChild` and that its Nitro alias is distinct.
 Pinned `AbsInbox` source establishes that the safe Inbox rewrites a contract
 refund recipient to that alias; this test does not execute the gateway or Inbox

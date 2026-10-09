@@ -607,8 +607,46 @@ contract StickySourceCollectorTest is Test {
         assertEq(_three.balanceOf(address(_collector)), 7e18);
     }
 
+    /// @notice Fee-refund contribution remains blocked at every nested inbound-allocation depth.
+    function test_feeRefundDuringNestedAcceptanceIsRejected() public {
+        vm.chainId(1);
+        address child = address(_collector.FEE_PAYER());
+        vm.deal({account: child, newBalance: 3 ether});
+        _mockTerminal({
+            projectId: JBConstants.FEE_BENEFICIARY_PROJECT_ID, backing: JBConstants.NATIVE_TOKEN, terminal: _terminal
+        });
+        _seventySeven.setTransferCallback({
+            target: address(_collector),
+            data: abi.encodeCall(StickySourceCollector.addFeeRefundToBalance, ()),
+            rejectOnFailure: false
+        });
+        JBSplitHookContext memory nested = _context({projectId: 77, stickyToken: _stickyB, groupId: 4000, amount: 7e18});
+        _three.setTransferCallback({
+            target: address(_controller),
+            data: abi.encodeCall(StickySourceController.distribute, (nested)),
+            rejectOnFailure: true
+        });
+
+        _queueDefault(_AMOUNT);
+
+        assertFalse(_seventySeven.callbackSucceeded());
+        assertEq(
+            _seventySeven.callbackReason(),
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InboundTransfer.selector, address(_seventySeven), uint256(2)
+            )
+        );
+        assertEq(child.balance, 3 ether);
+        assertEq(_terminal.balance, 0);
+        assertEq(_collector.pendingOf(3, _stickyA, 0), _AMOUNT);
+        assertEq(_collector.pendingOf(77, _stickyB, 4000), 7e18);
+        assertEq(_three.balanceOf(address(_collector)), _AMOUNT);
+        assertEq(_seventySeven.balanceOf(address(_collector)), 7e18);
+    }
+
     /// @notice Any keeper can contribute the destination child's complete native balance only to project 1.
     function test_feeRefundFundsFixedProjectOneBalance() public {
+        assertEq(JBConstants.FEE_BENEFICIARY_PROJECT_ID, 1, "canonical fee beneficiary is project 1");
         vm.chainId(1);
         address child = address(_collector.FEE_PAYER());
         uint256 amount = 3 ether;
@@ -631,6 +669,34 @@ contract StickySourceCollectorTest is Test {
 
         assertEq(child.balance, 0);
         assertEq(_terminal.balance, amount);
+    }
+
+    /// @notice Each contribution resolves project 1's current primary native terminal instead of caching a route.
+    function test_feeRefundResolvesRotatedTerminalPerCall() public {
+        vm.chainId(1);
+        address child = address(_collector.FEE_PAYER());
+        uint256 firstAmount = 1 ether;
+        uint256 secondAmount = 2 ether;
+        _mockTerminal({
+            projectId: JBConstants.FEE_BENEFICIARY_PROJECT_ID, backing: JBConstants.NATIVE_TOKEN, terminal: _terminal
+        });
+        vm.deal({account: child, newBalance: firstAmount});
+        assertEq(_collector.addFeeRefundToBalance(), firstAmount);
+
+        address rotatedTerminal = makeAddr("rotated project-1 terminal");
+        vm.etch({target: rotatedTerminal, newRuntimeBytecode: hex"00"});
+        vm.clearMockedCalls();
+        _mockTerminal({
+            projectId: JBConstants.FEE_BENEFICIARY_PROJECT_ID,
+            backing: JBConstants.NATIVE_TOKEN,
+            terminal: rotatedTerminal
+        });
+        vm.deal({account: child, newBalance: secondAmount});
+        assertEq(_collector.addFeeRefundToBalance(), secondAmount);
+
+        assertEq(_terminal.balance, firstAmount);
+        assertEq(rotatedTerminal.balance, secondAmount);
+        assertEq(child.balance, 0);
     }
 
     /// @notice A terminal callback cannot recursively spend or duplicate the child's fee contribution.

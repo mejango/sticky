@@ -1,6 +1,6 @@
 # Sticky: Daybreak review handoff
 
-**Regeneration required; not submitted or run.** The fixed project-1 raw-fee contribution changes the collector and fee-payer runtime after the source identity previously recorded here. Do not submit the old bundle. Regenerate its final commit, tree, archive, source digests, compiled identities and verification evidence first. This packet supports an independent review through the user's Daybreak access; no Daybreak result or external certification is established here.
+**Prepared; not submitted or run.** The fixed project-1 raw-fee contribution and its final local qualification are bound to the exact source identity below. This packet supports an independent review through the user's Daybreak access; no Daybreak result or external certification is established here. Exact-head hosted PR checks, deployment and live route receipts remain separate gates.
 
 ## Scope and source identity
 
@@ -9,8 +9,10 @@ Review Sticky's contracts, their actual V6 dependencies, deployment verification
 | Input | Identity and current status |
 | --- | --- |
 | Superseded Sticky review baseline | `74dc08798976f2a78a560ee5b2c2c98656affc4b`; PR #58 |
-| Final Sticky review commit | Pending regeneration after the fixed project-1 raw-fee contribution is committed and every required check passes. The supplied review bundle manifest must record that final commit, tree and archive SHA-256. |
-| Current Solidity/source-script digests | Pending regeneration. [adversarial-equivalence-20261009.json](tasks/adversarial-equivalence-20261009.json) records the superseded source and must not identify the final bundle. The replacement limited manifest still will not identify the web, tests, JavaScript tooling or documentation; use the final bundle commit and complete archive identity for those. |
+| Final Sticky contract source | Commit `fb41b8e830b7d4ab45fb117e1c791c7575c41407`; tree `8008fb3bc892098fad050cd5ffc0ee3d48eb6d2e`; Git archive SHA-256 `4ff14ffc040b70db2559c5659198aa8b33fef120bc90f0a8f5888642b301b748`. No deployment is implied. |
+| Current Solidity/source-script digests | [adversarial-equivalence-20261009.json](tasks/adversarial-equivalence-20261009.json) binds all 34 files to the final contract source and records the changed collector/fee-payer identities plus preserved six-singleton identities. The limited manifest does not identify the web, tests, JavaScript tooling or documentation; use the final bundle commit and complete archive identity for those. |
+| Final local qualification | [adversarial-verification-20261009.json](tasks/adversarial-verification-20261009.json): 307/307 local Solidity, 86/86 fork, 69/69 deployment/tooling checks, and full Slither with zero Medium/High results. Exact-head hosted PR checks remain pending. |
+| Family rehearsals | [Ethereum-home](tasks/home-chain-rehearsal.json) and [Arbitrum-home same-address control](tasks/arbitrum-home-control-rehearsal.json) both rehearse the exact contract source on Ethereum, OP, Base and Arbitrum. The [Ethereum-home factory payload](tasks/home-chain-deployment.json) is prepared only and unexecuted. |
 | Core Solidity | `feff600654aee6fb1747dded692f18068b2230a6` |
 | Distributor Solidity | `44d6d5d2e7cca77422ee0ac4909cf42ccf7839b5` |
 | Other Solidity dependencies | Exact root lockfile and remappings; reproduce the layout in [DEPLOYMENT.md](DEPLOYMENT.md#reproducible-checkout) |
@@ -20,7 +22,7 @@ Review Sticky's contracts, their actual V6 dependencies, deployment verification
 ### Finalize an exact review bundle
 
 1. Record the full final commit and Git tree for Sticky, the SDK, all four clients and both linked Solidity dependencies. Sticky's client is part of its own repository. Record dirty status for each; a baseline commit plus a dirty working tree is not an exact review revision. Use committed snapshots for the final bundle, or explicitly attach and hash every reviewed patch and added file if an interim review is intentional.
-2. Generate the replacement limited Solidity digest manifest from the final Sticky source, then verify that replacement from the Sticky root. The existing `tasks/adversarial-equivalence-20261009.json` is superseded and currently must not be used as a final-source qualification check. Once the replacement occupies that path, run:
+2. Verify the current limited Solidity digest manifest from the Sticky root:
 
    ```sh
    python3 - <<'PY'
@@ -34,7 +36,7 @@ Review Sticky's contracts, their actual V6 dependencies, deployment verification
    PY
    ```
 
-   A mismatch invalidates the replacement identity for that file; investigate it and regenerate evidence against the intended revision. This check does not establish deployment, finality, a passing test run or equivalence of unlisted files.
+   A mismatch invalidates the recorded identity for that file; investigate it and regenerate evidence against the intended revision. This check does not establish deployment, finality, a passing test run or equivalence of unlisted files.
 3. Export each final committed repository with `git archive --format=tar --output=<repository>.tar <full-commit>` and record its SHA-256. Record the SHA-256 of every supplied lockfile, the exact Node/Foundry/compiler versions, dependency revisions, and the SDK tarball's SHA-256 and npm integrity. Git archives omit submodule content: include the pinned `forge-std` checkout or its exact gitlink plus retrieval instructions. Do not package `.env` files, credentials, wallet material or ignored runtime caches.
 4. Keep a review-bundle manifest beside the exports containing repository name, commit, tree, archive SHA-256, dependency/lockfile digests, SDK package identity, included patches and evidence files. Hash the manifest itself. Verify installed SDK runtime/support files against the supplied preview or published tarball in each client; a `package.json` version alone does not identify a local overlay. Record every exact-source identity above and report any remaining dirty/preview input explicitly.
 5. Attach commands, outputs and exit codes from the exact bundle. [AUDIT_INSTRUCTIONS.md](AUDIT_INSTRUCTIONS.md#verification) owns the verification commands; [the fork guide](test/fork/README.md) owns RPC inputs and modeled transport boundaries. Supply RPC access separately if the reviewer needs it. Never include credential values in artifacts or logs.
@@ -81,6 +83,6 @@ Return the review-bundle manifest hash, exact reviewed commits, commands/results
 - **Objective:** Prepare a reviewable Daybreak handoff with independent first-pass instructions, exact-source identification and a separately presented prior-findings appendix; do not claim an external review ran.
 - **System fit:** Existing source, reports, reproduction tests and deployment evidence remain their own authorities. This packet only connects them to an external review input/output boundary; no execution authority changes.
 - **Reuse and simplicity:** Link to current owning instructions and use Git snapshots, the existing source digests and standard SHA-256 manifests. Add no uploader, integration, dependency or competing audit specification.
-- **Evidence and unknowns:** The baseline remains historical, while the 34-file digest manifest and former bundle identity are superseded by the fixed raw-fee contribution and require regeneration. The replacement bundle manifest must bind the final committed archives and verification records. SDK 2.27.0 is published and preview-equivalent, while each client's official lock/install/hosted evidence remains separately owned. Remaining release checks, the raw-address contribution proof and complete live lane qualification remain separate from the passing CCIP source-only proof.
-- **Verification:** Check the replacement final-source digests, all local document links and the workspace plan-refinement gate. These checks establish packet consistency only; actual Daybreak execution and final bundle verification require their own evidence.
+- **Evidence and unknowns:** The baseline remains historical. The current 34-file digest manifest, commit/tree/archive identity, verification record and both family rehearsals bind the fixed raw-fee contribution. SDK 2.27.0 is published and preview-equivalent, while each client's official lock/install/hosted evidence remains separately owned. Exact-head Sticky CI, deployment, the raw-address end-to-end receipt and complete live lane qualification remain separate from the local proof and passing CCIP source-only proof.
+- **Verification:** Check the current final-source digests, all local document links and the workspace plan-refinement gate. These checks establish packet consistency only; actual Daybreak execution and final bundle verification require their own evidence.
 - **Resource budget:** Reuse committed snapshots, existing test evidence and standard archive/hash tools. Check handoff consistency and exact artifact identities without repeating unchanged expensive tests. No uploads, deployment, source configuration, package publication or merges.
