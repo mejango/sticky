@@ -254,8 +254,8 @@ contract StickyDistributor is JBDistributor, IStickyDistributor {
     /// the split's beneficiary and the group is the split's `projectId`, which core reads only in the branch that
     /// pays a project directly, never while the split's hook is set. A split can therefore be both locked and
     /// group-carrying. A `projectId` that is not a valid tenure window, or a beneficiary the Sticky hook does not
-    /// track, funds the default group instead of reverting, because a split-hook revert silently returns the funds
-    /// to the project.
+    /// track, funds the default group instead of rejecting the allocation. Core burns unconsumed ERC-20 reserved
+    /// allocations after a failed callback; project credits transferred before that callback remain here.
     /// @param context The split context passed in by the terminal or controller.
     function processSplitWith(JBSplitHookContext calldata context) external payable override {
         // Only the project's own terminals and controller can route its splits here.
@@ -751,8 +751,8 @@ contract StickyDistributor is JBDistributor, IStickyDistributor {
         // Record the round's denominator on first funding and add the amount to its pot.
         _recordRewardFunding({hook: hook, groupId: groupId, token: token, amount: amount});
 
-        // The ledger is settled before this log. Reentering through the reward token cannot reorder it: every
-        // funding and claim entry point rejects calls while an inbound transfer is being measured.
+        // Log this funding after its ledger update. The inbound guard blocks nested ERC-20 pulls and claims;
+        // native funding accounts for msg.value separately and can execute during an ERC-20 callback.
         // forge-lint: disable-next-item(reentrancy-events)
         emit Fund({
             hook: hook, groupId: groupId, token: token, round: currentRound(), amount: amount, caller: _msgSender()
@@ -902,7 +902,8 @@ contract StickyDistributor is JBDistributor, IStickyDistributor {
     /// @notice The denominator recorded when a group's round is first funded.
     /// @dev The default group uses the active vote total at the snapshot block, so undelegated balances never share
     /// rewards. Tenure groups total the stake in the current round's window, read from the hook's epoch buckets at
-    /// funding time. Those buckets are frozen for the window because nothing joins an epoch before the round's own.
+    /// funding time. Those buckets cannot grow because nothing joins an epoch before the round's own, but exits
+    /// can reduce them after the denominator is recorded.
     /// @param hook The sticky token.
     /// @param groupId The reward group (0 = the default group).
     /// @param blockNumber The snapshot block, used by the default group only.

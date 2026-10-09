@@ -180,7 +180,8 @@ contract StickySourceCollector is IStickySourceCollector, ReentrancyGuard {
     /// @dev Derived from the supplied canonical sucker registry, whose deployment identity must be verified.
     IJBDirectory public immutable override DIRECTORY;
 
-    /// @notice The parent-only child that separates callers' fee receipts and refunds from all queued principal.
+    /// @notice The parent-only child that separates callers' fee receipts and source-chain refunds from queued
+    /// principal.
     IStickySourceFeePayer public immutable override FEE_PAYER;
 
     /// @notice The receiver factory whose address and implementation match the configured home-chain factory.
@@ -333,7 +334,8 @@ contract StickySourceCollector is IStickySourceCollector, ReentrancyGuard {
     /// remains valid because the destination remints the leaf's project-token count. A caller-sensitive custom cashout
     /// hook may make preview and execution differ; a failed minimum restores custody and liabilities for another
     /// attempt. Native finality, destination claim and receiver settlement remain separate after source submission
-    /// succeeds.
+    /// succeeds. The fee child recovers only source-chain retained registry and transport refunds; it cannot attribute
+    /// or recover asynchronous destination refunds.
     /// @param sourceProjectId The project whose attributed reserved-token custody is being delivered.
     /// @param stickyToken The home-chain Sticky share token whose holders receive the selected bucket.
     /// @param groupId The bucket's destination reward group.

@@ -104,7 +104,8 @@ contract StickyRewardReceiver is IStickyRewardReceiver {
     /// @dev Anyone can settle. The settlement time selects the distributor round, whose snapshot determines reward
     /// eligibility; the receiver does not reserve rewards for holders present when tokens arrive.
     /// @param token The reward token to settle.
-    /// @return amount The amount settled.
+    /// @return amount The receiver's gross balance submitted for funding, in reward-token atoms. Transfer taxes can
+    /// make the distributor's credited amount smaller.
     function settle(IERC20 token) external override returns (uint256 amount) {
         // Settle all tokens currently available, including arrivals sent before this receiver was deployed.
         amount = token.balanceOf(address(this));

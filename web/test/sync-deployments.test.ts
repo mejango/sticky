@@ -63,14 +63,14 @@ function record(
   mkdirSync(directory, { recursive: true })
   writeFileSync(
     join(directory, 'verified.json'),
-    JSON.stringify({ chainId, ...addresses, ...overrides.verified }),
+    JSON.stringify({ kind: 'verified', chainId, ...addresses, ...overrides.verified }),
   )
   writeFileSync(
     join(directory, 'StickyDeployer.json'),
     JSON.stringify({
       address: addresses.deployer.toLowerCase(),
       chainId: `0x${chainId.toString(16)}`,
-      receipt: { blockNumber: `0x${block.toString(16)}` },
+      receipt: { status: '0x1', transactionHash: codeHash, blockHash: codeHash, blockNumber: `0x${block.toString(16)}` },
       ...overrides.deployer,
     }),
   )
@@ -153,6 +153,11 @@ describe('deploymentsFromRecords', () => {
       { deployer: { receipt: { blockNumber: 'latest' } } },
       'base: StickyDeployer.json receipt.blockNumber must be a hex number',
     ],
+    [
+      'a missing creation receipt',
+      { deployer: { receipt: undefined } },
+      'base: StickyDeployer.json receipt.blockNumber must be a hex number',
+    ],
   ])('refuses %s', (_case, overrides, message) => {
     record('base', 8453, 51791252, overrides)
 
@@ -166,6 +171,25 @@ describe('deploymentsFromRecords', () => {
     expect(() => deploymentsFromRecords(root)).toThrow(
       /^base: ENOENT.*StickyDeployer\.json/,
     )
+  })
+
+  it.each(['simulation', undefined])('refuses a flat manifest with kind %s', kind => {
+    record('base', 8453, 51791252, { verified: { kind } })
+    expect(() => deploymentsFromRecords(root)).toThrow('record must be verified')
+  })
+
+  it.each([
+    { status: '0x0' }, { status: undefined }, { transactionHash: undefined },
+    { blockHash: undefined }, { transactionHash: `0x${'00'.repeat(32)}` },
+    { blockHash: `0x${'00'.repeat(32)}` }, { blockNumber: '0x0' },
+  ])('refuses incomplete or failed flat creation evidence: %j', overrides => {
+    record('base', 8453, 51791252, { deployer: {
+      receipt: { status: '0x1', transactionHash: codeHash, blockHash: codeHash, blockNumber: '0x10', ...overrides },
+    } })
+    const output = join(root, 'sticky-deployments.json')
+    expect(() => syncDeployments({ records: root, output })).toThrow('successful creation receipt')
+    expect(existsSync(output)).toBe(false)
+    expect(existsSync(join(root, 'sticky-source-collectors.json'))).toBe(false)
   })
 
   it('refuses two records for one chain', () => {

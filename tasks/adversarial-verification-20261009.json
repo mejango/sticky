@@ -1,0 +1,184 @@
+{
+  "reviewBaseline": "74dc08798976f2a78a560ee5b2c2c98656affc4b",
+  "scope": "Contract/source/tooling review evidence. Client qualification and package publication are recorded separately. No deployment/finality execution claim.",
+  "sourceIdentity": "adversarial-equivalence-20261009.json",
+  "testSHA256": {
+    "test/StickyAccounting.t.sol": "be476604926b74b3c4359533ebc9a45041a4915c557f9021c26a27bb4f7fd79e",
+    "test/StickyAutoStick_Unit.t.sol": "f22294eb5c3a7dda370cacfe5395393a012583e9b8171a911b53ebc384410035",
+    "test/StickyBurn_Integration.t.sol": "51cf8d26a32e9e3e90dc425380a0184bfd6cc4b55907dac76fee9d3dabdc4113",
+    "test/StickyDeployer_Regression.t.sol": "24023bb0484e329f27b62d3bff1ddc9289c51574ba7e3107f56543f30d475d5a",
+    "test/StickyDistributor_Invariant.t.sol": "15efafdd1f4b86d35064dbeef96a94a9bf4e6863b17eb0205796bc2207d84b2b",
+    "test/StickyDistributor_Unit.t.sol": "ba23dab407ca2b9d911f4d63664fa083eee9c84a0e7d59fa05816c6f3e1abb67",
+    "test/StickyForwarding.t.sol": "ee3b91c93e3fc0e597f49b799d6014fb90516bed0aadd2071ed8b671068d45ac",
+    "test/StickyHook_Unit.t.sol": "9ec7cbf5f367474a45e7ca0e4d4b310a1aeb056ddc325d44a6419879987fc397",
+    "test/StickyPriceFeed_Regression.t.sol": "40ff2ce0e83a0e8155586ec76128e170917eb39a39d1957379dd53e674b16764",
+    "test/StickyPricingCallbacks.t.sol": "87ae532d2029c70ebd29b9e4a5fbab8c4bc5591854a530fcb52e1cea2c8cf4fa",
+    "test/StickyPricing_Regression.t.sol": "32b25bd874ddb07f62034a87eab8491f9f5056c50471cc7dda2d236d8005280d",
+    "test/StickyRewardSnapshots.t.sol": "e01e9fe23656001a5425ba325de4cb07a7c504d7709a4f90636cd4db872dc774",
+    "test/StickyRewards_Regression.t.sol": "afe76b01bcf27bdac299f8664e3cda141892ed340475ed19f3e67f988aa32881",
+    "test/StickySourceCollector.t.sol": "d8b6750a5a4373c7ce13cfb61f51b62f19e13b3ae4be1c82f4879572fead2e98",
+    "test/Sticky_Integration.t.sol": "487da2c971ea15d87f7d5af125694dda3d9f3b3382dec00123c9314b1d42bd67",
+    "test/audit/SourceFeeArbitrumRefund.t.sol": "1f261f80943878dec378548d17a1d703d0cd03d1c89586671d5ae93212a45832",
+    "test/daybreak/DaybreakCounterfactualTokenCapture.t.sol": "48fa04f9947d363fded4a01a982658222ce77bd0d933bfa768a3c2bc85428c37",
+    "test/daybreak/StickyExpectedSafe.t.sol": "ae90dcb2f79be25e21a9837b4697ed7a9ff9a557cf10141519d036b9ba77a9d2",
+    "test/deployment/StickyDeployment.t.sol": "309b048d9edde5883df9361924ccf8a487d60dc878932d35f1b05df7efd15bc7",
+    "test/deployment/StickyDeploymentHarness.sol": "864d6ea87ef65ccb9bc4753eff4e33918168148be4385e275b43b5712a81d208",
+    "test/fork/StickyCrossChainRewards.t.sol": "414271659ca308208c4c80ca05635e46a8786b1391b3a4cfc3cf6ea39a2b0044",
+    "test/fork/StickyJbxAuthority.t.sol": "8694a112e1a0508e4486ab4df260f4e928093681677f1f621d99ee6ef93c31ac",
+    "test/fork/StickyJbxLifecycle.t.sol": "dedb82e4749e05cb6aaab01f97d9fbe09979f27da4e714eefabb3b7da9d5c982",
+    "test/fork/StickyJbxOmnichain.t.sol": "91ff9d5c93aad6cf67ca187516b7f19293857232266943f9228bfc24cee35aa2",
+    "test/fork/StickyRealProjects.t.sol": "bdbd955043c8ec645be56357261d50168c95bf91702692c5a615d76ea53a2bd8",
+    "test/fork/StickySourceCredits.t.sol": "c97cf660ea1074ac4aa4d956b3d0b6815e8942fc3394121fe18a6be1fa1519c0",
+    "test/fork/helpers/StickyJbxArbitrumTransport.sol": "46ce2f6cec599801e671ab9b63488151bb412122a153611c179784c511d4b913",
+    "test/fork/helpers/StickyJbxDeployedFork.sol": "52c44345a15b030d584cdb43a2af6f0c6c530a30b5dd91c4e1df90d47165adcb",
+    "test/fork/helpers/StickyJbxOptimismTransport.sol": "d30f2cd63b84e30638ef999095feff55fea14c1ad20acf6f248f8eaf23d0b4e9",
+    "test/fork/helpers/StickyRealProjectFork.sol": "d1094969ae2de01271ebc6501e9a900d732a8a9b3bb32b41181a2d155f9e7902",
+    "test/helpers/SourceFeeArbitrumHarness.sol": "933b00280e808cc1050912816cd1a3661cb133d1e51f5a11b2dbabe7c2797158",
+    "test/helpers/StickyCallbackToken.sol": "6c546ed1de4a11c1968713c31867b3737ad8101b62879b8d3d298e2edd6f60b5",
+    "test/helpers/StickyPricingToken.sol": "60259d316b4d201131b0604d3c3e3e72ad74aaea156287735859a1c35804e0c5",
+    "test/helpers/StickySourceCaller.sol": "3013ec08fdf5cfdb4ca26098449c4bbef015bfeffae6ce61dda6ae3ee6b2cf8e",
+    "test/helpers/StickySourceController.sol": "c49fd0d01b1e1be3211e7821c7b8a8b8d4b97f1dd1eb3885f263d274b311c7cd",
+    "test/helpers/StickySourceDistributor.sol": "3c30ff43cdf1f443c6925be6dae1557b90b17cfd11a5b14bd7eeb0c58484b017",
+    "test/helpers/StickySourceSucker.sol": "e2d941292a46b6c2a6562c5e3e225b73257f39c9b49c3b87ec8652fae9feb0b8",
+    "test/helpers/StickySourceToken.sol": "4b3bdf9b33b851e7aa6c540bdd316a69214e035d2b47c5e1f8af8a46ea609e05",
+    "test/helpers/StickySourceTokens.sol": "d38d174f994979b138eb3be63d88ba7edfb709b5db5045407890392cd5645de5",
+    "test/helpers/StickyTestFeeReceiver.sol": "a00341426166c3eba17b23f0528e6f7dd1f9f978026d8293edf665fbaa3e459f",
+    "test/helpers/StickyTestLauncher.sol": "902ac436b467ae4674b39aa7142e8e0bb70a64b5a83e03af0b54bb033671d8e6",
+    "test/helpers/StickyTestPriceFeed.sol": "8c06610887dc2de2a121bda9ee6061b26b7e8528425b3d36ee13aefd4e0d07e9"
+  },
+  "gates": [
+    {
+      "name": "local",
+      "command": "forge test --deny notes --fail-fast --summary --detailed --skip */script/**",
+      "exitCode": 0,
+      "logFile": "sticky-adversarial-local.log",
+      "logSHA256": "47d38098774ca042389eced217f089d32d0c4b44c077198dc1fdea8c97540889",
+      "tests": 296,
+      "suites": 19
+    },
+    {
+      "name": "invariants",
+      "command": "forge test with invariant runs 2048, depth 200 and seed 0x20261009",
+      "exitCode": 0,
+      "logFile": "sticky-adversarial-invariants.log",
+      "logSHA256": "d347d86838cb38ebeb3e5a718a34b5a7fb405d80193325a4235f80ebf16af7e1",
+      "invariants": 6,
+      "generatedActions": 409600,
+      "nonVacuityProof": true
+    },
+    {
+      "name": "forks",
+      "command": "STICKY_ENV_FILE=<private env> npm run test:fork",
+      "exitCode": 0,
+      "logFile": "sticky-adversarial-fork-final.log",
+      "logSHA256": "02d58d532bfc47fbf8c52348abd31d391248cb3df6c0389928191cb36e82396d",
+      "tests": 86,
+      "suites": 7
+    },
+    {
+      "name": "format",
+      "command": "forge fmt --check",
+      "exitCode": 0,
+      "logFile": "sticky-adversarial-format-final.log",
+      "logSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "deployment-tooling",
+      "command": "node --test test/deployment/*.test.cjs test/deployment/*.test.mjs",
+      "exitCode": 0,
+      "logFile": "sticky-adversarial-tooling.log",
+      "logSHA256": "334654ecd4e1898dbf5c4a6d3c579f73a2c1ead6eddad02735c45e0bf01acd4e",
+      "tests": 69
+    },
+    {
+      "name": "runtime-build",
+      "command": "forge build --deny notes --sizes --skip */test/** --skip */script/** --skip SphinxUtils",
+      "exitCode": 0,
+      "logFile": "sticky-adversarial-build.log",
+      "logSHA256": "fc8c110fe9649d31ec62cd6b3fb15c476a3226fec3460e62b583a4dd294f289d"
+    },
+    {
+      "name": "entrypoints",
+      "command": "forge build --skip */test/**",
+      "exitCode": 0,
+      "logFile": "sticky-adversarial-entrypoints.log",
+      "logSHA256": "59b3b91d830004f2b32cf22a056216e387848761ae9d317011242aaa96f68b0b"
+    },
+    {
+      "name": "slither",
+      "command": "slither . --config-file slither-ci.config.json --fail-medium",
+      "exitCode": 0,
+      "logFile": "sticky-adversarial-slither.log",
+      "logSHA256": "c7b87f6aaa2ed264b1e46e0e0614c581333388ccd2a8b7d17796b1a0032d3e20",
+      "contracts": 134,
+      "detectors": 77,
+      "medium": 0,
+      "high": 0,
+      "low": 87
+    },
+    {
+      "name": "singleton-equivalence",
+      "command": "six singleton creation/runtime/normalized ABI tests",
+      "exitCode": 0,
+      "logFile": "sticky-adversarial-equivalence.log",
+      "logSHA256": "4e1c85999220dee6915558c145d913e61993815f34c3239b9acb547af2aeb848",
+      "tests": 6
+    }
+  ],
+  "sdk": {
+    "sourceCommit": "a4022589502dada1507c1b40be7e9c13308bc630",
+    "preview": "2.27.0-preview.adversarial.9ee3da134017",
+    "sourceDigest": "9ee3da13401741294223a507feaad88fead30fb35371d32992b9231125d1e027",
+    "integrity": "sha512-VtasQlUSXb8M7azUYdiK14iBFI8bz07ZoCJo5YrPDTa2f5v5O1KPsWEiE7+SCXWBeiUNd5rWgx6TJ/GT+BtGDg==",
+    "toolchain": {
+      "node": "22.23.1",
+      "npm": "10.9.8"
+    },
+    "cleanInstall": {
+      "command": "npm ci",
+      "exitCode": 0,
+      "log": "/private/tmp/sdk-sticky-adversarial-preview/npm-ci.log"
+    },
+    "check": {
+      "command": "TURBO_FORCE=true npm run check",
+      "exitCode": 0,
+      "log": "/private/tmp/sdk-sticky-adversarial-preview/clean-check.log"
+    },
+    "productionAudit": {
+      "command": "npm run audit:prod",
+      "exitCode": 0,
+      "vulnerabilities": 0,
+      "log": "/private/tmp/sdk-sticky-adversarial-preview/clean-audit.log"
+    },
+    "compiledFilesEqual": 769,
+    "tests": {
+      "core": {
+        "passed": 2274,
+        "coverage": {
+          "lines": 98.38,
+          "statements": 98.38,
+          "functions": 99.75,
+          "branches": 96.35
+        }
+      },
+      "react": {
+        "passed": 153,
+        "coverage": {
+          "lines": 100,
+          "statements": 100,
+          "functions": 100,
+          "branches": 97.45
+        }
+      },
+      "connect": {
+        "passed": 35,
+        "coverage": {
+          "lines": 100,
+          "statements": 100,
+          "functions": 100,
+          "branches": 97.41
+        }
+      }
+    }
+  }
+}

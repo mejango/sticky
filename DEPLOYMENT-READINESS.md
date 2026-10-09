@@ -1,5 +1,7 @@
 # Sticky deployment readiness — 2026-09-12
 
+> **Historical rehearsal record.** The inputs, predictions and test counts below apply to the September revision. Use [DEPLOYMENT.md](DEPLOYMENT.md) for current release operations and [the home-chain review](OMNICHAIN_SPLIT_HOOK_REVIEW.md) for the destination-bound collector's separate evidence. This record establishes no current collector deployment.
+
 The audited suite passed deployment-and-restart rehearsals on all eight configured
 networks before the reward receiver rename. Each rehearsal checked the expected
 chain, core launch authorization and registry bindings, deployed missing contracts

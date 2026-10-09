@@ -41,8 +41,9 @@ interface IStickySourceCollector is IJBSplitHook {
     /// @param projectTokenCount The project-token atoms debited from the selected bucket.
     /// @param minimumReclaimed The fresh fee-adjusted reclaim minimum, in backing-token atoms; it can be zero.
     /// @param feeTokenCount The fee-project token atoms returned to the caller for this payment.
-    /// @param refundedFee The failed registry fee returned to the caller, in wei.
-    /// @param refundedTransportPayment The excess transport value returned to the caller, in wei.
+    /// @param refundedFee The failed registry fee retained on the source sucker and returned during this call, in wei.
+    /// @param refundedTransportPayment The excess transport value retained on the source sucker and returned during
+    /// this call, in wei.
     /// @param caller The account that funded the source submission.
     event Send(
         uint256 indexed sourceProjectId,
@@ -83,7 +84,7 @@ interface IStickySourceCollector is IJBSplitHook {
     /// @return directory The directory derived from the collector's sucker registry.
     function DIRECTORY() external view returns (IJBDirectory directory);
 
-    /// @notice The isolated fee payer that returns each delivery caller's fee receipts and native refunds.
+    /// @notice The isolated fee payer that returns each delivery caller's fee receipts and source-chain native refunds.
     /// @return feePayer The child permanently authorized to serve this collector.
     function FEE_PAYER() external view returns (IStickySourceFeePayer feePayer);
 
@@ -125,7 +126,8 @@ interface IStickySourceCollector is IJBSplitHook {
     /// remains valid because the destination remints the leaf's project-token count. A caller-sensitive custom cashout
     /// hook may make preview and execution differ; a failed minimum restores custody and liabilities for another
     /// attempt. Native finality, destination claim and receiver settlement remain separate after source submission
-    /// succeeds.
+    /// succeeds. The fee child recovers only source-chain retained registry and transport refunds; it cannot attribute
+    /// or recover asynchronous destination refunds.
     /// @param sourceProjectId The project whose attributed reserved-token custody is being delivered.
     /// @param stickyToken The home-chain Sticky share token whose holders receive the selected bucket.
     /// @param groupId The bucket's destination reward group.

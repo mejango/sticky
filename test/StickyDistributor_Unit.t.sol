@@ -20,6 +20,8 @@ import {IREVOwner} from "@rev-net/core-v6/src/interfaces/IREVOwner.sol";
 
 import {StickyDeployer} from "../src/StickyDeployer.sol";
 import {StickyDistributor} from "../src/StickyDistributor.sol";
+import {StickyRewardReceiver} from "../src/StickyRewardReceiver.sol";
+import {StickyRewardReceiverFactory} from "../src/StickyRewardReceiverFactory.sol";
 import {StickyToken} from "../src/StickyToken.sol";
 import {IStickyDistributor} from "../src/interfaces/IStickyDistributor.sol";
 import {IStickyHook} from "../src/interfaces/IStickyHook.sol";
@@ -188,6 +190,140 @@ contract StickyDistributorUnitTest is TestBaseWorkflow {
             initialVestingRounds: _VESTING_ROUNDS,
             initialClaimDuration: _CLAIM_DURATION
         });
+    }
+
+    /// @notice Returning temporarily acquired shares preserves snapshot rewards but cannot preserve tenure weight.
+    function test_adversarialReturnedSharesKeepTwoSnapshotRewardsWithoutTenureWeight() public {
+        (uint256 openProjectId, IJBToken openToken) = _launchOpenProject();
+        // Leave a positive aged tranche with Alice while Bob temporarily holds most of her shares.
+        uint256 principal = 100e18;
+        uint256 borrowedShares = principal * 9 / 10;
+        _stakeIn({holder: _alice, amount: principal, targetProjectId: openProjectId});
+        _warpWeeks(1);
+        vm.prank(_alice);
+        assertTrue(IERC20(address(openToken)).transfer({to: _bob, value: borrowedShares}));
+        uint256 ownershipBlock = vm.getBlockNumber();
+        vm.roll(ownershipBlock + 1);
+        uint256 fundedRound = _distributor.currentRound();
+        vm.prank(_bob);
+        _distributor.poke();
+        assertEq(_distributor.roundSnapshotBlock(fundedRound), ownershipBlock);
+        assertEq(_distributor.roundSnapshotBlock(fundedRound + 1), ownershipBlock);
+
+        // No underlying deposit or cash out is needed to return the temporary position.
+        vm.prank(_bob);
+        assertTrue(IERC20(address(openToken)).transfer({to: _alice, value: borrowedShares}));
+        assertEq(openToken.balanceOf(_bob), 0);
+        assertEq(openToken.balanceOf(_alice), principal);
+        assertEq(_hook.stakedBalanceOf(openProjectId, _bob), 0);
+        uint256 tenureGroup = 1000;
+        _fundHook({rewardedHook: address(openToken), amount: principal, groupId: 0});
+        _fundHook({rewardedHook: address(openToken), amount: principal, groupId: tenureGroup});
+        vm.warp(_distributor.roundStartTimestamp(fundedRound + 1));
+        vm.roll(vm.getBlockNumber() + 1);
+        _fundHook({rewardedHook: address(openToken), amount: principal, groupId: 0});
+        _fundHook({rewardedHook: address(openToken), amount: principal, groupId: tenureGroup});
+
+        vm.warp(_distributor.roundStartTimestamp(fundedRound + 2));
+        _distributor.beginVesting({hook: address(openToken), tokenIds: _tokenIds(_bob), tokens: _rewardTokens()});
+        _distributor.beginVesting({
+            hook: address(openToken), groupId: tenureGroup, tokenIds: _tokenIds(_bob), tokens: _rewardTokens()
+        });
+        assertEq(
+            _distributor.claimedFor(address(openToken), uint256(uint160(_bob)), IERC20(address(_reward))),
+            borrowedShares * 2
+        );
+        assertEq(
+            _distributor.claimedFor(address(openToken), tenureGroup, uint256(uint160(_bob)), IERC20(address(_reward))),
+            0
+        );
+
+        // Only Alice's untouched aged tranche shares the tenure pots; the returned shares get a fresh age.
+        _distributor.beginVesting({
+            hook: address(openToken), groupId: tenureGroup, tokenIds: _tokenIds(_alice), tokens: _rewardTokens()
+        });
+        assertEq(
+            _distributor.claimedFor(
+                address(openToken), tenureGroup, uint256(uint160(_alice)), IERC20(address(_reward))
+            ),
+            principal * 2
+        );
+        vm.warp(_distributor.roundStartTimestamp(fundedRound + 2 + _VESTING_ROUNDS));
+        _distributor.collectVestedRewards({
+            hook: address(openToken), tokenIds: _tokenIds(_bob), tokens: _rewardTokens(), beneficiary: _bob
+        });
+        assertEq(_reward.balanceOf(_bob), borrowedShares * 2);
+        assertEq(openToken.balanceOf(_alice), principal);
+    }
+
+    /// @notice Arrivals reserve neither the funding round nor the ownership present before a later settlement.
+    function test_adversarialSettlementAfterBoundaryRewardsTheLaterOwner() public {
+        (uint256 openProjectId, IJBToken openToken) = _launchOpenProject();
+        uint256 amount = 100e18;
+        _stakeIn({holder: _alice, amount: amount, targetProjectId: openProjectId});
+        StickyRewardReceiverFactory factory =
+            new StickyRewardReceiverFactory(new StickyRewardReceiver(IStickyDistributor(address(_distributor))));
+        address predicted = factory.predictReceiverOf({stickyToken: address(openToken), groupId: 0});
+        _reward.mint({to: predicted, amount: amount});
+        assertEq(predicted.code.length, 0);
+
+        // Change ownership after arrival and across a boundary, before anyone settles the counterfactual receiver.
+        vm.warp(_distributor.roundStartTimestamp(1));
+        vm.prank(_alice);
+        assertTrue(IERC20(address(openToken)).transfer({to: _bob, value: amount}));
+        vm.roll(vm.getBlockNumber() + 1);
+        vm.prank(_carol);
+        assertEq(factory.settleFor({stickyToken: address(openToken), groupId: 0, token: _reward}), amount);
+        assertEq(_reward.balanceOf(predicted), 0);
+        // forge-lint: disable-next-line(unused-return)
+        (uint208 arrivalRoundAmount,,,,) = _distributor.rewardRoundOf(address(openToken), 0, _reward, 0);
+        // forge-lint: disable-next-line(unused-return)
+        (uint208 settlementRoundAmount,,,,) = _distributor.rewardRoundOf(address(openToken), 0, _reward, 1);
+        assertEq(arrivalRoundAmount, 0);
+        assertEq(settlementRoundAmount, amount);
+
+        vm.warp(_distributor.roundStartTimestamp(2));
+        _distributor.beginVesting({hook: address(openToken), tokenIds: _tokenIds(_alice), tokens: _rewardTokens()});
+        _distributor.beginVesting({hook: address(openToken), tokenIds: _tokenIds(_bob), tokens: _rewardTokens()});
+        assertEq(_distributor.claimedFor(address(openToken), uint256(uint160(_alice)), _reward), 0);
+        assertEq(_distributor.claimedFor(address(openToken), uint256(uint160(_bob)), _reward), amount);
+    }
+
+    /// @notice Duplicate batch entries and sub-share rounding cannot duplicate claims or strand vesting dust.
+    /// @param amountSeed The reward amount, including odd values and single reward-token atoms.
+    function testFuzz_adversarialTinyVestingAndDuplicateListsConserveEveryAtom(uint8 amountSeed) public {
+        uint256 amount = bound(amountSeed, 1, type(uint8).max);
+        _stake({holder: _alice, amount: 1e18});
+        vm.roll(vm.getBlockNumber() + 1);
+        _fund(amount);
+        uint256[] memory ids = new uint256[](2);
+        ids[0] = uint256(uint160(_alice));
+        ids[1] = ids[0];
+        IERC20[] memory rewards = new IERC20[](2);
+        rewards[0] = _reward;
+        rewards[1] = _reward;
+        vm.warp(_distributor.roundStartTimestamp(1));
+        _distributor.beginVesting({hook: address(_stickyToken), tokenIds: ids, tokens: rewards});
+        assertEq(_distributor.totalVestingAmountOf(address(_stickyToken), _reward), amount);
+
+        vm.warp(_distributor.roundStartTimestamp(2));
+        assertEq(_distributor.collectableFor(address(_stickyToken), ids[0], _reward), amount / 2);
+        _distributor.collectVestedRewards({
+            hook: address(_stickyToken), tokenIds: ids, tokens: rewards, beneficiary: _alice
+        });
+        assertEq(_reward.balanceOf(_alice), amount / 2);
+        assertEq(_distributor.claimedFor(address(_stickyToken), ids[0], _reward), amount - amount / 2);
+
+        vm.warp(_distributor.roundStartTimestamp(1 + _VESTING_ROUNDS));
+        _distributor.collectVestedRewards({
+            hook: address(_stickyToken), tokenIds: ids, tokens: rewards, beneficiary: _alice
+        });
+        assertEq(_reward.balanceOf(_alice), amount);
+        assertEq(_distributor.totalVestingAmountOf(address(_stickyToken), _reward), 0);
+        assertEq(_distributor.balanceOf(address(_stickyToken), _reward), 0);
+        assertEq(_reward.balanceOf(address(_distributor)), 0);
+        assertEq(_distributor.claimedFor(address(_stickyToken), ids[0], _reward), 0);
+        assertEq(_distributor.collectableFor(address(_stickyToken), ids[0], _reward), 0);
     }
 
     function test_claimSplitsProRataAcrossAgedTranches() public {

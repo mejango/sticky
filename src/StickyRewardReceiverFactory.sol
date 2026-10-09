@@ -70,7 +70,8 @@ contract StickyRewardReceiverFactory is IStickyRewardReceiverFactory {
     /// @param stickyToken The sticky token whose holders should be rewarded.
     /// @param groupId The reward group the receiver funds (0 = the default group).
     /// @param token The reward token to settle.
-    /// @return amount The amount settled.
+    /// @return amount The receiver's gross balance submitted for funding, in reward-token atoms. Transfer taxes can
+    /// make the distributor's credited amount smaller.
     function settleFor(address stickyToken, uint256 groupId, IERC20 token) external override returns (uint256 amount) {
         // Materialize the destination if needed so even arrivals sent before deployment can fund rewards.
         amount = IStickyRewardReceiver(deployReceiverFor({stickyToken: stickyToken, groupId: groupId})).settle(token);

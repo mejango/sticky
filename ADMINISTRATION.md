@@ -55,3 +55,17 @@ The source authority and current split tables must be read from core at setup ti
 - A collector `send(...)` success proves source submission only. Keepers must follow finalization, the fixed-beneficiary destination claim, receiver settlement and holder collection separately. A successful native withdrawal cannot be recalled. Anyone can choose partial amounts, valid routes and send/settlement timing, so reward-round timing is not an administrator promise.
 - There is no Sticky pause, asset rescue, forced migration, or orphaned-fund recovery operation. Follow [DEPLOYMENT.md](./DEPLOYMENT.md) for new releases and [USER_JOURNEYS.md](./USER_JOURNEYS.md) for holder actions.
 - Contract changes remain in a PR through complete implementation/review, required checks, deployment and verification. The user's explicit approval of the final PR is required before merge; green checks, deployment access or prior requests to update main do not authorize it. Live deployment and split changes retain their own concrete execution authority.
+
+## Incident and recovery actions
+
+First retain the chain, contract/runtime identity, transaction or proposal reference, canonical receipt, affected pending bucket and relevant source/destination balances. A timeout is an unknown outcome; reconcile the original action before submitting another value-moving transaction. No Sticky administrator can pause these immutable contracts or reverse accepted allocations.
+
+| Observed state | Available response and limit |
+| --- | --- |
+| Incorrect split configuration before acceptance | The authorized source operator can correct unlocked current/future tables. Inspect reserves already distributed separately: a rejected ERC-20 callback may have burned them, and unattributed credits or donations have no collector rescue. |
+| Accepted bucket, failed delivery | Inspect the canonical revert and unchanged pending/custody balances, then retry a positive partial amount after fixing ERC-20 readiness, fees or route state. A qualified replacement must preserve the same home-chain destination. |
+| Source submission succeeded, arrival missing | Retain the exact leaf/root and follow the canonical transport's proving/finalization and destination claim. Check whether claim or settlement already occurred before retrying; do not treat a source receipt as destination funding. |
+| Unsafe or permanently unavailable lane | Stop configuring additional allocations to that lane and arrange authorized changes to future unlocked splits. Existing buckets remain bound to their destination, and permissionless contracts expose no delivery pause. Native Ethereum-to-Arbitrum collector delivery remains unqualified because asynchronous destination refunds cannot be recovered; see [RISKS.md](RISKS.md#operational-limits). |
+| Client or artifact mismatch | Restore the last verified client configuration and retain pending transaction records. Re-run live contract verification before publishing corrected artifacts; a website rollback cannot change deployed code, permanent pool settings or a submitted transaction. |
+
+Assign an operator to each unfinished source submission, native finalization, claim and settlement before enabling material funding. Permissionless access supplies execution authority to callers, not monitoring coverage or a recovery service.

@@ -56,9 +56,16 @@ function nonzeroHash(value) {
   return typeof value === 'string' && isHash(value) && !/^0x0+$/.test(value)
 }
 
+function hasSuccessfulReceipt(receipt) {
+  return receipt?.status === '0x1' && nonzeroHash(receipt.transactionHash) && nonzeroHash(receipt.blockHash)
+}
+
 function deploymentFrom(directory) {
   const record = readJson(join(directory, 'verified.json'))
   const deployer = readJson(join(directory, 'StickyDeployer.json'))
+  if (record.kind !== 'verified') {
+    throw new Error('the deployment record must be verified')
+  }
   const { chainId } = record
   if (!Number.isSafeInteger(chainId) || chainId <= 0) {
     throw new Error('chainId must be a positive integer')
@@ -86,6 +93,9 @@ function deploymentFrom(directory) {
     deployer.receipt?.blockNumber,
     'StickyDeployer.json receipt.blockNumber',
   )
+  if (fromBlock === 0n || !hasSuccessfulReceipt(deployer.receipt)) {
+    throw new Error('StickyDeployer.json must contain a successful creation receipt at a nonzero block')
+  }
   return { chainId, deployment: { ...addresses, fromBlock: String(fromBlock) } }
 }
 
@@ -176,8 +186,7 @@ export function collectorsFromRecords(root = RECORDS) {
           if (checksummed(artifact.address, `${name} address`) !== expectedAddress ||
             hexNumber(artifact.chainId, `${name} chainId`) !== BigInt(sourceChainId) ||
             artifact.destinationChainId !== destinationChainId || artifact.contractName !== name ||
-            artifact.receipt?.status !== '0x1' || !nonzeroHash(artifact.receipt?.transactionHash) ||
-            !nonzeroHash(artifact.receipt?.blockHash) ||
+            !hasSuccessfulReceipt(artifact.receipt) ||
             !Array.isArray(artifact.args) || artifact.args.length !== expectedArgs.length ||
             artifact.args.some((arg, index) => typeof arg !== 'string' || arg.toLowerCase() !== expectedArgs[index].toLowerCase())) {
             throw new Error(`${name} artifact does not match the executed destination family`)

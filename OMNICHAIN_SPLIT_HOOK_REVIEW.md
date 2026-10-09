@@ -1,8 +1,10 @@
 # Omnichain reserved-token split hook review
 
+> The [2026-10-09 adversarial review](ADVERSARIAL_REVIEW_2026-10-09.md) supersedes this report's readiness conclusions. The implementation and test evidence below remains tied to its recorded revisions. The later review identifies an open Ethereum-to-Arbitrum asynchronous-refund defect; that collector lane is not qualified for live use.
+
 ## Current home-chain revision
 
-Status as of 2026-10-09: the destination-bound implementation has passed the contract, fork, SDK and application checks recorded below. Published core 2.26.0 is pinned and qualified; final hosted checks and live release gates remain open. This is an internal source/test review, not independent human certification or live deployment evidence. The [accepted home-chain plan](tasks/home-chain-pools.md) and [operative hook plan](tasks/omnichain-split-hook.md) define the scope.
+Status as of 2026-10-09: the destination-bound implementation passed the contract, fork, SDK and application checks recorded below, and all six hosted checks at `74dc087` passed. Published core 2.26.0 is pinned and qualified. The subsequent adversarial-review remediation has its own pending verification/hosted checks, and live release gates remain open. This is an internal source/test review, not independent human certification or live deployment evidence. The [accepted home-chain plan](tasks/home-chain-pools.md) and [operative hook plan](tasks/omnichain-split-hook.md) define the scope.
 
 Each Sticky pool has one home chain. Its shares, backing, snapshots, rewards and redemption remain there, while qualified direct routes can deliver reserved project tokens from other chains. The collector appends a nonzero immutable `destinationChainId` to `(registry, tokens, receiverFactory)`. One family has matching addresses across source deployments with the same constructor inputs; another destination has separate custody. Split encoding stays `hook = verified home-chain collector`, `beneficiary = home-chain Sticky share token`, `projectId = reward group`. Local settlement requires the executing chain to match the immutable destination; remote submission requires a registered usable peer on that destination. There is no implicit relay or Ethereum fallback, and native L2-to-L2 delivery remains unsupported without a separately qualified direct route.
 

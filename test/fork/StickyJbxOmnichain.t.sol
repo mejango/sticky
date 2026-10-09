@@ -14,6 +14,7 @@ import {JBSplit} from "@bananapus/core-v6/src/structs/JBSplit.sol";
 import {JBSplitGroup} from "@bananapus/core-v6/src/structs/JBSplitGroup.sol";
 import {JBTerminalConfig} from "@bananapus/core-v6/src/structs/JBTerminalConfig.sol";
 import {JBArbitrumSucker} from "@bananapus/suckers-v6/src/JBArbitrumSucker.sol";
+import {JBCCIPSucker} from "@bananapus/suckers-v6/src/JBCCIPSucker.sol";
 import {JBOptimismSucker} from "@bananapus/suckers-v6/src/JBOptimismSucker.sol";
 import {JBSucker} from "@bananapus/suckers-v6/src/JBSucker.sol";
 import {IJBSuckerDeployer} from "@bananapus/suckers-v6/src/interfaces/IJBSuckerDeployer.sol";
@@ -25,12 +26,14 @@ import {JBOutboxTree} from "@bananapus/suckers-v6/src/structs/JBOutboxTree.sol";
 import {JBSuckerDeployerConfig} from "@bananapus/suckers-v6/src/structs/JBSuckerDeployerConfig.sol";
 import {JBTokenMapping} from "@bananapus/suckers-v6/src/structs/JBTokenMapping.sol";
 import {MerkleLib} from "@bananapus/suckers-v6/src/utils/MerkleLib.sol";
+import {IRouterClient} from "@chainlink/contracts-ccip/contracts/interfaces/IRouterClient.sol";
+import {Client} from "@chainlink/contracts-ccip/contracts/libraries/Client.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Bytes} from "@openzeppelin/contracts/utils/Bytes.sol";
-import {Vm} from "forge-std/Vm.sol";
+import {Vm, VmSafe} from "forge-std/Vm.sol";
 
 import {StickyDistributor} from "../../src/StickyDistributor.sol";
 import {StickyRewardReceiverFactory} from "../../src/StickyRewardReceiverFactory.sol";
@@ -134,6 +137,130 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
             StickyRewardReceiverFactory(_ethereum.suite.rewardReceiverFactory).predictReceiverOf(address(_sticky), 0);
         assertEq(_receiver.code.length, 0, "counterfactual receiver");
         assertFalse(_sticky.SOULBOUND(), "user-provisional transferable shares");
+    }
+
+    /// @notice The existing Ethereum-to-Arbitrum CCIP lane returns excess caller budget on the source chain.
+    /// @dev Uses actual reserves, registered clone/singleton code, native wrapping and the deployed CCIP router.
+    /// This proves source submission and refund attribution, not CCIP finality, Arbitrum settlement or pool readiness.
+    function test_adversarialEthereumToArbitrum_ccipReturnsSourceTransportRefund() public {
+        Source memory source = _source({chainId: 1, projectId: _REV_PROJECT});
+        JBCCIPSucker ccip = _checkedEthereumArbitrumCcipSucker();
+        source.sucker = ccip;
+        _flushReserved(source);
+        StickySourceCollector collector = _deployCollector({source: source, destinationChainId: _ARBITRUM});
+        uint256 reward = _fundCollector({source: source, collector: collector});
+        address feeChild = address(collector.FEE_PAYER());
+        address router = address(ccip.CCIP_ROUTER());
+        address wrapped = address(ccip.CCIP_ROUTER().getWrappedNative());
+        uint64 selector = ccip.REMOTE_CHAIN_SELECTOR();
+        assertTrue(ccip.CCIP_ROUTER().isChainSupported(selector), "router supports the selected CCIP lane");
+
+        // Separate actual prior outbox backing from this allocation and keep the caller's budget bounded.
+        JBOutboxTree memory beforeOutbox = ccip.outboxOf(JBConstants.NATIVE_TOKEN);
+        uint256 supplyBefore = source.token.totalSupply();
+        uint256 backingBefore = _backing(source);
+        uint256 wrappedBefore = IERC20(wrapped).balanceOf(address(ccip));
+        uint256 callerFeeTokensBefore = _feeToken(source).balanceOf(_keeper);
+        uint256 transportBudget = 0.5 ether;
+        uint256 value = ccip.REGISTRY().toRemoteFee() + transportBudget;
+        vm.deal(_keeper, value);
+        vm.recordLogs();
+        vm.startStateDiffRecording();
+        vm.prank(_keeper);
+        // Only the production-deployed local collector receives the bounded budget before actual CCIP submission.
+        // forge-lint: disable-next-item(arbitrary-send-eth)
+        collector.send{value: value}({
+            sourceProjectId: source.projectId,
+            stickyToken: address(_sticky),
+            groupId: 0,
+            amount: reward,
+            sucker: ccip,
+            backingToken: JBConstants.NATIVE_TOKEN
+        });
+        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        JBClaim memory claimData = _collectorClaim({
+            logs: logs,
+            source: source,
+            collector: collector,
+            beforeOutbox: beforeOutbox,
+            reward: reward,
+            backingToken: JBConstants.NATIVE_TOKEN
+        });
+
+        (JBMessageRoot memory root, uint256 paidFee) =
+            _assertCcipSubmission(accesses, ccip, beforeOutbox.balance + claimData.leaf.terminalTokenAmount);
+        assertGt(paidFee, 0);
+        assertLt(paidFee, transportBudget, "positive caller excess exercises the source refund ledger");
+        _assertEmittedRoot(source, claimData, abi.encodeCall(JBSucker.fromRemote, (root)), root.amount);
+
+        // The failed direct refund is retained for the child and claimed to this caller in the same transaction.
+        uint256 refund = transportBudget - paidFee;
+        _assertCcipRefund(logs, address(ccip), feeChild, refund);
+        assertEq(_keeper.balance, refund, "all excess transport budget returns to the current caller");
+        assertEq(feeChild.balance, 0);
+        assertEq(IERC20(wrapped).balanceOf(address(ccip)), wrappedBefore, "all newly wrapped backing leaves source");
+        assertEq(IERC20(wrapped).allowance(address(ccip), router), 0, "no standing CCIP backing allowance");
+        assertEq(_backing(source), backingBefore - claimData.leaf.terminalTokenAmount);
+        _assertCollectorTokenConservation(logs, source, collector, reward, supplyBefore, callerFeeTokensBefore);
+    }
+
+    /// @notice A real Ethereum-to-Arbitrum submission directs destination gas refunds to the isolated fee child.
+    /// @dev This source-boundary regression captures the deployed Inbox payload without mocking transport. It does
+    /// not execute ArbOS or claim to establish destination refund delivery. The Ethereum share-token bytes identify
+    /// only the bucket here; this test does not claim that a corresponding Arbitrum Sticky pool exists.
+    function test_adversarialEthereumToArbitrum_retryableRefundUsesFeeChild() public {
+        Source memory source = _source({chainId: 1, projectId: _REV_PROJECT});
+        source.sucker = _checkedSucker({chainId: 1, projectId: _REV_PROJECT, peerChain: _ARBITRUM});
+        _flushReserved(source);
+        StickySourceCollector collector = _deployCollector({source: source, destinationChainId: _ARBITRUM});
+        uint256 reward = _fundCollector({source: source, collector: collector});
+        address feeChild = address(collector.FEE_PAYER());
+        address inbox = address(JBArbitrumSucker(payable(address(source.sucker))).ARBINBOX());
+        bytes32 peer = source.sucker.peer();
+
+        // Supply a bounded caller budget above the live base-fee provision; all backing remains actual project funds.
+        uint256 transportBudget = 10_000_000 * block.basefee + 0.01 ether;
+        uint256 value = source.sucker.REGISTRY().toRemoteFee() + transportBudget;
+        vm.deal(_keeper, value);
+        vm.recordLogs();
+        vm.prank(_keeper);
+        // Only the locally deployed collector receives caller funds, then pays the verified route's real Inbox.
+        // forge-lint: disable-next-item(arbitrary-send-eth)
+        collector.send{value: value}({
+            sourceProjectId: source.projectId,
+            stickyToken: address(_sticky),
+            groupId: 0,
+            amount: reward,
+            sucker: source.sucker,
+            backingToken: JBConstants.NATIVE_TOKEN
+        });
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        // Nitro packs nine static words before the exact destination calldata in InboxMessageDelivered.
+        uint256 count;
+        for (uint256 i; i < logs.length; ++i) {
+            Vm.Log memory entry = logs[i];
+            if (
+                entry.emitter != inbox || entry.topics.length != 2
+                    || entry.topics[0] != keccak256("InboxMessageDelivered(uint256,bytes)")
+            ) continue;
+            bytes memory payload = abi.decode(entry.data, (bytes));
+            uint256[9] memory header = abi.decode(Bytes.slice(payload, 0, 9 * 32), (uint256[9]));
+            assertEq(bytes32(header[0]), peer, "actual retryable target");
+            assertEq(header[2] - header[1], transportBudget, "whole caller budget reaches destination escrow");
+            assertEq(header[4], uint256(uint160(feeChild)), "destination refund belongs to the fee child");
+            assertNotEq(header[4], uint256(uint160(_keeper)), "original caller is not the refund beneficiary");
+            assertEq(bytes32(header[5]), peer, "principal refund remains with destination sucker");
+            assertGt(transportBudget, header[3] + header[6] * header[7], "positive excess exists before execution");
+            assertEq(payload.length, 9 * 32 + header[8], "complete retryable payload captured");
+            ++count;
+        }
+        assertEq(count, 1, "one real native retryable");
+        assertEq(source.sucker.retainedToRemoteFeeOf(feeChild), 0, "no source registry refund represents L2 gas");
+        assertEq(source.sucker.retainedTransportPaymentRefundOf(feeChild), 0, "no source ledger recovers L2 excess");
+        assertEq(feeChild.balance, 0, "the source fee child cannot return destination escrow");
+        assertEq(collector.pendingOf(source.projectId, address(_sticky), 0), 0, "source send reports success");
     }
 
     /// @notice Actual Ethereum project 1 reserves enter the shared hook before permissionless settlement.
@@ -1257,6 +1384,136 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         source.terminal = source.controller.DIRECTORY().primaryTerminalOf(projectId, JBConstants.NATIVE_TOKEN);
         assertGt(address(source.terminal).code.length, 0);
         if (chainId != 1) source.sucker = _checkedSucker(chainId, projectId, 1);
+    }
+
+    /// @notice Verifies actual wrapping and router calldata from the source transaction's recorded accesses.
+    /// @param accesses The real transaction's account accesses.
+    /// @param ccip The verified source sucker.
+    /// @param backing The complete outbox backing submitted, including preceding allocations.
+    /// @return root The message submitted to the destination peer.
+    /// @return paidFee The router's exact source-chain fee.
+    function _assertCcipSubmission(
+        Vm.AccountAccess[] memory accesses,
+        JBCCIPSucker ccip,
+        uint256 backing
+    )
+        internal
+        view
+        returns (JBMessageRoot memory root, uint256 paidFee)
+    {
+        address wrapped = address(ccip.CCIP_ROUTER().getWrappedNative());
+        address router = address(ccip.CCIP_ROUTER());
+        uint64 selector = ccip.REMOTE_CHAIN_SELECTOR();
+        Client.EVM2AnyMessage memory message;
+        uint256 sendCount;
+        uint256 wrapCount;
+        for (uint256 i; i < accesses.length; ++i) {
+            Vm.AccountAccess memory entry = accesses[i];
+            if (entry.kind != VmSafe.AccountAccessKind.Call || entry.accessor != address(ccip)) continue;
+            if (entry.account == wrapped && keccak256(entry.data) == keccak256(abi.encodeWithSignature("deposit()"))) {
+                assertFalse(entry.reverted, "actual native wrapping succeeded");
+                assertEq(entry.value, backing);
+                ++wrapCount;
+            }
+            // The complete calldata is re-encoded after identifying the router entrypoint.
+            // forge-lint: disable-next-item(unsafe-typecast)
+            if (
+                entry.account != router || entry.data.length < 4
+                    || bytes4(entry.data) != IRouterClient.ccipSend.selector
+            ) {
+                continue;
+            }
+            uint64 capturedSelector;
+            (capturedSelector, message) = abi.decode(Bytes.slice(entry.data, 4), (uint64, Client.EVM2AnyMessage));
+            assertEq(capturedSelector, selector);
+            assertEq(entry.data, abi.encodeCall(IRouterClient.ccipSend, (selector, message)));
+            assertFalse(entry.reverted, "actual CCIP router accepted the source message");
+            paidFee = entry.value;
+            ++sendCount;
+        }
+        assertEq(sendCount, 1, "one real CCIP submission");
+        assertEq(wrapCount, 1, "one actual native-to-wrapped conversion");
+        assertEq(paidFee, ccip.CCIP_ROUTER().getFee(selector, message), "router receives only its exact live quote");
+        assertEq(message.feeToken, address(0), "native transport fee mode");
+        assertEq(abi.decode(message.receiver, (address)), address(uint160(uint256(ccip.peer()))));
+        assertEq(message.tokenAmounts.length, 1);
+        assertEq(message.tokenAmounts[0].token, wrapped);
+        assertEq(message.tokenAmounts[0].amount, backing);
+        (uint8 messageType, bytes memory payload) = abi.decode(message.data, (uint8, bytes));
+        assertEq(messageType, 0, "CCIP root message");
+        root = abi.decode(payload, (JBMessageRoot));
+        assertEq(root.token, bytes32(uint256(uint160(JBConstants.NATIVE_TOKEN))));
+        assertEq(root.amount, backing, "advertised root backing equals actual CCIP custody");
+    }
+
+    /// @notice Verifies both source refund ledger events name the fee child and original caller.
+    /// @param logs The source transaction's logs.
+    /// @param ccip The verified source sucker.
+    /// @param feeChild The caller into the sucker.
+    /// @param refund The exact excess transport budget.
+    function _assertCcipRefund(Vm.Log[] memory logs, address ccip, address feeChild, uint256 refund) internal view {
+        uint256 retainedCount;
+        uint256 claimedCount;
+        for (uint256 i; i < logs.length; ++i) {
+            Vm.Log memory entry = logs[i];
+            if (entry.emitter != address(ccip) || entry.topics.length < 2) continue;
+            if (entry.topics[0] == keccak256("RetainedTransportPaymentRefund(address,uint256,address)")) {
+                assertEq(entry.topics[1], bytes32(uint256(uint160(feeChild))));
+                assertEq(entry.data, abi.encode(refund, feeChild));
+                ++retainedCount;
+            }
+            if (entry.topics[0] == keccak256("RetainedTransportPaymentRefundClaimed(address,address,uint256,address)"))
+            {
+                assertEq(entry.topics[1], bytes32(uint256(uint160(feeChild))));
+                assertEq(entry.topics[2], bytes32(uint256(uint160(_keeper))));
+                assertEq(entry.data, abi.encode(refund, feeChild));
+                ++claimedCount;
+            }
+        }
+        assertEq(retainedCount, 1);
+        assertEq(claimedCount, 1);
+    }
+
+    /// @notice Authenticates the existing REV CCIP clone and its full singleton runtime against committed artifacts.
+    /// @return sucker The registered Ethereum-to-Arbitrum CCIP route; destination execution is qualified separately.
+    function _checkedEthereumArbitrumCcipSucker() internal returns (JBCCIPSucker sucker) {
+        string memory artifact =
+            vm.readFile("node_modules/@bananapus/suckers-v6/deployments/ethereum/JBCCIPSucker__ARB.json");
+        address implementation = vm.parseJsonAddress(artifact, ".address");
+        // The artifact runtime has unpatched immutable slots. Replay its creation code and recorded arguments
+        // against the actual, permanently configured deployer to compare every executable byte and immutable.
+        string[] memory args = vm.parseJsonStringArray(artifact, ".args");
+        assertEq(args.length, 7);
+        bytes memory creation = abi.encodePacked(
+            vm.parseJsonBytes(artifact, ".bytecode"),
+            abi.encode(
+                vm.parseAddress(args[0]),
+                vm.parseAddress(args[1]),
+                vm.parseAddress(args[2]),
+                vm.parseAddress(args[3]),
+                vm.parseUint(args[4]),
+                vm.parseAddress(args[5]),
+                vm.parseAddress(args[6])
+            )
+        );
+        address referenceImplementation;
+        assembly ("memory-safe") {
+            referenceImplementation := create(0, add(creation, 0x20), mload(creation))
+        }
+        assertGt(referenceImplementation.code.length, 0, "recorded singleton creation succeeds");
+        assertEq(implementation.codehash, referenceImplementation.codehash);
+        sucker = JBCCIPSucker(payable(0xB8253789Ab9fB858Ce454084a29681A661eA07eB));
+        // Solady's committed 44-byte clone runtime binds this route to the authenticated implementation.
+        assertEq(
+            address(sucker).codehash,
+            keccak256(abi.encodePacked(hex"3d3d3d3d363d3d37363d73", implementation, hex"5af43d3d93803e602a57fd5bf3"))
+        );
+        assertEq(sucker.projectId(), _REV_PROJECT);
+        assertEq(sucker.peerChainId(), _ARBITRUM);
+        assertEq(sucker.peer(), bytes32(uint256(uint160(address(sucker)))));
+        assertTrue(sucker.REGISTRY().isSuckerOf(_REV_PROJECT, address(sucker)));
+        assertTrue(sucker.remoteTokenFor(JBConstants.NATIVE_TOKEN).enabled);
+        assertGt(address(sucker.CCIP_ROUTER()).code.length, 0);
     }
 
     /// @notice Checks a reciprocal deployed native mapping, runtime and implementation against the recorded census.

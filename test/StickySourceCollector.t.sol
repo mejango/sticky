@@ -1517,6 +1517,89 @@ contract StickySourceCollectorTest is Test {
         assertEq(route.prepareCalls(), 3);
     }
 
+    /// @notice Mixed receipt, donation, callback and delivery sequences preserve independent bucket liabilities.
+    /// @dev Each run stays on one chain. The first eight steps exercise every action; later steps permute them.
+    /// Ghost balances change only from chosen inputs, never from the collector's reported accounting.
+    /// @param seed Entropy for action order, projects, pools, groups, receipt form and amounts.
+    /// @param home Whether this run settles locally or submits through source routes.
+    function testFuzz_mixedCustodySequence(bytes32 seed, bool home) public {
+        vm.chainId(home ? 1 : 10);
+        uint256[12] memory pending;
+        uint256[12] memory delivered;
+        uint256[3] memory donations;
+        StickySourceSucker[3] memory routes = [_newRoute(1), _sucker, _newRoute(77)];
+        address firstCaller = _caller;
+        address secondCaller = makeAddr("sequence delivery caller");
+        vm.deal({account: secondCaller, newBalance: 100 ether});
+
+        // Start every bucket with ample custody so each selected action is meaningful even at the fuzz boundaries.
+        for (uint256 bucket; bucket < 12; bucket++) {
+            _sequenceQueue({bucket: bucket, amount: 1e24, credits: bucket % 2 == 0});
+            pending[bucket] = 1e24;
+        }
+
+        for (uint256 step; step < 24; step++) {
+            uint256 entropy = uint256(keccak256(abi.encode(seed, step)));
+            _caller = entropy % 2 == 0 ? firstCaller : secondCaller;
+            uint256 action = step < 8 ? step : entropy % 8;
+            uint256 bucket = (entropy >> 8) % 12;
+            uint256 projectId = _sequenceProjectId(bucket / 4);
+            uint256 amount = 1 + ((entropy >> 32) % 1e20);
+            bool credits = (entropy >> 192) % 2 == 0;
+            StickySourceToken token = StickySourceToken(address(_tokens.tokenOf(projectId)));
+
+            if (action < 2) {
+                _sequenceQueue({bucket: bucket, amount: amount, credits: action == 1});
+                pending[bucket] += amount;
+            } else if (action == 2) {
+                // Plain donations add a custody floor but confer no bucket spending authority.
+                if (credits) {
+                    _tokens.seedCredit({holder: address(_collector), projectId: projectId, amount: amount});
+                } else {
+                    token.mint({account: address(_collector), amount: amount});
+                }
+                donations[bucket / 4] += amount;
+            } else if (action == 3) {
+                uint256 nestedBucket = (entropy >> 208) % 12;
+                uint256 nestedAmount = 1 + amount / 3;
+                _sequenceArmReceipt({token: token, bucket: nestedBucket, amount: nestedAmount, credits: credits});
+                _sequenceQueue({bucket: bucket, amount: amount, credits: false});
+                assertTrue(token.callbackSucceeded());
+                pending[bucket] += amount;
+                pending[nestedBucket] += nestedAmount;
+            } else {
+                bool rejected = action >= 6;
+                uint256 nestedBucket = (entropy >> 208) % 12;
+                uint256 nestedAmount = 1 + amount / 3;
+                if (action == 5) {
+                    // Incoming reserves during an outbound token pull must remain queued under their own key.
+                    _sequenceArmReceipt({token: token, bucket: nestedBucket, amount: nestedAmount, credits: credits});
+                }
+                if (action == 7) amount = pending[bucket] + 1;
+                _sequenceDeliver({
+                    bucket: bucket,
+                    amount: amount,
+                    route: routes[bucket / 4],
+                    home: home,
+                    failure: action == 6 ? 1 : (action == 7 ? 2 : 0)
+                });
+                if (!rejected) {
+                    pending[bucket] -= amount;
+                    delivered[bucket] += amount;
+                    if (action == 5) {
+                        assertTrue(token.callbackSucceeded());
+                        pending[nestedBucket] += nestedAmount;
+                    }
+                }
+            }
+            _assertSequenceCustody({
+                pending: pending, delivered: delivered, donations: donations, routes: routes, home: home
+            });
+        }
+        assertEq(_controller.rejectedCallbacks(), 0);
+        assertEq(_controller.burned(), 0);
+    }
+
     /// @notice Same-project nesting cannot double-book the inner allocation, including when buckets coincide.
     /// @param rawOuter The outer reserve allocation.
     /// @param rawInner The nested reserve allocation.
@@ -1748,9 +1831,167 @@ contract StickySourceCollectorTest is Test {
         });
     }
 
+    /// @notice Arms an authenticated nested allocation in the next principal transfer.
+    /// @param token The project token whose transfer invokes the nested allocation.
+    /// @param bucket The destination bucket for the nested allocation.
+    /// @param amount The nested allocation in project-token atoms.
+    /// @param credits Whether the nested controller context transfers credits.
+    function _sequenceArmReceipt(StickySourceToken token, uint256 bucket, uint256 amount, bool credits) internal {
+        JBSplitHookContext memory context = _sequenceContext({bucket: bucket, amount: amount, credits: credits});
+        token.setTransferCallback({
+            target: address(_controller),
+            data: abi.encodeCall(StickySourceController.distribute, (context)),
+            rejectOnFailure: true
+        });
+    }
+
+    /// @notice Attempts one local or remote delivery, proving rollback for the selected exact failure.
+    /// @param bucket The bucket selected by independent sequence inputs.
+    /// @param amount The requested project-token amount.
+    /// @param route The project's source delivery route.
+    /// @param home Whether this sequence uses home-chain settlement.
+    /// @param failure Zero for success, one for downstream rejection, or two for an overdraw.
+    function _sequenceDeliver(
+        uint256 bucket,
+        uint256 amount,
+        StickySourceSucker route,
+        bool home,
+        uint256 failure
+    )
+        internal
+    {
+        JBSplitHookContext memory context = _sequenceContext({bucket: bucket, amount: amount, credits: false});
+        if (home) {
+            _distributor.setRejectFunding(failure == 1);
+        } else {
+            _mockPreview({
+                route: route,
+                projectId: context.projectId,
+                amount: amount,
+                backing: JBConstants.NATIVE_TOKEN,
+                gross: _PREVIEW
+            });
+            route.setBehavior({
+                failFee: false, failTransport: failure == 1, leaveUnsent: false, receipt: _RECEIPT, transportRefund: 0
+            });
+        }
+        bytes32 beforeState = _stateHash(route);
+        uint256 leavesBefore = route.outboxOf(JBConstants.NATIVE_TOKEN).tree.count;
+        if (failure == 1) {
+            vm.expectRevert(
+                home
+                    ? StickySourceDistributor.StickySourceDistributor_Rejected.selector
+                    : StickySourceSucker.StickySourceSucker_Rejected.selector
+            );
+        } else if (failure == 2) {
+            vm.expectRevert(
+                abi.encodeWithSelector(
+                    StickySourceCollector.StickySourceCollector_InsufficientPending.selector,
+                    context.projectId,
+                    address(context.split.beneficiary),
+                    uint256(context.split.projectId),
+                    amount,
+                    amount - 1
+                )
+            );
+        }
+        if (home) {
+            vm.prank(_caller);
+            _collector.settle({
+                sourceProjectId: context.projectId,
+                stickyToken: address(context.split.beneficiary),
+                groupId: context.split.projectId,
+                amount: amount
+            });
+        } else {
+            uint256 index = _sendTo({
+                projectId: context.projectId,
+                stickyToken: address(context.split.beneficiary),
+                groupId: context.split.projectId,
+                amount: amount,
+                route: route,
+                backing: JBConstants.NATIVE_TOKEN,
+                value: _FEE
+            });
+            if (failure == 0) {
+                assertEq(index, leavesBefore);
+                assertEq(route.outboxOf(JBConstants.NATIVE_TOKEN).numberOfClaimsSent, leavesBefore + 1);
+                assertEq(route.principalPrepared(), amount);
+                assertEq(
+                    route.beneficiaryPrepared(),
+                    bytes32(
+                        uint256(
+                            uint160(
+                                _factory.predictReceiverOf({
+                                    stickyToken: address(context.split.beneficiary), groupId: context.split.projectId
+                                })
+                            )
+                        )
+                    )
+                );
+            }
+        }
+        if (failure != 0) assertEq(_stateHash(route), beforeState);
+        _distributor.setRejectFunding(false);
+    }
+
+    /// @notice Issues one sequence allocation through the controller's caught-callback path.
+    /// @param bucket The chosen source project, holder pool and reward group.
+    /// @param amount The allocation in project-token atoms.
+    /// @param credits Whether the context represents pretransferred project credits.
+    function _sequenceQueue(uint256 bucket, uint256 amount, bool credits) internal {
+        _controller.distribute(_sequenceContext({bucket: bucket, amount: amount, credits: credits}));
+    }
+
     //*********************************************************************//
     // ------------------------- internal views -------------------------- //
     //*********************************************************************//
+
+    /// @notice Checks all buckets, donation floors, destination receipts and outgoing approvals after every action.
+    /// @param pending Independently accumulated bucket liabilities.
+    /// @param delivered Independently accumulated successful delivery amounts.
+    /// @param donations Unattributed ERC-20 and credit custody per project.
+    /// @param routes Each project's source delivery route.
+    /// @param home Whether successful delivery funds the local distributor.
+    function _assertSequenceCustody(
+        uint256[12] memory pending,
+        uint256[12] memory delivered,
+        uint256[3] memory donations,
+        StickySourceSucker[3] memory routes,
+        bool home
+    )
+        internal
+        view
+    {
+        for (uint256 project; project < 3; project++) {
+            uint256 projectId = _sequenceProjectId(project);
+            IERC20 token = IERC20(address(_tokens.tokenOf(projectId)));
+            uint256 aggregate;
+            for (uint256 offset; offset < 4; offset++) {
+                uint256 bucket = project * 4 + offset;
+                address stickyToken = offset < 2 ? _stickyA : _stickyB;
+                uint256 groupId = offset % 2 == 0 ? 0 : 4000;
+                assertEq(
+                    _collector.pendingOf({sourceProjectId: projectId, stickyToken: stickyToken, groupId: groupId}),
+                    pending[bucket]
+                );
+                assertEq(
+                    _distributor.fundedOf({stickyToken: stickyToken, groupId: groupId, token: token}),
+                    home ? delivered[bucket] : 0
+                );
+                aggregate += pending[bucket];
+            }
+            assertEq(_collector.totalPendingOf(projectId), aggregate);
+            assertEq(
+                _tokens.totalBalanceOf({holder: address(_collector), projectId: projectId}),
+                aggregate + donations[project]
+            );
+            assertEq(token.allowance({owner: address(_collector), spender: address(routes[project])}), 0);
+            address child = address(_collector.FEE_PAYER());
+            assertEq(routes[project].retainedToRemoteFeeOf(child), 0);
+            assertEq(routes[project].retainedTransportPaymentRefundOf(child), 0);
+        }
+    }
 
     /// @notice Builds the actual reserved-split encoding for one attributed destination.
     /// @param projectId The source project.
@@ -1812,6 +2053,36 @@ contract StickySourceCollectorTest is Test {
             StickySourceCollector.send,
             (3, _stickyA, 0, amount, JBSucker(payable(address(_sucker))), JBConstants.NATIVE_TOKEN)
         );
+    }
+
+    /// @notice Resolves a ghost bucket index into the controller's authenticated split encoding.
+    /// @param bucket The index across three projects, two pools and two groups.
+    /// @param amount The chosen allocation in project-token atoms.
+    /// @param credits Whether to use the controller's cached credit-only token context.
+    /// @return context The valid split encoding for the chosen bucket.
+    function _sequenceContext(
+        uint256 bucket,
+        uint256 amount,
+        bool credits
+    )
+        internal
+        view
+        returns (JBSplitHookContext memory context)
+    {
+        context = _context({
+            projectId: _sequenceProjectId(bucket / 4),
+            stickyToken: bucket % 4 < 2 ? _stickyA : _stickyB,
+            groupId: bucket % 2 == 0 ? 0 : 4000,
+            amount: amount
+        });
+        if (credits) context.token = address(0);
+    }
+
+    /// @notice Converts one of the three independent ghost project indices to its configured source project.
+    /// @param index The zero-based project index.
+    /// @return projectId The V6 fee, REV or generic project ID.
+    function _sequenceProjectId(uint256 index) internal pure returns (uint256 projectId) {
+        return index == 0 ? 1 : (index == 1 ? 3 : 77);
     }
 
     /// @notice Captures custody, supply, liabilities, allowances, refunds and the prior frontier for atomicity checks.

@@ -4,6 +4,8 @@
 
 Find a concrete sequence that loses backing, corrupts share or tranche accounting, blocks another holder's exit, redirects rewards, or causes the client to authorize a different outcome from the one it presents. Verify findings against the pinned core and distributor implementations. Distinguish a source defect from a documented economic choice, a dependency failure, or an unverified deployment.
 
+The [2026-10-09 adversarial review](ADVERSARIAL_REVIEW_2026-10-09.md) owns the latest findings and supersedes earlier readiness conclusions. Its open native Ethereum-to-Arbitrum asynchronous-refund defect excludes that native collector lane from live qualification; CCIP is a distinct transport requiring separate qualification. Ethereum-home JBX delivery has separate release gates.
+
 ## Scope
 
 - Solidity in `src/`, including interfaces, structs, and `StickyPricing`.

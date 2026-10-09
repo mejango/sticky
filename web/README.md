@@ -25,7 +25,7 @@ NODE_OPTIONS=--no-experimental-webstorage npm run check
 
 `check` runs the production dependency audit, lint, types, deployment/schema/transaction inventories, coverage, the production build and browser tests. [The web workflow](../.github/workflows/web.yml) also builds and starts the production Docker image as a non-root user and checks its revision. Browser tests use recorded fixtures; they do not establish live wallet or deployment outcomes.
 
-`npm run deployments:check` compares `src/lib/sticky-deployments.json` with verified contract records in `../deployments/`. After contract deployment, the root `deploy:post:*` scripts verify the suite, write artifacts and run this client's sync script. Commit the generated client registry with the corresponding deployment records.
+`npm run deployments:check` compares `src/lib/sticky-deployments.json` and `src/lib/sticky-source-collectors.json` with verified contract records in `../deployments/`. Flat suite records require `kind: verified` and a successful creation receipt with nonzero block and transaction hashes; collector records additionally bind source/home identity, constructor arguments and the parent/child creation transaction. These are local consistency checks, so retain the live verification evidence described in [DEPLOYMENT.md](../DEPLOYMENT.md). After contract deployment, the root `deploy:post:*` scripts verify the suite, write artifacts and run this client's sync script. Commit both generated registries with the corresponding deployment records. Collector configuration is currently empty; predictions and rehearsals must not be added as live collectors.
 
 ## Deployment
 
