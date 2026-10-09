@@ -2,7 +2,7 @@
 
 Files in `web/` that originally came from Homerun (HR, `extensions/homerun`) or Juicebox Money (JBM, `webclients/juicebox-money`). The dated rows below retain port provenance; current shared transaction, transport and presentation rules belong in the SDK and are consumed by Juicebox Money, Revnet Money, Homerun and Sticky together.
 
-The current integration uses published `@bananapus/nana-sdk-core@2.26.0`, pinned exactly in `package.json` and the registry lockfile. The 2026-10-08 reconciliation used 2.25.0; the home-chain qualification records the subsequent 2.26.0 adoption. Shared owners below describe the current integration; historical dependency versions in the dated port records remain provenance.
+The current integration uses published `@bananapus/nana-sdk-core@2.27.0`, pinned exactly in `package.json` and the registry lockfile. Connect remains 0.5.6 and this client does not install the React SDK. The 2026-10-08 reconciliation used 2.25.0; the home-chain qualification records the subsequent 2.26.0 adoption, and the adversarial recovery release records 2.27.0. Shared owners below describe the current integration; historical dependency versions in the dated port records remain provenance.
 
 ## Current ownership
 

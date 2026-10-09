@@ -40,3 +40,26 @@ The server-rendered readiness regression failed before the fix and passes afterw
 
 
 Hosted verification passed at `f6ed26bc8a41d748ef1caa1831dee1efc7eebd05`: all seven checks, the complete 3604-unit-test suite, and all 53 browser cases, including the held-JavaScript cold-create case, passed without relaxing the failure-on-flaky policy. [PR 53](https://github.com/mejango/sticky/pull/53) merged the correction as `9530a5ae2534fac784284fa63439da5948029eae`. Root then confirmed the exact revision live, including the fully loaded mobile create defaults, input and connect entry; see the [cutover evidence](../../tasks/sticky-next-cutover.md). No wallet connection, signature or transaction was submitted during acceptance.
+
+## SDK 2.27.0 adoption
+
+## Plan refinement
+
+- **Objective:** Pin the client to authenticated `@bananapus/nana-sdk-core@2.27.0`, prove it through a clean locked install and all existing release checks, then push the qualified review branch without merging PR #58 or deploying it.
+- **System fit:** The published SDK owns shared recovery and route-readiness behavior, the web manifest and lock own Sticky's consumer identity, the existing web scripts/workflow own release evidence, and the draft pull request remains the review boundary under the separate contract release authority.
+- **Reuse and simplicity:** Use Node 26.7.0, npm 12.0.1, the exact existing core pin and repository-native check/OCI commands. Keep Connect 0.5.6, add no React SDK, wrapper, alias or preview override, and change only current release-state records after the official artifact is verified.
+- **Evidence and unknowns:** Sticky is prepared at `5421fe77c6dc97b424fbe1a0f2dbcd2443a088a5` with core 2.26.0; the qualified candidate is SDK commit `930f89f2f2cd06afaced3d5fddfd466b29edd24e` and preview `2.27.0-preview.adversarial.4006a0bca708`. Registry integrity and payload equivalence are prerequisites owned by the SDK release task.
+- **Verification:** Require an exact package/lock diff, official installed-package identity, clean `npm ci`, full `npm run check`, standalone non-root/read-only OCI health smoke, and every PR check on the exact pushed SHA. Replan on package-content or unrelated lock movement and retain the first failing evidence.
+- **Resource budget:** Run one official clean installation and one complete release path, reusing the qualified preview only to bound expected behavior. Avoid unchanged Solidity, RPC and deployment work, and stop before merge, deployment or automatic merge.
+
+- [x] Inventory dependency owners, current-version records and release gates.
+- [x] Verify the official core 2.27.0 artifact supplied by the SDK release owner.
+- [x] Update the exact manifest/lock entries and current release-state records only.
+- [x] Run clean package identity and the full client checks with the pinned toolchain.
+- [ ] Commit the final snapshot, run its hardened OCI smoke, push the qualified branch and confirm all hosted checks on its exact SHA; do not merge PR #58.
+
+## Review
+
+- Core 2.27.0 is installed from the authenticated registry tarball at integrity `sha512-fVGeoj2OE1iVIIZmvFY6aQUtZKlydnJkxulreKM3wIYLm7I+rXnSdsIwqRXf5VnRUyLOCWc7NuIyKGxk8jp+wA==`; registry provenance binds it to SDK release commit `b313472ad2f8b996e61c8b8b494d7413e59f8e8a`, and all 769 compiled/public files match the reviewed preview. Connect remains 0.5.6 and the React SDK is absent.
+- The pinned Node 26.7.0/npm 12.0.1 release path passes a clean locked install, zero-vulnerability production audit, lint, nonincremental types, deployment/schema/transaction inventories, 163 files and 3,777 coverage tests (94.63% statements, 90.91% branches, 94.90% functions, 96.59% lines), the standard plus deterministic/Signa production builds, and all 54 browser cases. The initial restricted Playwright start failed only because the sandbox refused its loopback listener; the same built artifacts passed outside that restriction.
+- The remaining release boundary is the exact committed revision's hardened OCI smoke and six hosted PR checks. Contract deployment, PR merge and application deployment remain outside this adoption task.
