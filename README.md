@@ -80,7 +80,7 @@ For cross-chain rewards, `StickyRewardReceiverFactory` predicts and clones a `St
 
 Route availability is checked per source and home chain. The pinned native routes connect Ethereum with each supported L2; they do not establish L2-to-L2 delivery. An Ethereum-to-Arbitrum lane requires the same verified Arbitrum-home collector family on both chains; its destination copy can permissionlessly contribute the unsafe root retryable's raw refund to project 1. A positive mapped-ERC-20 transfer additionally creates a gateway retryable whose refund uses the fee child's aliased address and remains unqualified; zero backing creates no gateway ticket. A WETH gateway cancellation or expiry can also place bridged call value at `alias(source sucker)`, outside Sticky control. See [the route limits](RISKS.md#operational-limits). Unsupported combinations require a separately qualified direct route. There is no implicit relay or fallback through Ethereum.
 
-The constructor-created `StickySourceFeePayer` keeps caller fee receipts and source-chain refunds separate from queued reward principal. On the configured destination chain, anyone can make its parent add the child's complete raw native balance to protocol fee project 1; the caller cannot redirect or receive that balance, and the operation does not reach a safe-Inbox alias. No recurring Safe custody or signature is needed after authorized split setup. The destination-bound hook's final contract source is locally qualified and its Ethereum-home and Arbitrum-home families have exact-source four-chain rehearsals; verified live execution remains required before either family is treated as deployed. Follow [the source-collector setup and verification recipe](DEPLOYMENT.md#source-collectors). Contract changes remain in PRs through review, deployment and verification, and require explicit approval of the final PR before merge.
+The constructor-created `StickySourceFeePayer` keeps caller fee receipts and source-chain refunds separate from queued reward principal. On the configured destination chain, anyone can make its parent add the child's complete raw native balance to protocol fee project 1; the caller cannot redirect or receive that balance, and the operation does not reach a safe-Inbox alias. No recurring Safe custody or signature is needed after authorized split setup. The destination-bound hook's final contract source is locally qualified. Earlier Ethereum-home and Arbitrum-home selected-family rehearsals remain contract evidence, but their deployment-script evidence is superseded; fresh all-family grouped rehearsal and verified live execution are required before any family is treated as deployed. Follow [the source-collector setup and verification recipe](DEPLOYMENT.md#source-collectors). Contract changes remain in PRs through review, deployment and verification, and require explicit approval of the final PR before merge.
 
 ## Contracts
 
@@ -134,22 +134,26 @@ The maintained web client is the Next app in `web/`. See [its guide](web/README.
 Follow [DEPLOYMENT.md](DEPLOYMENT.md) for the complete Sphinx workflow, eight RPC aliases, trusted core/sucker artifacts, credentials, and post-execution verification. Production scripts use the canonical CREATE2 factory and reuse existing deployments only after checking runtime code and immutable bindings. They fail on unexpected code or configuration.
 
 ```sh
-# Load the intended RPC configuration and rehearse without broadcasting:
-export STICKY_DESTINATION_CHAIN_ID=11155111
+# Load the intended RPC configuration and rehearse all four testnet home families
+# on one source without broadcasting:
 npm run deploy:rehearse -- --rpc-url ethereum_sepolia -vv
 
-# Create a Sphinx proposal for review and execution through the existing process:
+# Rehearse all four testnet sources and home families and render the exact
+# review-only Sphinx action inventory:
+npm run deploy:dry-run:testnets
+
+# Create one Sphinx proposal for review and execution through the existing process:
 npm run deploy:propose:testnets
-# For an Ethereum-home mainnet family, select STICKY_DESTINATION_CHAIN_ID=1 first.
+# Use the separate mainnet command when that environment is ready:
 # npm run deploy:propose:mainnets
 
-# After execution, verify the reviewed suite against the live chain:
+# After execution, verify all four home families against one live source chain:
 npm run deploy:verify -- --rpc-url ethereum_sepolia -vv
 ```
 
 Use `deploy:rehearse:testnets` / `deploy:rehearse:mainnets` to rehearse whole groups,
 and `deploy:post:testnets` / `deploy:post:mainnets` to verify them after Sphinx execution and write the
 explorer-verified per-contract artifacts.
-Grouped proposal commands rehearse every destination before collecting a proposal.
+Each grouped command covers the exact four source networks and four home-chain families in its environment. When the six shared contracts are already live and all four revised families are absent, the proposal contains four collector factory calls on every source; each collector creates its own fee payer. A pristine source also needs the five direct shared deployment calls, while a restart includes only missing calls. Deploying the complete grid does not qualify unsupported L2-to-L2 routes.
 Set `STICKY_ENV_FILE=../../deploy-all-v6/.env` to reuse the workspace credentials.
-Repeat rehearsals and verification for every intended network. `simulation.json` describes simulated state; only post-execution verification produces `verified.json`. Retain executed Sphinx receipts and publish the verified release artifacts before configuring a live client. Verify the client addresses and target-chain transaction flows before production cutover. Source changes produce new deployment predictions and do not upgrade existing immutable Sticky projects.
+`simulation.json` describes simulated state; only post-execution verification produces `verified.json`. Retain executed Sphinx receipts and publish the verified release artifacts before configuring a live client. Verify the client addresses and target-chain transaction flows before production cutover. Source changes produce new deployment predictions and do not upgrade existing immutable Sticky projects.

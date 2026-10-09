@@ -1,13 +1,21 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { dependencies, destinationChainId, familyDirectory, networks, preflight, requireOneAddressPerGroup, run, suite, verifyDependencies } from '../../script/deploy.mjs';
+import {
+  dependencies, destinationChainIds, familyDirectory, familySuite, networks, preflight,
+  requireAllAddressFamilies, run, sharedSuite, verifyDependencies,
+} from '../../script/deploy.mjs';
 
-function fixture(group, destination = networks[group][0][1]) {
+const address = byte => `0x${byte.toString(16).padStart(2, '0').repeat(20)}`;
+const block = { number: '0x64', hash: '0x' + 'ab'.repeat(32) };
+
+function fixture(group, { revision = 'abc123' } = {}) {
   const env = { SPHINX_ORG_ID: JSON.parse(readFileSync('sphinx.lock')).orgId, SPHINX_API_KEY: 'test-key',
-    SPHINX_MANAGED_BASE_URL: 'https://sphinx.example.test', STICKY_DESTINATION_CHAIN_ID: String(destination) };
+    SPHINX_MANAGED_BASE_URL: 'https://sphinx.example.test' };
   const files = {};
-  const addresses = Object.fromEntries(suite.map((field, i) => [field, `0x${String(i + 1).repeat(40)}`]));
+  const sharedAddresses = Object.fromEntries(sharedSuite.map((field, i) => [field, address(i + 1)]));
+  const familyAddresses = new Map(destinationChainIds(group).map((destination, i) => [destination,
+    Object.fromEntries(familySuite.map((field, j) => [field, address(64 + i * familySuite.length + j)]))]));
   for (const [, chainId, key, folder] of networks[group]) {
     env[key] = 'http://127.0.0.1:8545';
     for (const name of ['JBController', 'JBDirectory', 'JBMultiTerminal']) {
@@ -18,16 +26,18 @@ function fixture(group, destination = networks[group][0][1]) {
     files[`node_modules/@bananapus/suckers-v6/deployments/${folder}/JBSuckerRegistry.json`] = JSON.stringify({
       address: '0x' + '34'.repeat(20), chainId: `0x${chainId.toString(16)}`,
     });
-    for (const kind of ['simulation', 'verified']) {
-      files[`${familyDirectory(folder, destination)}/${kind}.json`] = JSON.stringify({
-        ...addresses, kind, chainId, destinationChainId: destination,
-      });
+    for (const destination of destinationChainIds(group)) {
+      for (const kind of ['simulation', 'verified']) {
+        files[`${familyDirectory(folder, destination)}/${kind}.json`] = JSON.stringify({
+          ...sharedAddresses, ...familyAddresses.get(destination), kind, chainId, destinationChainId: destination,
+          revision, rpcBlockNumber: 100, rpcBlockHash: block.hash,
+        });
+      }
     }
   }
   return { env, files, read: file => files[file] ?? readFileSync(file, 'utf8') };
 }
 
-const block = { number: '0x64', hash: '0x' + 'ab'.repeat(32) };
 function readOnlyTool(command, args) {
   if (command === 'cast') return { status: 0, stdout: JSON.stringify({ schema_version: 1, success: true, data: block }) };
   if (command !== 'git') return;
@@ -38,7 +48,7 @@ function readOnlyTool(command, args) {
 }
 
 for (const group of Object.keys(networks)) {
-  test(`${group}: all four rehearsals precede the Sphinx proposal`, () => {
+  test(`${group}: all four source rehearsals validate every home before the Sphinx proposal`, () => {
     const calls = [];
     run('propose', group, { ...fixture(group), spawn(command, args, options) {
       const tool = readOnlyTool(command, args);
@@ -46,7 +56,7 @@ for (const group of Object.keys(networks)) {
       calls.push({ command, args, chainId: options.env.STICKY_EXPECTED_CHAIN_ID });
       assert.equal(options.env.FOUNDRY_PROFILE, 'deploy');
       assert.equal(options.env.STICKY_REVISION, 'abc123');
-      assert.equal(options.env.STICKY_DESTINATION_CHAIN_ID, String(networks[group][0][1]));
+      assert.equal(options.env.STICKY_DESTINATION_CHAIN_ID, undefined);
       if (command === 'forge') {
         assert.equal(options.env.STICKY_RPC_BLOCK_NUMBER, '100');
         assert.equal(options.env.STICKY_RPC_BLOCK_HASH, block.hash);
@@ -63,6 +73,22 @@ for (const group of Object.keys(networks)) {
   });
 }
 
+test('the review-only Sphinx dry run uses the same all-family rehearsals without submitting', () => {
+  const calls = [];
+  run('dry-run', 'testnets', { ...fixture('testnets'), spawn(command, args, options) {
+    const tool = readOnlyTool(command, args);
+    if (tool) return tool;
+    calls.push({ command, args, chainId: options.env.STICKY_EXPECTED_CHAIN_ID });
+    return { status: 0 };
+  } });
+  assert.equal(calls.filter(({ command }) => command === 'forge').length, 4);
+  assert.deepEqual(calls.at(-1), {
+    command: 'node_modules/.bin/sphinx',
+    args: ['propose', 'script/Deploy.s.sol', '--target-contract', 'Deploy', '--networks', 'testnets', '--dry-run'],
+    chainId: '0',
+  });
+});
+
 test('failed rehearsal prevents proposal submission and remaining execution', () => {
   let attempts = 0;
   assert.throws(() => run('propose', 'testnets', { ...fixture('testnets'), spawn(command, args) {
@@ -75,7 +101,7 @@ test('failed rehearsal prevents proposal submission and remaining execution', ()
   assert.equal(attempts, 1);
 });
 
-test('verification only runs read-only Verify on every destination', () => {
+test('verification runs one all-family read-only Verify on every source', () => {
   let attempts = 0;
   run('verify', 'mainnets', { ...fixture('mainnets'), spawn(command, args) {
     const tool = readOnlyTool(command, args);
@@ -93,7 +119,7 @@ test('preflight rejects missing RPCs and mismatched artifacts without leaking va
   const { env, read } = fixture('testnets');
   delete env.RPC_BASE_SEPOLIA;
   assert.throws(() => preflight('testnets', env, read), /missing RPC_BASE_SEPOLIA/);
-  assert.throws(() => preflight('mainnets', { ...env, STICKY_DESTINATION_CHAIN_ID: '1' }, () => JSON.stringify({ address: '0x' + '12'.repeat(20), chainId: 1 })), /invalid JBController/);
+  assert.throws(() => preflight('mainnets', env, () => JSON.stringify({ address: '0x' + '12'.repeat(20), chainId: 1 })), /invalid JBController/);
   assert.throws(() => preflight('unknown'), /Network group/);
 });
 
@@ -104,7 +130,7 @@ test('missing proposal credentials fail before any child process starts', () => 
 });
 
 
-test('runner destinations match the Sphinx entrypoint exactly', () => {
+test('runner networks match the Sphinx entrypoint and grouped homes need no workflow input', () => {
   const source = readFileSync('script/Deploy.s.sol', 'utf8');
   for (const group of Object.keys(networks)) {
     const line = source.split('\n').find(line => line.includes(`sphinxConfig.${group} =`));
@@ -112,12 +138,10 @@ test('runner destinations match the Sphinx entrypoint exactly', () => {
     assert.deepEqual(networks[group].map(([alias]) => alias), configured);
   }
   const workflow = readFileSync('.github/workflows/test.yml', 'utf8');
-  const destinationInput = workflow.match(/^      destination_chain_id:\n((?:        [^\n]*\n)*)/m)?.[1];
-  assert.ok(destinationInput, 'manual rehearsal exposes the destination selector');
-  assert.match(destinationInput, /^        type: string$/m);
-  assert.match(destinationInput, /^        required: true$/m);
-  assert.doesNotMatch(destinationInput, /^        default:/m, 'a home chain must never be selected implicitly');
-  assert.match(workflow, /^          STICKY_DESTINATION_CHAIN_ID: \$\{\{ inputs\.destination_chain_id \}\}$/m);
+  assert.doesNotMatch(workflow, /destination_chain_id|STICKY_DESTINATION_CHAIN_ID/);
+  for (const [group, configured] of Object.entries(networks)) {
+    assert.deepEqual(destinationChainIds(group), configured.map(([, chainId]) => chainId));
+  }
 });
 
 
@@ -194,9 +218,9 @@ test('an artifacts run executes the explorer script only after the pin and check
   } }), /reviewed revision/);
 });
 
-test('an uncommitted checkout can rehearse but neither propose, verify nor emit artifacts', () => {
+test('an uncommitted checkout can rehearse but cannot dry-run, propose, verify or emit artifacts', () => {
   const dirtyGit = (command, args) => command === 'git' && args[0] === 'status' ? { status: 0, stdout: ' M src/StickyHook.sol' } : readOnlyTool(command, args);
-  for (const action of ['propose', 'verify', 'artifacts']) {
+  for (const action of ['dry-run', 'propose', 'verify', 'artifacts']) {
     assert.throws(() => run(action, 'testnets', { ...fixture('testnets'), spawn(command, args) {
       const tool = dirtyGit(command, args);
       if (tool) return tool;
@@ -215,7 +239,7 @@ test('an uncommitted checkout can rehearse but neither propose, verify nor emit 
   } });
   assert.equal(verifyRuns, 4);
   let forgeRuns = 0;
-  run('rehearse', 'testnets', { ...fixture('testnets'), spawn(command, args, options) {
+  run('rehearse', 'testnets', { ...fixture('testnets', { revision: 'abc123-dirty' }), spawn(command, args, options) {
     const tool = dirtyGit(command, args);
     if (tool) return tool;
     forgeRuns++;
@@ -255,13 +279,13 @@ test('a chain predicting different addresses stops the group before the Sphinx p
   const setup = fixture('mainnets');
   const file = `${familyDirectory('base', 1)}/simulation.json`;
   setup.files[file] = JSON.stringify({ ...JSON.parse(setup.files[file]), autoStick: '0x' + 'ee'.repeat(20) });
-  assert.throws(() => requireOneAddressPerGroup('mainnets', 'simulation', 1, setup.read), /base predicts a different deployment/);
+  assert.throws(() => requireAllAddressFamilies('mainnets', 'simulation', setup.read), /base: shared deployment differs/);
   assert.throws(() => run('propose', 'mainnets', { ...setup, spawn(command, args) {
     const tool = readOnlyTool(command, args);
     if (tool) return tool;
     assert.notEqual(command, 'node_modules/.bin/sphinx', 'the proposal must not be collected');
     return { status: 0 };
-  } }), /different deployment/);
+  } }), /shared deployment differs/);
 });
 
 
@@ -273,7 +297,7 @@ test('all chains must contain both source singleton addresses before any group i
         const file = `${familyDirectory(folder, 1)}/simulation.json`;
         setup.files[file] = JSON.stringify({ ...JSON.parse(setup.files[file]), [field]: value });
       }
-      assert.throws(() => requireOneAddressPerGroup('mainnets', 'simulation', 1, setup.read), new RegExp(`invalid ${field}`));
+      assert.throws(() => requireAllAddressFamilies('mainnets', 'simulation', setup.read), new RegExp(`invalid ${field}`));
     }
   }
 });
@@ -291,20 +315,10 @@ test('registry artifact roots are explicit and wrong registry chain metadata fai
     ? JSON.stringify({ address: '0x' + '34'.repeat(20), chainId: 999 }) : setup.read(file)), /invalid JBSuckerRegistry/);
 });
 
-test('a destination is explicit, canonical, safe and in the selected source network group', () => {
-  for (const value of [undefined, '', '0', '01', '-1', '+1', '1.0', '1e0', '0x1', ' 1', '1 ', '1\n', '9007199254740993', 1]) {
-    const setup = fixture('mainnets');
-    setup.env.STICKY_DESTINATION_CHAIN_ID = value;
-    assert.throws(() => run('propose', 'mainnets', { ...setup,
-      read() { assert.fail('invalid destination must fail before reading deployment inputs'); },
-      spawn() { assert.fail('invalid destination must fail before any subprocess'); },
-    }), /STICKY_DESTINATION_CHAIN_ID/);
-  }
-  assert.throws(() => destinationChainId('mainnets', { STICKY_DESTINATION_CHAIN_ID: '11155111' }), /belong to mainnets/);
-  assert.throws(() => destinationChainId('testnets', { STICKY_DESTINATION_CHAIN_ID: '1' }), /belong to testnets/);
-  for (const [group, chains] of Object.entries(networks)) {
-    for (const [, id] of chains) assert.equal(destinationChainId(group, { STICKY_DESTINATION_CHAIN_ID: String(id) }), id);
-  }
+test('each group has one exact ordered home set and family paths reject invalid IDs', () => {
+  assert.deepEqual(destinationChainIds('mainnets'), [1, 10, 8453, 42161]);
+  assert.deepEqual(destinationChainIds('testnets'), [11155111, 11155420, 84532, 421614]);
+  assert.throws(() => destinationChainIds('unknown'), /Network group/);
   assert.throws(() => familyDirectory('ethereum', '../1'), /Invalid collector destination/);
 });
 
@@ -322,10 +336,61 @@ test('a wrong second-chain destination, source or kind prevents proposal submiss
   }
 });
 
-test('one invocation reads only the selected family and never falls back to a flat manifest', () => {
-  const setup = fixture('mainnets', 8453);
-  const other = fixture('mainnets', 1);
-  Object.assign(setup.files, other.files);
+test('stale revision or RPC-block evidence cannot satisfy a fresh proposal rehearsal', () => {
+  for (const mismatch of [
+    { revision: 'stale' }, { revision: undefined }, { rpcBlockNumber: 99 }, { rpcBlockNumber: undefined },
+    { rpcBlockHash: '0x' + 'cd'.repeat(32) }, { rpcBlockHash: undefined },
+  ]) {
+    const setup = fixture('testnets');
+    const file = `${familyDirectory('arbitrum_sepolia', 421614)}/simulation.json`;
+    setup.files[file] = JSON.stringify({ ...JSON.parse(setup.files[file]), ...mismatch });
+    assert.throws(() => run('propose', 'testnets', { ...setup, spawn(command, args) {
+      const tool = readOnlyTool(command, args);
+      if (tool) return tool;
+      assert.notEqual(command, 'node_modules/.bin/sphinx', 'stale evidence must not reach proposal submission');
+      return { status: 0 };
+    } }), /manifest (revision does not match|does not match the freshly pinned RPC block)/);
+  }
+});
+
+test('one omitted fresh family manifest blocks Sphinx even when stale files remain', () => {
+  const setup = fixture('testnets', { revision: 'stale' });
+  let submitted = false;
+  assert.throws(() => run('propose', 'testnets', { ...setup, spawn(command, args) {
+    const tool = readOnlyTool(command, args);
+    if (tool) return tool;
+    if (command === 'node_modules/.bin/sphinx') submitted = true;
+    if (command === 'forge') {
+      const alias = args[3];
+      const [, chainId, , folder] = networks.testnets.find(([candidate]) => candidate === alias);
+      for (const destination of destinationChainIds('testnets')) {
+        if (alias === 'arbitrum_sepolia' && destination === 421614) continue;
+        const file = `${familyDirectory(folder, destination)}/simulation.json`;
+        setup.files[file] = JSON.stringify({
+          ...JSON.parse(setup.files[file]), revision: 'abc123', chainId,
+          rpcBlockNumber: 100, rpcBlockHash: block.hash,
+        });
+      }
+    }
+    return { status: 0 };
+  } }), /manifest revision does not match/);
+  assert.equal(submitted, false);
+});
+
+test('different homes cannot reuse either family address', () => {
+  for (const field of familySuite) {
+    const setup = fixture('mainnets');
+    const first = JSON.parse(setup.files[`${familyDirectory('ethereum', 1)}/verified.json`])[field];
+    for (const [, , , folder] of networks.mainnets) {
+      const file = `${familyDirectory(folder, 10)}/verified.json`;
+      setup.files[file] = JSON.stringify({ ...JSON.parse(setup.files[file]), [field]: first });
+    }
+    assert.throws(() => requireAllAddressFamilies('mainnets', 'verified', setup.read), new RegExp(`reuses another family's ${field}`));
+  }
+});
+
+test('one invocation requires every family and never falls back to a flat manifest', () => {
+  const setup = fixture('mainnets');
   const requested = [];
   run('verify', 'mainnets', { ...setup, read(file) {
     requested.push(file);
@@ -333,18 +398,19 @@ test('one invocation reads only the selected family and never falls back to a fl
   }, spawn(command, args, options) {
     const tool = readOnlyTool(command, args);
     if (tool) return tool;
-    assert.equal(options.env.STICKY_DESTINATION_CHAIN_ID, '8453');
+    assert.equal(options.env.STICKY_DESTINATION_CHAIN_ID, undefined);
     return { status: 0 };
   } });
   assert.deepEqual(requested.filter(file => file.endsWith('/verified.json')),
-    networks.mainnets.map(([, , , folder]) => `${familyDirectory(folder, 8453)}/verified.json`));
+    destinationChainIds('mainnets').flatMap(destination =>
+      networks.mainnets.map(([, , , folder]) => `${familyDirectory(folder, destination)}/verified.json`)));
 
   const selected = `${familyDirectory('ethereum', 8453)}/verified.json`;
   setup.files['deployments/ethereum/verified.json'] = setup.files[selected];
   delete setup.files[selected];
-  assert.throws(() => requireOneAddressPerGroup('mainnets', 'verified', 8453, file => {
-    assert.ok(file.includes('/source-collectors/8453/'), 'no flat-manifest fallback');
-    if (!setup.files[file]) throw new Error('missing selected family');
+  assert.throws(() => requireAllAddressFamilies('mainnets', 'verified', file => {
+    assert.match(file, /\/source-collectors\/\d+\/verified\.json$/, 'no flat-manifest fallback');
+    if (!setup.files[file]) throw new Error('missing required family');
     return setup.files[file];
-  }), /missing selected family/);
+  }), /missing required family/);
 });

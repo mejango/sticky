@@ -38,19 +38,10 @@ export const networks = {
   ],
 };
 
-// One explicit home selects an immutable collector family; never infer it from a source RPC or old manifest.
-export function destinationChainId(group, env = process.env) {
+// Every supported source environment deploys the same complete ordered set of home-chain families.
+export function destinationChainIds(group) {
   if (!networks[group]) throw new Error('Network group must be testnets or mainnets.');
-  const value = env.STICKY_DESTINATION_CHAIN_ID;
-  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)
-    || !Number.isSafeInteger(Number(value)) || String(Number(value)) !== value) {
-    throw new Error('STICKY_DESTINATION_CHAIN_ID must be an explicit positive canonical decimal safe integer.');
-  }
-  const id = Number(value);
-  if (!networks[group].some(([, chainId]) => chainId === id)) {
-    throw new Error(`STICKY_DESTINATION_CHAIN_ID must belong to ${group}.`);
-  }
-  return id;
+  return networks[group].map(([, chainId]) => chainId);
 }
 
 export function familyDirectory(folder, id) {
@@ -59,7 +50,7 @@ export function familyDirectory(folder, id) {
 }
 
 export function preflight(group, env = process.env, read = readFileSync) {
-  const destination = destinationChainId(group, env);
+  const destinations = destinationChainIds(group);
   const errors = [];
   const root = env.NANA_CORE_DEPLOYMENT_PATH || 'node_modules/@bananapus/core-v6/deployments';
   const suckerRoot = env.NANA_SUCKERS_DEPLOYMENT_PATH || 'node_modules/@bananapus/suckers-v6/deployments';
@@ -82,35 +73,72 @@ export function preflight(group, env = process.env, read = readFileSync) {
     }
   }
   if (errors.length) throw new Error(errors.join('\n'));
-  return destination;
+  return destinations;
 }
 
-// The manifest fields every chain of a group must predict identically; the core binds the same addresses everywhere.
+// Shared fields agree across every source and home; family fields agree across sources and differ by home.
 export const suite = ['deployer', 'hook', 'distributor', 'rewardReceiver', 'rewardReceiverFactory', 'autoStick', 'sourceCollector', 'sourceFeePayer'];
+export const sharedSuite = suite.filter(field => !field.startsWith('source'));
+export const familySuite = suite.filter(field => field.startsWith('source'));
 
-// Every chain of a group must predict one suite.
-export function requireOneAddressPerGroup(group, kind, selectedDestinationChainId, read = readFileSync) {
-  const destination = destinationChainId(group, { STICKY_DESTINATION_CHAIN_ID: String(selectedDestinationChainId) });
+// Every source must record every home, with one distinct collector family per home.
+export function requireAllAddressFamilies(group, kind, read = readFileSync, {
+  expectedRevision,
+  expectedRpcBlocks = {},
+} = {}) {
+  const destinations = destinationChainIds(group);
   if (!['simulation', 'verified'].includes(kind)) throw new Error('Manifest kind must be simulation or verified.');
-  let expected;
-  const manifests = [];
-  for (const [alias, chainId, , folder] of networks[group]) {
-    const manifest = JSON.parse(read(`${familyDirectory(folder, destination)}/${kind}.json`, 'utf8'));
-    if (manifest.destinationChainId !== destination || manifest.chainId !== chainId || manifest.kind !== kind) {
-      throw new Error(`${alias}: manifest destination, source chain or kind does not match the selected ${destination} ${kind} family.`);
-    }
-    for (const field of suite) {
-      if (typeof manifest[field] !== 'string' || manifest[field].length !== 42
-        || !/^0x[\da-fA-F]{40}$/.test(manifest[field]) || /^0x0{40}$/i.test(manifest[field])) {
-        throw new Error(`${alias}: missing or invalid ${field} deployment address.`);
+  let expectedShared;
+  const seenFamilyAddresses = Object.fromEntries(familySuite.map(field => [field, new Set()]));
+  const families = [];
+  for (const destination of destinations) {
+    let expectedFamily;
+    const manifests = [];
+    for (const [alias, chainId, , folder] of networks[group]) {
+      const manifest = JSON.parse(read(`${familyDirectory(folder, destination)}/${kind}.json`, 'utf8'));
+      if (manifest.destinationChainId !== destination || manifest.chainId !== chainId || manifest.kind !== kind) {
+        throw new Error(`${alias}: manifest destination, source chain or kind does not match the ${destination} ${kind} family.`);
       }
+      if (expectedRevision !== undefined && manifest.revision !== expectedRevision) {
+        throw new Error(`${alias}: home ${destination} manifest revision does not match the current deployment revision.`);
+      }
+      const expectedBlock = expectedRpcBlocks[alias];
+      if (expectedBlock !== undefined && (
+        !Number.isSafeInteger(manifest.rpcBlockNumber) || manifest.rpcBlockNumber <= 0
+        || BigInt(manifest.rpcBlockNumber).toString() !== expectedBlock.number
+        || typeof manifest.rpcBlockHash !== 'string'
+        || manifest.rpcBlockHash.toLowerCase() !== expectedBlock.hash.toLowerCase()
+      )) {
+        throw new Error(`${alias}: home ${destination} manifest does not match the freshly pinned RPC block.`);
+      }
+      for (const field of suite) {
+        if (typeof manifest[field] !== 'string' || manifest[field].length !== 42
+          || !/^0x[\da-fA-F]{40}$/.test(manifest[field]) || /^0x0{40}$/i.test(manifest[field])) {
+          throw new Error(`${alias}: missing or invalid ${field} deployment address for home ${destination}.`);
+        }
+      }
+      const sharedIdentity = sharedSuite.map(field => `${field}=${manifest[field].toLowerCase()}`).join(' ');
+      expectedShared ??= sharedIdentity;
+      if (sharedIdentity !== expectedShared) {
+        throw new Error(`${alias}: shared deployment differs for home ${destination}: ${sharedIdentity}`);
+      }
+      const familyIdentity = familySuite.map(field => `${field}=${manifest[field].toLowerCase()}`).join(' ');
+      expectedFamily ??= familyIdentity;
+      if (familyIdentity !== expectedFamily) {
+        throw new Error(`${alias}: home ${destination} predicts a different collector family: ${familyIdentity}`);
+      }
+      manifests.push({ alias, chainId, folder, manifest });
     }
-    const identity = suite.map(field => `${field}=${String(manifest[field]).toLowerCase()}`).join(' ');
-    expected ??= identity;
-    if (identity !== expected) throw new Error(`${alias} predicts a different deployment than the rest of ${group}: ${identity}`);
-    manifests.push({ alias, chainId, folder, manifest });
+    for (const field of familySuite) {
+      const address = manifests[0].manifest[field].toLowerCase();
+      if (seenFamilyAddresses[field].has(address)) {
+        throw new Error(`Home ${destination} reuses another family's ${field} address ${address}.`);
+      }
+      seenFamilyAddresses[field].add(address);
+    }
+    families.push({ destinationChainId: destination, manifests });
   }
-  return manifests;
+  return families;
 }
 
 // Whether the working sphinx.lock holds exactly the committed content, ignoring key order.
@@ -128,11 +156,11 @@ export function sameLock(spawn = spawnSync, read = readFileSync) {
 }
 
 export function run(action, group, { env = process.env, spawn = spawnSync, read = readFileSync } = {}) {
-  if (!['preflight', 'rehearse', 'propose', 'verify', 'artifacts'].includes(action)) {
-    throw new Error('Usage: deploy.sh <preflight|rehearse|propose|verify|artifacts> <testnets|mainnets>');
+  if (!['preflight', 'rehearse', 'dry-run', 'propose', 'verify', 'artifacts'].includes(action)) {
+    throw new Error('Usage: deploy.sh <preflight|rehearse|dry-run|propose|verify|artifacts> <testnets|mainnets>');
   }
-  const destination = preflight(group, env, read);
-  if (action === 'propose') {
+  preflight(group, env, read);
+  if (action === 'dry-run' || action === 'propose') {
     for (const key of ['SPHINX_MANAGED_BASE_URL', 'SPHINX_ORG_ID', 'SPHINX_API_KEY']) {
       if (!env[key]?.trim()) throw new Error(`Missing ${key}`);
     }
@@ -164,7 +192,6 @@ export function run(action, group, { env = process.env, spawn = spawnSync, read 
   if (dirty && action !== 'rehearse') throw new Error(`Commit the reviewed checkout before ${action}; it has uncommitted changes.`);
   const childEnv = {
     ...env, FOUNDRY_PROFILE: 'deploy',
-    STICKY_DESTINATION_CHAIN_ID: String(destination),
     STICKY_REVISION: revision.stdout.trim() + (dirty ? '-dirty' : ''),
   };
   const execute = (command, args, chainId = 0, block = { number: '0', hash: '0x' + '00'.repeat(32) }) => {
@@ -179,8 +206,9 @@ export function run(action, group, { env = process.env, spawn = spawnSync, read 
     execute('node', ['script/artifacts.mjs', group]);
     return;
   }
-  // Rehearse every destination successfully before creating a Sphinx proposal.
+  // Rehearse every source and all four of its destination families before creating a Sphinx proposal.
   const script = action === 'verify' ? 'Verify' : 'Rehearse';
+  const expectedRpcBlocks = {};
   for (const [alias, chainId] of networks[group]) {
     console.log(`${action}: ${alias}`);
     // RPC block heights identify fork state even on chains where EVM block.number means an L1 height.
@@ -196,18 +224,25 @@ export function run(action, group, { env = process.env, spawn = spawnSync, read 
     } catch {
       throw new Error(`${alias}: cannot read a canonical RPC block; stopping ${action}.`);
     }
+    expectedRpcBlocks[alias] = block;
     execute('forge', ['script', `script/${script}.s.sol:${script}`, '--rpc-url', alias,
       '--fork-block-number', block.number, '-vv'], chainId, block);
   }
-  requireOneAddressPerGroup(group, script === 'Verify' ? 'verified' : 'simulation', destination, read);
-  if (action === 'propose') {
-    execute('node_modules/.bin/sphinx', ['propose', 'script/Deploy.s.sol', '--target-contract', 'Deploy', '--networks', group]);
+  requireAllAddressFamilies(group, script === 'Verify' ? 'verified' : 'simulation', read, {
+    expectedRevision: childEnv.STICKY_REVISION,
+    expectedRpcBlocks,
+  });
+  if (action === 'dry-run' || action === 'propose') {
+    execute('node_modules/.bin/sphinx', [
+      'propose', 'script/Deploy.s.sol', '--target-contract', 'Deploy', '--networks', group,
+      ...(action === 'dry-run' ? ['--dry-run'] : []),
+    ]);
   }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
-    if (process.argv.length !== 4) throw new Error('Usage: deploy.sh <preflight|rehearse|propose|verify|artifacts> <testnets|mainnets>');
+    if (process.argv.length !== 4) throw new Error('Usage: deploy.sh <preflight|rehearse|dry-run|propose|verify|artifacts> <testnets|mainnets>');
     run(process.argv[2], process.argv[3]);
     console.log(`Sticky ${process.argv[2]} completed for ${process.argv[3]}.`);
   } catch (error) {

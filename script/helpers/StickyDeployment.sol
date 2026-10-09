@@ -124,6 +124,19 @@ abstract contract StickyDeployment is Script {
         _verify({core: core, deployed: deployed});
     }
 
+    /// @notice Deploys or verifies the complete ordered home-family set for the connected environment.
+    /// @param core The already verified core deployment.
+    /// @return deployed The four complete family deployments in canonical proposal order.
+    function _deployAll(StickyCoreDeployment memory core)
+        internal
+        returns (StickyDeploymentAddresses[4] memory deployed)
+    {
+        uint256[4] memory chainIds = _destinationChainIds();
+        for (uint256 i; i < chainIds.length; i++) {
+            deployed[i] = _deploy({core: core, destinationChainId: chainIds[i]});
+        }
+    }
+
     /// @notice Deploys a contract through the canonical factory if its predicted address has no code.
     /// @param name The compiled artifact name.
     /// @param salt The deployment salt.
@@ -286,12 +299,11 @@ abstract contract StickyDeployment is Script {
         _verifyCore(core);
     }
 
-    /// @notice Loads the explicitly selected collector family and rejects a home outside the source environment.
-    /// @dev A missing variable fails before any deployment; no default family is inferred from the source chain.
-    /// @return destinationChainId The supported mainnet or testnet home chain selected by the operator.
-    function _loadDestinationChainId() internal view returns (uint256 destinationChainId) {
-        destinationChainId = vm.envUint("STICKY_DESTINATION_CHAIN_ID");
-        _requireDestinationChainId(destinationChainId);
+    /// @notice Lists every supported collector home in the connected source chain's environment.
+    /// @return chainIds The four mainnet or testnet home chain IDs in proposal order.
+    function _destinationChainIds() internal view returns (uint256[4] memory chainIds) {
+        if (_isMainnetNetwork(_network(block.chainid))) return [uint256(1), 10, 8453, 42_161];
+        return [uint256(11_155_111), 11_155_420, 84_532, 421_614];
     }
 
     /// @notice Predicts every singleton, including the hook created by the deployer's constructor.
@@ -331,6 +343,20 @@ abstract contract StickyDeployment is Script {
             )
         });
         deployed.sourceFeePayer = vm.computeCreateAddress({deployer: deployed.sourceCollector, nonce: 1});
+    }
+
+    /// @notice Predicts the complete ordered home-family set for the connected environment.
+    /// @param core The core dependencies included in constructor arguments.
+    /// @return deployed The four complete family predictions in canonical proposal order.
+    function _predictAll(StickyCoreDeployment memory core)
+        internal
+        view
+        returns (StickyDeploymentAddresses[4] memory deployed)
+    {
+        uint256[4] memory chainIds = _destinationChainIds();
+        for (uint256 i; i < chainIds.length; i++) {
+            deployed[i] = _predict({core: core, destinationChainId: chainIds[i]});
+        }
     }
 
     /// @notice Checks a complete deployment against current compilation and all intended immutable settings.

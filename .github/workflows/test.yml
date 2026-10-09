@@ -11,10 +11,6 @@ on:
         type: choice
         default: ethereum_sepolia
         options: [testnets, mainnets, ethereum, optimism, base, arbitrum, ethereum_sepolia, optimism_sepolia, base_sepolia, arbitrum_sepolia]
-      destination_chain_id:
-        description: Explicit pool home chain ID in the selected mainnet or testnet environment
-        type: string
-        required: true
 
 permissions:
   contents: read
@@ -82,7 +78,7 @@ jobs:
         run: forge build --deny notes --sizes --skip "*/test/**" --skip "*/script/**" --skip SphinxUtils
       - name: Compile deployment entrypoints
         run: forge build --skip "*/test/**"
-      - name: Rehearse deployment and restart on the selected chain
+      - name: Rehearse every home-chain family and restart on the selected source or group
         if: github.event_name == 'workflow_dispatch'
         run: |
           case "$STICKY_NETWORK" in
@@ -91,7 +87,6 @@ jobs:
           esac
         env:
           STICKY_NETWORK: ${{ inputs.network }}
-          STICKY_DESTINATION_CHAIN_ID: ${{ inputs.destination_chain_id }}
           STICKY_REVISION: ${{ github.sha }}
           FOUNDRY_PROFILE: deploy
           RPC_ETHEREUM_MAINNET: ${{ secrets.RPC_ETHEREUM_MAINNET }}
