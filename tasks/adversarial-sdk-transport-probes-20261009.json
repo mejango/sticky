@@ -1,0 +1,349 @@
+{
+  "kind": "read-only SDK transport classifier probes; no transaction",
+  "sdkVersion": "2.27.0-preview.adversarial.141f0a332b5c",
+  "checkedAt": "2026-10-09T04:53:47.567Z",
+  "scope": "Classifier calls pinned to the census finalized block; native expectations from previously qualified fixture, CCIP expectations from clone census. Does not qualify lane execution, source identity or destination finality.",
+  "chains": [
+    {
+      "chainId": 1,
+      "block": {
+        "number": 26152417,
+        "hash": "0x833b717a190a1fd38532fdcf750e36be5cbdd3b269ee2a381b5d00e1ff76f8b3",
+        "timestamp": 1791519575,
+        "selection": "finalized"
+      },
+      "canonicalBlockRecheck": true,
+      "results": [
+        {
+          "projectId": "1",
+          "sucker": "0x2381Cff4dE6Cd94f2fceaBB2B0F747BFbB9DEf6a",
+          "peerChainId": 10,
+          "expected": "native",
+          "actual": "native",
+          "passed": true
+        },
+        {
+          "projectId": "1",
+          "sucker": "0xD360f44a88242A5F115eE8FC2893243Cd6feF936",
+          "peerChainId": 8453,
+          "expected": "native",
+          "actual": "native",
+          "passed": true
+        },
+        {
+          "projectId": "1",
+          "sucker": "0x0773E792D5dBd0Be8285D4A738cBbf7df1579eFE",
+          "peerChainId": 42161,
+          "expected": "native",
+          "actual": "native",
+          "passed": true
+        },
+        {
+          "projectId": "1",
+          "sucker": "0x7fD66506394FFE7ae7B98C965fACE1b78f985837",
+          "peerChainId": 10,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        },
+        {
+          "projectId": "1",
+          "sucker": "0x2d0791c4B52AFa3F2b1a23F7A884A53bc39F75A5",
+          "peerChainId": 8453,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        },
+        {
+          "projectId": "1",
+          "sucker": "0x0E5Aa16ADA59084ab59CBCb754ecB6cDb8fe3322",
+          "peerChainId": 42161,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        },
+        {
+          "projectId": "3",
+          "sucker": "0x505D884F0EA357C0D6F7eD286C232876190dfE44",
+          "peerChainId": 10,
+          "expected": "native",
+          "actual": "native",
+          "passed": true
+        },
+        {
+          "projectId": "3",
+          "sucker": "0xA2b081638dC179Dbb7e63f338357cEA2487bb933",
+          "peerChainId": 8453,
+          "expected": "native",
+          "actual": "native",
+          "passed": true
+        },
+        {
+          "projectId": "3",
+          "sucker": "0x791A2BCf7345dcd9e7493a9739Ac5e2b9B94EC2f",
+          "peerChainId": 42161,
+          "expected": "native",
+          "actual": "native",
+          "passed": true
+        },
+        {
+          "projectId": "3",
+          "sucker": "0xAAE2dB568Aa004fd837255f2BE9e3f27Ec6CFA9b",
+          "peerChainId": 10,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        },
+        {
+          "projectId": "3",
+          "sucker": "0xc1E9d58D820dbAbe611CEC5e22c1C45297Db32ED",
+          "peerChainId": 8453,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        },
+        {
+          "projectId": "3",
+          "sucker": "0xB8253789Ab9fB858Ce454084a29681A661eA07eB",
+          "peerChainId": 42161,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "chainId": 10,
+      "block": {
+        "number": 157960372,
+        "hash": "0x2b369c9c20bacd4341455a46afad7a8a60846db9fe202fef4b9057b65d9a641a",
+        "timestamp": 1791519521,
+        "selection": "finalized"
+      },
+      "canonicalBlockRecheck": true,
+      "results": [
+        {
+          "projectId": "1",
+          "sucker": "0x2381Cff4dE6Cd94f2fceaBB2B0F747BFbB9DEf6a",
+          "peerChainId": 1,
+          "expected": "native",
+          "actual": "native",
+          "passed": true
+        },
+        {
+          "projectId": "1",
+          "sucker": "0x7fD66506394FFE7ae7B98C965fACE1b78f985837",
+          "peerChainId": 1,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        },
+        {
+          "projectId": "1",
+          "sucker": "0x0a750492f156365f612e35056E0d7FA748F86D61",
+          "peerChainId": 42161,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        },
+        {
+          "projectId": "1",
+          "sucker": "0xA7Cc9300BF9119D27e6A22124cACC6F0f1eE778C",
+          "peerChainId": 8453,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        },
+        {
+          "projectId": "3",
+          "sucker": "0x505D884F0EA357C0D6F7eD286C232876190dfE44",
+          "peerChainId": 1,
+          "expected": "native",
+          "actual": "native",
+          "passed": true
+        },
+        {
+          "projectId": "3",
+          "sucker": "0xAAE2dB568Aa004fd837255f2BE9e3f27Ec6CFA9b",
+          "peerChainId": 1,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        },
+        {
+          "projectId": "3",
+          "sucker": "0x963ECD561d8588521a54f14C75a325766A784cfb",
+          "peerChainId": 42161,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        },
+        {
+          "projectId": "3",
+          "sucker": "0x76663c19DFA04eD45c2adEFCD432F22BdB873d83",
+          "peerChainId": 8453,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "chainId": 8453,
+      "block": {
+        "number": 52365097,
+        "hash": "0xcc16dcc82d025ae6d9c1d524c620b850368e2ba5170913661ef76a3fcd1e9e7b",
+        "timestamp": 1791519541,
+        "selection": "finalized"
+      },
+      "canonicalBlockRecheck": true,
+      "results": [
+        {
+          "projectId": "1",
+          "sucker": "0xD360f44a88242A5F115eE8FC2893243Cd6feF936",
+          "peerChainId": 1,
+          "expected": "native",
+          "actual": "native",
+          "passed": true
+        },
+        {
+          "projectId": "1",
+          "sucker": "0x2d0791c4B52AFa3F2b1a23F7A884A53bc39F75A5",
+          "peerChainId": 1,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        },
+        {
+          "projectId": "1",
+          "sucker": "0xA7Cc9300BF9119D27e6A22124cACC6F0f1eE778C",
+          "peerChainId": 10,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        },
+        {
+          "projectId": "1",
+          "sucker": "0x894516cD95A5CE8cA6B1ED0dd4A43A921dcC2AA9",
+          "peerChainId": 42161,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        },
+        {
+          "projectId": "3",
+          "sucker": "0xA2b081638dC179Dbb7e63f338357cEA2487bb933",
+          "peerChainId": 1,
+          "expected": "native",
+          "actual": "native",
+          "passed": true
+        },
+        {
+          "projectId": "3",
+          "sucker": "0xc1E9d58D820dbAbe611CEC5e22c1C45297Db32ED",
+          "peerChainId": 1,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        },
+        {
+          "projectId": "3",
+          "sucker": "0x76663c19DFA04eD45c2adEFCD432F22BdB873d83",
+          "peerChainId": 10,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        },
+        {
+          "projectId": "3",
+          "sucker": "0x94f8A90882f5a0288920540C2421D20f86C3547B",
+          "peerChainId": 42161,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "chainId": 42161,
+      "block": {
+        "number": 513089660,
+        "hash": "0x8f6b772e3510fec420bf357bd1c492fa84b72a27aa33c9aac06ae1b0a79ea40b",
+        "timestamp": 1791519451,
+        "selection": "finalized"
+      },
+      "canonicalBlockRecheck": true,
+      "results": [
+        {
+          "projectId": "1",
+          "sucker": "0x0773E792D5dBd0Be8285D4A738cBbf7df1579eFE",
+          "peerChainId": 1,
+          "expected": "native",
+          "actual": "native",
+          "passed": true
+        },
+        {
+          "projectId": "1",
+          "sucker": "0x0E5Aa16ADA59084ab59CBCb754ecB6cDb8fe3322",
+          "peerChainId": 1,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        },
+        {
+          "projectId": "1",
+          "sucker": "0x0a750492f156365f612e35056E0d7FA748F86D61",
+          "peerChainId": 10,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        },
+        {
+          "projectId": "1",
+          "sucker": "0x894516cD95A5CE8cA6B1ED0dd4A43A921dcC2AA9",
+          "peerChainId": 8453,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        },
+        {
+          "projectId": "3",
+          "sucker": "0x791A2BCf7345dcd9e7493a9739Ac5e2b9B94EC2f",
+          "peerChainId": 1,
+          "expected": "native",
+          "actual": "native",
+          "passed": true
+        },
+        {
+          "projectId": "3",
+          "sucker": "0xB8253789Ab9fB858Ce454084a29681A661eA07eB",
+          "peerChainId": 1,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        },
+        {
+          "projectId": "3",
+          "sucker": "0x963ECD561d8588521a54f14C75a325766A784cfb",
+          "peerChainId": 10,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        },
+        {
+          "projectId": "3",
+          "sucker": "0x94f8A90882f5a0288920540C2421D20f86C3547B",
+          "peerChainId": 8453,
+          "expected": "ccip",
+          "actual": "ccip",
+          "passed": true
+        }
+      ]
+    }
+  ],
+  "passed": true,
+  "qualifiedSdkCommit": "930f89f2f2cd06afaced3d5fddfd466b29edd24e",
+  "qualifiedPreviewVersion": "2.27.0-preview.adversarial.4006a0bca708",
+  "compiledSuckersSHA256": "635ace1cd8c73e6ac6a1844826b5d97031db71efdd4d56532278e49eef93c5eb",
+  "carryForwardEvidence": "The classifier module remains byte-identical to the original probe artifact (SHA-256 recorded here). The final SDK followup changes the separate writeRecovery owner; it does not change classifier code or its dependency graph."
+}

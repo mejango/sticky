@@ -21,7 +21,7 @@ function plan(chainIds = [84532]): LaunchPlan {
       args: [TOKEN, value.name, value.symbol, value.projectUri, 1000n, [address('6')], false] }) } }))
   return value
 }
-const payment = { chain: 84532, amount: '12', address: address('7') }
+const payment = { chain: 84532, amount: '12', target: address('7'), calldata: '0x' as Hex }
 const quote = { bundle_uuid: '11111111-1111-4111-8111-111111111111', payment_info: [payment], expectedTransactions: [] } as unknown as RelayrQuote
 
 function fixture(chainIds = [84532], capability: 'sponsored' | 'self-paid' | 'unavailable' = 'self-paid') {
@@ -38,11 +38,46 @@ function fixture(chainIds = [84532], capability: 'sponsored' | 'self-paid' | 'un
     record: vi.fn(async () => true), changed: vi.fn(),
   }
   const controller = createStickyLaunchController(ports)
-  const prepared = controller.prepare(plan(chainIds), capability)
+  const prepared = chainIds.length === 1 ? controller.prepare(plan(chainIds), capability) : store.save({
+    version: 1, plan: plan(chainIds), mode: 'relayr', published: false,
+    candidates: Object.fromEntries(chainIds.map(id => [id, []])), results: {}, listing: { state: 'pending', recorded: {} },
+  })
   return { storage, store, ports, controller, prepared }
 }
 
+/** Existing single-target Relayr records retain their exact payment/recovery behavior. New plans choose direct. */
+function relayrFixture() {
+  const f = fixture()
+  f.prepared = f.store.save({ ...f.prepared, mode: 'relayr' })
+  return f
+}
+
 describe('durable Sticky launch controller', () => {
+  it('admits only one home chain while preserving old submitted records for read-only recovery', async () => {
+    const f = fixture([84532, 11155420])
+    const before = { ...f.prepared, published: true, bundleUuid: quote.bundle_uuid, quote,
+      payment: { option: payment, started: true, hash: H2, proposalHash: H1 },
+      listing: { ...f.prepared.listing, state: 'published' as const, intentId: 'listing-identity' } }
+    f.store.save(before)
+    for (const action of [f.controller.run, f.controller.retry, f.controller.selfPay, f.controller.list]) {
+      await expect(action()).rejects.toThrow('one home chain')
+    }
+    expect(f.store.load()).toEqual(before)
+    vi.mocked(f.ports.status).mockResolvedValue({ 84532: [H1] })
+    const recovered = await f.controller.refresh()
+    expect(recovered.payment).toEqual({ ...before.payment, confirmed: true })
+    expect(recovered.candidates[84532]).toEqual([H1])
+    expect(f.ports.sendDirect).not.toHaveBeenCalled()
+    expect(f.ports.sendPayment).not.toHaveBeenCalled()
+    expect(f.ports.publishListing).not.toHaveBeenCalled()
+    expect(f.ports.record).not.toHaveBeenCalled()
+    expect(f.ports.sponsor).not.toHaveBeenCalled()
+    const clean = fixture()
+    clean.store.remove()
+    expect(() => clean.controller.prepare(plan([84532, 11155420]), 'self-paid')).toThrow('one home chain')
+    expect(clean.store.load()).toBeNull()
+  })
+
   it('wallet-action:create-a-sticky-token retains the submitted direct hash and never sends it twice after reload', async () => {
     const f = fixture()
     await f.controller.run()
@@ -55,7 +90,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('durably marks raw publication before POST and cannot republish a timed-out quote', async () => {
-    const f = fixture([84532, 11155420])
+    const f = relayrFixture()
     vi.mocked(f.ports.quote).mockImplementation(async (_plan, _remember, beforePublish) => {
       await beforePublish()
       expect(f.store.load()?.published).toBe(true)
@@ -69,7 +104,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('keeps a returned bundle identity even when later quote binding fails', async () => {
-    const f = fixture([84532, 11155420])
+    const f = relayrFixture()
     vi.mocked(f.ports.quote).mockImplementation(async (_plan, remember, beforePublish) => { await beforePublish(); remember(quote.bundle_uuid); throw new Error('binding failed') })
     await expect(f.controller.run()).rejects.toThrow('binding failed')
     expect(f.store.load()).toMatchObject({ published: true, bundleUuid: quote.bundle_uuid })
@@ -78,7 +113,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('can retry a failed preflight before quote publication, while a published quote stays locked', async () => {
-    const f = fixture([84532, 11155420])
+    const f = relayrFixture()
     vi.mocked(f.ports.quote).mockRejectedValueOnce(new Error('RPC unavailable before publication'))
     await expect(f.controller.run()).rejects.toThrow('before publication')
     expect(f.store.load()?.published).toBe(false)
@@ -90,7 +125,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('wallet-action:pay-for-a-multichain-sticky-launch saves the exact option and funding hash once', async () => {
-    const f = fixture([84532, 11155420])
+    const f = relayrFixture()
     await f.controller.run()
     expect(f.store.load()?.payment).toMatchObject({ option: payment, started: true, hash: H2, confirmed: true })
     await f.controller.run()
@@ -100,7 +135,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('refuses a payment chooser response outside the saved quote', async () => {
-    const f = fixture([84532, 11155420])
+    const f = relayrFixture()
     vi.mocked(f.ports.choosePayment).mockResolvedValue({ ...quote.payment_info[0], amount: '999' })
     await expect(f.controller.run()).rejects.toThrow('actual payment options')
     expect(f.ports.sendPayment).not.toHaveBeenCalled()
@@ -290,7 +325,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('keeps original quote and every old funding option when a finalized failed payment is retried', async () => {
-    const f = fixture([84532, 11155420])
+    const f = relayrFixture()
     const other = { ...quote.payment_info[0], chain: 11155420, amount: '99' }
     const multi = { ...quote, payment_info: [...quote.payment_info, other] }
     vi.mocked(f.ports.quote).mockImplementationOnce(async (_plan, _remember, beforePublish) => { beforePublish(); return multi })

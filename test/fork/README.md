@@ -24,6 +24,7 @@ STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork -- --match-contract S
 STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork -- --match-contract StickyCrossChainRewardsForkTest
 STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork -- --match-contract 'StickyJbx(Lifecycle|Authority)ForkTest'
 STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork -- --match-contract StickyJbxOmnichainForkTest
+STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork -- --match-contract StickySourceCreditsForkTest
 ```
 
 The wrapper selects the `fork` profile, using the same non-isolated production
@@ -107,6 +108,14 @@ The existing [deployment rehearsals](../../DEPLOYMENT.md) cover singleton deploy
 and restart across all eight configured networks. Neither suite broadcasts a
 transaction or creates a Sphinx proposal.
 
+The Base-home hook cases in this suite configure actual project `3` reserved splits
+through a collector bound immutably to Base. One settles a Base-local allocation;
+the other accepts Ethereum reserves, submits through the deployed Ethereum-to-Base
+route, and reuses the same modeled portal boundary before claim, settlement and
+holder rewards. The six existing pool singletons retain their identities. These
+tests qualify that direct route; they do not establish OP-to-Base or
+Arbitrum-to-Base delivery.
+
 ## Deployed Sticky JBX qualification
 
 [StickyJbxLifecycle.t.sol](StickyJbxLifecycle.t.sol) reuses the existing lifecycle
@@ -155,13 +164,63 @@ inclusion/finality, the outer Portal/outbox spent-message protection, or a runni
 relayer. Destination early/tampered/duplicate claims and unauthorized bridge
 delivery are checked separately. Successful arrival continues through fixed
 receiver settlement, four-round vesting, one-time holder collection and JBX
-redemption. Direct Ethereum cases exercise the real authenticated distributor
-split hook.
+redemption. Direct Ethereum cases use the same shared reserved split hook and
+then permissionlessly settle its attributed custody through the existing receiver.
 
-Manual-custodian cases exercise the shipped bridge path. Separate collector cases
-must prove permissionless source initiation after authorized configuration;
-source custody does not become permissionless merely because destination
-settlement already is. Unsent manual leaves are also tested for their
+Manual-custodian cases exercise the shipped bridge path. Separate shared-hook cases
+deploy the parent and fee child on local forks through the production deployment
+helper, configure `hook = collector`, `beneficiary = Ethereum Sticky share token`
+and `projectId = reward group`, then use an unrelated caller to distribute and
+submit rewards. Receipt must only credit the selected pending bucket; the outbox
+cannot change until a separate delivery call. These cases check principal/fee
+receipt separation, the requested REV fraction and remainder, atomic retry after
+insufficient fees, and the actual source leaf before reusing the destination proof.
+The four-chain deployment cases compare the full hook/child runtime and addresses
+within both the Ethereum-home and Base-home families, check receiver prediction
+parity, and prove the six existing singleton runtimes remain unchanged. Different
+home chains must have different collector and fee-child addresses. A real OP
+reserved-split allocation into a Base-home family stays queued when the caller
+tries its Ethereum peer; the Ethereum-home family cannot spend that allocation.
+Address parity establishes a family identity, not a direct transport path between
+every source and home chain.
+
+The Ethereum-to-Arbitrum refund case captures the real unsafe root-retryable
+payload on the Ethereum fork and verifies that it names the raw fee-child address.
+It then deploys the same Arbitrum-home family on the Arbitrum fork, checks equal
+parent and nonce-1 child addresses and the child-to-parent binding, and uses
+`vm.deal` to model only the finalized ArbOS balance credit. A permissionless call
+must add that complete raw balance to project 1 through its live native terminal,
+mint no project tokens and pay nothing to the caller. The same case separately
+funds the computed safe-Inbox alias and proves that balance remains untouched.
+The test does not execute or prove retryable finality. The separate local transport regression proves that
+the gateway request names `feeChild` and that its Nitro alias is distinct.
+Pinned `AbsInbox` source establishes that the safe Inbox rewrites a contract
+refund recipient to that alias; this test does not execute the gateway or Inbox
+rewrite. The raw-address contribution does not cover that account, so positive
+mapped-ERC-20 backing remains unqualified. Pinned WETH gateway/Inbox source also
+shows that cancellation or expiry can credit bridged call value to
+`alias(source sucker)`, which Sticky does not control; this fork case does
+not execute that cancellation path.
+
+Generic source cases launch ordinary projects with IDs above `3` through deployed
+core. The OP tests cover zero native backing, zero ERC-20 backing, and positive
+six-decimal USDC.e backing through a real registered OP sucker. The positive case
+supplies bounded test USDC.e inventory with `deal`; payment, project issuance,
+treasury cashout, project-token burning, selected outbox, canonical L2 bridge token
+burn and emitted root all execute real contracts. A foreign-address backing
+mapping models registry-owner setup where necessary. These generic transport
+cases qualify source submission only: they do not create a destination project
+or prove ERC-20 withdrawal finalization or L1 escrow release.
+
+[StickySourceCredits.t.sol](StickySourceCredits.t.sol) tests the real controller's
+credits-before-callback path for another generic source. A missing ERC-20 blocks
+delivery while preserving the pending bucket and actual credits. Deploying the
+project's ERC-20 permits partial and full permissionless settlement, preserving
+ordinary holders' credits and funding the existing Sticky reward ledger exactly.
+
+These local deployments do not establish live collector configuration or a running
+keeper. Unsent manual leaves are also tested for their
 source-chain emergency-beneficiary limitation. See the
 [qualification record](../../tasks/sticky-jbx-qualification.md) for completed
-results, exact proposed allocation and remaining live actions.
+results and exact proposed allocation, and [the deployment recipe](../../DEPLOYMENT.md#source-collectors)
+for remaining live actions.

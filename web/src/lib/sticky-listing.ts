@@ -5,11 +5,11 @@ import { isEip7702DelegatedEoaRuntime } from '@bananapus/nana-sdk-core/safe'
 import type { Hex } from 'viem'
 import { jbCenterBaseUrl } from '@/lib/jbcenter-config'
 import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
-import { isAddress, type LaunchPlan } from '@/lib/sticky-launch-plan'
+import { isAddress, requireSingleHomeChain, type LaunchPlan } from '@/lib/sticky-launch-plan'
 
 export const STICKY_LISTING_FORWARDER = jbContractAddress[6].ERC2771Forwarder[1]
 
-/** Preserve the legacy listing envelope; creation fees are paid separately and are not signed metadata. */
+/** Reconstruct saved envelopes for recovery too; only publication admits a new single-home launch. */
 export function buildStickyEnvelope(plan: LaunchPlan): JBCenterIntentInput {
   if (!plan.targets.length) throw new Error('A listing needs at least one launch call.')
   if (!isAddress(plan.owner)) throw new Error('A listing needs the launching wallet.')
@@ -27,7 +27,7 @@ export function buildStickyEnvelope(plan: LaunchPlan): JBCenterIntentInput {
 
 /** Unknown account code cannot authorize a listing. A contract account remains eligible for a self-paid launch. */
 export async function listingCapability(plan: LaunchPlan): Promise<'sponsored' | 'self-paid' | 'unavailable'> {
-  if (!plan.targets.length || !jbCenterBaseUrl()) return 'unavailable'
+  if (plan.targets.length !== 1 || !jbCenterBaseUrl()) return 'unavailable'
   const client = jbCenterPublicClient(plan.targets[0].chainId)
   // viem maps the successful empty-code answer to undefined; an RPC failure stays distinct.
   let code: Hex | undefined
@@ -47,5 +47,6 @@ export function createStickyCenterClient(): JBCenterClient {
 
 /** The SDK authenticates the whole envelope and signing message before invoking the adapter's signer. */
 export function publishStickyListing(plan: LaunchPlan, sign: (message: string) => Promise<Hex>) {
+  requireSingleHomeChain(plan.targets)
   return publishSignedIntent(createStickyCenterClient(), buildStickyEnvelope(plan), sign, { publisher: plan.owner })
 }

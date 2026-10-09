@@ -25,8 +25,6 @@ const mocks = vi.hoisted(() => ({
   moves: vi.fn(),
   creation: vi.fn(),
   flows: vi.fn(),
-  siblings: vi.fn(),
-  rows: vi.fn(),
   handle: vi.fn(),
   notFound: vi.fn(),
   address: undefined as string | undefined,
@@ -55,11 +53,6 @@ vi.mock('@/lib/sticky-feed', async importOriginal => ({
 vi.mock('@/lib/sticky-backing', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-backing')>()),
   backingFlows: mocks.flows,
-}))
-vi.mock('@/lib/sticky-siblings', async importOriginal => ({
-  ...(await importOriginal<typeof import('@/lib/sticky-siblings')>()),
-  launchSiblings: mocks.siblings,
-  siblingRows: mocks.rows,
 }))
 vi.mock('@/lib/sticky-handles', () => ({ resolveProjectHandle: mocks.handle }))
 vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn() }), notFound: mocks.notFound }))
@@ -192,15 +185,6 @@ beforeEach(() => {
   mocks.moves.mockReset().mockResolvedValue(paid)
   mocks.creation.mockReset().mockResolvedValue(1n)
   mocks.flows.mockReset().mockResolvedValue([])
-  mocks.siblings.mockReset().mockImplementation(async (info: StickyProjectInfo) => [
-    { chainId: info.chainId, projectId: info.projectId, self: true },
-  ])
-  // The Overview's chains are read through `readStickyProject`, whose calls these tests count.
-  mocks.rows
-    .mockReset()
-    .mockImplementation(async (siblings: { chainId: number; projectId: bigint; self: boolean }[]) =>
-      siblings.map(sibling => ({ ...sibling, info: slopshop(sibling.projectId) })),
-    )
   mocks.handle.mockReset().mockResolvedValue(null)
   mocks.notFound.mockReset().mockImplementation(() => {
     throw new Error(NOT_FOUND)
@@ -319,16 +303,16 @@ describe('the project route', () => {
 })
 
 describe('the header', () => {
-  it('reads Stuck, Sticks, On, Average active stick and Longest active stick, in that order', async () => {
+  it('reads Stuck, Sticks, Home chain, Average active stick and Longest active stick, in that order', async () => {
     await renderPage('base:23')
-    expect(labels()).toEqual(['Stuck:', 'Sticks:', 'On:', 'Average active stick:', 'Longest active stick:'])
+    expect(labels()).toEqual(['Stuck:', 'Sticks:', 'Home chain:', 'Average active stick:', 'Longest active stick:'])
     expect(value('Stuck')).toBe('1,010 SLOPSHOP')
     expect(value('Sticks')).toBe('2')
     expect(value('Average active stick')).toBe('2d 0h')
     expect(value('Longest active stick')).toBe('3d 0h')
-    const on = pair('On')!
-    expect(on.getAttribute('title')).toBe('Chains chosen at launch.')
-    expect([...on.querySelectorAll('img')].map(icon => icon.getAttribute('alt'))).toEqual(['Optimism', 'Base'])
+    const on = pair('Home chain')!
+    expect(on.getAttribute('title')).toBe('Shares, backing and rewards are accounted for on this chain.')
+    expect([...on.querySelectorAll('img')].map(icon => icon.getAttribute('alt'))).toEqual(['Base'])
   })
 
   it('shows Stuck as the backing the shares claim, in the underlying token, never the Sticky supply', async () => {
@@ -353,14 +337,15 @@ describe('the header', () => {
     expect(header().getAttribute('aria-busy')).toBe('true')
     expect(header().querySelector('h1')).toBeNull()
     expect(value('Stuck')).toBe('')
-    expect(pair('On')).toBeUndefined()
+    expect(pair('Home chain')).toBeUndefined()
     expect(labels()).toEqual(['Stuck:', 'Sticks:', 'Average active stick:', 'Longest active stick:'])
   })
 
-  it('names only the page\'s chain when the launch planned none', async () => {
-    mocks.project.mockResolvedValue(slopshop(23n, { plannedChains: null }))
+  it.each([null, [1, 10], [10, 8453]].map(plannedChains => ({ plannedChains })))(
+    'names only the verified home chain regardless of metadata $plannedChains', async ({ plannedChains }) => {
+    mocks.project.mockResolvedValue(slopshop(23n, { plannedChains }))
     await renderPage('base:23')
-    expect([...pair('On')!.querySelectorAll('img')].map(icon => icon.getAttribute('alt'))).toEqual(['Base'])
+    expect([...pair('Home chain')!.querySelectorAll('img')].map(icon => icon.getAttribute('alt'))).toEqual(['Base'])
   })
 
   it('says a project could not be read, tells the console why, and reads it again on Try again', async () => {
@@ -544,10 +529,9 @@ describe('the reads behind the page', () => {
     expect(mocks.holders).not.toHaveBeenCalled()
     expect(mocks.pinned).not.toHaveBeenCalled()
     expect(mocks.moves).not.toHaveBeenCalled()
-    // Nor does the Overview tab: not the balance flows, and not the search for the launch's chains.
+    // The Overview tab does not read the balance flows either.
     expect(mocks.creation).not.toHaveBeenCalled()
     expect(mocks.flows).not.toHaveBeenCalled()
-    expect(mocks.siblings).not.toHaveBeenCalled()
     for (const label of ['Stuck', 'Sticks', 'Average active stick', 'Longest active stick']) expect(value(label)).toBe('–')
     const note = [...host.querySelectorAll('[role="alert"]')].find(alert => alert.textContent?.includes('Latest'))!
     expect(note.textContent).toContain('Could not read Latest.')
@@ -558,7 +542,6 @@ describe('the reads behind the page', () => {
     expect(mocks.project).toHaveBeenCalledTimes(2)
     expect(mocks.events).toHaveBeenCalledTimes(1)
     expect(mocks.flows).toHaveBeenCalledTimes(1)
-    expect(mocks.siblings).toHaveBeenCalledTimes(1)
     expect(value('Sticks')).toBe('2')
     expect(amounts()).toEqual(['1,010 SLOPSHOP'])
   })

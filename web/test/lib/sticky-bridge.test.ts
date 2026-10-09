@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { getJBContractAddress } from '@bananapus/nana-sdk-core'
+import { getJBContractAddress, jbControllerAbi, jbDirectoryAbi } from '@bananapus/nana-sdk-core'
 import { buildBridgePrepareTx, suckerBranchRoot, suckerLeafHash, suckerLeafProof, SUCKER_EMPTY_TREE_ROOT } from '@bananapus/nana-sdk-core/v6'
 import { createPublicClient, custom, decodeFunctionData, encodeFunctionData, getAddress, keccak256, pad, parseAbi, toEventSelector, zeroHash, type Address, type Hex, type PublicClient } from 'viem'
 import { bridgeCalldata, bridgeMinimumOutput, BRIDGE_NATIVE_TOKEN, createStickyBridge, type BridgeRoute } from '@/lib/sticky-bridge'
@@ -20,7 +20,7 @@ const SEL = {
   toRemoteFee: '0x42115915', toRemote: '0xb71c1179', prepare: '0xaf629bbb', claim: '0xcbb2adce', decimals: '0x313ce567', symbol: '0x95d89b41', balanceOf: '0x70a08231', allowance: '0xdd62ed3e', approve: '0x095ea7b3',
 }
 const initial = {
-  trailingLogData: false, finalityReorg: false, safe: false, safeFailed: false, reverted: false, finalized: 100n, proposal: H(707),
+  trailingLogData: false, finalityReorg: false, safe: false, safeFailed: false, reverted: false, finalized: 100n, proposal: H(707), sourceCredits: false,
   delivered: true, executed: false, membership: 1n, allowance: 0n, balance: 10_000n, mapping: BRIDGE_NATIVE_TOKEN, token: A(32), sourceChain: 1n,
   transport: 'ccip', successfulBudget: 10n ** 15n, incomplete: false, badHash: false, badBranch: false, badAddress: false, badExecution: false,
   badPeer: false, badDecimals: false, emptyCode: false, disabled: false, changedReverse: false, migratedTerminal: false, nonProject: false,
@@ -64,12 +64,14 @@ function fixture(changes: Partial<typeof initial> = {}) {
       if (method !== 'eth_call') throw new Error(`Unexpected ${method}`)
       const tx = parameters[0] as { data: Hex; value?: Hex }
       const selector = tx.data.slice(0, 10)
+      if (selector === encodeFunctionData({ abi: jbDirectoryAbi, functionName: 'controllerOf', args: [22n] }).slice(0, 10)) return abi(A(80))
+      if (selector === encodeFunctionData({ abi: jbControllerAbi, functionName: 'mintTokensOf', args: [22n, 1000n, receiver, '', false] }).slice(0, 10)) return abi(1000)
       if (selector === SEL.isSuckerOf) return abi(state.membership)
       if (selector === SEL.peer) return abi(source ? route.destinationSucker : state.badPeer ? A(555) : route.sourceSucker)
       if (selector === SEL.peerChainId) return abi(source ? route.destination.chainId : route.source.chainId)
       if (selector === SEL.projectId) return abi(source ? 21 : 22)
       if (selector === SEL.projectIdOf) return abi(state.nonProject ? 0 : 21)
-      if (selector === SEL.tokenOf) return abi(source ? route.sourceToken : state.token)
+      if (selector === SEL.tokenOf) return abi(source ? state.sourceCredits ? A(0) : route.sourceToken : state.token)
       if (selector === SEL.TOKENS) return abi(getJBContractAddress('JBTokens', 6, source ? route.source.chainId : route.destination.chainId))
       if (selector === SEL.DIRECTORY) return abi(getJBContractAddress('JBDirectory', 6, source ? route.source.chainId : route.destination.chainId))
       if (selector === SEL.remoteTokenFor) return abi(state.disabled ? 0 : 1, 0, 200_000, !source && state.changedReverse ? A(999) : state.mapping)
@@ -133,6 +135,19 @@ describe('Sticky bridge, legacy acceptance preserved through SDK owners', () => 
     const [route] = await f.api.discover(f.route)
     expect(route).toMatchObject({ sourceProjectId: '21', destinationProjectId: '22', rewardToken: f.route.rewardToken.toLowerCase(), backingMeta: { symbol: 'ETH', decimals: 18 }, canPrepare: true })
     expect(f.calls.filter(call => call.method === 'eth_getCode').some(call => String(call.params[0]).toLowerCase() === BRIDGE_NATIVE_TOKEN)).toBe(false)
+  })
+  it('discovers a direct project-credit route before its source ERC-20 exists', async () => {
+    const f = fixture({ sourceCredits: true })
+    const [route] = await f.api.discover({ source: f.route.source, destination: f.route.destination, sourceProjectId: 21n })
+    expect(route).toMatchObject({ sourceProjectId: '21', sourceToken: A(0), sourceMeta: { symbol: 'Project #21 credits', decimals: 18 }, rewardToken: f.route.rewardToken.toLowerCase() })
+    expect(f.calls.some(call => call.method === 'eth_getCode' && String(call.params[0]).toLowerCase() === A(0))).toBe(false)
+  })
+  it('resolves an existing ERC-20 from the selected source project ID', async () => {
+    const f = fixture()
+    const [route] = await f.api.discover({ source: f.route.source, destination: f.route.destination, sourceProjectId: 21n })
+    expect(route.sourceToken).toBe(f.route.sourceToken.toLowerCase())
+    expect(route.sourceMeta.symbol).toBe('TOK')
+    await expect(f.api.discover({ source: f.route.source, destination: f.route.destination, sourceProjectId: 0n })).rejects.toThrow('not a Juicebox V6')
   })
   it.each([
     ['wrong RPC chain', { sourceChain: 10n }, 'wrong chain'], ['missing deployment', { emptyCode: true }, 'not deployed'],

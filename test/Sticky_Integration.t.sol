@@ -710,7 +710,7 @@ contract StickyIntegrationTest is TestBaseWorkflow {
             )
         );
         StickyRewardReceiver(tenureReceiver).initialize({initialStickyToken: address(this), initialGroupId: 0});
-        StickyRewardReceiver implementation = receiverFactory.RECEIVER();
+        StickyRewardReceiver implementation = StickyRewardReceiver(address(receiverFactory.RECEIVER()));
         assertEq(implementation.stickyToken(), address(implementation));
         vm.expectRevert(
             abi.encodeWithSelector(

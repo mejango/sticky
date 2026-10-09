@@ -69,6 +69,26 @@ async function click(text: string) {
 async function show() { await act(async () => openStickyLaunch('testnet')) }
 
 describe('global Sticky launch host', () => {
+  it('keeps old multi-pool evidence visible for read-only recovery without offering new authority', async () => {
+    const pending = saved({ mode: 'center', published: true, payment: { option: { chain: 84532, amount: '1' }, started: true, hash: HASH } as StickyLaunchSession['payment'] })
+    const first = pending.plan.targets[0]
+    pending.plan = { ...pending.plan, targets: [...pending.plan.targets, { ...first, chainId: 11155420, call: { ...first.call, chain: 11155420 } }] }
+    localStorage.setItem(STICKY_LAUNCH_KEY, JSON.stringify(pending))
+    mocks.load.mockReturnValue(pending)
+    await mount()
+    await show()
+    expect(container.textContent).toContain('separate pools on multiple chains')
+    expect(container.textContent).toContain('submission evidence is kept for recovery')
+    for (const name of ['Continue launch', 'Request sponsored launch', 'Pay for launch myself', 'List on Juicebox Center', 'Check failed transaction for retry']) {
+      expect(button(name)).toBeUndefined()
+    }
+    expect(container.querySelector('[aria-label="Recovery chain"]')).not.toBeNull()
+    await click('Check again')
+    expect(mocks.refresh).toHaveBeenCalled()
+    expect(mocks.run).not.toHaveBeenCalled()
+    expect(mocks.clear).not.toHaveBeenCalled()
+  })
+
   it('checks finalized failure on explicit retry and requires a separate reviewed launch action afterward', async () => {
     const pending = saved({ direct: { started: true, hash: HASH } })
     localStorage.setItem(STICKY_LAUNCH_KEY, JSON.stringify(pending))

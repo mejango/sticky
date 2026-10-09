@@ -9,7 +9,7 @@
 import { QueryClient, QueryClientProvider, notifyManager } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { getAddress, type Address } from 'viem'
+import { encodeFunctionData, getAddress, type Address } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { REVIEWED_ACCOUNT_CHANGED } from '@/lib/contract-write'
 import { stickyHookAbi, stickyTokenAbi } from '@/lib/sticky-abis'
@@ -21,7 +21,7 @@ import { E18, stickyInfo } from '../home-fixtures'
 const mocks = vi.hoisted(() => ({
   /** The account the page shows, which `getAccount` (the wallet's own) answers too unless a test says otherwise. */
   account: '' as string,
-  publicClient: { simulateContract: vi.fn(), estimateContractGas: vi.fn() },
+  publicClient: { simulateContract: vi.fn(), estimateContractGas: vi.fn(), getChainId: vi.fn(), getTransaction: vi.fn(), getTransactionReceipt: vi.fn(), getBlock: vi.fn() },
   receipt: { data: undefined, isError: false } as {
     data?: { status: 'success' | 'reverted'; transactionHash: string }
     isError: boolean
@@ -85,6 +85,8 @@ const ALICE = getAddress(`0x${'a1'.repeat(20)}`)
 const BOB = getAddress(`0x${'b2'.repeat(20)}`)
 const STICKY = getAddress(`0x${'5'.repeat(40)}`)
 const HASH = `0x${'c3'.repeat(32)}`
+const BLOCK_HASH = `0x${'ed'.repeat(32)}` as const
+const walletReceipt = () => ({ status: 'success' as const, transactionHash: HASH, blockNumber: 12n, blockHash: BLOCK_HASH, transactionIndex: 0, from: ALICE, to: STICKY, logs: [] })
 const info = stickyInfo(CHAIN, 12n, { stToken: STICKY, stSymbol: 'STICKYART', symbol: 'ART', decimals: 6 })
 
 const answer = (result: unknown) => [{ status: 'success', result }]
@@ -109,6 +111,10 @@ beforeEach(() => {
   mocks.receipt = { data: undefined, isError: false }
   mocks.account = ALICE
   mocks.safe = false
+  mocks.publicClient.getChainId.mockResolvedValue(CHAIN)
+  mocks.publicClient.getTransactionReceipt.mockImplementation(async () => mocks.receipt.data)
+  mocks.publicClient.getTransaction.mockImplementation(async () => ({ ...walletReceipt(), hash: HASH, input: encodeFunctionData(mocks.publicClient.simulateContract.mock.lastCall![0]) }))
+  mocks.publicClient.getBlock.mockResolvedValue({ number: 12n, hash: BLOCK_HASH })
   mocks.waitForSafeExecutionHash.mockReset().mockImplementation(() => new Promise(() => {}))
   mocks.getAccount.mockReset().mockImplementation(() => ({ address: mocks.account, chainId: CHAIN }))
   mocks.requestReview.mockReset().mockResolvedValue(true)
@@ -169,7 +175,7 @@ describe('a Safe review dismissed from its enclosing modal', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
   })
 
-  it.each(['transfer', 'trust'] as const)('releases an unproven %s only after its notice is dismissed', async kind => {
+  it.each(['transfer', 'trust'] as const)('retains an unproven %s after its notice is dismissed', async kind => {
     mocks.safe = true
     mocks.waitForSafeExecutionHash.mockRejectedValue(new Error('Confirmation unavailable.'))
     const onClose = vi.fn()
@@ -192,10 +198,10 @@ describe('a Safe review dismissed from its enclosing modal', () => {
     expect(document.querySelector('[data-tx-confirm]')).toBeNull()
     expect(onClose).not.toHaveBeenCalled()
 
-    // Escape dismissed the unproven result, so an explicit new review may send again.
+    // Escape closes the notice; another review still follows the original reservation.
     await press(modal(), `Review ${kind}`)
     await press(confirm(), `Confirm & ${kind}`)
-    expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
     await escape()
     await escape()
     expect(onClose).toHaveBeenCalledOnce()
@@ -256,7 +262,7 @@ describe('a transfer', () => {
     expect(mocks.read).toHaveBeenCalledTimes(2)
     expect(confirm().textContent).toContain('Waiting for confirmation…')
 
-    mocks.receipt = { data: { status: 'success', transactionHash: HASH }, isError: false }
+    mocks.receipt = { data: walletReceipt(), isError: false }
     await render(transfer())
     expect(confirm().textContent).toContain('Sticky tokens transferred')
     expect(confirm().querySelector('a')!.getAttribute('href')).toBe(`https://sepolia.basescan.org/tx/${HASH}`)

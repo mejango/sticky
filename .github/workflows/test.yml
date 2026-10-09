@@ -11,6 +11,10 @@ on:
         type: choice
         default: ethereum_sepolia
         options: [testnets, mainnets, ethereum, optimism, base, arbitrum, ethereum_sepolia, optimism_sepolia, base_sepolia, arbitrum_sepolia]
+      destination_chain_id:
+        description: Explicit pool home chain ID in the selected mainnet or testnet environment
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -87,6 +91,7 @@ jobs:
           esac
         env:
           STICKY_NETWORK: ${{ inputs.network }}
+          STICKY_DESTINATION_CHAIN_ID: ${{ inputs.destination_chain_id }}
           STICKY_REVISION: ${{ github.sha }}
           FOUNDRY_PROFILE: deploy
           RPC_ETHEREUM_MAINNET: ${{ secrets.RPC_ETHEREUM_MAINNET }}

@@ -21,10 +21,13 @@ contract StickyPriceFeed is IJBPriceFeed {
     //*********************************************************************//
 
     /// @notice Thrown when existing shares have no positive backing, so their issuance ratio cannot be priced.
+    /// @param backing The project's total recorded backing balance.
+    /// @param orphanedBalance The backing excluded from existing shares.
     error StickyPriceFeed_InvalidBacking(uint256 backing, uint256 orphanedBalance);
 
     /// @notice Thrown when the requested precision exceeds the core's supported accounting precision, which its
     /// decimal conversions cannot represent.
+    /// @param decimals The unsupported requested precision.
     error StickyPriceFeed_UnsupportedDecimals(uint256 decimals);
 
     //*********************************************************************//

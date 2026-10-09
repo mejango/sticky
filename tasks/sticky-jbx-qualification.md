@@ -1,6 +1,6 @@
 # Sticky JBX qualification — 2026-10-08
 
-This record distinguishes the already deployed Sticky system, new source-delivery code, and the configuration still needed for an Ethereum Sticky JBX pool. No mainnet transaction, split edit, deployment, or user signature was sent during qualification.
+> **Historical fixed-route qualification.** The evidence below describes the 2026-10-08 qualification revision merged in `137e607`, before the shared destination-bound collector and its later fixed project-1 raw-fee contribution. Its collector counts, call signatures, fees and routing setup are not current instructions. Use [DEPLOYMENT.md](../DEPLOYMENT.md#source-collectors) for the operative setup and [the current adversarial report](../ADVERSARIAL_REVIEW_2026-10-09.md) for maintained evidence and gates; the intervening [home-chain review](../OMNICHAIN_SPLIT_HOOK_REVIEW.md) is also revision-bound. No mainnet transaction, split edit, deployment, or user signature was sent during this qualification.
 
 ## Plan refinement
 
@@ -15,11 +15,13 @@ This record distinguishes the already deployed Sticky system, new source-deliver
 
 The previously shipped omnichain design is present: a per-pool/group receiver can receive bridged project tokens, anyone can settle it, and the distributor handles reward eligibility, vesting and collection. The client already supports wallet-owned source tokens being prepared and bridged. Source tokens held by a reserved-split recipient need a callable source action; pointing that split at an Ethereum receiver's numeric address does not bridge them.
 
+The original [JBStickyRewardPocket](https://github.com/mejango/sticky/blob/7600fa076d3c2defb9929a52acd8cf0a33dd6036/src/JBStickyRewardPocket.sol) is the historical destination basket that evolved into `StickyRewardReceiver`. The archived [JBXDistributor.bridgeToMainnet](https://github.com/Bananapus/nana-jbx-distributor-v6/blob/09dd1b564fd9ceb2cb6e25bc253c0fefd4f7ea19/src/JBXDistributor.sol) already allowed permissionless source reward preparation, but targeted its own mainnet reward ledger. The collector supplies that source role for the current Sticky receiver/distributor without introducing another reward ledger. The qualification's initial description of a source-delivery gap referred to this current integration, not an absence of prior permissionless designs.
+
 The deployed Sticky source matches revision `f8928002c0685b29e327014e5ae4221a5bd53e08`; the confidence branch starts from client release `db8966c4efdc8ae0f69684a047c4ccb9e2173176`. All six existing suite creation bytecodes in the final compilation exactly match their Ethereum deployment artifacts, so adding the collector does not change those deployment predictions. All ten Ethereum manifest runtime identities are checked by [the deployed fixture](../test/fork/helpers/StickyJbxDeployedFork.sol), alongside immutable bindings and canonical JBX at `0x4554CC10898f92D45378b98D6D6c2dD54c687Fb2`.
 
 Candidate pool settings are zero cashout tax and transferable shares; the tax choice remains provisional. Those launch settings are permanent. Group 0 is the planned reward policy, chosen per funding or receiver route; the pool can also receive other reward groups. Group 0 allocates by snapshot: acquiring shares temporarily before a snapshot and exiting afterward can retain rewards. It does not require continued staking. The first eligible snapshot matters because snapshots are shared across pools; zero-eligible funding can be recycled in a later round. JBP6 and REV remain separate reward tokens; AutoStick does not swap them into JBX.
 
-## Source configuration
+## Historical source configuration
 
 V6 project 1 is named **Juicebox Protocol V6**, symbol **JBP6**, token `0x6b50843C88290c180DF24c445E37B296d9760FA8`. The user's “JBP1” refers to this project. V6 project 3 is **Revnet Network**, symbol **REV**, token `0x3dD82a891C80Db068e95708E83583d626E2c1Fac`. These identities agree on all four chains.
 
@@ -36,17 +38,17 @@ REV reserves 38% in all twelve configured stage tables. The requested approximat
 
 The next stage starts February 10, 2027; the final stage starts December 19, 2036 and has zero payment issuance weight. Both retain the same reserved percentage.
 
-Ethereum uses the existing distributor split hook: `hook = StickyDistributor`, `beneficiary = confirmed Sticky JBX share token`, `projectId = 0` for reward group 0. OP, Base and Arbitrum use a plain split beneficiary equal to the corresponding source collector, with no split hook and `projectId = 0`. The collector fixes the canonical native sucker and the confirmed Ethereum receiver. Its fee-payer child must never be a reserved-split beneficiary.
+The fixed-route qualification used a direct Ethereum distributor hook and plain remote collector beneficiaries. That setup is superseded. For the current design on every source, including Ethereum, set `hook = verified Ethereum-home collector`, `beneficiary = confirmed Ethereum Sticky JBX share token`, and `projectId = 0` for group 0. Plain collector beneficiaries do not create pending entitlements. Follow the [current setup recipe](../DEPLOYMENT.md#source-collectors) before editing any source split; the fee child must never receive reserved allocations.
 
-## Delivery and recovery
+## Current delivery and recovery
 
-After authorized setup, anyone can distribute pending reserved tokens and call the source collector's `send()` with the registry's exact fee. It prepares its entire source-token balance with a fresh positive cashout minimum, clears its allowance, submits the outbox and verifies that its leaf was included. The current registry fee is 0.001 ETH per source submission, plus transaction gas; re-read it before sending. The caller receives their fee-payment JBP6 receipt or failed-payment refund. New reserves received during that fee payment remain in the parent collector.
+The current collector family queues authenticated allocations by source project, home-chain Sticky token and group. Anyone may call `settle(sourceProjectId, stickyToken, groupId, amount)` on Ethereum, or `send(sourceProjectId, stickyToken, groupId, amount, sucker, backingToken)` on a qualified remote source, for a positive partial pending amount. The route is checked at delivery; a valid replacement must still point directly to Ethereum. A zero backing quote is allowed. Supply the current registry fee plus native transport budget, with gas separate. Historical `send()` signatures, positive-only quotes and fixed-fee amounts below are not operative APIs.
 
-A failed preparation, transport call, fee refund or sent-leaf check reverts the complete source transaction. The collector introduces no owner, arbitrary withdrawal or alternative destination. If the fixed route becomes permanently unusable before submission, held tokens cannot be rescued through this contract; operators can redirect future reserves by changing unlocked splits. Once submitted, native bridge proving/finalization and the destination claim still need execution. Permissionless means any eligible caller may perform these steps; it does not mean an unattended keeper is deployed or that delivery is immediate.
-
-After finalized transport, anyone can submit the sucker Merkle claim to the fixed receiver, then settle that receiver into the distributor. Holders collect their vested allocation. Unsent leaves created through the older manual bridge path have a separate limitation: emergency exit remints to the leaf beneficiary on the source chain, which is not necessarily a usable source custodian. Atomic collector submission avoids leaving its own unsent leaf when transport reverts. It cannot undo a successfully submitted native withdrawal.
+A failed delivery restores accepted custody atomically; incorrect acceptance configuration can instead make core burn unconsumed ERC-20 reserves or leave credits unattributed. Source submission, native finalization, destination claim, receiver settlement and holder collection each require their own canonical evidence. The receiver needs the destination reward ERC-20 before a remote claim. No collector deployment or keeper operation is established by these historical tests. The complete authority, retry and recovery boundaries live in [DEPLOYMENT.md](../DEPLOYMENT.md#source-collectors).
 
 ## Verification record
+
+These results belong to the qualification revision merged in `137e607`. They establish that revision's evidence; subsequent changes and validation are recorded in the [collector audit](../SOURCE_COLLECTOR_AUDIT.md).
 
 - **Passed:** Final combined local suite: 259 cases across 18 suites, including the 34 new collector cases, six invariant assertions at 1,024 runs / 102,400 handler calls and six fuzz functions at 4,096 runs each. The non-vacuous funding/collection tripwire passed. The unchanged baseline had also passed its 225 cases before the collector was added.
 - **Passed:** 20 actual-deployment JBX lifecycle cases and five actual-deployment authority cases. Coverage includes 100 million actual JBX across two holders, exact zero-tax round trips, eight tax/transfer-mode combinations, donation/orphan/rounding cases, real JBP6 and REV payment-issued rewards, vesting/one-time collection, zero-eligible round recovery, signed forwarding/replay/tampering/expiry and unauthorized ruleset mutation.
@@ -65,10 +67,6 @@ The route tests execute source preparation and deployed bridge/messenger contrac
 
 ## Before live routing
 
-1. Finalize permanent pool settings, create Sticky JBX through the verified Ethereum deployer, and read the confirmed project/share-token identity from the receipt.
-2. Predict/deploy the group-0 receiver through the verified receiver factory and confirm its pool, group and distributor bindings. Do not use a simulated next project ID.
-3. Deploy and verify the six collectors against the reviewed source revision and canonical native suckers. Verify parent/child bindings and exact receiver before assigning funds.
-4. Prepare source-authorized split edits for every configured stage on all four chains, preserving the remainder and any locks. Resolve project 1's percentage and the treatment of any automatic REV issuance separately.
-5. Establish an eligible JBX holder snapshot, then exercise a bounded live reward delivery through every lane, including native finalization, destination settlement and holder collection. Record receipts and monitoring ownership before scaling funding.
+Follow [the source-collector setup and verification recipe](../DEPLOYMENT.md#source-collectors). Sticky JBX still requires a confirmed live pool/receiver, the verified Ethereum-home collector family and fee child on each participating source (shared by JBP6 and REV), authorized split edits, and bounded acceptance, delivery, finalization, settlement and collection through each lane before scaling funding. Resolve project 1's percentage and the treatment of any automatic REV issuance separately. Neither the historical fork evidence nor a predicted next project ID supplies those live identities or receipts.
 
 Source review and fork evidence increase confidence in the tested behavior; they are not a formal audit or proof that every contract, dependency and bridge failure is impossible.

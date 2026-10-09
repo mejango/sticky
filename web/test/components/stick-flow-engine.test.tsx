@@ -3,7 +3,7 @@
 import { QueryClient, QueryClientProvider, notifyManager } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { getAddress, type Address, type Hex } from 'viem'
+import { encodeFunctionData, getAddress, toHex, UserRejectedRequestError, type Address, type Hex, type TransactionReceipt } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { REVIEWED_ACCOUNT_CHANGED } from '@/lib/contract-write'
 import { stickyDeployment } from '@/lib/sticky-addresses'
@@ -27,13 +27,15 @@ const STICK = `0x${'b2'.repeat(32)}` as Hex
 
 const mocks = vi.hoisted(() => ({
   wallet: {} as { isConnected: boolean; address: string | undefined; isCenterWallet: boolean; openSignIn: ReturnType<typeof vi.fn> },
-  publicClient: { simulateContract: vi.fn(), estimateContractGas: vi.fn() },
+  publicClient: { simulateContract: vi.fn(), estimateContractGas: vi.fn(), getChainId: vi.fn(), getTransaction: vi.fn(), getTransactionReceipt: vi.fn(), getBlock: vi.fn() },
   getAccount: vi.fn(),
   requestReview: vi.fn(),
   switchChain: vi.fn(),
   writeContract: vi.fn(),
   /** The receipts the chain has, by lowercase hash. */
-  receipts: {} as Record<string, unknown>,
+  receipts: {} as Record<string, TransactionReceipt>,
+  transactions: {} as Record<string, unknown>,
+  blocks: {} as Record<string, { hash: Hex; number: bigint; timestamp: bigint }>,
   project: vi.fn(),
   position: vi.fn(),
   quote: vi.fn(),
@@ -99,11 +101,29 @@ beforeEach(() => {
   mocks.requestReview.mockResolvedValue(true)
   mocks.switchChain.mockResolvedValue(undefined)
   mocks.publicClient.simulateContract.mockImplementation(async (request: { address: string; functionName: string; account: string }) => ({
-    request: { address: request.address, functionName: request.functionName, account: request.account },
+    request: { ...request },
   }))
   mocks.publicClient.estimateContractGas.mockResolvedValue(50_000n)
+  mocks.publicClient.getChainId.mockResolvedValue(CHAIN)
+  mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => {
+    const transaction = mocks.transactions[hash.toLowerCase()]
+    if (!transaction) throw new Error('Transaction not found')
+    return transaction
+  })
+  mocks.publicClient.getTransactionReceipt.mockImplementation(async ({ hash }: { hash: Hex }) => {
+    const receipt = mocks.receipts[hash.toLowerCase()]
+    if (!receipt) throw new Error('Receipt not found')
+    return receipt
+  })
+  mocks.publicClient.getBlock.mockImplementation(async ({ blockNumber }: { blockNumber: bigint }) => {
+    const block = mocks.blocks[String(blockNumber)]
+    if (!block) throw new Error('Block not found')
+    return block
+  })
   mocks.writeContract.mockReset()
   mocks.receipts = {}
+  mocks.transactions = {}
+  mocks.blocks = {}
   mocks.project.mockReset().mockImplementation(async () =>
     stickyInfo(CHAIN, BigInt(PROJECT), { symbol: 'CPN', decimals: 6, stSymbol: 'STICKYCPN', stakedToken: TOKEN }),
   )
@@ -187,7 +207,20 @@ async function openReview() {
 }
 /** The chain has mined `hash` in `block`, and the flow renders again. */
 async function mined(hash: Hex, block: bigint) {
-  mocks.receipts[hash.toLowerCase()] = { transactionHash: hash, status: 'success', blockNumber: block }
+  const request = mocks.writeContract.mock.calls.find(([request]) => request.functionName === (hash === APPROVAL ? 'approve' : 'pay'))?.[0]
+  if (!request) throw new Error('Cannot mine a transaction that the wallet was not asked to send')
+  const blockHash = toHex(block, { size: 32 })
+  mocks.blocks[String(block)] = { hash: blockHash, number: block, timestamp: 1_790_000_000n + block }
+  mocks.transactions[hash.toLowerCase()] = {
+    hash, chainId: CHAIN, from: request.account, to: request.address,
+    input: encodeFunctionData({ abi: request.abi, functionName: request.functionName, args: request.args }),
+    value: request.value ?? 0n, blockHash, blockNumber: block, transactionIndex: 0,
+  }
+  mocks.receipts[hash.toLowerCase()] = {
+    transactionHash: hash, status: 'success', blockNumber: block, blockHash, transactionIndex: 0,
+    from: request.account, to: request.address, contractAddress: null, logs: [], logsBloom: `0x${'0'.repeat(512)}`,
+    cumulativeGasUsed: 50_000n, gasUsed: 50_000n, effectiveGasPrice: 1n, type: 'eip1559',
+  }
   if (acting) await act(async () => root.render(tree()))
   else root.render(tree())
 }
@@ -288,7 +321,7 @@ describe('the stick flow on the real engine', () => {
   })
 
   it('sends the approval again, and only the approval, when the wallet refused it', async () => {
-    mocks.writeContract.mockRejectedValueOnce(new Error('User rejected the request.')).mockResolvedValueOnce(APPROVAL)
+    mocks.writeContract.mockRejectedValueOnce(new UserRejectedRequestError(new Error('User rejected the request.'))).mockResolvedValueOnce(APPROVAL)
     await openReview()
     await act(async () => confirmButton()!.click())
     await until(() => confirmButton()?.textContent === 'Retry', 'the approval to be refused')
@@ -297,6 +330,23 @@ describe('the stick flow on the real engine', () => {
     await act(async () => confirmButton()!.click())
     await until(() => mocks.writeContract.mock.calls.length === 2, 'the approval to be sent again')
     expect(writes()).toEqual(['approve', 'approve'])
+  })
+
+  it('retains an ambiguous approval across dismissal and reopening without offering another wallet submission', async () => {
+    mocks.writeContract.mockRejectedValueOnce(new Error('Connection lost after sending'))
+    await openReview()
+    await act(async () => confirmButton()!.click())
+    await until(() => confirmButton()?.textContent === 'Done', 'the unresolved approval to be held')
+    expect(stepStates()).toEqual(['active', 'pending'])
+    expect(dialog()!.textContent).toContain('may have been submitted')
+    expect(writes()).toEqual(['approve'])
+    await act(async () => confirmButton()!.click())
+    await until(() => !dialog(), 'the held review to close')
+    await openReview()
+    await act(async () => confirmButton()!.click())
+    await until(() => confirmButton()?.textContent === 'Done', 'the original unresolved approval to be restored')
+    expect(writes()).toEqual(['approve'])
+    expect(stepStates()).toEqual(['active', 'pending'])
   })
 })
 

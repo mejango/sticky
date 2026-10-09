@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, vi } from 'vitest'
+import { browserWriteRecoveryModel } from './support/write-recovery'
 
 function blockedNetworkConstructor(transport: string) {
   return class {
@@ -17,7 +18,13 @@ beforeEach(() => {
   if (browser) {
     vi.stubGlobal('localStorage', browser.localStorage)
     vi.stubGlobal('sessionStorage', browser.sessionStorage)
+    browser.localStorage.clear()
   }
+  const { locks } = browserWriteRecoveryModel()
+  const navigator = globalThis.navigator ?? {}
+  vi.stubGlobal('navigator', new Proxy(navigator, {
+    get: (target, property) => property === 'locks' ? locks : Reflect.get(target, property, target),
+  }))
   // Match the reference Vitest config's clearMocks policy for shared spies.
   vi.clearAllMocks()
   // React 19 requires test environments to opt into act() semantics

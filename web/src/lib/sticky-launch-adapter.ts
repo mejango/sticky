@@ -26,7 +26,7 @@ import { isHash, type Address, type Hex } from 'viem'
 import { SUPPORTED_CHAINS } from '@/lib/chains'
 import { submitReviewedContractWrite } from '@/lib/contract-write'
 import { isSafeConnection, readSafeAppExecution, waitForSafeExecutionHash } from '@/lib/safe-connector'
-import { revalidateStickyLaunch, type LaunchPlan } from '@/lib/sticky-launch-plan'
+import { requireSingleHomeChain, revalidateStickyLaunch, type LaunchPlan } from '@/lib/sticky-launch-plan'
 import { validateLaunchCall, verifyFinalizedStickyCallFailure, verifyFinalizedStickyLaunchFailure, verifyStickyLaunchDeployment } from '@/lib/sticky-launch-proof'
 import {
   createStickyLaunchController,
@@ -119,6 +119,7 @@ function reviewCalls(plan: LaunchPlan) {
 
 /** No destination balance or code is replaced: only the payer's native fee balance is supplied for relayed simulation. */
 async function checkLaunch(plan: LaunchPlan) {
+  requireSingleHomeChain(plan.targets)
   guard(plan.owner)
   await revalidateStickyLaunch(plan)
   for (const call of reviewCalls(plan)) {
@@ -127,6 +128,7 @@ async function checkLaunch(plan: LaunchPlan) {
       stateOverride: [{ address: plan.owner, balance: call.value + 100n * 10n ** 18n }] })
   }
   guard(plan.owner)
+  requireSingleHomeChain(plan.targets)
 }
 
 /** A proposal hash is saved before polling and is never mistaken for an onchain receipt hash. */
@@ -163,20 +165,21 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
   const ports: StickyLaunchPorts = {
     store, guard, changed,
     async review(plan, sponsored) {
-      phase('Checking the launch on every selected chain.')
+      phase('Checking the launch on its home chain.')
       await checkLaunch(plan)
       await requireTransactionReview({ calls: reviewCalls(plan), title: 'Review Sticky launch',
         kind: sponsored ? 'authorization' : 'transaction',
-        description: sponsored ? 'Approve listing and sponsored creation on the selected chains.' : 'Review creation on every selected chain before listing or payment.',
+        description: sponsored ? 'Approve listing and sponsored creation on the home chain.' : 'Review creation on the home chain before listing or payment.',
         confirmLabel: 'Continue' })
       guard(plan.owner)
     },
     async quote(plan, rememberUuid, beforePublish) {
       await checkLaunch(plan)
-      phase('Getting payment options for the selected chains.')
+      phase('Getting payment options for the home chain.')
       const request = relayrBundleRequest(plan.targets.map(target => target.call))
       guard(plan.owner)
       beforePublish()
+      requireSingleHomeChain(plan.targets)
       const response = await fetch(`${RELAYR_API}/v1/bundle/prepaid`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request),
         signal: AbortSignal.timeout(45_000),
@@ -228,7 +231,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
     },
     async sendDirect(session, callbacks) {
       const { plan } = session
-      if (plan.targets.length !== 1) throw new Error('A direct launch must have exactly one chain.')
+      requireSingleHomeChain(plan.targets)
       const [target] = plan.targets
       const chain = reviewedChain(target.chainId)
       const request = { chainId: target.chainId, address: target.deployer, abi: stickyDeployerAbi,
@@ -250,6 +253,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
         },
         beforeWrite: callbacks.beforeWrite, onBeforeWriteAborted: callbacks.rejected, onWriteRejected: callbacks.rejected,
         beforeSend: () => {
+          requireSingleHomeChain(plan.targets)
           assertReviewedWallet({ ...authority, chainId: target.chainId })
           if (!wallet) throw new Error('Wallet connection changed. Review the launch again.')
         },
@@ -259,6 +263,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       await safeResult(target.chainId, hash, viaSafe, callbacks)
     },
     async sendPayment(session, callbacks) {
+      requireSingleHomeChain(session.plan.targets)
       const quote = boundQuote(session)
       if (!session.payment) throw new Error('Choose a payment option first.')
       const details = relayrPaymentDetails(session.payment.option, { bundleUuid: quote.bundle_uuid, destinationChainIds: chainsOf(session.plan) })
@@ -271,6 +276,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       const request = { chainId: details.chainId, from: owner, to: details.target, data: details.calldata,
         value: details.amount, gas: RELAYR_PAYMENT_GAS }
       const assertPaymentSnapshot = () => {
+        requireSingleHomeChain(session.plan.targets)
         boundQuote(session)
         const live = relayrPaymentDetails(session.payment!.option, { bundleUuid: quote.bundle_uuid, destinationChainIds: chainsOf(session.plan) })
         if (live.chainId !== details.chainId || live.amount !== details.amount || !same(live.calldata, details.calldata)) throw new Error('The launch payment changed. Review its original option again.')
@@ -288,7 +294,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
         review: async reviewed => {
           await reverify()
           await requireTransactionReview({ title: 'Review execution payment', confirmLabel: 'Pay',
-            description: 'One payment covers creation on all selected chains.', calls: [{ ...reviewed,
+            description: 'This payment covers creation on the home chain.', calls: [{ ...reviewed,
               ...(viaSafe ? { safeTxGas: 0n } : {}), label: `Create ${session.plan.symbol}`, contractName: 'Prepaid payment' }] })
         },
         switchChain: async chainId => { ({ wallet } = await connectedWallet(chainId as JBChainId, { expected: owner, requireUnchanged: true, changedError: 'Connect the wallet that prepared this launch.' })) },
@@ -309,7 +315,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
         onPhase: value => phase(value === 'signing' ? 'Confirm payment in your wallet.' : 'Checking the execution payment.'),
       })
       const execution = await safeResult(details.chainId, hash, viaSafe, callbacks)
-      phase('Payment submitted. Checking execution on each chain.')
+      phase('Payment submitted. Checking execution on the home chain.')
       if (!(await ports.verifyPayment({ ...session,
         payment: { ...session.payment, hash: execution, proposalHash: viaSafe ? hash : undefined },
       }))) throw new Error('The original payment is still being verified. Keep this launch saved; do not pay again.')
@@ -382,6 +388,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
     },
     verifyDeployment: verifyStickyLaunchDeployment,
     async publishListing(plan) {
+      requireSingleHomeChain(plan.targets)
       const authority = reviewedWallet(plan.owner)
       const intent = await publishStickyListing(plan, async message => {
         assertReviewedWallet(authority)
@@ -390,6 +397,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
           calls: reviewCalls(plan) })
         assertReviewedWallet(authority)
         const { wallet } = await connectedWallet(plan.targets[0].chainId as JBChainId, { expected: plan.owner, requireUnchanged: true, changedError: 'Connect the wallet that prepared this launch.' })
+        requireSingleHomeChain(plan.targets)
         assertReviewedWallet({ ...authority, chainId: plan.targets[0].chainId })
         const signature = await wallet.signMessage({ account: plan.owner, message })
         assertReviewedWallet({ ...authority, chainId: plan.targets[0].chainId })
@@ -402,6 +410,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       await readIntent(session)
       guard(session.plan.owner)
       beforeRequest()
+      requireSingleHomeChain(session.plan.targets)
       await center.requestDeploy(session.listing.intentId!, { chainIds: chainsOf(session.plan) })
     },
     async record(session, chainId, result) {

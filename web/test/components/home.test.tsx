@@ -284,8 +284,8 @@ describe('the home page, as its chains are read', () => {
     expect(feed).toEqual(['/opsep:20', '/basesep:37'])
   })
 
-  it('collapses one launch\'s projects on different chains into one card with every chain\'s icon', async () => {
-    const launch = { launchId: 'L1' }
+  it('lists shared historical launch metadata as independent pools with local figures and links', async () => {
+    const launch = { launchId: 'L1', plannedChains: [84532, 11155420] }
     mocks.chain.mockImplementation(async (chainId: number) => {
       if (chainId === 84532) return chainResult(chainId, [card(84532, 37n, launch), card(84532, 38n, launch), card(84532, 39n)])
       if (chainId === 11155420) return chainResult(chainId, [card(11155420, 20n, launch)])
@@ -293,15 +293,16 @@ describe('the home page, as its chains are read', () => {
     })
     await renderHome('testnet')
 
-    // A second project on the same chain with a copied launch id keeps a card of its own.
-    expect(cards()).toHaveLength(3)
-    // Chains come in the site's order, Optimism Sepolia before Base Sepolia, and the card opens the first one's project.
-    const grouped = cards().find(link => link.querySelector('[role="img"]')?.getAttribute('aria-label') === 'Optimism Sepolia, Base Sepolia')!
-    expect(grouped.getAttribute('href')).toBe('/opsep:20')
-    expect(grouped.textContent).toContain('Sticks: 2')
-    expect(grouped.textContent).toContain('Backing: 2 CPN')
-    // A launch's card names no project ID: it stands for one on each chain.
-    expect(grouped.textContent).not.toContain('#37')
+    expect(cards().map(link => link.getAttribute('href'))).toEqual(['/opsep:20', '/basesep:37', '/basesep:38', '/basesep:39'])
+    for (const link of cards()) {
+      expect(link.textContent).toContain('Sticks: 1')
+      expect(link.textContent).toContain('Backing: 1 CPN')
+      expect(link.querySelectorAll('[role="img"] img')).toHaveLength(1)
+    }
+    expect(cards()[0].textContent).toContain('#20')
+    expect(cards()[1].textContent).toContain('#37')
+    expect(cards()[0].querySelector('[role="img"]')?.getAttribute('aria-label')).toBe('Optimism Sepolia')
+    expect(cards()[1].querySelector('[role="img"]')?.getAttribute('aria-label')).toBe('Base Sepolia')
   })
 
   it('goes back to loading on Try again, reads every chain again, and draws what it finds', async () => {
@@ -681,17 +682,17 @@ describe('StickyFeed', () => {
 })
 
 describe('StickiestCard', () => {
-  const renderCard = (group: HomeCard[], rank = 1) =>
-    renderNode(<StickiestCard group={{ cards: group, totalStaked: 0n }} rank={rank} />)
+  const renderCard = (card: HomeCard, rank = 1) =>
+    renderNode(<StickiestCard card={card} rank={rank} />)
 
   it('shows the backing holders can claim in the underlying token, never the Sticky supply', async () => {
-    await renderCard([card(8453, 23n, { decimals: 6, symbol: 'SLOPSHOP', backing: 7n * E6, totalSupply: 5n * E18 })])
+    await renderCard(card(8453, 23n, { decimals: 6, symbol: 'SLOPSHOP', backing: 7n * E6, totalSupply: 5n * E18 }))
     expect(host.textContent).toContain('Backing: 7 SLOPSHOP')
     expect(host.textContent).not.toContain('Backing: 5')
   })
 
   it('shows its rank, its Sticky name, its project ID and chain, its Sticks and its stickiness bonus', async () => {
-    await renderCard([card(8453, 23n, { stSymbol: 'STICKYCPN', cashOutTaxRate: 1_250n }, 4)], 3)
+    await renderCard(card(8453, 23n, { stSymbol: 'STICKYCPN', cashOutTaxRate: 1_250n }, 4), 3)
     const link = host.querySelector<HTMLAnchorElement>('a[data-card]')!
     expect(link.getAttribute('href')).toBe('/base:23')
     expect(link.textContent).toContain('3')
@@ -702,15 +703,15 @@ describe('StickiestCard', () => {
   })
 
   it('names a Sticky token without its own symbol after the token it sticks', async () => {
-    await renderCard([card(8453, 23n, { stSymbol: '' })])
+    await renderCard(card(8453, 23n, { stSymbol: '' }))
     expect(host.textContent).toContain('Sticky CPN')
   })
 
-  it('lists each chain\'s backing when a launch\'s chains back it with different tokens', async () => {
-    await renderCard([
-      card(1, 2n, { launchId: 'L', symbol: 'CPN', decimals: 18, backing: E18 }),
-      card(10, 3n, { launchId: 'L', symbol: 'USDC', decimals: 6, backing: 2n * E6 }),
-    ])
-    expect(host.textContent).toContain('Backing: 1 CPN, 2 USDC')
+  it('uses the verified home chain even when historical metadata names other chains', async () => {
+    await renderCard(card(10, 3n, { launchId: 'L', plannedChains: [1, 8453], symbol: 'USDC', decimals: 6, backing: 2n * E6 }))
+    expect(host.textContent).toContain('Backing: 2 USDC')
+    const link = host.querySelector<HTMLAnchorElement>('a[data-card]')!
+    expect(link.getAttribute('href')).toBe('/op:3')
+    expect(link.querySelector('[role="img"]')?.getAttribute('aria-label')).toBe('Optimism')
   })
 })

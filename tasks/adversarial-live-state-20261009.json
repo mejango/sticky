@@ -1,0 +1,311 @@
+{
+  "kind": "read-only current state census; no transaction",
+  "checkedAt": "2026-10-09T04:36:59.840Z",
+  "scope": "Canonical core runtime hashes, source identity/reserve settings, and previously pinned native route runtime/state/mapping compared at freshly recorded finalized blocks; additional registered routes not qualified by this census. No mint-authority simulation, implementation source equality, split authority, future-stage or finality execution claim.",
+  "chains": [
+    {
+      "chainId": 1,
+      "block": {
+        "number": 26152417,
+        "hash": "0x833b717a190a1fd38532fdcf750e36be5cbdd3b269ee2a381b5d00e1ff76f8b3",
+        "timestamp": 1791519575,
+        "selection": "finalized"
+      },
+      "changedDependencyRuntimeNames": [],
+      "projects": [
+        {
+          "projectId": "1",
+          "token": "0x6b50843C88290c180DF24c445E37B296d9760FA8",
+          "reservedPercent": 6200,
+          "sameToken": true,
+          "sameTokenRuntime": true,
+          "reservedSplits": [
+            {
+              "percent": 1000000000,
+              "projectId": "0",
+              "beneficiary": "0x4dc161eF837fF1C4485b08DDFcDB182F2157bE18",
+              "preferAddToBalance": false,
+              "lockedUntil": 0,
+              "hook": "0x0000000000000000000000000000000000000000"
+            }
+          ],
+          "reviewedNativeRoutes": [
+            {
+              "peerChainId": 10,
+              "sucker": "0x2381Cff4dE6Cd94f2fceaBB2B0F747BFbB9DEf6a",
+              "sameRuntime": true,
+              "state": 0,
+              "nativeEnabled": true,
+              "emergencyHatch": false
+            },
+            {
+              "peerChainId": 8453,
+              "sucker": "0xD360f44a88242A5F115eE8FC2893243Cd6feF936",
+              "sameRuntime": true,
+              "state": 0,
+              "nativeEnabled": true,
+              "emergencyHatch": false
+            },
+            {
+              "peerChainId": 42161,
+              "sucker": "0x0773E792D5dBd0Be8285D4A738cBbf7df1579eFE",
+              "sameRuntime": true,
+              "state": 0,
+              "nativeEnabled": true,
+              "emergencyHatch": false
+            }
+          ],
+          "otherRegisteredRouteCount": 3
+        },
+        {
+          "projectId": "3",
+          "token": "0x3dD82a891C80Db068e95708E83583d626E2c1Fac",
+          "reservedPercent": 3800,
+          "sameToken": true,
+          "sameTokenRuntime": true,
+          "reservedSplits": [
+            {
+              "percent": 1000000000,
+              "projectId": "0",
+              "beneficiary": "0x6b92c73682f0e1fac35A18ab17efa5e77DDE9fE1",
+              "preferAddToBalance": false,
+              "lockedUntil": 0,
+              "hook": "0x0000000000000000000000000000000000000000"
+            }
+          ],
+          "reviewedNativeRoutes": [
+            {
+              "peerChainId": 10,
+              "sucker": "0x505D884F0EA357C0D6F7eD286C232876190dfE44",
+              "sameRuntime": true,
+              "state": 0,
+              "nativeEnabled": true,
+              "emergencyHatch": false
+            },
+            {
+              "peerChainId": 8453,
+              "sucker": "0xA2b081638dC179Dbb7e63f338357cEA2487bb933",
+              "sameRuntime": true,
+              "state": 0,
+              "nativeEnabled": true,
+              "emergencyHatch": false
+            },
+            {
+              "peerChainId": 42161,
+              "sucker": "0x791A2BCf7345dcd9e7493a9739Ac5e2b9B94EC2f",
+              "sameRuntime": true,
+              "state": 0,
+              "nativeEnabled": true,
+              "emergencyHatch": false
+            }
+          ],
+          "otherRegisteredRouteCount": 3
+        }
+      ]
+    },
+    {
+      "chainId": 10,
+      "block": {
+        "number": 157960372,
+        "hash": "0x2b369c9c20bacd4341455a46afad7a8a60846db9fe202fef4b9057b65d9a641a",
+        "timestamp": 1791519521,
+        "selection": "finalized"
+      },
+      "changedDependencyRuntimeNames": [],
+      "projects": [
+        {
+          "projectId": "1",
+          "token": "0x6b50843C88290c180DF24c445E37B296d9760FA8",
+          "reservedPercent": 6200,
+          "sameToken": true,
+          "sameTokenRuntime": true,
+          "reservedSplits": [
+            {
+              "percent": 1000000000,
+              "projectId": "0",
+              "beneficiary": "0x4dc161eF837fF1C4485b08DDFcDB182F2157bE18",
+              "preferAddToBalance": false,
+              "lockedUntil": 0,
+              "hook": "0x0000000000000000000000000000000000000000"
+            }
+          ],
+          "reviewedNativeRoutes": [
+            {
+              "peerChainId": 1,
+              "sucker": "0x2381Cff4dE6Cd94f2fceaBB2B0F747BFbB9DEf6a",
+              "sameRuntime": true,
+              "state": 0,
+              "nativeEnabled": true,
+              "emergencyHatch": false
+            }
+          ],
+          "otherRegisteredRouteCount": 3
+        },
+        {
+          "projectId": "3",
+          "token": "0x3dD82a891C80Db068e95708E83583d626E2c1Fac",
+          "reservedPercent": 3800,
+          "sameToken": true,
+          "sameTokenRuntime": true,
+          "reservedSplits": [
+            {
+              "percent": 1000000000,
+              "projectId": "0",
+              "beneficiary": "0x6b92c73682f0e1fac35A18ab17efa5e77DDE9fE1",
+              "preferAddToBalance": false,
+              "lockedUntil": 0,
+              "hook": "0x0000000000000000000000000000000000000000"
+            }
+          ],
+          "reviewedNativeRoutes": [
+            {
+              "peerChainId": 1,
+              "sucker": "0x505D884F0EA357C0D6F7eD286C232876190dfE44",
+              "sameRuntime": true,
+              "state": 0,
+              "nativeEnabled": true,
+              "emergencyHatch": false
+            }
+          ],
+          "otherRegisteredRouteCount": 3
+        }
+      ]
+    },
+    {
+      "chainId": 8453,
+      "block": {
+        "number": 52365097,
+        "hash": "0xcc16dcc82d025ae6d9c1d524c620b850368e2ba5170913661ef76a3fcd1e9e7b",
+        "timestamp": 1791519541,
+        "selection": "finalized"
+      },
+      "changedDependencyRuntimeNames": [],
+      "projects": [
+        {
+          "projectId": "1",
+          "token": "0x6b50843C88290c180DF24c445E37B296d9760FA8",
+          "reservedPercent": 6200,
+          "sameToken": true,
+          "sameTokenRuntime": true,
+          "reservedSplits": [
+            {
+              "percent": 1000000000,
+              "projectId": "0",
+              "beneficiary": "0x4dc161eF837fF1C4485b08DDFcDB182F2157bE18",
+              "preferAddToBalance": false,
+              "lockedUntil": 0,
+              "hook": "0x0000000000000000000000000000000000000000"
+            }
+          ],
+          "reviewedNativeRoutes": [
+            {
+              "peerChainId": 1,
+              "sucker": "0xD360f44a88242A5F115eE8FC2893243Cd6feF936",
+              "sameRuntime": true,
+              "state": 0,
+              "nativeEnabled": true,
+              "emergencyHatch": false
+            }
+          ],
+          "otherRegisteredRouteCount": 3
+        },
+        {
+          "projectId": "3",
+          "token": "0x3dD82a891C80Db068e95708E83583d626E2c1Fac",
+          "reservedPercent": 3800,
+          "sameToken": true,
+          "sameTokenRuntime": true,
+          "reservedSplits": [
+            {
+              "percent": 1000000000,
+              "projectId": "0",
+              "beneficiary": "0x6b92c73682f0e1fac35A18ab17efa5e77DDE9fE1",
+              "preferAddToBalance": false,
+              "lockedUntil": 0,
+              "hook": "0x0000000000000000000000000000000000000000"
+            }
+          ],
+          "reviewedNativeRoutes": [
+            {
+              "peerChainId": 1,
+              "sucker": "0xA2b081638dC179Dbb7e63f338357cEA2487bb933",
+              "sameRuntime": true,
+              "state": 0,
+              "nativeEnabled": true,
+              "emergencyHatch": false
+            }
+          ],
+          "otherRegisteredRouteCount": 3
+        }
+      ]
+    },
+    {
+      "chainId": 42161,
+      "block": {
+        "number": 513089660,
+        "hash": "0x8f6b772e3510fec420bf357bd1c492fa84b72a27aa33c9aac06ae1b0a79ea40b",
+        "timestamp": 1791519451,
+        "selection": "finalized"
+      },
+      "changedDependencyRuntimeNames": [],
+      "projects": [
+        {
+          "projectId": "1",
+          "token": "0x6b50843C88290c180DF24c445E37B296d9760FA8",
+          "reservedPercent": 6200,
+          "sameToken": true,
+          "sameTokenRuntime": true,
+          "reservedSplits": [
+            {
+              "percent": 1000000000,
+              "projectId": "0",
+              "beneficiary": "0x4dc161eF837fF1C4485b08DDFcDB182F2157bE18",
+              "preferAddToBalance": false,
+              "lockedUntil": 0,
+              "hook": "0x0000000000000000000000000000000000000000"
+            }
+          ],
+          "reviewedNativeRoutes": [
+            {
+              "peerChainId": 1,
+              "sucker": "0x0773E792D5dBd0Be8285D4A738cBbf7df1579eFE",
+              "sameRuntime": true,
+              "state": 0,
+              "nativeEnabled": true,
+              "emergencyHatch": false
+            }
+          ],
+          "otherRegisteredRouteCount": 3
+        },
+        {
+          "projectId": "3",
+          "token": "0x3dD82a891C80Db068e95708E83583d626E2c1Fac",
+          "reservedPercent": 3800,
+          "sameToken": true,
+          "sameTokenRuntime": true,
+          "reservedSplits": [
+            {
+              "percent": 1000000000,
+              "projectId": "0",
+              "beneficiary": "0x6b92c73682f0e1fac35A18ab17efa5e77DDE9fE1",
+              "preferAddToBalance": false,
+              "lockedUntil": 0,
+              "hook": "0x0000000000000000000000000000000000000000"
+            }
+          ],
+          "reviewedNativeRoutes": [
+            {
+              "peerChainId": 1,
+              "sucker": "0x791A2BCf7345dcd9e7493a9739Ac5e2b9B94EC2f",
+              "sameRuntime": true,
+              "state": 0,
+              "nativeEnabled": true,
+              "emergencyHatch": false
+            }
+          ],
+          "otherRegisteredRouteCount": 3
+        }
+      ]
+    }
+  ]
+}

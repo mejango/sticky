@@ -1,0 +1,35 @@
+{
+  "baseline": "d8e0dc549767f6999d387dbe3fc23592f3676ae6",
+  "contracts": {
+    "StickyDeployer": {
+      "bytecode": "c0528ef651267fc68e7da40108751fc7bb4eaf2d3003d609c61a20a6fa5d6a8f",
+      "deployedBytecode": "02deaa016206d363efbd19fd6b775a5866239c9701a37ff4990bcf35fb74fd36",
+      "abi": "c6a35b3350f40fa23f110d550ee9ed8e4f68f223da289e0ba19e7b066130ae3c"
+    },
+    "StickyHook": {
+      "bytecode": "a4b4c198ed1136b6a778baa06552daea8caad1cb7170d7df5a6ca1211447304f",
+      "deployedBytecode": "45dda607e9af9c034da7d6b32b0a4e5bcd7df8a128f309c258381ab8d998c943",
+      "abi": "36c5010cdf0f230fbafc1fec258a3a5715e139cb19c0e3e7770690ab666cf61c"
+    },
+    "StickyDistributor": {
+      "bytecode": "cdcdc3b0b55d70579a9ad5c34c654c89edfd13591f2d76338d98b9a635d4aebe",
+      "deployedBytecode": "1ecb73c52c24aaa11d8f5da8d12be5b6414a918624782b9fc5c94f02118326cb",
+      "abi": "02614bb149233841a0d0da5f70faa2e421282763c702ba06ca0158807f23c199"
+    },
+    "StickyRewardReceiver": {
+      "bytecode": "cfa93e6c5ad0bb08e059bdc197e0fc51bf1b8f20959cca914f6de3d19b3fba76",
+      "deployedBytecode": "a49117087c3a17c68e1d348956ea4cd2d25c1593a18fc643d3cf65a7a8a44afd",
+      "abi": "a148a45d3ade9d2eff594a880b39ee9197ac9b0f8253b6c6f9a8d3056bd38c6e"
+    },
+    "StickyRewardReceiverFactory": {
+      "bytecode": "a446029f0adb1fb203b1640c1f164403581e60e4361310336351f6da724a2a53",
+      "deployedBytecode": "da6fe687ab3fb768ce5b39ff534a0cf99315f2f32e3c39f6c1377b5b703f5eab",
+      "abi": "1274ffefaa47c53ad80b10a5a849d135eddeadd9816f1dc8596bae47302605f0"
+    },
+    "StickyAutoStick": {
+      "bytecode": "0d843cfa7a089bd68c5f1b6cfe0871d0508d756e3c1cc815ce12f6ca40556d6d",
+      "deployedBytecode": "01b7f61bbc72d453be3b8e753f9c04eb79bd635eaf131ff8652808c6cb76bdb0",
+      "abi": "3739ec72904823bb4bae185c51feb54fecc6f278920359b6d9953b1d71ae3e42"
+    }
+  }
+}

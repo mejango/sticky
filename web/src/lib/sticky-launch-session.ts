@@ -1,6 +1,6 @@
 import { isAddress, isHash, type Hex } from 'viem'
 import type { RelayrPayment, RelayrQuote } from '@bananapus/nana-sdk-core/review/relayr'
-import { validateLaunchCall, type LaunchPlan, type LaunchTarget } from '@/lib/sticky-launch-plan'
+import { requireSingleHomeChain, validateLaunchCall, type LaunchPlan, type LaunchTarget } from '@/lib/sticky-launch-plan'
 
 export const STICKY_LAUNCH_KEY = 'sticky-launch-pending-v1'
 export type LaunchResult = { hash: Hex; projectId: string; token: `0x${string}` }
@@ -32,6 +32,7 @@ export type StickyLaunchSession = {
 
 type Store = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
 export function validateStickyLaunch(value: unknown): StickyLaunchSession {
+  // Older multi-target records retain their evidence; authority-bearing actions enforce one home below.
   const session = value as StickyLaunchSession | null
   if (!session || session.version !== 1 || !session.plan || !isAddress(session.plan.owner) ||
       typeof session.plan.id !== 'string' || !session.plan.id || !isAddress(session.plan.token) ||
@@ -154,6 +155,7 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     try { return await run() } finally { busy = false }
   }
   async function listing(session: StickyLaunchSession) {
+    requireSingleHomeChain(session.plan.targets)
     if (session.listing.intentId || session.listing.state === 'unavailable') return session
     try {
       ports.guard(session.plan.owner)
@@ -193,7 +195,7 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
       try { confirmed = await ports.verifyPayment(current) } catch { /* Unknown funding keeps its exact intent. */ }
       current = save({ ...current, payment: { ...current.payment, confirmed } })
     }
-    if (current.listing.intentId) {
+    if (current.listing.intentId && current.plan.targets.length === 1) {
       for (const target of current.plan.targets) {
         const result = current.results[target.chainId]
         if (!result || current.listing.recorded[target.chainId] === result.hash) continue
@@ -212,10 +214,12 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     return {
       async beforeWrite() {
         const session = load()
+        requireSingleHomeChain(session.plan.targets)
         ports.guard(session.plan.owner)
         if (session[kind === 'direct' ? 'directAttempts' : 'paymentAttempts']?.length) {
           await ports.requireRetry(session, kind, 'retry')
           ports.guard(session.plan.owner)
+          requireSingleHomeChain(session.plan.targets)
         }
         if (session[kind]?.started) throw new Error('This launch already has a wallet submission. Recover it before continuing.')
         if (kind === 'direct') save({ ...session, direct: { started: true } })
@@ -239,26 +243,31 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
   return {
     load: ports.store.load,
     prepare(plan: LaunchPlan, capability: 'sponsored' | 'self-paid' | 'unavailable') {
+      requireSingleHomeChain(plan.targets)
       ports.guard(plan.owner)
       if (ports.store.load()) throw new Error('Finish or resume the saved launch first.')
-      return save({ version: 1, plan, mode: capability === 'sponsored' ? 'center' : plan.targets.length === 1 ? 'direct' : 'relayr',
+      return save({ version: 1, plan, mode: capability === 'sponsored' ? 'center' : 'direct',
         published: false, candidates: Object.fromEntries(plan.targets.map(target => [target.chainId, []])), results: {},
         listing: { state: capability === 'unavailable' ? 'unavailable' : 'pending', recorded: {} } })
     },
     run: () => exclusively(async () => {
-      let session = await refreshSession(load())
+      const saved = load()
+      requireSingleHomeChain(saved.plan.targets)
+      let session = await refreshSession(saved)
       if (launchComplete(session)) return session
       ports.guard(session.plan.owner)
       if (session.direct?.started || session.payment?.started || (session.listing.requested && !session.listing.selfPaid)) return session
       await ports.review(session.plan, session.mode === 'center')
       ports.guard(session.plan.owner)
+      requireSingleHomeChain(session.plan.targets)
       session = await listing(session)
       if (session.mode === 'center') {
         if (!session.listing.intentId) {
-          session = save({ ...session, mode: session.plan.targets.length === 1 ? 'direct' : 'relayr' })
+          session = save({ ...session, mode: 'direct' })
         } else {
           await ports.sponsor(session, () => {
             ports.guard(session.plan.owner)
+            requireSingleHomeChain(session.plan.targets)
             if (session.listing.requested) throw new Error('This sponsor request was already published.')
             // Save immediately before request: a timeout may still queue the deployment.
             session = save({ ...session, listing: { ...session.listing, requested: true } })
@@ -274,6 +283,7 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
       if (!session.published) {
         const quote = await ports.quote(session.plan, uuid => { session = save({ ...session, bundleUuid: uuid }) }, () => {
           ports.guard(session.plan.owner)
+          requireSingleHomeChain(session.plan.targets)
           if (session.published) throw new Error('This launch was already published.')
           session = save({ ...session, published: true })
         })
@@ -292,7 +302,9 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     }),
     refresh: () => exclusively(() => refreshSession(load())),
     retry: () => exclusively(async () => {
-      const session = await refreshSession(load())
+      const saved = load()
+      requireSingleHomeChain(saved.plan.targets)
+      const session = await refreshSession(saved)
       if (launchComplete(session)) return session
       ports.guard(session.plan.owner)
       const kind = session.payment?.started ? 'payment' : 'direct'
@@ -308,11 +320,12 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     }),
     selfPay: () => exclusively(async () => {
       const session = load()
+      requireSingleHomeChain(session.plan.targets)
       ports.guard(session.plan.owner)
       if (session.mode !== 'center' || session.listing.requested) {
         throw new Error('This launch may already be running. Keep its saved recovery and check again.')
       }
-      return save({ ...session, mode: session.plan.targets.length === 1 ? 'direct' : 'relayr',
+      return save({ ...session, mode: 'direct',
         listing: { ...session.listing, selfPaid: true } })
     }),
     list: () => exclusively(async () => refreshSession(await listing(load()))),

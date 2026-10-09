@@ -5,10 +5,12 @@ import type { Address } from 'viem'
 import type { LaunchPlan } from '@/lib/sticky-launch-plan'
 
 const mocks = vi.hoisted(() => ({
+  chainId: 84532,
   wallet: { address: undefined as Address | undefined, isCenterWallet: false },
   viewAs: null as Address | null, signIn: vi.fn(), blocker: vi.fn(), plan: vi.fn(), capability: vi.fn(),
   prepare: vi.fn(), working: vi.fn(), failed: vi.fn(),
 }))
+vi.mock('wagmi', () => ({ useChainId: () => mocks.chainId }))
 vi.mock('@/hooks/useWallet', () => ({ useWallet: () => mocks.wallet }))
 vi.mock('@/lib/viewAs', () => ({ useViewAs: () => ({ viewAs: mocks.viewAs }) }))
 vi.mock('@/providers/WalletAuthContext', () => ({ useWalletAuth: () => ({ requestSignIn: mocks.signIn }) }))
@@ -24,6 +26,7 @@ let container: HTMLDivElement
 let root: Root
 let busy: boolean
 beforeEach(() => {
+  mocks.chainId = 84532
   mocks.wallet = { address: OWNER, isCenterWallet: false }
   mocks.viewAs = null
   mocks.blocker.mockReturnValue('')
@@ -61,6 +64,34 @@ async function submit() {
 }
 
 describe('Sticky create form boundaries', () => {
+  it('defaults to a supported connected chain and changes the one selected home without accumulating chains', async () => {
+    await render()
+    expect(field<HTMLInputElement>('Base Sepolia').checked).toBe(true)
+    await act(async () => field<HTMLInputElement>('Arbitrum Sepolia').click())
+    expect(container.querySelectorAll('input[name="home-chain"]:checked')).toHaveLength(1)
+    expect(field<HTMLInputElement>('Base Sepolia').checked).toBe(false)
+    await fill('Token address', TOKEN)
+    await submit()
+    expect(mocks.plan).toHaveBeenLastCalledWith(expect.objectContaining({ chainIds: [421614] }), OWNER)
+    await fill('Networks', 'production')
+    expect(field<HTMLInputElement>('Ethereum').checked).toBe(true)
+    await submit()
+    expect(mocks.plan).toHaveBeenLastCalledWith(expect.objectContaining({ chainIds: [1] }), OWNER)
+  })
+
+  it('ignores unsupported or unavailable wallet chains and blocks creation if no home is available', async () => {
+    mocks.chainId = 999
+    await render()
+    expect(field<HTMLInputElement>('Sepolia').checked).toBe(true)
+    await fill('Networks', 'production')
+    mocks.blocker.mockReturnValue('not deployed')
+    await fill('Networks', 'testnet')
+    expect(container.querySelectorAll('input[name="home-chain"]:checked')).toHaveLength(0)
+    expect([...container.querySelectorAll('button')].find(item => item.textContent === 'Prepare launch')?.disabled).toBe(true)
+    await submit()
+    expect(mocks.plan).not.toHaveBeenCalled()
+  })
+
   it.each(['sponsored', 'self-paid', 'unavailable'] as const)('prepares the saved plan only after determining %s capability', async capability => {
     let answer!: (value: typeof capability) => void
     mocks.capability.mockReturnValueOnce(new Promise<typeof capability>(resolve => { answer = resolve }))
@@ -77,7 +108,7 @@ describe('Sticky create form boundaries', () => {
     expect(mocks.failed).not.toHaveBeenCalled()
   })
 
-  it('passes the chosen economics and only configured chains to the owning planner', async () => {
+  it('passes the chosen economics and exactly one configured home chain to the owning planner', async () => {
     mocks.blocker.mockImplementation(id => id === 11155420 ? 'no auto-stick helper' : '')
     await render()
     expect(container.textContent).toContain('depends on the share of total supply being unstuck')
@@ -86,7 +117,7 @@ describe('Sticky create form boundaries', () => {
     const blocked = field<HTMLInputElement>('OP Sepolia')
     expect(blocked.disabled).toBe(true)
     expect(blocked.checked).toBe(false)
-    await fill('Token address', 'base:5')
+    await fill('Token address', 'base-sepolia:5')
     await fill('Name (optional)', 'My Sticky')
     await fill('Symbol (optional)', 'MST')
     await fill('Stickiness bonus', 'custom')
@@ -94,12 +125,12 @@ describe('Sticky create form boundaries', () => {
     await fill('Permanent granters', OWNER)
     await act(async () => field<HTMLInputElement>('Lock transfers').click())
     await submit()
-    expect(mocks.plan).toHaveBeenCalledExactlyOnceWith({ tokenInput: 'base:5', name: 'My Sticky', symbol: 'MST',
+    expect(mocks.plan).toHaveBeenCalledExactlyOnceWith({ tokenInput: 'base-sepolia:5', name: 'My Sticky', symbol: 'MST',
       bonusChoice: 'custom', customBonus: '3.05', trustedSenders: OWNER, soulbound: true,
-      chainIds: [11155111, 84532, 421614], environment: 'testnet' }, OWNER)
+      chainIds: [84532], environment: 'testnet' }, OWNER)
     await fill('Networks', 'production')
     await submit()
-    expect(mocks.plan).toHaveBeenLastCalledWith(expect.objectContaining({ chainIds: [1, 10, 8453, 42161], environment: 'production' }), OWNER)
+    expect(mocks.plan).toHaveBeenLastCalledWith(expect.objectContaining({ chainIds: [1], environment: 'production' }), OWNER)
   })
 
   it('shows validation failures without proceeding to listing and always releases the busy state', async () => {

@@ -1,0 +1,91 @@
+{
+  "kind": "read-only fork rehearsal",
+  "revision": "24632c528669f9261c60bb203f65bc3e0d6ac7b6",
+  "constructorArguments": [
+    "0x7903a854aE91eAf635430D120a1a434085cEf297",
+    "0x1f80d8f057eE36b4C2656D107E4e4558B71bA7D9",
+    "0x41AEC7AacEa4759F2c8AaBD68D4a4C1574A6A737"
+  ],
+  "creationCodeHash": "0xe822dc891c94d975f7d2655b0932e7af714b5fa4b960af60e4d63d4dab49a61f",
+  "initCodeHash": "0xefd6e191ad5d3ad23d1075513bb01517ae7014a5daf059a5c76f49d0cbed9301",
+  "factoryCalldataHash": "0x26b5b19be6b093859c0dc5b53d745eaa2e61ba1b33e864995e6eb978625f29ab",
+  "create2Factory": "0x4e59b44847b379578588920cA78FbF26c0B4956C",
+  "registry": "0x7903a854aE91eAf635430D120a1a434085cEf297",
+  "tokens": "0x1f80d8f057eE36b4C2656D107E4e4558B71bA7D9",
+  "directory": "0x5AfF29060E023e6FB87BE5596652B33c65Af535B",
+  "rewardReceiverFactory": "0x41AEC7AacEa4759F2c8AaBD68D4a4C1574A6A737",
+  "sourceCollector": "0x797ae6f5fa80114354e0b0d55E26020Ea09962Ed",
+  "sourceFeePayer": "0x8A8255d64DEb148dD520B7Bb255C457A68c684d6",
+  "sourceCollectorSalt": "0x537469636b79536f75726365436f6c6c6563746f725636000000000000000000",
+  "sourceCollectorCodehash": "0x0b268359d3ff2803653d1344543ac1f23e56bec9cac6bb68e57e2483baac64ec",
+  "sourceFeePayerCodehash": "0x537937e00a3e0843985fddc4dad32600b263e412c39f38c51c5c1160d788bac7",
+  "sourceSHA256": {
+    "StickySourceCollector": "6606fe233b1d3fd429eced80ceebe1041c317b9dd1a589adc3d3870c95021da1",
+    "StickySourceFeePayer": "4cac311605c136b9aa088c59e85e1fb774aa839cf1ca1ca428b76b5fc289d1db"
+  },
+  "chains": [
+    {
+      "chainId": 1,
+      "rpcBlockNumber": 26150449,
+      "rpcBlockHash": "0xd34072e12cd102abffc6b119bb00fa45a2f7cb7465581628b9994264edb3a0c5",
+      "kind": "simulation",
+      "revision": "24632c528669f9261c60bb203f65bc3e0d6ac7b6"
+    },
+    {
+      "chainId": 10,
+      "rpcBlockNumber": 157948577,
+      "rpcBlockHash": "0xafa78d5127f11ac2c5968c7da762e161ff839301103d4446ad03481a071cb50d",
+      "kind": "simulation",
+      "revision": "24632c528669f9261c60bb203f65bc3e0d6ac7b6"
+    },
+    {
+      "chainId": 8453,
+      "rpcBlockNumber": 52353301,
+      "rpcBlockHash": "0xe589bdf9188824da55208694c5c18717fae3158c4c4d6b4d0aa4c7733efbe7f9",
+      "kind": "simulation",
+      "revision": "24632c528669f9261c60bb203f65bc3e0d6ac7b6"
+    },
+    {
+      "chainId": 42161,
+      "rpcBlockNumber": 513006833,
+      "rpcBlockHash": "0x5beb40cd5e095c712a0e6e95ead9f3a37cf126a55d5282d6ec30be35947ddc69",
+      "kind": "simulation",
+      "revision": "24632c528669f9261c60bb203f65bc3e0d6ac7b6"
+    }
+  ],
+  "rpcEstimates": [
+    {
+      "chainId": 1,
+      "rpcBlockNumber": 26150449,
+      "collectorAbsentBeforeSimulation": true,
+      "feeChildAbsentBeforeSimulation": true,
+      "estimatedFactoryCallGas": 2461983,
+      "ok": true
+    },
+    {
+      "chainId": 10,
+      "rpcBlockNumber": 157948577,
+      "collectorAbsentBeforeSimulation": true,
+      "feeChildAbsentBeforeSimulation": true,
+      "estimatedFactoryCallGas": 2461983,
+      "ok": true
+    },
+    {
+      "chainId": 8453,
+      "rpcBlockNumber": 52353301,
+      "collectorAbsentBeforeSimulation": true,
+      "feeChildAbsentBeforeSimulation": true,
+      "estimatedFactoryCallGas": 2461983,
+      "ok": true
+    },
+    {
+      "chainId": 42161,
+      "rpcBlockNumber": 513006833,
+      "collectorAbsentBeforeSimulation": true,
+      "feeChildAbsentBeforeSimulation": true,
+      "estimatedFactoryCallGas": 2474699,
+      "ok": true
+    }
+  ],
+  "execution": "Not executed. One value-zero factory call per chain creates the parent and its child. Gas estimates exclude Safe/Sphinx execution overhead and are not fee quotes."
+}

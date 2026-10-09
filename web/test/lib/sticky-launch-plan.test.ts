@@ -17,7 +17,7 @@ const TOKENS = address('4')
 const OTHER = address('9')
 const ids = [84532, 11155420]
 const input: LaunchInput = { tokenInput: TOKEN, bonusChoice: '10', trustedSenders: '', soulbound: false,
-  chainIds: ids, environment: 'testnet' }
+  chainIds: [ids[0]], environment: 'testnet' }
 
 function world(chainId: number) {
   const deployment = stickyDeployment(chainId)!
@@ -90,24 +90,24 @@ describe('legacy launch rules', () => {
     for (const text of ['0', '0x12', '1.5', 'base:', '100000000000000000000']) expect(parseTokenInput(text).kind).toBe('invalid')
   })
 
-  it('requires one project token across all chains unless a chain prefix is given', async () => {
+  it('resolves a project only on the selected home chain and refuses conflicting prefixes', async () => {
     const tokenOfAt = vi.fn(async () => TOKEN)
-    const args = { projectId: 4n, chainId: null, targetChainIds: ids, tokenOfAt, nameOf: (id: number) => `chain ${id}` }
-    expect(await resolveProjectToken(args)).toEqual({ address: TOKEN, chainIds: ids })
-    expect(tokenOfAt.mock.calls).toHaveLength(2)
-    await expect(resolveProjectToken({ ...args, targetChainIds: [] })).rejects.toThrow('Choose at least one')
+    const args = { projectId: 4n, chainId: null, targetChainIds: [ids[0]], tokenOfAt, nameOf: (id: number) => `chain ${id}` }
+    expect(await resolveProjectToken(args)).toEqual({ address: TOKEN, chainIds: [ids[0]] })
+    expect(tokenOfAt).toHaveBeenCalledExactlyOnceWith(ids[0], 4n)
+    await expect(resolveProjectToken({ ...args, targetChainIds: [] })).rejects.toThrow('one home chain')
+    await expect(resolveProjectToken({ ...args, targetChainIds: ids })).rejects.toThrow('one home chain')
     for (const value of [ZERO, new Error('reverted')]) {
-      await expect(resolveProjectToken({ ...args, tokenOfAt: async id => {
-        if (id === ids[0]) return TOKEN
+      await expect(resolveProjectToken({ ...args, tokenOfAt: async () => {
         if (value instanceof Error) throw value
         return value
-      } })).rejects.toThrow('Project #4 has no ERC-20 on chain 11155420')
+      } })).rejects.toThrow('Project #4 has no ERC-20 on chain 84532')
     }
-    await expect(resolveProjectToken({ ...args, tokenOfAt: async id => id === ids[0] ? TOKEN : OTHER }))
-      .rejects.toThrow('different token on chain 11155420 than on chain 84532')
     tokenOfAt.mockClear()
-    expect(await resolveProjectToken({ ...args, chainId: 8453 })).toEqual({ address: TOKEN, chainIds: [8453] })
-    expect(tokenOfAt).toHaveBeenCalledExactlyOnceWith(8453, 4n)
+    await expect(resolveProjectToken({ ...args, chainId: 8453 })).rejects.toThrow('selected home chain')
+    expect(tokenOfAt).not.toHaveBeenCalled()
+    expect(await resolveProjectToken({ ...args, chainId: ids[0] })).toEqual({ address: TOKEN, chainIds: [ids[0]] })
+    expect(tokenOfAt).toHaveBeenCalledExactlyOnceWith(ids[0], 4n)
   })
 
   it('requires identical token name, symbol and decimals', () => {
@@ -121,12 +121,29 @@ describe('legacy launch rules', () => {
 })
 
 describe('runtime preparation', () => {
-  it('binds every call to verified runtime, token, fee, names and one shared launch identity', async () => {
+  it('enforces one home chain before any preparation or revalidation RPC', async () => {
+    await expect(prepareStickyLaunch({ ...input, chainIds: ids }, OWNER)).rejects.toThrow('one home chain')
+    expect(rpc.client).not.toHaveBeenCalled()
+    const plan = await prepareStickyLaunch({ ...input, chainIds: [ids[0]] }, OWNER)
+    rpc.client.mockClear()
+    plan.targets.push({ ...plan.targets[0], chainId: ids[1], call: { ...plan.targets[0].call, chain: ids[1] } })
+    await expect(revalidateStickyLaunch(plan)).rejects.toThrow('one home chain')
+    expect(rpc.client).not.toHaveBeenCalled()
+  })
+
+  it('rejects a qualified token on another chain before preparation reads', async () => {
+    await expect(prepareStickyLaunch({ ...input, chainIds: [ids[0]], tokenInput: 'base:4' }, OWNER))
+      .rejects.toThrow('selected home chain')
+    expect(rpc.client).not.toHaveBeenCalled()
+  })
+
+  it('binds one home call to verified runtime, token, fee, names and its launch identity', async () => {
     const plan = await prepareStickyLaunch({ ...input, trustedSenders: OWNER, soulbound: true }, OWNER)
     expect(plan).toMatchObject({ owner: OWNER, token: TOKEN, name: 'Sticky Artizen', symbol: 'STICKYART',
       tokenName: 'Artizen', tokenSymbol: 'ART', tokenDecimals: 18, cashOutTaxRate: '1000', soulbound: true })
     const metadata = JSON.parse(decodeURIComponent(plan.projectUri.split(',')[1]))
-    expect(metadata).toEqual({ protocol: 'Sticky', version: 1, launchId: plan.id, environment: 'testnet', chains: ids })
+    expect(metadata).toEqual({ protocol: 'Sticky', version: 1, launchId: plan.id, environment: 'testnet', chains: [ids[0]] })
+    expect(plan.targets).toHaveLength(1)
     for (const target of plan.targets) {
       const state = worlds.get(target.chainId)!
       expect(target).toMatchObject({ deployer: state.deployment.deployer, controller: state.deployment.controller, projects: PROJECTS,
@@ -142,10 +159,10 @@ describe('runtime preparation', () => {
     expect(() => JSON.stringify(plan)).not.toThrow()
   })
 
-  it('resolves a bare ID on every chain and refreshes creation fees for the next preparation', async () => {
+  it('resolves a bare ID only on its home chain and refreshes creation fees for the next preparation', async () => {
     const first = await prepareStickyLaunch({ ...input, tokenInput: '4', name: ' Custom ', symbol: ' custom ' }, OWNER)
     expect(first).toMatchObject({ name: 'Custom', symbol: 'custom', token: TOKEN })
-    for (const state of worlds.values()) if (ids.includes(await state.getChainId())) {
+    for (const state of worlds.values()) if (await state.getChainId() === ids[0]) {
       expect(state.readContract).toHaveBeenCalledWith(expect.objectContaining({ address: TOKENS, functionName: 'tokenOf', args: [4n] }))
     }
     worlds.get(ids[0])!.answers.set(`${PROJECTS}.creationFee`, 20n)
@@ -154,19 +171,17 @@ describe('runtime preparation', () => {
     expect(second.id).not.toBe(first.id)
   })
 
-  it('resolves a prefixed project only there and still checks the token on all selected chains', async () => {
-    await prepareStickyLaunch({ ...input, tokenInput: 'base:4' }, OWNER)
-    expect(worlds.get(8453)!.readContract).toHaveBeenCalledWith(expect.objectContaining({ functionName: 'tokenOf', args: [4n] }))
-    for (const id of ids) {
-      expect(worlds.get(id)!.readContract).not.toHaveBeenCalledWith(expect.objectContaining({ functionName: 'tokenOf' }))
-      expect(worlds.get(id)!.readContract).toHaveBeenCalledWith(expect.objectContaining({ address: TOKEN, functionName: 'decimals' }))
-    }
+  it('resolves a matching prefixed project and reads metadata on the home chain only', async () => {
+    await prepareStickyLaunch({ ...input, tokenInput: 'base-sepolia:4' }, OWNER)
+    expect(worlds.get(ids[0])!.readContract).toHaveBeenCalledWith(expect.objectContaining({ functionName: 'tokenOf', args: [4n] }))
+    expect(worlds.get(ids[0])!.readContract).toHaveBeenCalledWith(expect.objectContaining({ address: TOKEN, functionName: 'decimals' }))
+    for (const id of [ids[1], 8453]) expect(worlds.get(id)!.readContract).not.toHaveBeenCalled()
   })
 
   it('rejects invalid identity, unsupported environment choices and malformed token inputs', async () => {
     await expect(prepareStickyLaunch(input, ZERO)).rejects.toThrow('Connect a wallet')
-    await expect(prepareStickyLaunch({ ...input, chainIds: [] }, OWNER)).rejects.toThrow('Choose at least one')
-    for (const chainIds of [[84532, 84532], [84532, 8453], [999]]) {
+    await expect(prepareStickyLaunch({ ...input, chainIds: [] }, OWNER)).rejects.toThrow('one home chain')
+    for (const chainIds of [[8453], [999]]) {
       await expect(prepareStickyLaunch({ ...input, chainIds }, OWNER)).rejects.toThrow('selected network environment')
     }
     for (const tokenInput of ['', '0', '0x123', ZERO]) {
@@ -193,14 +208,12 @@ describe('runtime preparation', () => {
     }
   })
 
-  it('rejects absent project tokens, unreadable metadata and mismatched metadata', async () => {
-    const state = worlds.get(ids[1])!
+  it('rejects absent project tokens and unreadable metadata', async () => {
+    const state = worlds.get(ids[0])!
     state.answers.set(`${TOKENS}.tokenOf`, ZERO)
     await expect(prepareStickyLaunch({ ...input, tokenInput: '4' }, OWNER)).rejects.toThrow('has no ERC-20')
     state.answers.set(`${TOKEN}.symbol`, new Error('metadata unavailable'))
     await expect(prepareStickyLaunch(input, OWNER)).rejects.toThrow('metadata unavailable')
-    state.answers.set(`${TOKEN}.symbol`, 'OTHER')
-    await expect(prepareStickyLaunch(input, OWNER)).rejects.toThrow('token differs')
   })
 
   it('revalidates a saved plan without changing its identity and refuses fresh fee, metadata or deployment drift', async () => {

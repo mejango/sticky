@@ -1,13 +1,20 @@
 # Sticky
 
-Sticky wraps an ERC-20 token in a permanently configured Juicebox V6 staking project. Deposits issue 18-decimal Sticky shares of the project's backing. Holders accumulate a streak while their share balance remains positive; each deposit also retains its own timestamp. Projects choose a permanent cash out tax and whether shares are soulbound or transferable.
+Sticky wraps an ERC-20 token in a permanently configured Juicebox V6 staking project. Deposits issue 18-decimal Sticky shares of the project's backing. Holders accumulate a streak while their share balance remains positive; deposits are grouped into weekly tranches whose timestamp follows the latest addition that week. Projects choose a permanent cash out tax and whether shares are soulbound or transferable.
 
 Sticky shares are not a promise to redeem one underlying token each. Their issuance and redemption depend on share-owned backing, rounding, the configured cash out curve, and applicable Juicebox terminal fees. There is no time lock. A 100% cash out tax makes redemption return zero underlying tokens, including a full exit.
 
+Each pool has one home chain. Its shares, backing, reward snapshots and redemption stay there; qualified reward sources can fund it from other chains. A similarly named deployment elsewhere is a separate pool, even if its token address or launch metadata matches. Choose one supported home chain when creating a pool.
+
 ## Documentation
 
-- [Production review](AUDIT_REPORT.md): findings, fixes, validation, and remaining release limits.
-- [Sticky JBX qualification](tasks/sticky-jbx-qualification.md): deployed JBX custody tests, V6 reserved-reward routing, source collectors and live setup boundaries.
+- [Current adversarial review](ADVERSARIAL_REVIEW_2026-10-09.md): final-source local verification, remaining hosted/live launch gates and the Ethereum-to-Arbitrum refund boundary; supersedes earlier readiness conclusions.
+- [Historical production review](AUDIT_REPORT.md): September findings, fixes and validation at the recorded revision.
+- [One home chain per pool](tasks/home-chain-pools.md): accepted launch, identity and direct-route delivery design.
+- [Shared omnichain split hook](tasks/omnichain-split-hook.md): current implementation gates and historical Ethereum-only evidence.
+- [Historical omnichain split-hook review](OMNICHAIN_SPLIT_HOOK_REVIEW.md): former home-chain and Ethereum-only review evidence; its runtime conclusions are superseded.
+- [Historical source collector audit](SOURCE_COLLECTOR_AUDIT.md): fixed-route predecessor review; its results do not certify the shared-hook redesign.
+- [Historical Sticky JBX qualification](tasks/sticky-jbx-qualification.md): deployed JBX custody and V6 reward evidence, with links to current source-collector setup.
 
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — contracts, accounting flows, and trust boundaries.
 - [USER_JOURNEYS.md](./USER_JOURNEYS.md) — launch, stake, exit, rewards, and compounding.
@@ -67,7 +74,13 @@ Rewards vest over rounds. `collectVestedRewards(...)` collects unlocked rewards 
 
 Auto-stick is best effort. The distributor permits anyone to collect to the holder's canonical beneficiary first. Those tokens arrive safely in the holder's wallet, but a later keeper may find nothing to compound. The holder can stake those funds manually. UI estimates can change before execution; the adapter's quote is taken during the actual transaction.
 
-For cross-chain rewards, `StickyRewardReceiverFactory` predicts and clones a `StickyRewardReceiver` for each destination Sticky token and reward group. Separate receiving addresses keep arrivals attributed to the intended reward pool and weighting. Rewards may arrive before that receiver is deployed; anyone can call `settleFor(...)` to fund the distributor with its ERC-20 balance. Transport requires a supported bridge route for the reward token, independently of the Sticky project. Identical receiver addresses across chains require the same factory address, destination Sticky-token address, and group; using common salts alone does not establish parity. Share tokens are deployed with CREATE2 under a salt bound to the launcher and the launch arguments, and `predictStickyTokenOf(launcher, projectId, ...)` returns the address a launch produces; the project ID is part of the token's creation code, so predict against the ID the launch will receive, or route rewards after the launch confirms. See [the architecture rationale](ARCHITECTURE.md#why-a-receiver-and-a-factory) for the receiver/factory split and the per-project price feed.
+For cross-chain rewards, `StickyRewardReceiverFactory` predicts and clones a `StickyRewardReceiver` for each destination Sticky token and reward group. Separate receiving addresses keep arrivals attributed to the intended reward pool and weighting. Rewards may arrive before that receiver is deployed; anyone can call `settleFor(...)` to fund the distributor with its ERC-20 balance. Transport requires a supported bridge route for the reward token, independently of the Sticky project. Identical receiver addresses across chains require the same verified factory address and receiver implementation, destination Sticky-token address, and group; using common salts alone does not establish parity. Share tokens are deployed with CREATE2 under a salt bound to the launcher and the launch arguments, and `predictStickyTokenOf(launcher, projectId, ...)` returns the address a launch produces; the project ID is part of the token's creation code, so predict against the ID the launch will receive, or route rewards after the launch confirms. See [the architecture rationale](ARCHITECTURE.md#why-a-receiver-and-a-factory) for the receiver/factory split and the per-project price feed.
+
+`StickySourceCollector` provides a reserved-token split hook for V6 projects, with one immutable destination chain per collector family. On the home chain and each qualified source, use `hook = verified collector for that home chain`, `beneficiary = home-chain Sticky share token`, and `split.projectId = reward group`. The family has the same address across matching source deployments; another home chain uses a different family. The authenticated source project comes from the controller's callback context. Acceptance only queues the allocation. Anyone can later settle a positive partial amount on the home chain or submit it through a qualified direct source-project route whose peer is that home chain. Source credits can wait for their ERC-20; the destination reward ERC-20 must exist before a remote claim because receivers settle ERC-20 balances only.
+
+Route availability is checked per source and home chain. The pinned native routes connect Ethereum with each supported L2; they do not establish L2-to-L2 delivery. An Ethereum-to-Arbitrum lane requires the same verified Arbitrum-home collector family on both chains; its destination copy can permissionlessly contribute the unsafe root retryable's raw refund to project 1. A positive mapped-ERC-20 transfer additionally creates a gateway retryable whose refund uses the fee child's aliased address and remains unqualified; zero backing creates no gateway ticket. A WETH gateway cancellation or expiry can also place bridged call value at `alias(source sucker)`, outside Sticky control. See [the route limits](RISKS.md#operational-limits). Unsupported combinations require a separately qualified direct route. There is no implicit relay or fallback through Ethereum.
+
+The constructor-created `StickySourceFeePayer` keeps caller fee receipts and source-chain refunds separate from queued reward principal. On the configured destination chain, anyone can make its parent add the child's complete raw native balance to protocol fee project 1; the caller cannot redirect or receive that balance, and the operation does not reach a safe-Inbox alias. No recurring Safe custody or signature is needed after authorized split setup. The destination-bound hook's final contract source is locally qualified and its Ethereum-home and Arbitrum-home families have exact-source four-chain rehearsals; verified live execution remains required before either family is treated as deployed. Follow [the source-collector setup and verification recipe](DEPLOYMENT.md#source-collectors). Contract changes remain in PRs through review, deployment and verification, and require explicit approval of the final PR before merge.
 
 ## Contracts
 
@@ -81,7 +94,10 @@ For cross-chain rewards, `StickyRewardReceiverFactory` predicts and clones a `St
 | `StickyAutoStick` | Opt-in reward collection and compounding for the same holder and project across chosen reward groups. |
 | `StickyRewardReceiverFactory` | Predicts/deploys reward receivers per Sticky token and group and settles their balances into the distributor. |
 | `StickyRewardReceiver` | Holds arriving reward tokens for one destination Sticky token and group and its bound distributor. |
-| `StickySourceCollector` | Lets anyone submit one V6 project's reserved rewards from a fixed native source route to a fixed Ethereum receiver; its fee-payer child isolates caller fee receipts. |
+| `StickySourceCollector` | Shared reserved-token split hook with attributed custody per source project, home-chain Sticky token and group; permissionless partial local settlement or registered-route submission. |
+| `StickySourceFeePayer` | Only-parent child that submits the validated route, returns that send's fee-token increase and source-retained refunds to the collector send's original delivery caller, and allows its destination parent to contribute the child's complete raw native balance to protocol fee project 1; never a split recipient. |
+
+Integrations consume the typed public contracts in [src/interfaces](src/interfaces/). Interfaces own declarations and events; implementations own execution and errors. The [API architecture](ARCHITECTURE.md#public-interfaces) identifies receiver, collector and fee-payer boundaries and the upstream interface reuse.
 
 The deployer, hook, distributor and AutoStick accept core's ERC-2771 forwarder, so a sponsor can relay a launch or a holder's trust updates, auto-stick settings, claims and funding on the signer's behalf. Staking and unstaking already relay through the core terminal.
 
@@ -115,14 +131,16 @@ The maintained web client is the Next app in `web/`. See [its guide](web/README.
 
 ## Deploy
 
-Follow [DEPLOYMENT.md](DEPLOYMENT.md) for the complete Sphinx workflow, eight RPC aliases, trusted core artifacts, credentials, and post-execution verification. Production scripts use the canonical CREATE2 factory and reuse existing deployments only after checking runtime code and immutable bindings. They fail on unexpected code or configuration.
+Follow [DEPLOYMENT.md](DEPLOYMENT.md) for the complete Sphinx workflow, eight RPC aliases, trusted core/sucker artifacts, credentials, and post-execution verification. Production scripts use the canonical CREATE2 factory and reuse existing deployments only after checking runtime code and immutable bindings. They fail on unexpected code or configuration.
 
 ```sh
 # Load the intended RPC configuration and rehearse without broadcasting:
+export STICKY_DESTINATION_CHAIN_ID=11155111
 npm run deploy:rehearse -- --rpc-url ethereum_sepolia -vv
 
 # Create a Sphinx proposal for review and execution through the existing process:
 npm run deploy:propose:testnets
+# For an Ethereum-home mainnet family, select STICKY_DESTINATION_CHAIN_ID=1 first.
 # npm run deploy:propose:mainnets
 
 # After execution, verify the reviewed suite against the live chain:

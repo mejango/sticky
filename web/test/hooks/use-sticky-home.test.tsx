@@ -155,7 +155,7 @@ describe('useStickyHome', () => {
     root = createRoot(host)
     await render()
     await settle()
-    expect(seen.cards.map(group => group.cards[0].info.projectId)).toEqual([2n])
+    expect(seen.cards.map(card => card.info.projectId)).toEqual([2n])
     expect(seen.revalidating).toBe(true)
     expect(seen.secured).toBeNull()
 
@@ -180,7 +180,7 @@ describe('useStickyHome', () => {
     expect(seen.airdrops.map(item => item.chainId)).toEqual([10])
   })
 
-  it('groups the loaded chains\' cards and names the chains that failed', async () => {
+  it('ranks the loaded chains\' independent pools and names the chains that failed', async () => {
     mocks.chain.mockImplementation(async (chainId: number) => {
       if (chainId === 10) throw new Error('rpc down')
       return chainResult(chainId, [card(chainId, 1n, { totalSupply: BigInt(chainId) })])
@@ -189,7 +189,7 @@ describe('useStickyHome', () => {
     await settle()
     expect(seen.failedChains).toEqual([10])
     expect(seen.pending).toBe(false)
-    expect(seen.cards.map(group => group.cards[0].info.chainId)).toEqual([42161, 8453, 1])
+    expect(seen.cards.map(card => card.info.chainId)).toEqual([42161, 8453, 1])
   })
 
   it('is pending while a chain has neither answered nor failed, and revalidating while one with data is read again', async () => {

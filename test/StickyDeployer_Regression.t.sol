@@ -6,6 +6,7 @@ import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 import {StickyDeployer} from "../src/StickyDeployer.sol";
+import {StickyToken} from "../src/StickyToken.sol";
 
 import {StickyTestFeeReceiver} from "./helpers/StickyTestFeeReceiver.sol";
 import {StickyTestLauncher} from "./helpers/StickyTestLauncher.sol";
@@ -45,6 +46,78 @@ contract StickyDeployerRegressionTest is TestBaseWorkflow {
         jbProjects().setCreationFee({fee: _FEE, receiver: payable(address(_receiver))});
         _deployer = new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal()});
         vm.deal(_launcher, _FEE);
+    }
+
+    /// @notice The nested-share restriction is local to one factory; another factory can put transferable shares
+    /// and their reward weight in terminal custody, even though the nested holder can still recover their shares.
+    function test_crossFactoryStickySharesCanAccrueTerminalRewardWeight() public {
+        StickyDeployer otherDeployer = new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal()});
+        vm.deal(_launcher, 2 * _FEE);
+        vm.startPrank(_launcher);
+        // forge-lint: disable-next-item(arbitrary-send-eth)
+        uint256 underlyingProjectId = _deployer.deployStickyFor{value: _FEE}({
+            stakedToken: IERC20Metadata(address(usdcToken())),
+            name: "Transferable Sticky",
+            symbol: "stUSD",
+            projectUri: "",
+            cashOutTaxRate: 0,
+            granters: new address[](0),
+            soulbound: false
+        });
+        StickyToken underlyingShares = StickyToken(address(jbTokens().tokenOf(underlyingProjectId)));
+        // A different hook has no registration for this otherwise genuine Sticky share token.
+        assertEq(otherDeployer.HOOK().tokenOf(underlyingProjectId), address(0));
+        // forge-lint: disable-next-item(arbitrary-send-eth)
+        uint256 nestedProjectId = otherDeployer.deployStickyFor{value: _FEE}({
+            stakedToken: IERC20Metadata(address(underlyingShares)),
+            name: "Nested Sticky",
+            symbol: "ststUSD",
+            projectUri: "",
+            cashOutTaxRate: 0,
+            granters: new address[](0),
+            soulbound: false
+        });
+        // forge-lint: disable-next-line(literal-instead-of-constant)
+        uint256 amount = 1e6;
+        usdcToken().mint({_to: _launcher, _amount: amount});
+        assertTrue(usdcToken().approve({spender: address(jbMultiTerminal()), value: amount}));
+        uint256 underlyingCount = jbMultiTerminal().pay({
+            projectId: underlyingProjectId,
+            token: address(usdcToken()),
+            amount: amount,
+            beneficiary: _launcher,
+            minReturnedTokens: amount,
+            memo: "",
+            metadata: bytes("")
+        });
+        assertTrue(underlyingShares.approve({spender: address(jbMultiTerminal()), value: underlyingCount}));
+        uint256 nestedCount = jbMultiTerminal().pay({
+            projectId: nestedProjectId,
+            token: address(underlyingShares),
+            amount: underlyingCount,
+            beneficiary: _launcher,
+            minReturnedTokens: underlyingCount,
+            memo: "",
+            metadata: bytes("")
+        });
+        // Reward snapshots attribute the nested collateral to the terminal, which has no reward-claim method.
+        assertEq(underlyingShares.balanceOf(address(jbMultiTerminal())), underlyingCount);
+        assertEq(underlyingShares.getVotes(address(jbMultiTerminal())), underlyingCount);
+        assertEq(underlyingShares.getVotes(_launcher), 0);
+        // This composability limitation does not itself prevent a zero-tax nested holder from exiting.
+        uint256 reclaimed = jbMultiTerminal().cashOutTokensOf({
+            holder: _launcher,
+            projectId: nestedProjectId,
+            cashOutCount: nestedCount,
+            tokenToReclaim: address(underlyingShares),
+            minTokensReclaimed: underlyingCount,
+            beneficiary: payable(_launcher),
+            metadata: bytes("")
+        });
+        vm.stopPrank();
+        assertEq(reclaimed, underlyingCount);
+        assertEq(underlyingShares.balanceOf(_launcher), underlyingCount);
+        assertEq(underlyingShares.getVotes(address(jbMultiTerminal())), 0);
     }
 
     /// @notice Fee-project tokens belong to the funding launcher while Sticky retains permanent NFT ownership.

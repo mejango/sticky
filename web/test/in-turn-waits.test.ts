@@ -122,10 +122,10 @@ describe('a read made in turn', () => {
       return { file, text, source: ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true) }
     })
     const turns = files.flatMap(({ source }) => callsOf(source, 'inTurn'))
-    // The reads made in turn: the project's history, its holders' and Latest's scans, the balance flows, the Chains
-    // search, the airdrop funding, the account's positions and activity, and the home's chains. A floor, so a check
-    // that found none would not pass.
-    expect(turns.length).toBeGreaterThanOrEqual(9)
+    // The reads made in turn: the project's history, its holders' and Latest's scans, the balance flows, the airdrop
+    // funding, the account's positions and activity, and the home's chains. Removing the cross-pool siblings query
+    // removed one turn; these eight remain a floor so a check that found none would not pass.
+    expect(turns.length).toBeGreaterThanOrEqual(8)
     const found = files.flatMap(({ file, text, source }) =>
       waitsInTurn(file, text, source).map(wait => ({ file: relative(SRC, file), ...wait })),
     )

@@ -9,7 +9,8 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, Profiler, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { erc20Abi, getAddress, zeroAddress, type Address } from 'viem'
+import { encodeAbiParameters, encodeFunctionData, erc20Abi, getAddress, toEventSelector, toHex, UserRejectedRequestError, zeroAddress, type Abi, type Address, type Hex, type TransactionReceipt } from 'viem'
+import { SAFE_EXEC_ABI } from '@bananapus/nana-sdk-core/safe-service'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { REVIEWED_ACCOUNT_CHANGED } from '@/lib/contract-write'
 import { feelessAddressesAbi, stickyAutoStickAbi, stickyHookAbi, terminalAbi } from '@/lib/sticky-abis'
@@ -22,7 +23,7 @@ import { CHAIN, HOLDER, OTHER, PROJECT, REVERT, STAKED, STICKY, deployment, rewa
 const mocks = vi.hoisted(() => ({
   wallet: { address: undefined as string | undefined, isCenterWallet: false },
   openSignIn: vi.fn(),
-  publicClient: { simulateContract: vi.fn(), estimateContractGas: vi.fn(), waitForTransactionReceipt: vi.fn() },
+  publicClient: { simulateContract: vi.fn(), estimateContractGas: vi.fn(), waitForTransactionReceipt: vi.fn(), getChainId: vi.fn(), getTransaction: vi.fn(), getTransactionReceipt: vi.fn(), getBlock: vi.fn() },
   getAccount: vi.fn(),
   requestReview: vi.fn(),
   switchChain: vi.fn(),
@@ -30,6 +31,10 @@ const mocks = vi.hoisted(() => ({
   confirming: { on: true, status: 'success' as 'success' | 'reverted' },
   safe: { on: false, execution: undefined as undefined | PromiseWithResolvers<string> },
   engine: { silent: false },
+  receipts: {} as Record<string, TransactionReceipt>,
+  transactions: {} as Record<string, unknown>,
+  blocks: {} as Record<string, { hash: Hex; number: bigint; timestamp: bigint }>,
+  proposals: {} as Record<string, Write>,
 }))
 
 vi.mock('@wagmi/core', () => ({ getAccount: mocks.getAccount }))
@@ -38,7 +43,7 @@ vi.mock('wagmi', () => ({
   useSwitchChain: () => ({ switchChainAsync: mocks.switchChain }),
   // A transaction is confirmed as soon as it has a hash to watch, unless a test says it is not.
   useWaitForTransactionReceipt: ({ hash, query }: { hash?: string; query?: { enabled?: boolean } }) => ({
-    data: hash && query?.enabled !== false && mocks.confirming.on ? { status: mocks.confirming.status, transactionHash: hash, logs: [] } : undefined,
+    data: hash && query?.enabled !== false && mocks.confirming.on ? mocks.receipts[hash.toLowerCase()] : undefined,
     isError: false,
   }),
   useWriteContract: () => ({ writeContractAsync: mocks.writeContract }),
@@ -77,8 +82,6 @@ vi.mock('@/lib/safe-connector', async importOriginal => ({
   atOnceExecution: async () => null,
   findPendingSafeAppProposal: async () => null,
   watchSafeProposal: () => new Promise(() => {}),
-  // The shared Safe proof tests establish this result; this suite checks the dependent flow.
-  readSafeAppExecution: async () => ({ status: 'success' }),
 }))
 
 import { UnstickFlow } from '@/components/project/flows/UnstickFlow'
@@ -168,6 +171,10 @@ const requestSignIn = vi.fn()
 let hashes = 0
 beforeEach(() => {
   hashes = 0
+  mocks.receipts = {}
+  mocks.transactions = {}
+  mocks.blocks = {}
+  mocks.proposals = {}
   commits.length = 0
   mocks.wallet = { address: HOLDER, isCenterWallet: false }
   mocks.confirming = { on: true, status: 'success' }
@@ -178,10 +185,30 @@ beforeEach(() => {
   mocks.switchChain.mockResolvedValue(undefined)
   mocks.publicClient.simulateContract.mockImplementation(async (request: unknown) => ({ request }))
   mocks.publicClient.estimateContractGas.mockResolvedValue(50_000n)
-  mocks.publicClient.waitForTransactionReceipt.mockImplementation(async ({ hash }: { hash: string }) => ({
-    status: 'success', transactionHash: hash, blockNumber: 100n, logs: [],
-  }))
-  mocks.writeContract.mockImplementation(async () => `0x${(hashes += 1).toString(16).padStart(64, '0')}`)
+  mocks.publicClient.getChainId.mockResolvedValue(CHAIN)
+  mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: string }) => {
+    const transaction = mocks.transactions[hash.toLowerCase()]
+    if (!transaction) throw new Error('Transaction not found')
+    return transaction
+  })
+  const receiptOf = async ({ hash }: { hash: string }) => {
+    const receipt = mocks.confirming.on && mocks.receipts[hash.toLowerCase()]
+    if (!receipt) throw new Error('Receipt not found')
+    return receipt
+  }
+  mocks.publicClient.getTransactionReceipt.mockImplementation(receiptOf)
+  mocks.publicClient.waitForTransactionReceipt.mockImplementation(receiptOf)
+  mocks.publicClient.getBlock.mockImplementation(async ({ blockNumber, blockTag }: { blockNumber?: bigint; blockTag?: string }) => {
+    const block = blockTag === 'finalized' ? Object.values(mocks.blocks).at(-1) : mocks.blocks[String(blockNumber)]
+    if (!block) throw new Error('Block not found')
+    return block
+  })
+  mocks.writeContract.mockImplementation(async (request: Write) => {
+    const hash = toHex(hashes += 1, { size: 32 })
+    if (mocks.safe.on) mocks.proposals[hash] = request
+    else mine(hash, request)
+    return hash
+  })
   mocks.openSignIn.mockResolvedValue(undefined)
   requestSignIn.mockResolvedValue(undefined)
   vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -261,7 +288,34 @@ const rowsOf = () =>
     }, []),
   )
 /** What the wallet was asked to write, in order, and the account it was simulated and sent as. */
-type Write = { functionName: string; args: unknown[]; address: Address; account: Address }
+type Write = { abi: Abi; functionName: string; args: unknown[]; address: Address; account: Address; value?: bigint }
+/** Mine the actual reviewed wallet call once. Its receipt remains stable when the next call's outcome changes. */
+function mine(hash: Hex, request: Write, proposalHash?: Hex) {
+  const number = 100n + BigInt(Object.keys(mocks.transactions).length)
+  const blockHash = toHex(number, { size: 32 })
+  const data = encodeFunctionData({ abi: request.abi, functionName: request.functionName, args: request.args })
+  const from = proposalHash ? OTHER : request.account
+  const to = proposalHash ? request.account : request.address
+  const input = proposalHash ? encodeFunctionData({
+    abi: SAFE_EXEC_ABI, functionName: 'execTransaction',
+    args: [request.address, request.value ?? 0n, data, 0, 0n, 0n, 0n, zeroAddress, zeroAddress, '0x'],
+  }) : data
+  mocks.blocks[String(number)] = { hash: blockHash, number, timestamp: 1_790_000_000n + number }
+  mocks.transactions[hash.toLowerCase()] = {
+    hash, chainId: CHAIN, from, to, input, value: proposalHash ? 0n : request.value ?? 0n,
+    blockNumber: number, blockHash, transactionIndex: 0,
+  }
+  mocks.receipts[hash.toLowerCase()] = {
+    transactionHash: hash, blockNumber: number, blockHash, transactionIndex: 0, from, to,
+    status: mocks.confirming.status, contractAddress: null, logsBloom: `0x${'0'.repeat(512)}`,
+    cumulativeGasUsed: 50_000n, gasUsed: 50_000n, effectiveGasPrice: 1n, type: 'eip1559',
+    logs: proposalHash ? [{
+      address: request.account, topics: [toEventSelector('ExecutionSuccess(bytes32,uint256)'), proposalHash],
+      data: encodeAbiParameters([{ type: 'uint256' }], [0n]),
+      transactionHash: hash, blockNumber: number, blockHash, transactionIndex: 0, logIndex: 0, removed: false,
+    }] : [],
+  }
+}
 const writes = () => mocks.writeContract.mock.calls.map(([request]) => request as Write)
 const called = () => writes().map(request => request.functionName)
 /** What the review was asked to show, in order. */
@@ -541,12 +595,12 @@ describe('a send that stops halfway', () => {
     expect(steps().map(step => step.state)).toEqual(['complete', 'active', 'pending', 'pending'])
 
     // The wallet refuses the second.
-    mocks.writeContract.mockRejectedValueOnce(new Error('The wallet did not send it.'))
+    mocks.writeContract.mockRejectedValueOnce(new UserRejectedRequestError(new Error('The wallet did not send it.')))
     await press('Remove auto-stick permission', confirm()!)
     await until(() => nameOf(confirm()!).includes('Retry'), 'the failure')
 
     const dialog = confirm()!
-    expect(dialog.textContent).toContain('The wallet did not send it.')
+    expect(dialog.textContent).toContain('Transaction cancelled.')
     // Only the step that was tried did not go through; the ones after it were never sent.
     expect(dialog.textContent).toContain(
       "Went through: Turn off auto-stick. Did not go through: Stop the auto-stick contract from sticking ART for you. Not sent yet: Remove the auto-stick contract's ART allowance; Unstick.",
@@ -566,7 +620,7 @@ describe('a send that stops halfway', () => {
     ])
     expect(steps().map(step => step.state)).toEqual(['complete', 'active', 'pending', 'pending'])
     expect(confirm()!.textContent).toContain('3 transactions left.')
-    expect(confirm()!.textContent).not.toContain('The wallet did not send it.')
+    expect(confirm()!.textContent).not.toContain('Transaction cancelled.')
 
     await sendStep('Remove auto-stick permission', 'Remove auto-stick allowance')
     await sendStep('Remove auto-stick allowance', 'Confirm & unstick')
@@ -583,7 +637,7 @@ describe('a send that stops halfway', () => {
     world(on)
     await review('1')
     await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
-    mocks.writeContract.mockRejectedValueOnce(new Error('The wallet did not send it.'))
+    mocks.writeContract.mockRejectedValueOnce(new UserRejectedRequestError(new Error('The wallet did not send it.')))
     await press('Remove auto-stick permission', confirm()!)
     await until(() => nameOf(confirm()!).includes('Retry'), 'the failure')
     await press('Retry', confirm()!)
@@ -594,6 +648,31 @@ describe('a send that stops halfway', () => {
     await sendStep('Remove auto-stick allowance', 'Confirm & unstick')
     await sendStep('Confirm & unstick')
     expect(called().filter(name => name === 'setConfigFor')).toHaveLength(1)
+  })
+
+  it('holds an uncertain wallet reply after reopening the review without repeating the attempted step', async () => {
+    const { set } = world(on)
+    await review('1')
+    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
+    mocks.writeContract.mockRejectedValueOnce(new Error('Connection lost after sending'))
+    await press('Remove auto-stick permission', confirm()!)
+    await until(() => nameOf(confirm()!).includes('Done'), 'the uncertain send')
+
+    expect(confirm()!.textContent).toContain('This app cannot safely send the action again.')
+    expect(nameOf(confirm()!)).not.toContain('Retry')
+    expect(steps().map(step => step.state)).toEqual(['complete', 'active', 'pending', 'pending'])
+    expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor'])
+
+    await press('Done', confirm()!)
+    set({ enabled: false })
+    await press('Unstick', form())
+    await until(planned(4), 'the reopened plan')
+    await press('Remove auto-stick permission', confirm()!)
+    await until(() => nameOf(confirm()!).includes('Done'), 'the saved uncertain send')
+
+    expect(confirm()!.textContent).toContain('This app cannot safely send the action again.')
+    expect(nameOf(confirm()!)).not.toContain('Retry')
+    expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor'])
   })
 
   it('counts a transaction that went through once, however often the page renders again after it', async () => {
@@ -812,7 +891,10 @@ describe('a send that stops halfway', () => {
     expect(steps().map(step => step.state)).toEqual(['active', 'pending', 'pending', 'pending'])
     expect(called()).toEqual(['setConfigFor'])
 
-    await act(async () => mocks.safe.execution!.resolve(`0x${'e'.repeat(64)}`))
+    const [proposalHash, request] = Object.entries(mocks.proposals)[0]
+    const executionHash = `0x${'e'.repeat(64)}` as Hex
+    mine(executionHash, request, proposalHash as Hex)
+    await act(async () => mocks.safe.execution!.resolve(executionHash))
     await until(() => nameOf(confirm()!).includes('Remove auto-stick permission'), 'the execution')
     expect(confirm()!.textContent).toContain('Went through: Turn off auto-stick. Not sent yet:')
     expect(confirm()!.textContent).toContain('3 transactions left.')
@@ -1100,7 +1182,6 @@ describe('after a confirmed send', () => {
     trusted: ['sticky-trusted', CHAIN, 12, HOLDER, ''],
     'account page': ['sticky-account', 'mainnet', HOLDER.toLowerCase(), 'positions', CHAIN],
     flows: [...p, 'flows'],
-    siblings: [...p, 'siblings', 'v1'],
     funding: [...p, 'funding'],
     'another project': ['sticky-project', CHAIN, 13, 'holders'],
     'another chain': ['sticky-project', 1, 12, 'holders'],

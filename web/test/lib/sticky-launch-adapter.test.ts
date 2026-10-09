@@ -110,8 +110,8 @@ function session(chains = [8453]): StickyLaunchSession {
     listing: { state: 'unavailable', recorded: {} } }
 }
 
-function paymentSession(): StickyLaunchSession & { quote: RelayrQuote; payment: NonNullable<StickyLaunchSession['payment']> } {
-  const saved = session([8453, 10])
+function paymentSession(chains = [8453]): StickyLaunchSession & { quote: RelayrQuote; payment: NonNullable<StickyLaunchSession['payment']> } {
+  const saved = { ...session(chains), mode: 'relayr' as const }
   const quote = quoted(saved.plan)
   return { ...saved, quote, bundleUuid: BUNDLE, published: true, payment: { option: quote.payment_info[0], started: false } }
 }
@@ -160,6 +160,38 @@ beforeEach(() => {
 })
 
 describe('Sticky launch browser boundaries', () => {
+  it('enforces one home chain at every publication boundary', async () => {
+    const multi = session([8453, 10])
+    await expect(fake.ports.quote(multi.plan, vi.fn(), vi.fn())).rejects.toThrow('one home chain')
+    await expect(fake.ports.publishListing(multi.plan)).rejects.toThrow('one home chain')
+    await expect(fake.ports.sponsor(multi, vi.fn())).rejects.toThrow('one home chain')
+    expect(fetch).not.toHaveBeenCalled()
+    expect(fake.publish).not.toHaveBeenCalled()
+    expect(fake.sponsor).not.toHaveBeenCalled()
+  })
+
+  it.each(['direct', 'payment'] as const)('enforces one home chain after awaited %s journaling and before the final wallet call', async kind => {
+    const multi = session([8453, 10])
+    const saved = kind === 'direct' ? session() : paymentSession()
+    const noted = callbacks()
+    noted.beforeWrite.mockImplementation(async () => { saved.plan.targets.push(multi.plan.targets[1]) })
+    await expect(kind === 'direct' ? fake.ports.sendDirect(saved, noted) : fake.ports.sendPayment(saved, noted)).rejects.toThrow('one home chain')
+    expect(fake.write).not.toHaveBeenCalled()
+    expect(fake.send).not.toHaveBeenCalled()
+    expect(noted.rejected).toHaveBeenCalledOnce()
+  })
+
+  it('checks one home chain after acquiring the listing signer', async () => {
+    const prepared = plan()
+    fake.publish.mockImplementation(async (_plan, sign) => { await sign('Exact SDK listing message'); return { id: 'listing' } })
+    fake.connected.mockImplementation(async () => {
+      prepared.targets.push(plan([10]).targets[0])
+      return walletResult()
+    })
+    await expect(fake.ports.publishListing(prepared)).rejects.toThrow('one home chain')
+    expect(fake.sign).not.toHaveBeenCalled()
+  })
+
   it('refuses cross-tab contention and missing Web Locks before creating a recovery record', async () => {
     const controller = createBrowserStickyLaunchController()
     vi.stubGlobal('navigator', {})
@@ -300,16 +332,17 @@ describe('Sticky launch browser boundaries', () => {
   it('remembers a published bundle UUID even when its exact quote binding fails', async () => {
     const remember = vi.fn()
     vi.mocked(fetch).mockResolvedValueOnce(json({ bundle_uuid: BUNDLE, tx_uuids: [], payment_info: [] }))
-    await expect(fake.ports.quote(plan([8453, 10]), remember, () => {})).rejects.toThrow('bind')
+    await expect(fake.ports.quote(plan(), remember, () => {})).rejects.toThrow('bind')
     expect(remember).toHaveBeenCalledWith(BUNDLE)
     const sent = JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))
     expect(sent.virtual_nonce_mode).toBe('ChainIndependent')
-    expect(sent.transactions.map((entry: { virtual_nonce: number }) => entry.virtual_nonce)).toEqual([0, 0])
+    expect(sent.transactions.map((entry: { virtual_nonce: number }) => entry.virtual_nonce)).toEqual([0])
   })
 
   it('keeps a raw launch published when quote transport fails, and never posts it again on resume', async () => {
     const controller = createBrowserStickyLaunchController()
-    await controller.prepare(plan([8453, 10]), 'unavailable')
+    const saved = await controller.prepare(plan(), 'unavailable')
+    fake.ports.store.save({ ...saved, mode: 'relayr' })
     vi.mocked(fetch).mockRejectedValueOnce(new Error('POST timed out'))
     await expect(controller.run()).rejects.toThrow('timed out')
     expect(controller.load()?.published).toBe(true)
@@ -319,17 +352,18 @@ describe('Sticky launch browser boundaries', () => {
 
   it('keeps an unpublished draft retryable when preflight fails before publication, and refuses POST if saving fails', async () => {
     const controller = createBrowserStickyLaunchController()
-    await controller.prepare(plan([8453, 10]), 'unavailable')
+    const saved = await controller.prepare(plan(), 'unavailable')
+    fake.ports.store.save({ ...saved, mode: 'relayr' })
     fake.revalidate.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('runtime unavailable'))
     await expect(controller.run()).rejects.toThrow('runtime unavailable')
     expect(controller.load()?.published).toBe(false)
     expect(fetch).not.toHaveBeenCalled()
-    await expect(fake.ports.quote(plan([8453, 10]), vi.fn(), () => { throw new Error('storage full') })).rejects.toThrow('storage full')
+    await expect(fake.ports.quote(plan(), vi.fn(), () => { throw new Error('storage full') })).rejects.toThrow('storage full')
     expect(fetch).not.toHaveBeenCalled()
   })
 
   it('retains a confirmed destination candidate while another exact bound record remains pending', async () => {
-    const saved = paymentSession()
+    const saved = paymentSession([8453, 10])
     saved.quote.transactions[0].status = { state: 'Completed', data: { hash: HASH } }
     vi.mocked(fetch).mockImplementation(async () => json({ bundle_uuid: BUNDLE, transactions: saved.quote.transactions }))
     await expect(fake.ports.status(saved)).resolves.toEqual({ 8453: [HASH], 10: [] })
@@ -347,7 +381,7 @@ describe('Sticky launch browser boundaries', () => {
   })
 
   it('does not accept one destination hash for multiple launch calls', async () => {
-    const saved = paymentSession()
+    const saved = paymentSession([8453, 10])
     saved.quote.transactions.forEach(record => { record.status = { state: 'Completed', data: { hash: HASH } } })
     vi.mocked(fetch).mockImplementation(async () => json({ bundle_uuid: BUNDLE, transactions: saved.quote.transactions }))
     await expect(fake.ports.status(saved)).rejects.toThrow()

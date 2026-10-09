@@ -9,6 +9,10 @@ contract Verify is StickyDeployment {
     /// @notice Checks current artifacts, predictions, bytecode and immutable bindings against the connected RPC.
     function run() public {
         StickyCoreDeployment memory core = _loadCore();
-        _writeManifest({core: core, deployed: _predict(core), kind: "verified"});
+        _writeManifest({
+            core: core,
+            deployed: _predict({core: core, destinationChainId: _loadDestinationChainId()}),
+            kind: "verified"
+        });
     }
 }

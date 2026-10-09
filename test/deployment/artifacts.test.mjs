@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { constructorArgs, contracts, emit, trustedForwarder } from '../../script/artifacts.mjs';
-import { networks, suite } from '../../script/deploy.mjs';
+import { familyDirectory, networks, suite } from '../../script/deploy.mjs';
 
 const code = '0x6080604052';
 const addresses = {
   controller: '0x' + '11'.repeat(20), directory: '0x' + '22'.repeat(20), terminal: '0x' + '33'.repeat(20),
+  registry: '0x' + '44'.repeat(20), tokens: '0x' + '55'.repeat(20),
+  sourceCollector: '0x' + 'a7'.repeat(20), sourceFeePayer: '0x' + 'a8'.repeat(20),
   deployer: '0x' + 'a1'.repeat(20), hook: '0x' + 'a2'.repeat(20), distributor: '0x' + 'a3'.repeat(20),
   rewardReceiver: '0x' + 'a6'.repeat(20), rewardReceiverFactory: '0x' + 'a4'.repeat(20), autoStick: '0x' + 'a5'.repeat(20),
 };
@@ -18,7 +20,13 @@ const expectedArgs = {
   StickyRewardReceiver: [addresses.distributor],
   StickyRewardReceiverFactory: [addresses.rewardReceiver],
   StickyAutoStick: [addresses.deployer, addresses.distributor],
+  StickySourceCollector: [addresses.registry, addresses.tokens, addresses.rewardReceiverFactory, '1'],
+  StickySourceFeePayer: [],
 };
+
+const argsFor = (name, destination) => name === 'StickySourceCollector'
+  ? [...expectedArgs[name].slice(0, 3), String(destination)] : expectedArgs[name];
+const outputPath = (folder, contract, destination) => `${contract.family ? familyDirectory(folder, destination) : `deployments/${folder}`}/${contract.name}.json`;
 
 function artifact(name) {
   return JSON.stringify({
@@ -27,19 +35,21 @@ function artifact(name) {
   });
 }
 
-function fixture(group, { revision = 'abc123' } = {}) {
+function fixture(group, { revision = 'abc123', destination = networks[group][0][1] } = {}) {
   const files = {};
-  for (const [, , , folder] of networks[group]) {
-    files[`deployments/${folder}/verified.json`] = JSON.stringify({ ...addresses, revision });
+  for (const [, chainId, , folder] of networks[group]) {
+    files[`${familyDirectory(folder, destination)}/verified.json`] = JSON.stringify({
+      ...addresses, revision, chainId, destinationChainId: destination, kind: 'verified',
+    });
   }
   for (const { name } of contracts) files[`out/${name}.sol/${name}.json`] = artifact(name);
   const written = {};
   const verified = [];
   const fetched = [];
   return {
-    written, verified, fetched,
+    written, verified, fetched, files, destination,
     options: {
-      env: { ETHERSCAN_API_KEY: 'key' },
+      env: { ETHERSCAN_API_KEY: 'key', STICKY_DESTINATION_CHAIN_ID: String(destination) },
       read: file => { if (!files[file]) throw new Error(`missing ${file}`); return files[file]; },
       write: (file, content) => { written[file] = JSON.parse(content); },
       spawn: (command, args) => { verified.push({ command, args }); return { status: 0, stdout: '' }; },
@@ -49,9 +59,10 @@ function fixture(group, { revision = 'abc123' } = {}) {
         if (searchParams.get('action') === 'getcontractcreation') {
           const address = searchParams.get('contractaddresses');
           const name = contracts.find(contract => addresses[contract.field] === address).name;
-          const child = name === 'StickyHook';
-          return { result: [{ txHash: `0xtx-${child ? 'StickyDeployer' : name}`,
-            creationBytecode: child ? undefined : `${code}${expectedArgs[name].map(word).join('')}` }] };
+          const parent = name === 'StickyHook' ? 'StickyDeployer' : name === 'StickySourceFeePayer' ? 'StickySourceCollector' : undefined;
+          const child = Boolean(parent);
+          return { result: [{ txHash: `0xtx-${parent ?? name}`,
+            creationBytecode: child ? undefined : `${code}${argsFor(name, destination).map(word).join('')}` }] };
         }
         return { result: { blockHash: '0x' + 'bb'.repeat(32), transactionHash: searchParams.get('txhash') } };
       },
@@ -65,18 +76,19 @@ test('the artifact contracts cover the whole suite the runner compares across ch
 
 for (const group of Object.keys(networks)) {
   test(`${group}: every contract is verified on the explorer and written in the shared artifact layout`, async () => {
-    const { written, verified, options } = fixture(group);
+    const { written, verified, options, destination } = fixture(group);
     await emit(group, options);
     for (const [alias, chainId, , folder] of networks[group]) {
       for (const contract of contracts) {
-        const record = written[`deployments/${folder}/${contract.name}.json`];
+        const record = written[outputPath(folder, contract, destination)];
         assert.ok(record, `${alias} must write ${contract.name}.json`);
         assert.equal(record.format, 'sphinx-sol-ct-artifact-1');
         assert.equal(record.address, addresses[contract.field].toLowerCase());
         assert.equal(record.sourceName, `src/${contract.name}.sol`);
         assert.equal(record.contractName, contract.name);
         assert.equal(record.chainId, `0x${chainId.toString(16)}`);
-        assert.deepEqual(record.args, expectedArgs[contract.name]);
+        assert.deepEqual(record.args, argsFor(contract.name, destination));
+        assert.equal(record.destinationChainId, contract.family ? destination : undefined);
         assert.equal(record.bytecode, code);
         assert.equal(record.gitCommit, 'abc123');
         assert.equal(record.gitDirty, false);
@@ -85,13 +97,17 @@ for (const group of Object.keys(networks)) {
       }
       // The hook is created by the deployer's constructor, so its receipt is the deployer's creation transaction.
       assert.equal(written[`deployments/${folder}/StickyHook.json`].receipt.transactionHash, '0xtx-StickyDeployer');
+      assert.equal(written[`${familyDirectory(folder, destination)}/StickySourceFeePayer.json`].receipt.transactionHash, '0xtx-StickySourceCollector');
+      assert.ok(!written[`deployments/${folder}/verified.json`], 'canonical singleton manifest is not rewritten');
+      assert.ok(!written[`deployments/${folder}/StickySourceCollector.json`], 'no flat source-collector artifact');
     }
     assert.equal(verified.length, networks[group].length * contracts.length);
     for (const { command, args } of verified) {
       assert.equal(command, 'forge');
       assert.equal(args[0], 'verify-contract');
       const name = args[2].split(':')[1];
-      assert.deepEqual(args.slice(-2), ['--constructor-args', `0x${expectedArgs[name].map(word).join('')}`]);
+      if (expectedArgs[name].length) assert.deepEqual(args.slice(-2), ['--constructor-args', `0x${argsFor(name, destination).map(word).join('')}`]);
+      else assert.ok(!args.includes('--constructor-args'), 'the child constructor takes no arguments');
       assert.ok(args.includes('--via-ir') && args.includes('--skip-is-verified-check'));
       assert.ok(!args.includes('--broadcast'));
     }
@@ -148,4 +164,105 @@ test('constructor bindings are encoded from the manifest and rejected when the c
   const compiled = JSON.parse(readFileSync('out/StickyDistributor.sol/StickyDistributor.json', 'utf8'));
   assert.deepEqual(compiled.abi.find(entry => entry.type === 'constructor').inputs.map(input => input.type),
     ['address', 'address', 'address', 'uint256', 'uint256', 'uint48']);
+});
+
+
+test('six deployed singleton creation bytes and constructor bindings stay unchanged', () => {
+  const manifest = JSON.parse(readFileSync('deployments/ethereum/verified.json', 'utf8'));
+  for (const contract of contracts.filter(contract => !contract.name.startsWith('StickySource'))) {
+    const compiled = JSON.parse(readFileSync(`out/${contract.name}.sol/${contract.name}.json`, 'utf8'));
+    const deployed = JSON.parse(readFileSync(`deployments/ethereum/${contract.name}.json`, 'utf8'));
+    assert.equal(compiled.bytecode.object.toLowerCase(), deployed.bytecode.toLowerCase(), contract.name);
+    assert.deepEqual(constructorArgs(contract, manifest, compiled).args.map(String).map(value => value.toLowerCase()),
+      deployed.args.map(String).map(value => value.toLowerCase()), contract.name);
+  }
+});
+
+test('an old live manifest cannot emit undeployed source singleton artifacts', async () => {
+  const setup = fixture('mainnets');
+  const read = setup.options.read;
+  setup.options.read = file => {
+    if (!file.endsWith('/verified.json')) return read(file);
+    const manifest = JSON.parse(read(file));
+    delete manifest.sourceCollector;
+    delete manifest.sourceFeePayer;
+    return JSON.stringify(manifest);
+  };
+  await assert.rejects(emit('mainnets', setup.options), /invalid sourceCollector deployment address/);
+  assert.deepEqual(setup.written, {}, 'an incomplete live manifest must stop before any artifact write');
+  assert.equal(setup.fetched.length, 0);
+});
+
+test('all four family manifests and constructor bindings are validated before any explorer request or write', async () => {
+  for (const mismatch of [
+    { destinationChainId: 8453 }, { destinationChainId: undefined }, { chainId: 1 }, { kind: 'simulation' },
+    { sourceCollector: undefined }, { sourceFeePayer: '0x' + '00'.repeat(20) }, { tokens: undefined },
+    { sourceFeePayer: [addresses.sourceFeePayer] }, { sourceFeePayer: `${addresses.sourceFeePayer}\n` },
+  ]) {
+    const setup = fixture('mainnets');
+    const file = `${familyDirectory('optimism', 1)}/verified.json`;
+    setup.files[file] = JSON.stringify({ ...JSON.parse(setup.files[file]), ...mismatch });
+    await assert.rejects(emit('mainnets', setup.options));
+    assert.equal(setup.fetched.length, 0, 'a second-chain mismatch must fail before querying the first chain');
+    assert.equal(setup.verified.length, 0);
+    assert.deepEqual(setup.written, {});
+  }
+});
+
+test('an explicit non-Ethereum family emits only its parent and child into its namespace', async () => {
+  const setup = fixture('mainnets', { destination: 8453 });
+  for (const [, , , folder] of networks.mainnets) {
+    setup.files[`deployments/${folder}/verified.json`] = '{"obsolete":true}';
+    setup.files[`${familyDirectory(folder, 1)}/verified.json`] = '{"unselected":true}';
+  }
+  await emit('mainnets', setup.options);
+  for (const [, , , folder] of networks.mainnets) {
+    for (const contract of contracts) {
+      const record = setup.written[outputPath(folder, contract, 8453)];
+      assert.ok(record);
+      if (contract.family) assert.equal(record.destinationChainId, 8453);
+    }
+    assert.deepEqual(setup.written[`${familyDirectory(folder, 8453)}/StickySourceCollector.json`].args,
+      [addresses.registry, addresses.tokens, addresses.rewardReceiverFactory, '8453']);
+  }
+  assert.ok(Object.keys(setup.written).every(file => !file.includes('/source-collectors/1/')));
+});
+
+test('missing destination selection or family manifests never uses legacy flat evidence', async () => {
+  const setup = fixture('mainnets');
+  delete setup.options.env.STICKY_DESTINATION_CHAIN_ID;
+  await assert.rejects(emit('mainnets', setup.options), /STICKY_DESTINATION_CHAIN_ID/);
+  setup.options.env.STICKY_DESTINATION_CHAIN_ID = '1';
+  const selected = `${familyDirectory('ethereum', 1)}/verified.json`;
+  setup.files['deployments/ethereum/verified.json'] = setup.files[selected];
+  delete setup.files[selected];
+  await assert.rejects(emit('mainnets', setup.options), /missing .*source-collectors\/1\/verified.json/);
+  assert.equal(setup.fetched.length, 0);
+  assert.deepEqual(setup.written, {});
+});
+
+test('constructor integer encoding follows the compiled ABI and rejects coerced or overflowing values', () => {
+  const collector = contracts.find(contract => contract.name === 'StickySourceCollector');
+  const compiled = JSON.parse(artifact(collector.name));
+  const manifest = { ...addresses, destinationChainId: 8453 };
+  const encoded = constructorArgs(collector, manifest, compiled);
+  assert.deepEqual(encoded.args, argsFor(collector.name, 8453));
+  assert.equal(encoded.argsHex.slice(-64), word(8453));
+  for (const value of [undefined, null, true, '', '01', '-1', '+1', '0x1', '1.0', '1e0', '1\n', 1.5,
+    Number.MAX_SAFE_INTEGER + 1, (1n << 256n).toString()]) {
+    assert.throws(() => constructorArgs(collector, { ...manifest, destinationChainId: value }, compiled), /invalid destinationChainId uint256/);
+  }
+  const uint8 = structuredClone(compiled);
+  uint8.abi[0].inputs[3].type = 'uint8';
+  assert.throws(() => constructorArgs(collector, manifest, uint8), /invalid destinationChainId uint8/);
+  assert.equal(constructorArgs(collector, { ...manifest, destinationChainId: '255' }, uint8).args[3], '255');
+  const invalidWidth = structuredClone(compiled);
+  invalidWidth.abi[0].inputs[3].type = 'uint7';
+  assert.throws(() => constructorArgs(collector, manifest, invalidWidth), /no longer matches/);
+  const address = structuredClone(compiled);
+  address.abi[0].inputs[3].type = 'address';
+  assert.throws(() => constructorArgs(collector, manifest, address), /no destinationChainId address/);
+  const integerRegistry = structuredClone(compiled);
+  integerRegistry.abi[0].inputs[0].type = 'uint256';
+  assert.throws(() => constructorArgs(collector, manifest, integerRegistry), /invalid registry uint256/);
 });

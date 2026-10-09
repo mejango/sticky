@@ -10,7 +10,7 @@ import {
   type Hex,
 } from 'viem'
 import { SAFE_EXEC_ABI } from '@bananapus/nana-sdk-core/safe-service'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 
 const displayQueries = new QueryClient()
@@ -25,7 +25,7 @@ const mocks = vi.hoisted(() => ({
   chainId: 1,
   connectorUid: 'wallet-one',
   connected: true,
-  publicClient: { simulateContract: vi.fn(), estimateContractGas: vi.fn(), getTransaction: vi.fn() },
+  publicClient: { simulateContract: vi.fn(), estimateContractGas: vi.fn(), getTransaction: vi.fn(), getChainId: vi.fn(), getBlock: vi.fn(), getTransactionReceipt: vi.fn() },
   receipt: { data: undefined, isError: false } as {
     data?: {
       status: 'success' | 'reverted'
@@ -83,6 +83,12 @@ const BOB = '0x2222222222222222222222222222222222222222' as Address
 const reviewedByAlice = { reviewedAccount: ALICE }
 const HASH = `0x${'ab'.repeat(32)}` as const
 const EXECUTION_HASH = `0x${'cd'.repeat(32)}` as const
+const BLOCK_HASH = `0x${'ef'.repeat(32)}` as const
+const canonicalReceipt = (status: 'success' | 'reverted', transactionHash: Hex = HASH) => ({
+  status, transactionHash, blockNumber: 77n, blockHash: BLOCK_HASH, transactionIndex: 0,
+  from: ALICE, to: BOB, logs: [],
+})
+const recoveryRecords = () => Object.keys(localStorage).filter(key => key.startsWith('nana-sdk:reviewed-write:')).map(key => JSON.parse(localStorage.getItem(key)!))
 const ABI = parseAbi(['function transfer(address to, uint256 amount)'])
 const request = {
   chainId: 10,
@@ -116,8 +122,14 @@ async function renderHook() {
   await act(async () => {
     renderer = TestRenderer.create(createElement(Harness, { ref }))
   })
+  renderers.push(renderer)
   return { ref, renderer }
 }
+
+const renderers: TestRenderer.ReactTestRenderer[] = []
+afterEach(async () => {
+  await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount() })
+})
 
 beforeEach(() => {
   displayQueries.clear()
@@ -134,10 +146,16 @@ beforeEach(() => {
   mocks.waitForSafeExecutionHash.mockResolvedValue(EXECUTION_HASH)
   mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => ({
     hash,
-    from: BOB,
-    to: ALICE,
-    input: execTransaction(),
+    from: mocks.safeConnection ? BOB : ALICE,
+    to: mocks.safeConnection ? ALICE : BOB,
+    input: mocks.safeConnection ? execTransaction() : encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] }),
+    blockHash: BLOCK_HASH, blockNumber: 77n, transactionIndex: 0,
   }))
+  mocks.publicClient.getChainId.mockResolvedValue(10)
+  mocks.publicClient.getBlock.mockImplementation(async ({ blockNumber }: { blockNumber?: bigint }) => ({
+    number: blockNumber ?? 100n, hash: BLOCK_HASH, timestamp: 1_000n,
+  }))
+  mocks.publicClient.getTransactionReceipt.mockImplementation(async () => mocks.receipt.data)
   mocks.publicClient.simulateContract.mockResolvedValue({
     request: { address: BOB, functionName: 'transfer', gas: 100n },
   })
@@ -146,6 +164,28 @@ beforeEach(() => {
 })
 
 describe('useSafeTx', () => {
+  it('keeps a broadcast with a lost wallet reply held through reset and remount, including a changed amount', async () => {
+    let recipientBalance = 0n
+    mocks.writeContract.mockImplementationOnce(async () => {
+      recipientBalance += 5n
+      throw new Error('The wallet broadcast the transfer but its RPC response was lost.')
+    })
+    const first = await renderHook()
+    await act(async () => { await first.ref.current!.send(request, reviewedByAlice) })
+    expect(first.ref.current).toMatchObject({ phase: 'submitted', busy: false, hash: null })
+    expect(first.ref.current!.notice).toMatch(/may have been submitted/i)
+    await act(async () => first.ref.current!.reset())
+    await act(async () => { await first.ref.current!.send(request, reviewedByAlice) })
+    await act(async () => first.renderer.unmount())
+
+    const second = await renderHook()
+    await act(async () => { await second.ref.current!.send({ ...request, args: [BOB, 6n] }, reviewedByAlice) })
+    expect(second.ref.current).toMatchObject({ phase: 'submitted', hash: null })
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
+    expect(recipientBalance).toBe(5n)
+    await act(async () => second.renderer.unmount())
+  })
+
   it('refuses to send while view-as is active', async () => {
     setViewAs(BOB)
     try {
@@ -390,7 +430,7 @@ describe('useSafeTx', () => {
         ? VIEW_AS_WRITE_BLOCKED
         : 'Wallet connection changed. Review the transaction again.')
       expect(mocks.writeContract).not.toHaveBeenCalled()
-      expect(onBeforeWriteAborted).toHaveBeenCalledTimes(beforeWrite ? 1 : 0)
+      expect(onBeforeWriteAborted).toHaveBeenCalledOnce()
     } finally {
       clearViewAs()
       await act(async () => hook.renderer.unmount())
@@ -431,7 +471,7 @@ describe('useSafeTx', () => {
         await hook.ref.current!.send(request, reviewedByAlice)
       })
 
-      mocks.receipt = { data: { status, transactionHash: HASH }, isError: false }
+      mocks.receipt = { data: canonicalReceipt(status), isError: false }
       await act(async () => {
         hook.renderer.update(createElement(Harness, { ref: hook.ref }))
       })
@@ -445,7 +485,7 @@ describe('useSafeTx', () => {
   it('does not confirm a new action using the previous successful receipt', async () => {
     const hook = await renderHook()
     await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
-    mocks.receipt = { data: { status: 'success', transactionHash: HASH }, isError: false }
+    mocks.receipt = { data: canonicalReceipt('success'), isError: false }
     await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
     expect(hook.ref.current!.phase).toBe('success')
 
@@ -455,7 +495,7 @@ describe('useSafeTx', () => {
       phase: 'pending', busy: true, hash: EXECUTION_HASH, receipt: null,
     })
 
-    mocks.receipt = { data: { status: 'success', transactionHash: EXECUTION_HASH }, isError: false }
+    mocks.receipt = { data: canonicalReceipt('success', EXECUTION_HASH), isError: false }
     await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
     expect(hook.ref.current!.phase).toBe('success')
   })
@@ -466,7 +506,7 @@ describe('useSafeTx', () => {
       const getTransactionReceipt = vi
         .fn()
         .mockResolvedValueOnce(null)
-        .mockResolvedValue({ status: 'success', blockNumber: 77n, transactionHash: HASH })
+        .mockResolvedValue(canonicalReceipt('success'))
       mocks.publicClient = {
         ...mocks.publicClient,
         getTransactionReceipt,
@@ -486,7 +526,7 @@ describe('useSafeTx', () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(4_100)
       })
-      expect(getTransactionReceipt).toHaveBeenCalledTimes(2)
+      expect(getTransactionReceipt).toHaveBeenCalledTimes(3)
       expect(hook.ref.current).toMatchObject({ phase: 'success', busy: false, error: null })
       expect(hook.ref.current!.receipt).toMatchObject({ blockNumber: 77n })
     } finally {
@@ -576,8 +616,8 @@ describe('useSafeTx', () => {
       })
       // The gas followed the reviewed connection, and nothing reached the wallet.
       expect(mocks.writeContract).not.toHaveBeenCalled()
-      // Nothing was marked before the write, so nothing is withdrawn.
-      expect(onBeforeWriteAborted).not.toHaveBeenCalled()
+      // The final wallet gate releases the generic reservation.
+      expect(onBeforeWriteAborted).toHaveBeenCalledOnce()
     },
   )
 
@@ -654,4 +694,203 @@ describe('useSafeTx', () => {
     expect(onBeforeWriteAborted).toHaveBeenCalledOnce()
     expect(mocks.writeContract).toHaveBeenCalledOnce()
   })
+  it('does not treat a rejection-looking transport message as a definite wallet rejection', async () => {
+    mocks.writeContract.mockRejectedValueOnce(new Error('User rejected: transport connection lost'))
+    const hook = await renderHook()
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    expect(hook.ref.current!.phase).toBe('submitted')
+    expect(recoveryRecords()).toHaveLength(1)
+  })
+
+  it('refuses a wallet write if the durable marker cannot be retained', async () => {
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Storage unavailable') })
+    const hook = await renderHook()
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    expect(mocks.writeContract).not.toHaveBeenCalled()
+    expect(hook.ref.current!.phase).toBe('error')
+  })
+
+  it('refuses a wallet write without cross-tab exclusion', async () => {
+    vi.stubGlobal('navigator', { locks: undefined })
+    const hook = await renderHook()
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    expect(mocks.writeContract).not.toHaveBeenCalled()
+    expect(hook.ref.current!.error).toMatch(/coordinate wallet writes/i)
+  })
+
+  it('repairs a returned hash after storage recovers without submitting twice', async () => {
+    vi.useFakeTimers()
+    try {
+      const original = Storage.prototype.setItem
+      let storageBroken = true
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key, value) {
+        if (storageBroken && JSON.parse(value).hash) throw new Error('Storage became unavailable')
+        original.call(this, key, value)
+      })
+      const hook = await renderHook()
+      await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+      expect(hook.ref.current!.hash).toBe(HASH)
+      expect(recoveryRecords()[0].hash).toBeUndefined()
+      storageBroken = false
+      mocks.receipt = { data: canonicalReceipt('success'), isError: false }
+      await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
+      expect(recoveryRecords()).toHaveLength(0)
+      expect(hook.ref.current!.phase).toBe('success')
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+    } finally { vi.useRealTimers() }
+  })
+
+  it('recovers a prior different amount without attributing its success to the new request', async () => {
+    const first = await renderHook()
+    await act(async () => { await first.ref.current!.send(request, reviewedByAlice) })
+    await act(async () => { first.renderer.unmount() })
+    const reopened = await renderHook()
+    await act(async () => { await reopened.ref.current!.send({ ...request, args: [BOB, 6n] }, reviewedByAlice) })
+    mocks.receipt = { data: canonicalReceipt('success'), isError: false }
+    await act(async () => { reopened.renderer.update(createElement(Harness, { ref: reopened.ref })) })
+    expect(reopened.ref.current!.phase).toBe('submitted')
+    expect(reopened.ref.current!.notice).toMatch(/earlier transaction is confirmed/i)
+    expect(recoveryRecords()).toHaveLength(0)
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
+  })
+
+  it('keeps a noncanonical receipt pending and retains its durable record', async () => {
+    const hook = await renderHook()
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    mocks.publicClient.getBlock.mockResolvedValue({ number: 77n, hash: EXECUTION_HASH })
+    mocks.receipt = { data: canonicalReceipt('success'), isError: false }
+    await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
+    expect(hook.ref.current!.phase).toBe('pending')
+    expect(recoveryRecords()).toHaveLength(1)
+  })
+
+  it('holds a reverted write until finality proves its failure', async () => {
+    const hook = await renderHook()
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    mocks.publicClient.getBlock.mockImplementation(async ({ blockNumber }: { blockNumber?: bigint }) => ({
+      number: blockNumber ?? 76n, hash: BLOCK_HASH, timestamp: 1_000n,
+    }))
+    mocks.receipt = { data: canonicalReceipt('reverted'), isError: false }
+    await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
+    expect(hook.ref.current!.phase).toBe('submitted')
+    expect(recoveryRecords()).toHaveLength(1)
+  })
+
+  it.each(['reset', 'unmount'] as const)('does not write after %s closes an outstanding review', async close => {
+    let finish!: (accepted: boolean) => void
+    mocks.requestReview.mockImplementationOnce(() => new Promise<boolean>(resolve => { finish = resolve }))
+    const hook = await renderHook()
+    let pending!: Promise<Hex | null>
+    await act(async () => { pending = hook.ref.current!.send(request, reviewedByAlice); await Promise.resolve() })
+    await act(async () => { if (close === 'reset') hook.ref.current!.reset(); else hook.renderer.unmount() })
+    await act(async () => { finish(true); await pending })
+    expect(mocks.writeContract).not.toHaveBeenCalled()
+    expect(recoveryRecords()).toHaveLength(0)
+  })
+
+  it('awaits a typed domain hash handoff and does not open a second generic journal', async () => {
+    const events: string[] = []
+    mocks.writeContract.mockImplementationOnce(async () => {
+      events.push('write')
+      expect(recoveryRecords()).toHaveLength(0)
+      return HASH
+    })
+    const hook = await renderHook()
+    await act(async () => {
+      await hook.ref.current!.send(request, { ...reviewedByAlice, durableRecovery: {
+        reserve: () => { events.push('reserve') },
+        releaseUnsubmitted: () => { events.push('released') },
+        submitted: async (hash, safe) => {
+          expect(hash).toBe(HASH)
+          expect(safe).toBe(false)
+          await Promise.resolve()
+          events.push('stored')
+        },
+      } })
+      events.push('returned')
+    })
+    expect(events).toEqual(['reserve', 'write', 'stored', 'returned'])
+  })
+
+  it('returns a known hash after a domain storage failure without invoking rejection cleanup', async () => {
+    const releaseUnsubmitted = vi.fn()
+    const hook = await renderHook()
+    let returned: Hex | null = null
+    await act(async () => {
+      returned = await hook.ref.current!.send(request, { ...reviewedByAlice, durableRecovery: {
+        reserve: vi.fn(), releaseUnsubmitted,
+        submitted: () => { throw { code: 4001, message: 'Storage callback failed' } },
+      } })
+    })
+    expect(returned).toBe(HASH)
+    expect(hook.ref.current).toMatchObject({ phase: 'pending', submissionHash: HASH })
+    expect(releaseUnsubmitted).not.toHaveBeenCalled()
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
+  })
+
+  it('persists a wallet reply received after reset without reopening the old review', async () => {
+    let reply!: (hash: Hex) => void
+    mocks.writeContract.mockImplementationOnce(() => new Promise<Hex>(resolve => { reply = resolve }))
+    const hook = await renderHook()
+    let pending!: Promise<Hex | null>
+    await act(async () => { pending = hook.ref.current!.send(request, reviewedByAlice) })
+    await act(async () => { hook.ref.current!.reset() })
+    await act(async () => { reply(HASH); await pending })
+    expect(hook.ref.current!.phase).toBe('idle')
+    expect(recoveryRecords()[0].hash).toBe(HASH)
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    expect(hook.ref.current!.submissionHash).toBe(HASH)
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
+  })
+
+  it('keeps account scopes independent while retaining the original account’s unknown write', async () => {
+    mocks.writeContract.mockRejectedValueOnce(new Error('Lost response after broadcast'))
+    const hook = await renderHook()
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    mocks.account = BOB
+    await act(async () => { await hook.ref.current!.send(request, { reviewedAccount: BOB }) })
+    expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+    expect(recoveryRecords()).toHaveLength(2)
+    expect(recoveryRecords().find(record => record.account === ALICE).hash).toBeUndefined()
+  })
+
+  it('releases only an explicitly rejected reservation before a new review', async () => {
+    mocks.writeContract.mockRejectedValueOnce(new UserRejectedRequestError(new Error('Declined')))
+    const hook = await renderHook()
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    expect(recoveryRecords()).toHaveLength(0)
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+    expect(recoveryRecords()[0].hash).toBe(HASH)
+  })
+
+  it.each(['reset', 'unmount'] as const)('refuses the final wallet write when %s occurs during readiness verification', async close => {
+    let release!: () => void
+    const reverify = () => new Promise<void>(resolve => { release = resolve })
+    const hook = await renderHook()
+    let pending!: Promise<Hex | null>
+    await act(async () => { pending = hook.ref.current!.send(request, { ...reviewedByAlice, reverify }) })
+    await act(async () => { if (close === 'reset') hook.ref.current!.reset(); else hook.renderer.unmount() })
+    await act(async () => { release(); await pending })
+    expect(mocks.writeContract).not.toHaveBeenCalled()
+    expect(recoveryRecords()).toHaveLength(0)
+  })
+
+  it('saves an older wallet reply without replacing a newer action’s visible hash', async () => {
+    let reply!: (hash: Hex) => void
+    mocks.writeContract.mockImplementationOnce(() => new Promise<Hex>(resolve => { reply = resolve }))
+    const hook = await renderHook()
+    let pending!: Promise<Hex | null>
+    await act(async () => { pending = hook.ref.current!.send(request, reviewedByAlice) })
+    await act(async () => { hook.ref.current!.reset() })
+    mocks.writeContract.mockResolvedValueOnce(EXECUTION_HASH)
+    await act(async () => {
+      await hook.ref.current!.send({ ...request, abi: parseAbi(['function approve(address spender,uint256 amount)']), functionName: 'approve' }, reviewedByAlice)
+    })
+    await act(async () => { reply(HASH); await pending })
+    expect(hook.ref.current).toMatchObject({ phase: 'pending', hash: EXECUTION_HASH })
+    expect(recoveryRecords().map(record => record.hash).sort()).toEqual([HASH, EXECUTION_HASH].sort())
+    expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+  })
+
 })

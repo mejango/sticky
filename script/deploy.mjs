@@ -38,17 +38,41 @@ export const networks = {
   ],
 };
 
-export function preflight(group, env = process.env, read = readFileSync) {
+// One explicit home selects an immutable collector family; never infer it from a source RPC or old manifest.
+export function destinationChainId(group, env = process.env) {
   if (!networks[group]) throw new Error('Network group must be testnets or mainnets.');
+  const value = env.STICKY_DESTINATION_CHAIN_ID;
+  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)
+    || !Number.isSafeInteger(Number(value)) || String(Number(value)) !== value) {
+    throw new Error('STICKY_DESTINATION_CHAIN_ID must be an explicit positive canonical decimal safe integer.');
+  }
+  const id = Number(value);
+  if (!networks[group].some(([, chainId]) => chainId === id)) {
+    throw new Error(`STICKY_DESTINATION_CHAIN_ID must belong to ${group}.`);
+  }
+  return id;
+}
+
+export function familyDirectory(folder, id) {
+  if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Invalid collector destination chain ID.');
+  return `deployments/${folder}/source-collectors/${id}`;
+}
+
+export function preflight(group, env = process.env, read = readFileSync) {
+  const destination = destinationChainId(group, env);
   const errors = [];
   const root = env.NANA_CORE_DEPLOYMENT_PATH || 'node_modules/@bananapus/core-v6/deployments';
+  const suckerRoot = env.NANA_SUCKERS_DEPLOYMENT_PATH || 'node_modules/@bananapus/suckers-v6/deployments';
   for (const [alias, chainId, variable, folder] of networks[group]) {
     if (!env[variable]?.trim()) errors.push(`${alias}: missing ${variable}`);
-    for (const name of ['JBController', 'JBDirectory', 'JBMultiTerminal']) {
-      const file = `${root}/${folder}/${name}.json`;
+    for (const [artifactRoot, name] of [
+      ...['JBController', 'JBDirectory', 'JBMultiTerminal'].map(name => [root, name]), [suckerRoot, 'JBSuckerRegistry'],
+    ]) {
+      const file = `${artifactRoot}/${folder}/${name}.json`;
       try {
         const artifact = JSON.parse(read(file, 'utf8'));
-        if (!/^0x[\da-fA-F]{40}$/.test(artifact.address || '') || /^0x0{40}$/.test(artifact.address)) {
+        if (typeof artifact.address !== 'string' || artifact.address.length !== 42
+          || !/^0x[\da-fA-F]{40}$/.test(artifact.address) || /^0x0{40}$/.test(artifact.address)) {
           throw new Error('invalid contract address');
         }
         if (BigInt(artifact.chainId) !== BigInt(chainId)) throw new Error('wrong chain ID');
@@ -58,20 +82,35 @@ export function preflight(group, env = process.env, read = readFileSync) {
     }
   }
   if (errors.length) throw new Error(errors.join('\n'));
+  return destination;
 }
 
 // The manifest fields every chain of a group must predict identically; the core binds the same addresses everywhere.
-export const suite = ['deployer', 'hook', 'distributor', 'rewardReceiver', 'rewardReceiverFactory', 'autoStick'];
+export const suite = ['deployer', 'hook', 'distributor', 'rewardReceiver', 'rewardReceiverFactory', 'autoStick', 'sourceCollector', 'sourceFeePayer'];
 
 // Every chain of a group must predict one suite.
-export function requireOneAddressPerGroup(group, kind, read = readFileSync) {
+export function requireOneAddressPerGroup(group, kind, selectedDestinationChainId, read = readFileSync) {
+  const destination = destinationChainId(group, { STICKY_DESTINATION_CHAIN_ID: String(selectedDestinationChainId) });
+  if (!['simulation', 'verified'].includes(kind)) throw new Error('Manifest kind must be simulation or verified.');
   let expected;
-  for (const [alias, , , folder] of networks[group]) {
-    const manifest = JSON.parse(read(`deployments/${folder}/${kind}.json`, 'utf8'));
+  const manifests = [];
+  for (const [alias, chainId, , folder] of networks[group]) {
+    const manifest = JSON.parse(read(`${familyDirectory(folder, destination)}/${kind}.json`, 'utf8'));
+    if (manifest.destinationChainId !== destination || manifest.chainId !== chainId || manifest.kind !== kind) {
+      throw new Error(`${alias}: manifest destination, source chain or kind does not match the selected ${destination} ${kind} family.`);
+    }
+    for (const field of suite) {
+      if (typeof manifest[field] !== 'string' || manifest[field].length !== 42
+        || !/^0x[\da-fA-F]{40}$/.test(manifest[field]) || /^0x0{40}$/i.test(manifest[field])) {
+        throw new Error(`${alias}: missing or invalid ${field} deployment address.`);
+      }
+    }
     const identity = suite.map(field => `${field}=${String(manifest[field]).toLowerCase()}`).join(' ');
     expected ??= identity;
     if (identity !== expected) throw new Error(`${alias} predicts a different deployment than the rest of ${group}: ${identity}`);
+    manifests.push({ alias, chainId, folder, manifest });
   }
+  return manifests;
 }
 
 // Whether the working sphinx.lock holds exactly the committed content, ignoring key order.
@@ -92,7 +131,7 @@ export function run(action, group, { env = process.env, spawn = spawnSync, read 
   if (!['preflight', 'rehearse', 'propose', 'verify', 'artifacts'].includes(action)) {
     throw new Error('Usage: deploy.sh <preflight|rehearse|propose|verify|artifacts> <testnets|mainnets>');
   }
-  preflight(group, env, read);
+  const destination = preflight(group, env, read);
   if (action === 'propose') {
     for (const key of ['SPHINX_MANAGED_BASE_URL', 'SPHINX_ORG_ID', 'SPHINX_API_KEY']) {
       if (!env[key]?.trim()) throw new Error(`Missing ${key}`);
@@ -125,6 +164,7 @@ export function run(action, group, { env = process.env, spawn = spawnSync, read 
   if (dirty && action !== 'rehearse') throw new Error(`Commit the reviewed checkout before ${action}; it has uncommitted changes.`);
   const childEnv = {
     ...env, FOUNDRY_PROFILE: 'deploy',
+    STICKY_DESTINATION_CHAIN_ID: String(destination),
     STICKY_REVISION: revision.stdout.trim() + (dirty ? '-dirty' : ''),
   };
   const execute = (command, args, chainId = 0, block = { number: '0', hash: '0x' + '00'.repeat(32) }) => {
@@ -159,7 +199,7 @@ export function run(action, group, { env = process.env, spawn = spawnSync, read 
     execute('forge', ['script', `script/${script}.s.sol:${script}`, '--rpc-url', alias,
       '--fork-block-number', block.number, '-vv'], chainId, block);
   }
-  requireOneAddressPerGroup(group, script === 'Verify' ? 'verified' : 'simulation', read);
+  requireOneAddressPerGroup(group, script === 'Verify' ? 'verified' : 'simulation', destination, read);
   if (action === 'propose') {
     execute('node_modules/.bin/sphinx', ['propose', 'script/Deploy.s.sol', '--target-contract', 'Deploy', '--networks', group]);
   }

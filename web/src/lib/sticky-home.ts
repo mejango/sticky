@@ -56,14 +56,9 @@ import {
 } from '@/lib/sticky-indexed'
 import { usdPrices } from '@/lib/sticky-prices'
 import { readStickyProjects, type StickyProjectInfo } from '@/lib/sticky-project'
-import { launchKey } from '@/lib/sticky-siblings'
 
 /** A Sticky project on the home, as the chain reads it now, and how many holders have shares stuck in it. */
 export type HomeCard = { info: StickyProjectInfo; sticks: number }
-
-/** A Stickiest card: one launch's projects, at most one per chain, or a project of its own. Cards rank by
- * `totalStaked`, their Sticky shares. */
-export type HomeCardGroup = { cards: HomeCard[]; totalStaked: bigint }
 
 /** A change to a project's Sticky shares, at a time in Unix seconds: what the secured chart's history is made of. */
 export type SupplyMove = { projectId: bigint; timestamp: number; delta: bigint }
@@ -316,36 +311,12 @@ const live: HomeReadDeps = {
   creationBlock: (chainId, projectId, { signal }) => projectCreationBlock(chainId, projectId, { signal }),
 }
 
-/** A card's launch key and planned chains when its chain is one of them, or its uri names no chains; otherwise none.
- * A launch writes one uri on every chain, so a project on another chain whose uri copies a launch's cannot join it, or
- * head it, and neither can one whose copy adds its own chain to the plan. */
-function plannedKey({ info }: HomeCard): string | null {
-  const key = launchKey(info)
-  const onPlan = info.plannedChains === null || info.plannedChains.includes(info.chainId)
-  return key !== null && onPlan ? `${key}|${info.plannedChains ?? ''}` : null
-}
-
-/**
- * The Stickiest cards: a launch's projects share its launch id, stickiness bonus, transfer mode and planned chains,
- * and each chain of its plan gives the first of its projects that does, so a copied uri cannot join a launch. Most
- * Sticky shares first; cards that tie keep the order they came in.
- */
-export function groupHomeCards(cards: readonly HomeCard[]): HomeCardGroup[] {
-  const groups: HomeCardGroup[] = []
-  const byLaunch = new Map<string, HomeCardGroup>()
-  for (const card of cards) {
-    const key = plannedKey(card)
-    const launch = key === null ? undefined : byLaunch.get(key)
-    if (launch && !launch.cards.some(other => other.info.chainId === card.info.chainId)) {
-      launch.cards.push(card)
-      launch.totalStaked += card.info.totalSupply
-      continue
-    }
-    const fresh = { cards: [card], totalStaked: card.info.totalSupply }
-    if (key !== null && !launch) byLaunch.set(key, fresh)
-    groups.push(fresh)
-  }
-  return groups.sort((a, b) => (b.totalStaked > a.totalStaked ? 1 : b.totalStaked < a.totalStaked ? -1 : 0))
+/** Independent pools ranked by their local Sticky supply, most first. Shared metadata or token addresses never
+ * combine pools across chains. Cards that tie retain discovery order. */
+export function rankHomeCards(cards: readonly HomeCard[]): HomeCard[] {
+  return [...cards].sort((a, b) =>
+    b.info.totalSupply > a.info.totalSupply ? 1 : b.info.totalSupply < a.info.totalSupply ? -1 : 0,
+  )
 }
 
 /** A point of the secured chart: US dollars in millionths. */

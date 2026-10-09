@@ -1,0 +1,139 @@
+{
+  "kind": "read-only fork rehearsal; no deployment or source-split transaction",
+  "sourceRevision": "af4b08d0fa9a975002cafae79a36b7cb6d6221ed",
+  "sourceSHA256": {
+    "script/Deploy.s.sol": "b9f233e0a4adbc56197c9612ba932d9f31a062342818f260e0009b27a717f3e9",
+    "script/DeployLocal.s.sol": "ec72a219e76938a45a155a76389e8c236f56735810406554c6b26badc0c45c82",
+    "script/Rehearse.s.sol": "c97ba7166f23177d478e5d2353e819bae81f4055f5b4967522bdf9787edb76f7",
+    "script/Verify.s.sol": "e243511d3ce69c91696af6d0eb07fc0335b4b4b36f9379957fa711c875951dc0",
+    "script/helpers/StickyDeployment.sol": "b51d1a107219de1af356a821aa8a0b2932ea26f3f775a0424d2abf63cada3b69",
+    "script/mocks/MockArt.sol": "657e3abcbcb4c495e1d275b75f40e8ec9d93c14d687678858e0e099b2d1aca62",
+    "script/mocks/MockBan.sol": "e1636b931080827f51a0a6a2d73476383a0b425b0ad3e60d62130cb3bb20ddcd",
+    "script/structs/StickyCoreDeployment.sol": "bb6940e6b0c18b354c8bc121b9d5dd5eefbd6ce9317b9a393f6fd13420638551",
+    "script/structs/StickyDeploymentAddresses.sol": "9bdacca43149d54b0ab3bb49cb408afdb442f7fa6c5c07735a8973b970cd3460",
+    "script/structs/StickyImmutableReference.sol": "dda46b3e13d144e67184db20e055fc7455fc4363c32f0759388d42d2c9e8d5fd",
+    "src/StickyAutoStick.sol": "318e00ff136c6704be56bd98ad458c6c8d58835360bccd8c20d51d8ba67e4b3e",
+    "src/StickyDeployer.sol": "242c8f65727d83fc6be73ce930f3be117b66431290de7c00413a4220377dbbc9",
+    "src/StickyDistributor.sol": "42e876447a9074d26be7a73d38eb87c6d36208c312e73185a157f5fb74c69bd2",
+    "src/StickyHook.sol": "46b97f26d2c7bae24c5281ea773a9bc3e3a12c0d642d800e58f44eb9169216a4",
+    "src/StickyPriceFeed.sol": "e211b6a7343a65e7cfd4352ab380173a1fcb3c0954776e91c77fe72930be44db",
+    "src/StickyRewardReceiver.sol": "a7149827c4132702fb1ec7eaaf522b7e7d304effe2b2a3c701f89461716017d4",
+    "src/StickyRewardReceiverFactory.sol": "35947c944d6208683fd28615dbd0b754e36d2067309a1527ee69827cc6aff88f",
+    "src/StickySourceCollector.sol": "5d8bb67afa83fb16b5a14679ac5976a310407895a0aa73d35d4d8dada45a232b",
+    "src/StickySourceFeePayer.sol": "2e1683e195ddaae2d2c001c639e58f0e1cbe410840bd6e654da48cbd1d0688da",
+    "src/StickyToken.sol": "0a5edab5f39ddace4c46623c4631aa69a1f88d0b8101c3371c0c1469a32d3120",
+    "src/enums/AutoStickStatus.sol": "7b8ea1dfb4f73cb7c76dafec733cb743d1c2c60f9fefe31f2323e3879cb79cbf",
+    "src/interfaces/IStickyAutoStick.sol": "4a97413f50d3e4d68799699bab227a22f6a2e8765c62973b21fe1d58b9283873",
+    "src/interfaces/IStickyDeployer.sol": "d2cf87fb0d66768081a194a7b1ba0755b508d3bf46697561bd542c818f8cc5a0",
+    "src/interfaces/IStickyDistributor.sol": "5fd12806e63af9316efae53a5e884411e7d3ee8b2df2871db95da6c2e4061a9d",
+    "src/interfaces/IStickyHook.sol": "df59024aa7ca86f618864d06bc35c5676dadc955685d84dc3ef5962493dcdf70",
+    "src/interfaces/IStickyRewardReceiver.sol": "f2c7bd80301f20bbce6a0fe0ba9e0dbecf63bac7dc7bd2b4f58aa4ff0ac7d1d4",
+    "src/interfaces/IStickyRewardReceiverFactory.sol": "4e138084406b13198a8c72740a31bfc5ddd31d5bf708952ede1fec0a439cbcc5",
+    "src/interfaces/IStickySourceCollector.sol": "495d2eb5c90cc5db88c53ac74ba52d2ad10d3750f2b7bfb4c53eb960c19b4357",
+    "src/interfaces/IStickySourceFeePayer.sol": "4ea9f3fc2a1973a8bcee1084a2ab725186f7669dd1e5cf518a98ee64bbccdc02",
+    "src/interfaces/IStickyToken.sol": "87ffc13e2902a0c25a04fba02224d38cf470809bbe95351d867a24af4d5db116",
+    "src/libraries/StickyPricing.sol": "77681eafbe93bc930e9c8f12649fa4501bb874b81dfbc06550da86f6e6a9dc26",
+    "src/structs/AutoStickConfig.sol": "165d1b7091d4f381089bb439348483f468211b6a0ad8be6d25ae3352abf5b21e",
+    "src/structs/StickyPaySnapshot.sol": "b18981de63e1db6e80885337157b549750508ef6ba24f80dfb5f93d6be98ef39",
+    "src/structs/StickyTranche.sol": "ea5ffcf74d294f44e8e1cbf183a4074b3f0cbbc074c20badb9c2f6426532d953"
+  },
+  "qualifiedContractCommit": "af4b08d0fa9a975002cafae79a36b7cb6d6221ed",
+  "destinationChainId": 1,
+  "create2Factory": "0x4e59b44847b379578588920cA78FbF26c0B4956C",
+  "sourceCollectorSalt": "0x537469636b79536f75726365436f6c6c6563746f725636000000000000000000",
+  "constructorArguments": [
+    "0x7903a854aE91eAf635430D120a1a434085cEf297",
+    "0x1f80d8f057eE36b4C2656D107E4e4558B71bA7D9",
+    "0x41AEC7AacEa4759F2c8AaBD68D4a4C1574A6A737",
+    "1"
+  ],
+  "creationCodeHash": "0x6f4e38796a90b0f60f8c373a030d869b9d4c43470d9ea46421387d8d0f033a91",
+  "initCodeHash": "0xc8e4854e2f3531730ae3103d1494cebfc06984b1ab32a19653e74af51a959089",
+  "factoryCalldataHash": "0xd3757de1f6daa88ceaeb535305e588319d4aa09b54ea4abb1de6e4b92af55475",
+  "sourceCollector": "0x3b33E1aee2ADc340F2f9930863323F1686B02d68",
+  "sourceCollectorCodehash": "0x70305e1f3d2c9dc4549b8abbb4397958443967a592d6291e9e77e86547b8ec86",
+  "sourceFeePayer": "0x8833FBCD0A7Bc2afD4D5f837998F6cfffB23980E",
+  "sourceFeePayerCreationCodeHash": "0x17619b734c4ad0208623b5fa4de59409f7438f4577699acfe2c701665d7cc5a8",
+  "sourceFeePayerCodehash": "0x60977a48cb6b7a2e69de13a6cfaa74e5f9551479646ecd97462755681a754e61",
+  "blockMetadataValidation": "Passed independent eth_chainId, eth_getBlockByNumber/hash/parent and state-override EVM NUMBER/BLOCKHASH/TIMESTAMP checks at every recorded block. Arbitrum records both its canonical L2 RPC parent and its independently validated L1-style EVM block context.",
+  "chains": [
+    {
+      "chainId": 1,
+      "rpcBlockNumber": 26157492,
+      "rpcBlockHash": "0x864863e55d0f59c97f4978a7fcf331f60318adfcd29895c1d65b1f3eb8944302",
+      "rpcParentBlockHash": "0x581ef711340a9e1c17aa7b5ced099194826769deafdc351c5b06af9e40e81563",
+      "evmBlockNumber": 26157492,
+      "evmParentBlockHash": "0x581ef711340a9e1c17aa7b5ced099194826769deafdc351c5b06af9e40e81563",
+      "timestamp": 1791580679,
+      "kind": "simulation",
+      "revision": "af4b08d0fa9a975002cafae79a36b7cb6d6221ed"
+    },
+    {
+      "chainId": 10,
+      "rpcBlockNumber": 157990962,
+      "rpcBlockHash": "0x06a40b6289077f05cde629c10f6e2bb29d8c82db3e315e4b0bb147e5e2de5814",
+      "rpcParentBlockHash": "0x8464f74d265c93446390cfe70dca4f6c624bb77ababda58aacf27e6eb4501f9e",
+      "evmBlockNumber": 157990962,
+      "evmParentBlockHash": "0x8464f74d265c93446390cfe70dca4f6c624bb77ababda58aacf27e6eb4501f9e",
+      "timestamp": 1791580701,
+      "kind": "simulation",
+      "revision": "af4b08d0fa9a975002cafae79a36b7cb6d6221ed"
+    },
+    {
+      "chainId": 8453,
+      "rpcBlockNumber": 52395685,
+      "rpcBlockHash": "0xb7be9608dad80442add42e1eda52bc705ed0f4495995d491f998ecc4bef3444a",
+      "rpcParentBlockHash": "0x937a278f457ea8c3b19ba1360418499e8014420ab0d6078a3b623dda192521a5",
+      "evmBlockNumber": 52395685,
+      "evmParentBlockHash": "0x937a278f457ea8c3b19ba1360418499e8014420ab0d6078a3b623dda192521a5",
+      "timestamp": 1791580717,
+      "kind": "simulation",
+      "revision": "af4b08d0fa9a975002cafae79a36b7cb6d6221ed"
+    },
+    {
+      "chainId": 42161,
+      "rpcBlockNumber": 513317966,
+      "rpcBlockHash": "0x2353c1ab18ffe0828e7623f7f2b14227ba269999f1ca16f7f061a516c598a66d",
+      "rpcParentBlockHash": "0xe87060f05dc9443b44a1a721253c3f73ba866134abcad973a9433140ddd25e55",
+      "evmBlockNumber": 26157495,
+      "evmParentBlockHash": "0x2252182cb662ae0b986b131fee3d1d8d8961c1d7907ea0dd427725586588dcf7",
+      "timestamp": 1791580735,
+      "kind": "simulation",
+      "revision": "af4b08d0fa9a975002cafae79a36b7cb6d6221ed"
+    }
+  ],
+  "rpcEstimates": [
+    {
+      "chainId": 1,
+      "rpcBlockNumber": 26157492,
+      "collectorAbsentBeforeSimulation": true,
+      "feeChildAbsentBeforeSimulation": true,
+      "estimatedFactoryCallGas": 2653619,
+      "ok": true
+    },
+    {
+      "chainId": 10,
+      "rpcBlockNumber": 157990962,
+      "collectorAbsentBeforeSimulation": true,
+      "feeChildAbsentBeforeSimulation": true,
+      "estimatedFactoryCallGas": 2653619,
+      "ok": true
+    },
+    {
+      "chainId": 8453,
+      "rpcBlockNumber": 52395685,
+      "collectorAbsentBeforeSimulation": true,
+      "feeChildAbsentBeforeSimulation": true,
+      "estimatedFactoryCallGas": 2653619,
+      "ok": true
+    },
+    {
+      "chainId": 42161,
+      "rpcBlockNumber": 513317966,
+      "collectorAbsentBeforeSimulation": true,
+      "feeChildAbsentBeforeSimulation": true,
+      "estimatedFactoryCallGas": 2665873,
+      "ok": true
+    }
+  ]
+}

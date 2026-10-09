@@ -12,10 +12,11 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { zeroAddress } from 'viem'
+import { getContractAddress, zeroAddress } from 'viem'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   deploymentsFromRecords,
+  collectorsFromRecords,
   syncDeployments,
 } from '../scripts/sync-deployments.mjs'
 
@@ -62,14 +63,14 @@ function record(
   mkdirSync(directory, { recursive: true })
   writeFileSync(
     join(directory, 'verified.json'),
-    JSON.stringify({ chainId, ...addresses, ...overrides.verified }),
+    JSON.stringify({ kind: 'verified', chainId, ...addresses, ...overrides.verified }),
   )
   writeFileSync(
     join(directory, 'StickyDeployer.json'),
     JSON.stringify({
       address: addresses.deployer.toLowerCase(),
       chainId: `0x${chainId.toString(16)}`,
-      receipt: { blockNumber: `0x${block.toString(16)}` },
+      receipt: { status: '0x1', transactionHash: codeHash, blockHash: codeHash, blockNumber: `0x${block.toString(16)}` },
       ...overrides.deployer,
     }),
   )
@@ -152,6 +153,11 @@ describe('deploymentsFromRecords', () => {
       { deployer: { receipt: { blockNumber: 'latest' } } },
       'base: StickyDeployer.json receipt.blockNumber must be a hex number',
     ],
+    [
+      'a missing creation receipt',
+      { deployer: { receipt: undefined } },
+      'base: StickyDeployer.json receipt.blockNumber must be a hex number',
+    ],
   ])('refuses %s', (_case, overrides, message) => {
     record('base', 8453, 51791252, overrides)
 
@@ -165,6 +171,25 @@ describe('deploymentsFromRecords', () => {
     expect(() => deploymentsFromRecords(root)).toThrow(
       /^base: ENOENT.*StickyDeployer\.json/,
     )
+  })
+
+  it.each(['simulation', undefined])('refuses a flat manifest with kind %s', kind => {
+    record('base', 8453, 51791252, { verified: { kind } })
+    expect(() => deploymentsFromRecords(root)).toThrow('record must be verified')
+  })
+
+  it.each([
+    { status: '0x0' }, { status: undefined }, { transactionHash: undefined },
+    { blockHash: undefined }, { transactionHash: `0x${'00'.repeat(32)}` },
+    { blockHash: `0x${'00'.repeat(32)}` }, { blockNumber: '0x0' },
+  ])('refuses incomplete or failed flat creation evidence: %j', overrides => {
+    record('base', 8453, 51791252, { deployer: {
+      receipt: { status: '0x1', transactionHash: codeHash, blockHash: codeHash, blockNumber: '0x10', ...overrides },
+    } })
+    const output = join(root, 'sticky-deployments.json')
+    expect(() => syncDeployments({ records: root, output })).toThrow('successful creation receipt')
+    expect(existsSync(output)).toBe(false)
+    expect(existsSync(join(root, 'sticky-source-collectors.json'))).toBe(false)
   })
 
   it('refuses two records for one chain', () => {
@@ -230,5 +255,135 @@ describe('sync-deployments.mjs', () => {
 
     expect(status).toBe(1)
     expect(stderr).toContain('usage: sync-deployments.mjs [--check]')
+  })
+})
+
+const collector = '0x1111111111111111111111111111111111111111'
+const feePayer = getContractAddress({ from: collector, nonce: 1n })
+const codeHash = `0x${'12'.repeat(32)}`
+const sourceBindings = {
+  registry: addresses.deployer, tokens: addresses.hook, directory: addresses.terminal,
+  rewardReceiverFactory: addresses.rewardReceiverFactory,
+}
+
+function family(source: string, sourceChainId: number, home = 1, overrides: Record<string, unknown> = {}) {
+  const directory = join(root, source, 'source-collectors', String(home))
+  mkdirSync(directory, { recursive: true })
+  writeFileSync(join(directory, 'verified.json'), JSON.stringify({
+    kind: 'verified', chainId: sourceChainId, destinationChainId: home,
+    sourceCollector: collector, sourceFeePayer: feePayer,
+    sourceCollectorCodehash: codeHash, sourceFeePayerCodehash: codeHash,
+    ...sourceBindings, ...overrides,
+  }))
+  for (const [name, address, args] of [
+    ['StickySourceCollector', collector, [sourceBindings.registry, sourceBindings.tokens, sourceBindings.rewardReceiverFactory, String(home)]],
+    ['StickySourceFeePayer', feePayer, []],
+  ] as const) {
+    writeFileSync(join(directory, `${name}.json`), JSON.stringify({
+      contractName: name, address, args, chainId: `0x${sourceChainId.toString(16)}`, destinationChainId: home,
+      receipt: { status: '0x1', transactionHash: codeHash, blockHash: codeHash, blockNumber: '0x10' },
+    }))
+  }
+  return directory
+}
+
+describe('collectorsFromRecords', () => {
+  beforeEach(() => {
+    record('ethereum', 1, 1)
+    record('base', 8453, 2)
+  })
+
+  it('publishes only executed verified families, with the source and home explicitly bound', () => {
+    family('base', 8453)
+    family('ethereum', 1)
+    expect(collectorsFromRecords(root)).toEqual([1, 8453].map(sourceChainId => ({
+      sourceChainId, destinationChainId: 1, address: collector, feePayer,
+      runtimeCodeHash: codeHash, feePayerRuntimeCodeHash: codeHash,
+      registry: sourceBindings.registry, tokens: sourceBindings.tokens, directory: sourceBindings.directory,
+      receiverFactory: addresses.rewardReceiverFactory,
+    })))
+  })
+
+  it('does not promote rehearsal records or a legacy flat collector to live configuration', () => {
+    const directory = family('base', 8453)
+    const verified = readFileSync(join(directory, 'verified.json'))
+    rmSync(join(directory, 'verified.json'))
+    writeFileSync(join(directory, 'simulation.json'), verified)
+    writeFileSync(join(root, 'base', 'StickySourceCollector.json'), readFileSync(join(directory, 'StickySourceCollector.json')))
+    const flatPath = join(root, 'base', 'verified.json')
+    writeFileSync(flatPath, JSON.stringify({ ...JSON.parse(readFileSync(flatPath, 'utf8')), sourceCollector: collector }))
+    expect(collectorsFromRecords(root)).toEqual([])
+  })
+
+  it.each([
+    { kind: 'simulation' }, { destinationChainId: 10 }, { chainId: 1 },
+    { chainId: 10 }, { sourceCollectorCodehash: '0x123' },
+    { sourceFeePayerCodehash: `0x${'00'.repeat(32)}` },
+    { rewardReceiverFactory: addresses.hook }, { sourceFeePayer: collector },
+  ])('rejects mismatched or incomplete verified evidence: %j', overrides => {
+    family('base', 8453, 1, overrides)
+    expect(() => collectorsFromRecords(root)).toThrow()
+  })
+
+  it.each([
+    { chainId: '0x1' }, { destinationChainId: 10 }, { address: addresses.hook },
+    { args: [sourceBindings.registry, sourceBindings.tokens, sourceBindings.rewardReceiverFactory, '10'] },
+    { receipt: { status: '0x0', transactionHash: codeHash, blockHash: codeHash, blockNumber: '0x10' } },
+  ])('rejects an artifact that does not prove the reviewed family: %j', overrides => {
+    const directory = family('base', 8453)
+    const path = join(directory, 'StickySourceCollector.json')
+    writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), ...overrides }))
+    expect(() => collectorsFromRecords(root)).toThrow('artifact does not match')
+  })
+
+  it('requires the same complete family identity on each source chain', () => {
+    family('ethereum', 1)
+    family('base', 8453, 1, { sourceCollectorCodehash: `0x${'34'.repeat(32)}` })
+    expect(() => collectorsFromRecords(root)).toThrow('differs across source chains')
+  })
+
+  it.each(['transactionHash', 'blockHash'])('rejects a zero creation %s', field => {
+    const directory = family('base', 8453)
+    const path = join(directory, 'StickySourceFeePayer.json')
+    const artifact = JSON.parse(readFileSync(path, 'utf8'))
+    artifact.receipt[field] = `0x${'00'.repeat(32)}`
+    writeFileSync(path, JSON.stringify(artifact))
+    expect(() => collectorsFromRecords(root)).toThrow('artifact does not match')
+  })
+
+  it.each([
+    { transactionHash: `0x${'34'.repeat(32)}` },
+    { blockHash: `0x${'34'.repeat(32)}` },
+    { blockNumber: '0x11' }, { blockNumber: '0x0' },
+  ])('requires parent and child evidence from one nonzero creation block: %j', overrides => {
+    const directory = family('base', 8453)
+    const path = join(directory, 'StickySourceFeePayer.json')
+    const artifact = JSON.parse(readFileSync(path, 'utf8'))
+    artifact.receipt = { ...artifact.receipt, ...overrides }
+    writeFileSync(path, JSON.stringify(artifact))
+    expect(() => collectorsFromRecords(root)).toThrow('share one successful creation transaction')
+  })
+
+  it('requires a verified home-chain deployment', () => {
+    family('base', 8453, 10)
+    expect(() => collectorsFromRecords(root)).toThrow('both source and home')
+  })
+
+  it('fails synchronization before writing either output when family evidence is invalid', () => {
+    family('base', 8453, 1, { kind: 'simulation' })
+    const output = join(root, 'sticky-deployments.json')
+    expect(() => syncDeployments({ records: root, output })).toThrow()
+    expect(existsSync(output)).toBe(false)
+    expect(existsSync(join(root, 'sticky-source-collectors.json'))).toBe(false)
+  })
+
+  it('checks collector configuration independently of the existing singleton records', () => {
+    const output = join(root, 'sticky-deployments.json')
+    syncDeployments({ records: root, output })
+    expect(readFileSync(join(root, 'sticky-source-collectors.json'), 'utf8')).toBe('[]\n')
+    family('base', 8453)
+    expect(() => syncDeployments({ check: true, records: root, output })).toThrow('sticky-source-collectors.json is out of date')
+    syncDeployments({ records: root, output })
+    expect(syncDeployments({ check: true, records: root, output })).toContain('matches')
   })
 })
