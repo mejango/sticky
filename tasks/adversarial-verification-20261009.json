@@ -1,9 +1,16 @@
 {
   "reviewBaseline": "74dc08798976f2a78a560ee5b2c2c98656affc4b",
-  "qualifiedContractCommit": "fb41b8e830b7d4ab45fb117e1c791c7575c41407",
-  "checkedAt": "2026-10-09T17:21:26Z",
-  "scope": "Final contract/source/tooling qualification for the fixed project-1 raw native contribution. Client and published SDK qualification remain separately recorded. No live deployment, source-split transaction or bridge-finality claim.",
+  "qualifiedContractCommit": "af4b08d0fa9a975002cafae79a36b7cb6d6221ed",
+  "checkedAt": "2026-10-09T21:33:44Z",
+  "scope": "Exact contract/source/test/tooling qualification for the fixed project-1 raw native contribution, interface/style conformance and collector ERC-165 self-identification. Exact-head hosted CI remains explicitly pending until this evidence commit is pushed. Client and published SDK qualification remain separately recorded. No live deployment, source-split transaction or bridge-finality claim.",
   "sourceIdentity": "adversarial-equivalence-20261009.json",
+  "toolchain": {
+    "foundry": "1.8.1",
+    "solc": "0.8.28",
+    "node": "22.23.1",
+    "slither": "0.11.3"
+  },
+  "testManifestSHA256": "7c33d7b030fc35d026c642f5ecdc381ce7513cefa7a10c38915bbcb7d0a8cf87",
   "testSHA256": {
     "test/StickyAccounting.t.sol": "be476604926b74b3c4359533ebc9a45041a4915c557f9021c26a27bb4f7fd79e",
     "test/StickyAutoStick_Unit.t.sol": "f22294eb5c3a7dda370cacfe5395393a012583e9b8171a911b53ebc384410035",
@@ -18,7 +25,7 @@
     "test/StickyPricing_Regression.t.sol": "32b25bd874ddb07f62034a87eab8491f9f5056c50471cc7dda2d236d8005280d",
     "test/StickyRewardSnapshots.t.sol": "e01e9fe23656001a5425ba325de4cb07a7c504d7709a4f90636cd4db872dc774",
     "test/StickyRewards_Regression.t.sol": "afe76b01bcf27bdac299f8664e3cda141892ed340475ed19f3e67f988aa32881",
-    "test/StickySourceCollector.t.sol": "5ba2db082a5fd2a9172b30d59d3521bdbe21c3ea47602aac8a14b4d38aca72b3",
+    "test/StickySourceCollector.t.sol": "ea44eed82e2fbf77107255d893190e92f9b9715924e0ada19ea80e1e76ced913",
     "test/Sticky_Integration.t.sol": "487da2c971ea15d87f7d5af125694dda3d9f3b3382dec00123c9314b1d42bd67",
     "test/audit/SourceFeeArbitrumRefund.t.sol": "2d39a3792f69f39a4590dfb02f50168f3fc574eff194f418ce16806c97e615f1",
     "test/daybreak/DaybreakCounterfactualTokenCapture.t.sol": "48fa04f9947d363fded4a01a982658222ce77bd0d933bfa768a3c2bc85428c37",
@@ -28,7 +35,7 @@
     "test/fork/StickyCrossChainRewards.t.sol": "414271659ca308208c4c80ca05635e46a8786b1391b3a4cfc3cf6ea39a2b0044",
     "test/fork/StickyJbxAuthority.t.sol": "8694a112e1a0508e4486ab4df260f4e928093681677f1f621d99ee6ef93c31ac",
     "test/fork/StickyJbxLifecycle.t.sol": "dedb82e4749e05cb6aaab01f97d9fbe09979f27da4e714eefabb3b7da9d5c982",
-    "test/fork/StickyJbxOmnichain.t.sol": "4292025214a6a263e7703aca636b1aab1d70e09aea783a7fab1c3c689093fabe",
+    "test/fork/StickyJbxOmnichain.t.sol": "95f0e76d1024e3a544c65c2c1d01c3fc728a76bd1dafdd28cfadacc415987955",
     "test/fork/StickyRealProjects.t.sol": "bdbd955043c8ec645be56357261d50168c95bf91702692c5a615d76ea53a2bd8",
     "test/fork/StickySourceCredits.t.sol": "c97cf660ea1074ac4aa4d956b3d0b6815e8942fc3394121fe18a6be1fa1519c0",
     "test/fork/helpers/StickyJbxArbitrumTransport.sol": "46ce2f6cec599801e671ab9b63488151bb412122a153611c179784c511d4b913",
@@ -52,14 +59,18 @@
   "gates": [
     {
       "name": "local",
-      "command": "forge test --deny notes --fail-fast --summary --detailed --skip '*/script/**' --threads 1",
+      "command": "PATH=<Foundry 1.8.1> forge test --deny notes --fail-fast --summary --detailed --skip '*/script/**'",
       "exitCode": 0,
       "tests": 307,
       "suites": 19,
-      "fuzzRuns": 4096,
+      "fuzzProperties": 10,
+      "fuzzRunsPerProperty": 4096,
+      "fuzzRuns": 40960,
       "invariants": 6,
+      "invariantRuns": 1024,
       "invariantCalls": 102400,
-      "qualification": "Complete exact-tree run uses the qualified contract source plus test-only hardening for literal project 1, per-call terminal resolution, nested acceptance and prefunded-child deployment; no production source changed after the qualified commit."
+      "allowedHandlerReverts": 4707,
+      "qualification": "Complete exact-af4 tree run over the recorded 43-test source manifest."
     },
     {
       "name": "prefunded-child",
@@ -70,11 +81,11 @@
     },
     {
       "name": "forks",
-      "command": "STICKY_ENV_FILE=<private env> npm run test:fork",
+      "command": "PATH=<Foundry 1.8.1> STICKY_ENV_FILE=<private env> npm run test:fork",
       "exitCode": 0,
       "tests": 86,
       "suites": 7,
-      "qualification": "Complete four-chain rerun includes the raw-versus-safe-Inbox-alias isolation assertion. It models ArbOS raw refund credit with vm.deal and does not claim retryable finality."
+      "qualification": "Complete exact-af4 four-chain rerun includes collector self-interface support and raw-versus-safe-Inbox-alias isolation. It models ArbOS raw refund credit with vm.deal and does not claim retryable finality."
     },
     {
       "name": "transport-audit",
@@ -89,25 +100,78 @@
       "exitCode": 0
     },
     {
+      "name": "source-style",
+      "command": "node --test test/deployment/source-contract-style.test.mjs",
+      "exitCode": 0,
+      "tests": 15,
+      "qualification": "Dynamically covers every production source and all nine interfaces, NatSpec for named parameters/returns and errors, the exact inherited unnamed-input compatibility set, section/import/suppression rules and no @inheritdoc."
+    },
+    {
       "name": "deployment-tooling",
       "command": "node --test test/deployment/*.test.cjs test/deployment/*.test.mjs",
       "exitCode": 0,
-      "tests": 69,
-      "qualification": "The sandbox run failed only because loopback binding was denied; the identical loopback-enabled run passed 69/69."
+      "tests": 78,
+      "qualification": "Pinned Node 22.23.1 exact-af4 aggregate: artifacts 13, singleton preservation 6, fork runner 21, deploy runner 20, source style 15 and Sphinx/config 3. The config suite's temporary loopback listener required an otherwise identical run outside the sandbox."
     },
     {
       "name": "runtime-build",
       "command": "forge build --deny notes --sizes --skip '*/test/**' --skip '*/script/**' --skip SphinxUtils",
       "exitCode": 0,
-      "sourceCollectorRuntimeBytes": 9084,
-      "sourceCollectorInitcodeBytes": 12223,
+      "sourceCollectorRuntimeBytes": 9108,
+      "sourceCollectorInitcodeBytes": 12247,
       "sourceFeePayerRuntimeBytes": 2370,
       "sourceFeePayerInitcodeBytes": 2422
     },
     {
       "name": "entrypoints",
       "command": "FOUNDRY_PROFILE=deploy forge build --skip '*/test/**'",
-      "exitCode": 0
+      "exitCode": 0,
+      "qualification": "The same deploy profile compiled and executed both exact-af4 four-chain rehearsals."
+    },
+    {
+      "name": "production-coverage",
+      "command": "npm run coverage",
+      "exitCode": 0,
+      "tests": 274,
+      "suites": 18,
+      "executableProductionFiles": 11,
+      "coverage": {
+        "lines": {
+          "percent": 94.67,
+          "covered": 800,
+          "total": 845
+        },
+        "statements": {
+          "percent": 93.89,
+          "covered": 983,
+          "total": 1047
+        },
+        "branches": {
+          "percent": 81.38,
+          "covered": 153,
+          "total": 188
+        },
+        "functions": {
+          "percent": 93.7,
+          "covered": 119,
+          "total": 127
+        }
+      },
+      "contracts": {
+        "StickySourceCollector": {
+          "lines": 97.12,
+          "statements": 96.34,
+          "branches": 86.67,
+          "functions": 100
+        },
+        "StickySourceFeePayer": {
+          "lines": 100,
+          "statements": 97.92,
+          "branches": 91.67,
+          "functions": 100
+        }
+      },
+      "qualification": "Excludes scripts, fork/deployment suites, external CTPublisher bytecode and two assertions invalidated only by coverage instrumentation."
     },
     {
       "name": "slither",
@@ -115,29 +179,33 @@
       "exitCode": 0,
       "contracts": 134,
       "detectors": 77,
-      "medium": 0,
       "high": 0,
-      "low": 87
+      "medium": 0,
+      "low": 87,
+      "collectorAndFeePayerFindings": 0
     },
     {
       "name": "singleton-equivalence",
-      "command": "node --test test/deployment/*.test.cjs test/deployment/*.test.mjs",
+      "command": "node --test test/deployment/existing-singletons.test.mjs",
       "exitCode": 0,
+      "tests": 6,
       "contracts": 6,
       "creationRuntimeAndPublicAbiPreserved": true
     },
     {
       "name": "ethereum-home-rehearsal",
-      "command": "STICKY_DESTINATION_CHAIN_ID=1 npm run deploy:rehearse:mainnets",
+      "command": "STICKY_ENV_FILE=../../deploy-all-v6/.env NANA_CORE_DEPLOYMENT_PATH=../../nana-core-v6/deployments STICKY_DESTINATION_CHAIN_ID=1 npm run deploy:rehearse:mainnets",
       "exitCode": 0,
       "chains": 4,
+      "sourceRevision": "af4b08d0fa9a975002cafae79a36b7cb6d6221ed",
       "evidence": "home-chain-rehearsal.json"
     },
     {
       "name": "arbitrum-home-control-rehearsal",
-      "command": "STICKY_DESTINATION_CHAIN_ID=42161 npm run deploy:rehearse:mainnets",
+      "command": "STICKY_ENV_FILE=../../deploy-all-v6/.env NANA_CORE_DEPLOYMENT_PATH=../../nana-core-v6/deployments STICKY_DESTINATION_CHAIN_ID=42161 npm run deploy:rehearse:mainnets",
       "exitCode": 0,
       "chains": 4,
+      "sourceRevision": "af4b08d0fa9a975002cafae79a36b7cb6d6221ed",
       "evidence": "arbitrum-home-control-rehearsal.json"
     }
   ],
@@ -222,12 +290,14 @@
   "hostedSticky": {
     "status": "pending exact-head PR checks after the regenerated evidence commit is pushed",
     "prior": {
-      "commit": "f7812f461a7fb3a846fa110fb947f4a7532b6e72",
+      "commit": "25ab894cf3f1df0b40e4707ff73ec6e92ee94dbf",
       "checks": 6,
       "result": "success",
-      "contractRun": "https://github.com/mejango/sticky/actions/runs/37886660933",
-      "webRun": "https://github.com/mejango/sticky/actions/runs/37886660826",
-      "scope": "Published contract/audit/provenance increment; new SDK-dependent client changes remain separate."
+      "lintRun": "https://github.com/mejango/sticky/actions/runs/37965753904",
+      "slitherRun": "https://github.com/mejango/sticky/actions/runs/37965753933",
+      "contractRun": "https://github.com/mejango/sticky/actions/runs/37965753708",
+      "webRun": "https://github.com/mejango/sticky/actions/runs/37965753934",
+      "scope": "Last pushed predecessor before the af4 interface/style and evidence increment."
     }
   },
   "pricingCrossCheck": {
