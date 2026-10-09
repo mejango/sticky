@@ -4,9 +4,8 @@ pragma solidity 0.8.28;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 
-import {StickyRewardReceiver} from "./StickyRewardReceiver.sol";
-
 import {IStickyDistributor} from "./interfaces/IStickyDistributor.sol";
+import {IStickyRewardReceiver} from "./interfaces/IStickyRewardReceiver.sol";
 import {IStickyRewardReceiverFactory} from "./interfaces/IStickyRewardReceiverFactory.sol";
 
 /// @notice Creates and locates a separate reward receiver for each Sticky token and reward group, and forwards
@@ -37,7 +36,7 @@ contract StickyRewardReceiverFactory is IStickyRewardReceiverFactory {
     IStickyDistributor public immutable override DISTRIBUTOR;
 
     /// @notice The receiver implementation every receiver is cloned from.
-    StickyRewardReceiver public immutable override RECEIVER;
+    IStickyRewardReceiver public immutable override RECEIVER;
 
     //*********************************************************************//
     // --------------------- public stored properties -------------------- //
@@ -55,7 +54,7 @@ contract StickyRewardReceiverFactory is IStickyRewardReceiverFactory {
 
     /// @notice Initializes the factory's receiver implementation.
     /// @param receiver The receiver implementation every receiver is cloned from.
-    constructor(StickyRewardReceiver receiver) {
+    constructor(IStickyRewardReceiver receiver) {
         // Clone this implementation; its address, with the pair's salt, determines every receiver's address.
         RECEIVER = receiver;
 
@@ -74,7 +73,7 @@ contract StickyRewardReceiverFactory is IStickyRewardReceiverFactory {
     /// @return amount The amount settled.
     function settleFor(address stickyToken, uint256 groupId, IERC20 token) external override returns (uint256 amount) {
         // Materialize the destination if needed so even arrivals sent before deployment can fund rewards.
-        amount = StickyRewardReceiver(deployReceiverFor({stickyToken: stickyToken, groupId: groupId})).settle(token);
+        amount = IStickyRewardReceiver(deployReceiverFor({stickyToken: stickyToken, groupId: groupId})).settle(token);
 
         // This reports the completed call's gross amount; reward accounting belongs to the guarded distributor.
         // forge-lint: disable-next-line(reentrancy-events)
@@ -129,7 +128,7 @@ contract StickyRewardReceiverFactory is IStickyRewardReceiverFactory {
         receiverOf[stickyToken][groupId] = receiver;
 
         // Fix the clone's holder pool and group in the same call, so no one else can initialize it.
-        StickyRewardReceiver(receiver).initialize({initialStickyToken: stickyToken, initialGroupId: groupId});
+        IStickyRewardReceiver(receiver).initialize({initialStickyToken: stickyToken, initialGroupId: groupId});
 
         // Publish the destination for funders and indexers. Initialization only validates and stores the pair, so it
         // cannot call back into this factory.

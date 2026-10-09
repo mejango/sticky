@@ -3,9 +3,8 @@ pragma solidity ^0.8.0;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-import {StickyRewardReceiver} from "../StickyRewardReceiver.sol";
-
 import {IStickyDistributor} from "./IStickyDistributor.sol";
+import {IStickyRewardReceiver} from "./IStickyRewardReceiver.sol";
 
 /// @notice Creates and locates per-(Sticky token, reward group) reward receivers and forwards settlement requests.
 /// @dev Each receiver address identifies its rewarded holder pool and group when a bridge delivers plain ERC-20
@@ -39,7 +38,7 @@ interface IStickyRewardReceiverFactory {
 
     /// @notice The receiver implementation every receiver is cloned from.
     /// @return receiver The receiver implementation.
-    function RECEIVER() external view returns (StickyRewardReceiver receiver);
+    function RECEIVER() external view returns (IStickyRewardReceiver receiver);
 
     /// @notice The deterministic receiver address for a sticky token and reward group, whether or not it has been
     /// deployed.

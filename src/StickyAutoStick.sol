@@ -112,10 +112,10 @@ contract StickyAutoStick is ERC2771Context, ReentrancyGuard, IStickyAutoStick {
     //*********************************************************************//
 
     /// @notice The longest cooldown a holder can configure.
-    uint48 public constant MAX_COOLDOWN = 30 days;
+    uint48 public constant override MAX_COOLDOWN = 30 days;
 
     /// @notice The shortest cooldown a holder can configure, limiting keeper-driven tranche growth.
-    uint48 public constant MIN_COOLDOWN = 1 days;
+    uint48 public constant override MIN_COOLDOWN = 1 days;
 
     //*********************************************************************//
     // --------------- public immutable stored properties ---------------- //

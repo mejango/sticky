@@ -70,6 +70,14 @@ interface IStickyAutoStick {
     /// @return hook The bound Sticky position hook.
     function HOOK() external view returns (IStickyHook hook);
 
+    /// @notice The longest cooldown a holder can configure between automated compounds.
+    /// @return duration The maximum cooldown, in seconds.
+    function MAX_COOLDOWN() external view returns (uint48 duration);
+
+    /// @notice The shortest cooldown a holder can configure between automated compounds.
+    /// @return duration The minimum cooldown, in seconds.
+    function MIN_COOLDOWN() external view returns (uint48 duration);
+
     /// @notice The terminal sticky projects are paid through.
     /// @return terminal The bound payment terminal.
     function TERMINAL() external view returns (IJBTerminal terminal);

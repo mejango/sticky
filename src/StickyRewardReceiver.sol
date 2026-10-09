@@ -5,6 +5,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import {IStickyDistributor} from "./interfaces/IStickyDistributor.sol";
+import {IStickyRewardReceiver} from "./interfaces/IStickyRewardReceiver.sol";
 
 /// @notice Holds cross-chain reward arrivals for one sticky token and reward group until anyone settles them into
 /// the rewards distributor.
@@ -18,7 +19,7 @@ import {IStickyDistributor} from "./interfaces/IStickyDistributor.sol";
 /// project without an ERC-20 receives, and native ETH cannot be settled and stay in the receiver. Funders must bridge
 /// only to chains where the reward project has an ERC-20 and must not send ETH. A tenure group's receiver can only
 /// settle once its sticky token is registered with the distributor's Sticky hook.
-contract StickyRewardReceiver {
+contract StickyRewardReceiver is IStickyRewardReceiver {
     // A library that safely interacts with ERC-20 tokens.
     using SafeERC20 for IERC20;
 
@@ -44,17 +45,17 @@ contract StickyRewardReceiver {
     //*********************************************************************//
 
     /// @notice The distributor rewards are settled into, shared by every clone of this implementation.
-    IStickyDistributor public immutable DISTRIBUTOR;
+    IStickyDistributor public immutable override DISTRIBUTOR;
 
     //*********************************************************************//
     // --------------------- public stored properties -------------------- //
     //*********************************************************************//
 
     /// @notice The reward group settlements fund (0 = the default group).
-    uint256 public groupId;
+    uint256 public override groupId;
 
     /// @notice The sticky token whose holders this receiver rewards. Zero only on a clone awaiting initialization.
-    address public stickyToken;
+    address public override stickyToken;
 
     //*********************************************************************//
     // -------------------------- constructor ---------------------------- //
@@ -82,7 +83,7 @@ contract StickyRewardReceiver {
     /// @param initialStickyToken The sticky token whose holders this receiver rewards.
     /// @param initialGroupId The reward group settlements fund; the factory only creates receivers for groups the
     /// distributor accepts.
-    function initialize(address initialStickyToken, uint256 initialGroupId) external {
+    function initialize(address initialStickyToken, uint256 initialGroupId) external override {
         // Reject re-initialization, which could point the receiver at a different holder pool.
         if (stickyToken != address(0)) revert StickyRewardReceiver_AlreadyInitialized(stickyToken);
 
@@ -104,7 +105,7 @@ contract StickyRewardReceiver {
     /// eligibility; the receiver does not reserve rewards for holders present when tokens arrive.
     /// @param token The reward token to settle.
     /// @return amount The amount settled.
-    function settle(IERC20 token) external returns (uint256 amount) {
+    function settle(IERC20 token) external override returns (uint256 amount) {
         // Settle all tokens currently available, including arrivals sent before this receiver was deployed.
         amount = token.balanceOf(address(this));
 
