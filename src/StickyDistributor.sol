@@ -27,7 +27,7 @@ import {IStickyDistributor} from "./interfaces/IStickyDistributor.sol";
 import {IStickyHook} from "./interfaces/IStickyHook.sol";
 import {IStickyToken} from "./interfaces/IStickyToken.sol";
 
-/// @notice A singleton distributor that hands ERC-20 rewards (or native ETH) to the holders of Sticky tokens with
+/// @notice A singleton distributor that hands ERC-20 rewards (or native ETH) to Sticky shareholders with
 /// linear vesting. Funders choose who a pot rewards: the default group (0) splits it across delegated voting power
 /// at the round's snapshot block, exactly like a token distributor, while a tenure group splits it across the stake
 /// each holder still holds in tranches created between `maxWeeks` and `minWeeks` before the round started.
@@ -46,28 +46,42 @@ contract StickyDistributor is JBDistributor, IStickyDistributor {
     //*********************************************************************//
 
     /// @notice Thrown when the Sticky hook measures stake age in a different epoch than this distributor.
+    /// @param expected The epoch duration required by the distributor.
+    /// @param actual The epoch duration reported by the Sticky hook.
     error StickyDistributor_EpochDurationMismatch(uint256 expected, uint256 actual);
 
     /// @notice Thrown when a group ID is neither the default group nor a valid tenure window.
+    /// @param groupId The rejected reward group ID.
     error StickyDistributor_InvalidGroupId(uint256 groupId);
 
     /// @notice Thrown when a token ID has non-zero bits above 160, which would alias another holder's address.
+    /// @param tokenId The token ID that cannot be decoded to one holder address.
     error StickyDistributor_InvalidTokenId(uint256 tokenId);
 
     /// @notice Thrown when the native ETH sent with a split does not match the split's amount.
+    /// @param msgValue The amount of native ETH received.
+    /// @param contextAmount The amount declared by the split context.
     error StickyDistributor_NativeAmountMismatch(uint256 msgValue, uint256 contextAmount);
 
     /// @notice Thrown when a tenure denominator is read while a payment's minted shares have no tranche yet, since the
     /// hook's buckets would not yet include them.
+    /// @param hook The Sticky share token whose project has a payment in progress.
+    /// @param projectId The ID of the Sticky project receiving the payment.
     error StickyDistributor_PaymentInProgress(address hook, uint256 projectId);
 
     /// @notice Thrown when native ETH is sent with a split for an ERC-20 token.
+    /// @param token The ERC-20 token declared by the split context.
+    /// @param expectedToken The native-token sentinel expected for a native split.
+    /// @param msgValue The amount of native ETH received.
     error StickyDistributor_TokenMismatch(address token, address expectedToken, uint256 msgValue);
 
     /// @notice Thrown when a split comes from an address that is neither a terminal nor the controller of its project.
+    /// @param projectId The ID of the project whose split is being processed.
+    /// @param caller The address that attempted to process the split.
     error StickyDistributor_Unauthorized(uint256 projectId, address caller);
 
     /// @notice Thrown when a tenure group is funded for a token the Sticky hook does not track tranches for.
+    /// @param hook The unregistered Sticky share token being funded.
     error StickyDistributor_UnregisteredStickyToken(address hook);
 
     /// @notice Thrown when the claim duration is zero, which would let a tenure pot whose eligible holders all exited

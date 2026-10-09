@@ -67,8 +67,8 @@ contract StickyAutoStick is ERC2771Context, ReentrancyGuard, IStickyAutoStick {
     error StickyAutoStick_InsufficientAllowance(uint256 allowance, uint256 needed);
 
     /// @notice Thrown when the terminal returns fewer shares than its preview quoted for the delivered reward.
-    /// @param received The Sticky token count returned by the terminal.
-    /// @param minimum The minimum Sticky token count required by the preview.
+    /// @param received The Sticky share count returned by the terminal.
+    /// @param minimum The minimum Sticky share count required by the preview.
     error StickyAutoStick_InsufficientStickyTokens(uint256 received, uint256 minimum);
 
     /// @notice Thrown when the requested cooldown is outside the supported range, which bounds keeper-driven tranche
@@ -233,7 +233,7 @@ contract StickyAutoStick is ERC2771Context, ReentrancyGuard, IStickyAutoStick {
     /// @param holder The holder whose rewards are compounded.
     /// @param groupIds The reward groups to collect from, strictly ascending.
     /// @return underlyingAmount The underlying-token amount collected and stuck.
-    /// @return stickyTokenCount The sticky tokens minted to the holder, as a fixed point number with 18 decimals.
+    /// @return stickyTokenCount The Sticky shares minted to the holder, as a fixed point number with 18 decimals.
     function compoundFor(
         uint256 projectId,
         address holder,
@@ -341,7 +341,7 @@ contract StickyAutoStick is ERC2771Context, ReentrancyGuard, IStickyAutoStick {
     /// @param projectId The ID of the sticky project whose rewards are claimed and stuck.
     /// @param groupIds The reward groups to collect from, strictly ascending.
     /// @return underlyingAmount The underlying-token amount claimed and stuck.
-    /// @return stickyTokenCount The sticky tokens minted to the caller, as a fixed point number with 18 decimals.
+    /// @return stickyTokenCount The Sticky shares minted to the caller, as a fixed point number with 18 decimals.
     function stickRewardsFor(
         uint256 projectId,
         uint256[] calldata groupIds
@@ -475,7 +475,7 @@ contract StickyAutoStick is ERC2771Context, ReentrancyGuard, IStickyAutoStick {
     /// @param stickyToken The project's sticky token, already resolved and validated.
     /// @param minimumAmount The smallest combined amount worth sticking.
     /// @return underlyingAmount The underlying-token amount collected and stuck.
-    /// @return stickyTokenCount The sticky tokens minted to the holder, as a fixed point number with 18 decimals.
+    /// @return stickyTokenCount The Sticky shares minted to the holder, as a fixed point number with 18 decimals.
     function _collectAndStick(
         uint256 projectId,
         address holder,
@@ -716,7 +716,7 @@ contract StickyAutoStick is ERC2771Context, ReentrancyGuard, IStickyAutoStick {
     /// @param holder The holder who receives the issued shares.
     /// @param underlying The project's underlying token.
     /// @param amount The underlying-token amount to preview, in the token's decimals.
-    /// @return stickyTokenCount The number of Sticky token atoms the terminal would issue to the holder.
+    /// @return stickyTokenCount The number of Sticky share atoms the terminal would issue to the holder.
     function _previewStickyTokenCountFor(
         uint256 projectId,
         address holder,

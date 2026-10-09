@@ -41,6 +41,7 @@ import {StickyRewardReceiverFactory} from "../../src/StickyRewardReceiverFactory
 import {StickySourceCollector} from "../../src/StickySourceCollector.sol";
 import {StickySourceFeePayer} from "../../src/StickySourceFeePayer.sol";
 import {StickyToken} from "../../src/StickyToken.sol";
+import {IStickySourceCollector} from "../../src/interfaces/IStickySourceCollector.sol";
 import {StickyCoreDeployment} from "../../script/structs/StickyCoreDeployment.sol";
 import {StickyDeploymentAddresses} from "../../script/structs/StickyDeploymentAddresses.sol";
 import {StickyDeploymentHarness} from "../deployment/StickyDeploymentHarness.sol";
@@ -861,6 +862,7 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         assertEq(deployed.destinationChainId, destinationChainId, "manifest identifies the selected family");
         assertEq(collector.DESTINATION_CHAIN_ID(), destinationChainId, "immutable home-chain binding");
         assertEq(address(collector.FEE_PAYER()), deployed.sourceFeePayer, "verified child binding");
+        assertTrue(collector.supportsInterface(type(IStickySourceCollector).interfaceId), "collector interface");
         assertTrue(collector.supportsInterface(type(IJBSplitHook).interfaceId), "reserved split-hook interface");
     }
 

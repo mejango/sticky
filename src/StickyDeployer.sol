@@ -39,21 +39,31 @@ contract StickyDeployer is ERC2771Context, IERC721Receiver, IStickyDeployer {
     //*********************************************************************//
 
     /// @notice Thrown when the requested cash out tax rate is above the protocol maximum, which core cannot apply.
+    /// @param rate The requested cash out tax rate.
+    /// @param max The protocol's maximum cash out tax rate.
     error StickyDeployer_InvalidCashOutTaxRate(uint256 rate, uint256 max);
 
     /// @notice Thrown when the underlying token maps to currency zero, which the core price registry rejects.
+    /// @param token The underlying token whose address maps to currency zero.
     error StickyDeployer_InvalidCurrency(address token);
 
     /// @notice Thrown when feed registration and payment pricing would use different core price registries, so the
     /// terminal could not read the registered issuance denominator.
+    /// @param controllerPrices The price registry used by the controller for feed registration.
+    /// @param terminalPrices The price registry used by the terminal for payment pricing.
     error StickyDeployer_PriceRegistryMismatch(address controllerPrices, address terminalPrices);
 
     /// @notice Thrown when the staked token is a share token of a project launched by this deployer, whose reward
     /// weight the terminal could never claim.
+    /// @param token The Sticky share token requested as the staking asset.
+    /// @param projectId The Sticky project that issued the requested token.
     error StickyDeployer_StakedTokenIsSticky(address token, uint256 projectId);
 
     /// @notice Thrown when an NFT arrives other than a project NFT minted during this deployer's own launch, so no
     /// unrelated project can be held without Sticky's permanent configuration.
+    /// @param collection The NFT contract that sent the token.
+    /// @param from The token's previous owner.
+    /// @param tokenId The token ID received.
     error StickyDeployer_UnexpectedNft(address collection, address from, uint256 tokenId);
 
     //*********************************************************************//
@@ -362,8 +372,7 @@ contract StickyDeployer is ERC2771Context, IERC721Receiver, IStickyDeployer {
     /// @dev Only a mint from the controller's `PROJECTS` while a launch is in progress is accepted. `originalPayer` is
     /// non-zero exactly for the duration of `deployStickyFor`, and `JBProjects` mints before forwarding its creation
     /// fee, so the accepted NFT is the one the launch requested. Transfers of existing NFTs and mints outside a launch
-    /// revert.
-    /// @inheritdoc IERC721Receiver
+    /// revert. The operator and callback data do not affect that authentication.
     /// @param from The previous owner of the NFT, which is the zero address for a mint.
     /// @param tokenId The ID of the NFT received, reported when the NFT is rejected.
     /// @return selector The ERC721 receiver acceptance selector.

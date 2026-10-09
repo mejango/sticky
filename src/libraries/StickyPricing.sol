@@ -10,6 +10,7 @@ library StickyPricing {
     //*********************************************************************//
 
     /// @notice Thrown when the payment's accounting precision exceeds the 36 decimals the terminal supports.
+    /// @param decimals The unsupported accounting precision.
     error StickyPricing_UnsupportedDecimals(uint256 decimals);
 
     //*********************************************************************//

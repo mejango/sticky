@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import test from 'node:test';
 
 const sections = [
@@ -10,11 +10,29 @@ const sections = [
   'public transactions', 'internal transactions', 'internal helpers', 'internal views', 'private helpers',
 ];
 const parameters = value => value.trim() ? value.split(',').map(parameter => {
-  assert.match(parameter.trim(), /^\w+(?:\s+(?:memory|calldata|storage|payable))?\s+\w+$/, `Unsupported parameter: ${parameter}`);
+  assert.match(parameter.trim(), /^\w+(?:\[\d*\])*(?:\s+(?:memory|calldata|storage|payable))?\s+\w+$/, `Unsupported parameter: ${parameter}`);
   return parameter.trim().split(/\s+/).at(-1);
 }) : [];
 const names = ['StickySourceCollector', 'StickySourceFeePayer'];
+
+function sourceNames(directory = new URL('../../src/', import.meta.url), prefix = '') {
+  return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
+    if (entry.isDirectory()) return sourceNames(new URL(`${entry.name}/`, directory), `${prefix}${entry.name}/`);
+    return entry.isFile() && entry.name.endsWith('.sol') ? [`${prefix}${entry.name.slice(0, -4)}`] : [];
+  }).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+}
+
+const allSourceNames = sourceNames();
+const contractNames = allSourceNames.filter(name => !name.includes('/'));
+const interfaceNames = allSourceNames.filter(name => name.startsWith('interfaces/')).map(name => name.slice(11));
+const productionSourceNames = allSourceNames.filter(name => !name.startsWith('interfaces/'));
 const read = name => readFileSync(new URL(`../../src/${name}.sol`, import.meta.url), 'utf8');
+
+function checkImports(source) {
+  for (const statement of source.match(/^import .*$/gm) ?? []) {
+    assert.match(statement, /^import \{\w+\} from "[^"]+";$/, 'Imports must name one type explicitly.');
+  }
+}
 
 function checkDocumentation(name, docs, args = [], returns = [], keys = []) {
   assert.match(docs, /@notice\s+\S/, `${name} needs a notice.`);
@@ -31,9 +49,7 @@ function check(name, source) {
   assert.deepEqual(types.map(match => [match[1], match[2]]), [['contract', name]]);
   assert.doesNotMatch(source, /@inheritdoc|multi-contract-file/);
   assert.doesNotMatch(source.replace(/\/\/[^\n]*/g, ''), /\/\*/, 'Extend the bounded check before adding block comments.');
-  for (const statement of source.match(/^import .*$/gm) ?? []) {
-    assert.match(statement, /^import \{\w+\} from "[^"]+";$/, 'Imports must name one type explicitly.');
-  }
+  checkImports(source);
   const openzeppelin = [...source.matchAll(/^import .* from "(@openzeppelin\/[^"]+)";$/gm)].map(match => match[1]);
   assert.deepEqual(openzeppelin, [...openzeppelin].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase())),
     'OpenZeppelin imports must follow source-path order within their package group.');
@@ -112,14 +128,15 @@ function checkInterface(name, source) {
   assert.deepEqual([...source.matchAll(/^\s*((?:abstract\s+)?contract|library|interface|enum|struct)\s+(\w+)/gm)]
     .map(match => [match[1], match[2]]), [['interface', name]]);
   assert.doesNotMatch(source, /@inheritdoc|multi-contract-file|\/\*/);
-  for (const statement of source.match(/^import .*$/gm) ?? []) assert.match(statement, /^import \{\w+\} from "[^"]+";$/);
+  checkImports(source);
   const declaration = source.match(new RegExp(`interface ${name}[^\\{]*\\{([\\s\\S]*)\\}\\s*$`));
   assert.ok(declaration, 'Unsupported interface header.');
   assert.match(source.slice(0, declaration.index), /@notice\s+\S/, 'Interface needs a notice.');
   const body = declaration[1];
   let end = 0, group = -1, previous = '';
   for (const member of body.matchAll(/((?:\s*\/\/\/[^\n]*\n)+)\s*((event|function) (\w+)\(([^)]*)\)[^;]*;)/g)) {
-    assert.equal(body.slice(end, member.index).trim(), '', 'Unsupported or undocumented interface member.');
+    const gap = body.slice(end, member.index).replace(/^\s*\/\/(?!\/).*$/gm, '').trim();
+    assert.equal(gap, '', 'Unsupported or undocumented interface member.');
     const [, docs, code, kind, memberName, args] = member;
     const next = kind === 'event' ? 0 : /\b(view|pure)\b/.test(code) ? 1 : 2;
     assert.ok(next >= group, 'Interface order must be events, views, then transactions.');
@@ -134,14 +151,14 @@ function checkInterface(name, source) {
     end = member.index + member[0].length;
   }
   assert.ok(end > 0, 'The interface must contain checked members.');
-  assert.equal(body.slice(end).trim(), '', 'Unsupported or undocumented interface member.');
+  assert.equal(body.slice(end).replace(/^\s*\/\/(?!\/).*$/gm, '').trim(), '', 'Unsupported or undocumented interface member.');
 }
 
 for (const name of names) {
   test(`${name} follows the source layout and complete inlined NatSpec rules`, () => check(name, read(name)));
 }
 
-for (const name of ['IStickyRewardReceiver', 'IStickySourceCollector', 'IStickySourceFeePayer']) {
+for (const name of interfaceNames) {
   test(`${name} documents and orders every declared event and public API`, () => {
     const source = read(`interfaces/${name}`);
     checkInterface(name, source);
@@ -149,6 +166,61 @@ for (const name of ['IStickyRewardReceiver', 'IStickySourceCollector', 'IStickyS
     assert.throws(() => checkInterface(name, source.replace(/\}\s*$/, '    error Undocumented();\n}\n')));
   });
 }
+
+test('every production custom error documents all of its context', () => {
+  for (const sourceName of productionSourceNames) {
+    const source = read(sourceName);
+    const declarations = [...source.matchAll(/^\s*error\s+(\w+)\(([^;]*)\);/gm)];
+    const documented = [...source.matchAll(/((?:\s*\/\/\/[^\n]*\n)+)\s*error\s+(\w+)\(([^;]*)\);/g)];
+    assert.equal(documented.length, declarations.length, `${sourceName}: every error needs contiguous NatSpec.`);
+    for (const [, docs, errorName, args] of documented) {
+      checkDocumentation(errorName, docs, parameters(args.replace(/\s+/g, ' ')));
+    }
+  }
+});
+
+test('production implementations keep their NatSpec local', () => {
+  for (const sourceName of allSourceNames) {
+    assert.doesNotMatch(read(sourceName), /@inheritdoc/, `${sourceName}: inline implementation NatSpec.`);
+  }
+});
+
+test('every production function documents its named parameters and preserves reviewed unnamed inputs', () => {
+  const allowedUnnamed = new Map([
+    ['StickyDeployer.onERC721Received', ['0:address', '3:bytes calldata']],
+    ['StickyHook.hasMintPermissionFor', ['0:uint256', '1:JBRuleset memory', '2:address']],
+    ['StickyToken.delegateBySig', ['1:uint256', '2:uint256', '3:uint8', '4:bytes32', '5:bytes32']],
+    ['StickyToken.initialize', ['0:string memory', '1:string memory', '2:address']],
+    ['StickyToken.setMetadata', ['0:string memory', '1:string memory']],
+  ]);
+  const seenUnnamed = new Set();
+  for (const sourceName of productionSourceNames) {
+    const source = read(sourceName);
+    const declarations = [...source.matchAll(/^\s*function\s+(\w+)\s*\(/gm)];
+    const documented = [...source.matchAll(
+      /((?:\s*\/\/\/[^\n]*\n)+)(?:\s*\/\/(?!\/)[^\n]*\n)*\s*function\s+(\w+)\s*\(([\s\S]*?)\)\s*([^{;]*)\{/g,
+    )];
+    assert.equal(documented.length, declarations.length, `${sourceName}: every function needs contiguous NatSpec.`);
+    for (const [, docs, functionName, args, tail] of documented) {
+      const parsed = args.trim() ? args.split(',').map((parameter, index) => {
+        const normalized = parameter.trim().replace(/\s+/g, ' ');
+        const match = normalized.match(/^(\w+(?:\[\d*\])*(?:\s+(?:memory|calldata|storage|payable))?)(?:\s+(\w+))?$/);
+        assert.ok(match, `${sourceName}.${functionName}: unsupported parameter ${normalized}.`);
+        return { index, type: match[1], name: match[2] };
+      }) : [];
+      const named = parsed.filter(parameter => parameter.name).map(parameter => parameter.name);
+      const returns = parameters(tail.match(/returns\s*\(([^)]*)\)/)?.[1] ?? '');
+      checkDocumentation(functionName, docs, named, returns);
+      const unnamed = parsed.filter(parameter => !parameter.name).map(parameter => `${parameter.index}:${parameter.type}`);
+      if (unnamed.length) {
+        const key = `${sourceName}.${functionName}`;
+        assert.deepEqual(unnamed, allowedUnnamed.get(key), `${key}: unnamed inputs are limited to deployed ABI exceptions.`);
+        seenUnnamed.add(key);
+      }
+    }
+  }
+  assert.deepEqual([...seenUnnamed].sort(), [...allowedUnnamed.keys()].sort(), 'Every deployed ABI exception remains present.');
+});
 
 test('the declaration gate rejects missing documentation, layout drift and unsupported syntax', () => {
   const source = read('StickySourceCollector');

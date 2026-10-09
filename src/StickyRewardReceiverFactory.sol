@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {IStickyDistributor} from "./interfaces/IStickyDistributor.sol";
 import {IStickyRewardReceiver} from "./interfaces/IStickyRewardReceiver.sol";
@@ -23,9 +23,11 @@ contract StickyRewardReceiverFactory is IStickyRewardReceiverFactory {
     //*********************************************************************//
 
     /// @notice Thrown when a receiver is requested for a group the distributor cannot fund.
+    /// @param groupId The unsupported reward group ID.
     error StickyRewardReceiverFactory_InvalidGroupId(uint256 groupId);
 
     /// @notice Thrown when a receiver is requested for the zero sticky token, which no receiver can be bound to.
+    /// @param stickyToken The invalid Sticky share token address.
     error StickyRewardReceiverFactory_InvalidStickyToken(address stickyToken);
 
     //*********************************************************************//

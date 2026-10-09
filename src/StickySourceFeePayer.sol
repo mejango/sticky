@@ -165,7 +165,7 @@ contract StickySourceFeePayer is IStickySourceFeePayer {
         // Neither source-chain refund ledger may carry a prior caller's payment into this submission.
         _requireNoRetainedCredit(sucker);
 
-        // Exclude old donations when receipts are possible; a zero fee needs no ERC-20 to submit transport.
+        // Exclude preexisting donations when receipts are possible; a zero fee needs no ERC-20 to submit transport.
         uint256 beforeBalance = hasFeeToken ? feeToken.balanceOf(address(this)) : 0;
 
         // Forward only this call's value; the sucker owns fee processing and the selected asset's transport.

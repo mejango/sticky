@@ -11,13 +11,13 @@ import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {IStickyHook} from "./interfaces/IStickyHook.sol";
 import {IStickyToken} from "./interfaces/IStickyToken.sol";
 
-/// @notice An ERC-20 representing a staked position in a sticky project, minted by staking and burned by cashing out
-/// or voluntarily through the controller. Its transfer policy is permanent: soulbound tokens reject transfers;
-/// transferable tokens consume the sender's newest tranches and create a fresh tranche for the recipient.
-/// @dev Checkpointed votes make the token a valid stake source for `StickyDistributor` default-group rewards: every
+/// @notice An ERC-20 share token representing a staked position in a sticky project. Staking mints shares; cashing out
+/// or a voluntary controller burn destroys them. Its transfer policy is permanent: soulbound shares reject transfers;
+/// transferable shares consume the sender's newest tranches and create a fresh tranche for the recipient.
+/// @dev Checkpointed votes make each share a valid stake source for `StickyDistributor` default-group rewards: every
 /// holder is self-delegated automatically on first mint and delegation can never be changed, so each holder's voting
 /// power always equals their staked balance and the active-vote total always equals the total supply. Tenure rewards
-/// read the hook's tranches instead. A recipient's existing streak continues when tokens arrive; the incoming tokens
+/// read the hook's tranches instead. A recipient's existing streak continues when shares arrive; the incoming shares
 /// join the recipient's newest tranche of the current epoch or start a new one.
 contract StickyToken is ERC20Votes, IJBActiveVotes, IStickyToken, IJBToken {
     //*********************************************************************//
@@ -28,27 +28,35 @@ contract StickyToken is ERC20Votes, IJBActiveVotes, IStickyToken, IJBToken {
     error StickyToken_AlreadyInitialized();
 
     /// @notice Thrown when attempting to change delegation. Reward weight always stays with the holder.
+    /// @param delegatee The account the caller attempted to delegate to.
     error StickyToken_DelegationLocked(address delegatee);
 
     /// @notice Thrown when calling `setMetadata`. This token's name and symbol are immutable.
     error StickyToken_MetadataIsImmutable();
 
     /// @notice Thrown when attempting a transfer while the token is soulbound, preserving its transfer policy.
+    /// @param from The account attempting to transfer shares.
+    /// @param to The intended recipient.
     error StickyToken_Soulbound(address from, address to);
 
     /// @notice Thrown when the caller is not the `JBTokens` contract that manages this token, so supply changes follow
     /// the controller's authorization.
+    /// @param caller The unauthorized caller.
+    /// @param tokens The `JBTokens` contract authorized to manage this token's supply.
     error StickyToken_Unauthorized(address caller, address tokens);
 
-    /// @notice Thrown when tokens move before a pending payment's minted tranche has been recorded, which would consume
+    /// @notice Thrown when shares move before a pending payment's minted tranche has been recorded, which would consume
     /// older tranches out of order.
+    /// @param holder The holder attempting to move shares.
+    /// @param tokenBalance The holder's share balance, including the unrecorded mint.
+    /// @param stakedBalance The holder's balance represented by recorded tranches.
     error StickyToken_UnrecordedMint(address holder, uint256 tokenBalance, uint256 stakedBalance);
 
     //*********************************************************************//
     // --------------- public immutable stored properties ---------------- //
     //*********************************************************************//
 
-    /// @notice The hook that tracks tranches and streaks, notified when tokens burn or transfer between holders.
+    /// @notice The hook that tracks tranches and streaks, notified when shares burn or transfer between holders.
     IStickyHook public immutable override HOOK;
 
     /// @notice The ID of the sticky project this token belongs to. This token can't be attached to any other project.
@@ -116,19 +124,19 @@ contract StickyToken is ERC20Votes, IJBActiveVotes, IStickyToken, IJBToken {
     // ---------------------- external transactions ---------------------- //
     //*********************************************************************//
 
-    /// @notice Burns some outstanding tokens.
+    /// @notice Burns some outstanding Sticky shares.
     /// @dev Can only be called by the `JBTokens` contract.
-    /// @param account The address to burn tokens from.
-    /// @param amount The amount of tokens to burn, as a fixed point number with 18 decimals.
+    /// @param account The address to burn shares from.
+    /// @param amount The number of shares to burn, as a fixed point number with 18 decimals.
     function burn(address account, uint256 amount) external override onlyTokens {
         // Use the ERC-20 burn path so `_update` consumes stake accounting and checkpoints the reduced balance.
         _burn({account: account, value: amount});
     }
 
-    /// @notice Mints more of this token.
+    /// @notice Mints more Sticky shares.
     /// @dev Can only be called by the `JBTokens` contract.
-    /// @param account The address to mint the new tokens to.
-    /// @param amount The amount of tokens to mint, as a fixed point number with 18 decimals.
+    /// @param account The address to mint the new shares to.
+    /// @param amount The number of shares to mint, as a fixed point number with 18 decimals.
     function mint(address account, uint256 amount) external override onlyTokens {
         // Use the ERC-20 mint path so `_update` establishes self-delegation and checkpoints the issued shares.
         _mint({account: account, value: amount});
@@ -165,7 +173,6 @@ contract StickyToken is ERC20Votes, IJBActiveVotes, IStickyToken, IJBToken {
 
     /// @notice This token is initialized by its constructor and can't be initialized again.
     /// @dev The proposed name, symbol and token manager are unused; every call reverts.
-    /// @inheritdoc IJBToken
     function initialize(string memory, string memory, address) external pure override {
         // Preserve the constructor's immutable bindings instead of allowing an initializer to replace them.
         revert StickyToken_AlreadyInitialized();
@@ -173,7 +180,6 @@ contract StickyToken is ERC20Votes, IJBActiveVotes, IStickyToken, IJBToken {
 
     /// @notice This token's name and symbol are immutable.
     /// @dev The proposed name and symbol are unused; every call reverts.
-    /// @inheritdoc IJBToken
     function setMetadata(string memory, string memory) external pure override {
         // Keep the token's public identity fixed for every holder throughout the project's lifetime.
         revert StickyToken_MetadataIsImmutable();
@@ -185,7 +191,7 @@ contract StickyToken is ERC20Votes, IJBActiveVotes, IStickyToken, IJBToken {
 
     /// @notice The balance of the given address.
     /// @param account The account to get the balance of.
-    /// @return balance The number of tokens owned by the account, as a fixed point number with 18 decimals.
+    /// @return balance The number of Sticky shares owned by the account, as a fixed point number with 18 decimals.
     function balanceOf(address account) public view override(ERC20, IJBToken) returns (uint256 balance) {
         // Expose the ERC-20 ledger through IJBToken so core accounting reads the same balance that transfers update.
         return super.balanceOf(account);
@@ -214,8 +220,8 @@ contract StickyToken is ERC20Votes, IJBActiveVotes, IStickyToken, IJBToken {
         revert StickyToken_DelegationLocked(delegatee);
     }
 
-    /// @notice The total supply of this token.
-    /// @return supply The total supply of this token, as a fixed point number with 18 decimals.
+    /// @notice The total supply of Sticky shares.
+    /// @return supply The total number of outstanding Sticky shares, as a fixed point number with 18 decimals.
     function totalSupply() public view override(ERC20, IJBToken) returns (uint256 supply) {
         // Expose the ERC-20 supply through IJBToken so issuance and redemption use the outstanding share count.
         return super.totalSupply();
@@ -231,9 +237,9 @@ contract StickyToken is ERC20Votes, IJBActiveVotes, IStickyToken, IJBToken {
     /// @dev Every receiver is self-delegated on first receipt so reward weight always tracks balance.
     /// The terminal can call the staked token between minting and its pay hook. Outgoing movements during that gap
     /// must revert; otherwise they would consume older tranches before the newly minted tranche is recorded.
-    /// @param from The address tokens are moving from. `address(0)` means the tokens are being minted.
-    /// @param to The address tokens are moving to. `address(0)` means the tokens are being burned.
-    /// @param value The amount of tokens moving.
+    /// @param from The address shares are moving from. `address(0)` means shares are being minted.
+    /// @param to The address shares are moving to. `address(0)` means shares are being burned.
+    /// @param value The number of shares moving.
     function _update(address from, address to, uint256 value) internal override {
         // Minted shares cannot consume earlier tranches before the terminal records their own payment tranche.
         if (value != 0 && from != address(0) && from != to) {

@@ -125,8 +125,9 @@ contract StickySourceCollectorTest is Test {
         assertEq(_collector.DESTINATION_CHAIN_ID(), 1);
     }
 
-    /// @notice The hook exposes the controller's expected split-hook interface without claiming every interface.
-    function test_supportsSplitHookInterface() public view {
+    /// @notice The collector advertises its complete public API and the split-hook interface the controller checks.
+    function test_supportsCollectorAndSplitHookInterfaces() public view {
+        assertTrue(_collector.supportsInterface(type(IStickySourceCollector).interfaceId));
         assertTrue(_collector.supportsInterface(type(IJBSplitHook).interfaceId));
         assertTrue(_collector.supportsInterface(type(IERC165).interfaceId));
         assertFalse(_collector.supportsInterface(0xffffffff));

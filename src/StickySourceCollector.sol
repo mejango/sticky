@@ -32,8 +32,8 @@ import {IStickySourceFeePayer} from "./interfaces/IStickySourceFeePayer.sol";
 /// @dev Set the reserved split's hook to this contract, beneficiary to the home-chain Sticky share token, and projectId
 /// to its reward group. Acceptance only records attributed custody; bridge fees, transport and settlement are separate
 /// calls so their failures cannot reject a valid reserved allocation. Credits can wait here for the source ERC-20.
-/// @dev Each source project, Sticky token and group has its own pending balance. Callers cannot redirect that balance,
-/// spend another bucket or claim unattributed donations. Canonical project and transport dependencies still govern
+/// @dev Each source project, Sticky share token and group has its own pending balance. Callers cannot redirect that
+/// balance, spend another bucket or claim unattributed donations. Canonical project and transport dependencies govern
 /// issuance and delivery. The home-chain reward ERC-20 and intended Sticky receiver must be usable before remote
 /// claims.
 /// @dev There is no owner, upgrade, withdrawal or general rescue. The only fee-child recovery contributes its full
@@ -200,7 +200,8 @@ contract StickySourceCollector is IStickySourceCollector, ReentrancyGuard {
     // --------------------- public stored properties -------------------- //
     //*********************************************************************//
 
-    /// @notice The accepted project-token atoms awaiting delivery to each home-chain Sticky token and reward group.
+    /// @notice The accepted project-token atoms awaiting delivery to each home-chain Sticky share token and reward
+    /// group.
     /// @custom:param sourceProjectId The source project whose reserved tokens or credits were accepted.
     /// @custom:param stickyToken The home-chain Sticky share token whose holders receive this allocation.
     /// @custom:param groupId The destination reward group.
@@ -491,11 +492,12 @@ contract StickySourceCollector is IStickySourceCollector, ReentrancyGuard {
     // ----------------------- external views ---------------------------- //
     //*********************************************************************//
 
-    /// @notice Reports the ERC-165 and reserved split-hook interfaces implemented by this contract.
+    /// @notice Reports the collector, reserved split-hook and ERC-165 interfaces implemented by this contract.
     /// @param interfaceId The interface identifier being queried.
     /// @return supported Whether this contract implements the requested interface.
     function supportsInterface(bytes4 interfaceId) external pure override returns (bool supported) {
-        return interfaceId == type(IJBSplitHook).interfaceId || interfaceId == type(IERC165).interfaceId;
+        return interfaceId == type(IStickySourceCollector).interfaceId || interfaceId == type(IJBSplitHook).interfaceId
+            || interfaceId == type(IERC165).interfaceId;
     }
 
     //*********************************************************************//
@@ -595,7 +597,7 @@ contract StickySourceCollector is IStickySourceCollector, ReentrancyGuard {
     /// @param amount The project-token atoms to approve and prepare.
     /// @param sucker The authenticated, sending-enabled source sucker.
     /// @param backingToken The mapped terminal asset being reclaimed and bridged.
-    /// @param receiver The fixed home-chain receiver predicted for the bucket's Sticky token and group.
+    /// @param receiver The fixed home-chain receiver predicted for the bucket's Sticky share token and group.
     /// @return leafIndex The leaf's index in the backing asset's source outbox.
     /// @return minimumReclaimed The conservative preview bound, in backing-token atoms, including zero backing.
     function _prepare(

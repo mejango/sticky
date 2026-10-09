@@ -23,9 +23,9 @@ interface IStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @param caller The address that set the granter.
     event SetGranter(uint256 indexed projectId, address indexed granter, address caller);
 
-    /// @notice Emitted when a sticky project's token is registered as its movement reporter.
+    /// @notice Emitted when a sticky project's share token is registered as its movement reporter.
     /// @param projectId The ID of the sticky project.
-    /// @param token The sticky token allowed to report transfers and burns.
+    /// @param token The Sticky share token allowed to report transfers and burns.
     /// @param caller The address that registered the token.
     event SetToken(uint256 indexed projectId, address token, address caller);
 
@@ -36,10 +36,10 @@ interface IStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @param trusted Whether the sender is now trusted.
     event SetTrustedSender(uint256 indexed projectId, address indexed holder, address indexed sender, bool trusted);
 
-    /// @notice Emitted when tokens are staked, joining the holder's newest tranche of the epoch or creating a new one.
+    /// @notice Emitted when Sticky shares join the holder's newest tranche of the epoch or create a new one.
     /// @param projectId The ID of the sticky project being staked to.
     /// @param holder The address the staked position belongs to.
-    /// @param payer The address the staked tokens came from.
+    /// @param payer The payment payer or transfer sender whose shares joined the position.
     /// @param count The shares added by a payment or incoming transfer, as a fixed point number with 18 decimals.
     /// @param stakedBalance The holder's staked balance after the stake, as a fixed point number with 18 decimals.
     /// @param caller The address that triggered the stake.
@@ -65,13 +65,13 @@ interface IStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @param caller The address that triggered the stake which started the streak.
     event StreakStarted(uint256 indexed projectId, address indexed holder, address caller);
 
-    /// @notice Emitted when tokens burn or transfer away, consuming tranches newest-first.
+    /// @notice Emitted when Sticky shares burn or transfer away, consuming tranches newest-first.
     /// @dev A voluntary burn or transfer does not reclaim backing; this event alone does not prove a cash out.
     /// @param projectId The ID of the sticky project being unstaked from.
     /// @param holder The address the staked position belongs to.
-    /// @param count The number of staked project tokens removed, as a fixed point number with 18 decimals.
+    /// @param count The number of Sticky shares removed, as a fixed point number with 18 decimals.
     /// @param stakedBalance The holder's staked balance after the unstake, as a fixed point number with 18 decimals.
-    /// @param caller The registered sticky token that reported the movement.
+    /// @param caller The registered Sticky share token that reported the movement.
     event Unstaked(
         uint256 indexed projectId, address indexed holder, uint256 count, uint256 stakedBalance, address caller
     );
@@ -103,8 +103,8 @@ interface IStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     function isGranterOf(uint256 projectId, address granter) external view returns (bool isGranter);
 
     /// @notice Whether a payment to a project has minted shares this hook has not yet recorded.
-    /// @dev Set by the registered token on every mint and cleared by the terminal's after-pay callback, so the
-    /// distributor never reads a tenure denominator while the epoch buckets lag the token's supply.
+    /// @dev Set by the registered share token on every mint and cleared by the terminal's after-pay callback, so the
+    /// distributor never reads a tenure denominator while the epoch buckets lag the share supply.
     /// @param projectId The ID of the sticky project to check.
     /// @return isPaying Whether a payment's minted shares are still waiting for their tranche.
     function isPayingFor(uint256 projectId) external view returns (bool isPaying);
@@ -149,10 +149,10 @@ interface IStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @return amount The excluded underlying balance, in underlying token atoms.
     function orphanedBalanceOf(uint256 projectId) external view returns (uint256 amount);
 
-    /// @notice The total number of staked project tokens a holder has, as a fixed point number with 18 decimals.
+    /// @notice The total number of Sticky shares in a holder's position, as a fixed point number with 18 decimals.
     /// @param projectId The ID of the sticky project to check the balance of.
     /// @param holder The address to check the balance of.
-    /// @return balance The holder's currently staked token balance.
+    /// @return balance The holder's current Sticky share balance.
     function stakedBalanceOf(uint256 projectId, address holder) external view returns (uint256 balance);
 
     /// @notice A holder's staked balance held in tranches created through an epoch, as a fixed point number with 18
@@ -176,9 +176,9 @@ interface IStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @return timestamp The active streak's start timestamp, or zero if the balance is zero.
     function streakStartOf(uint256 projectId, address holder) external view returns (uint256 timestamp);
 
-    /// @notice The sticky token allowed to report transfers and burns for a project.
+    /// @notice The Sticky share token allowed to report transfers and burns for a project.
     /// @param projectId The ID of the sticky project to get the token of.
-    /// @return token The project's registered sticky token.
+    /// @return token The project's registered Sticky share token.
     function tokenOf(uint256 projectId) external view returns (address token);
 
     /// @notice The number of tranches a holder has.
@@ -210,27 +210,27 @@ interface IStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
         view
         returns (StickyTranche[] memory tranches);
 
-    /// @notice Consumes the newest tranches for every positive token burn, including voluntary controller burns.
-    /// @dev Only the registered sticky token can report burns. Zero burns leave accounting unchanged.
+    /// @notice Consumes the newest tranches for every positive Sticky share burn, including voluntary controller burns.
+    /// @dev Only the registered Sticky share token can report burns. Zero burns leave accounting unchanged.
     /// @param projectId The ID of the sticky project.
-    /// @param holder The holder whose tokens were burned.
-    /// @param amount The number of tokens burned, as a fixed point number with 18 decimals.
+    /// @param holder The holder whose shares were burned.
+    /// @param amount The number of shares burned, as a fixed point number with 18 decimals.
     function recordBurn(uint256 projectId, address holder, uint256 amount) external;
 
-    /// @notice Counts a mint whose tranche this hook has not yet recorded, flagging the project's payment as in
-    /// progress until the terminal's after-pay callback records it.
-    /// @dev Only the registered sticky token can report mints.
-    /// @param projectId The ID of the sticky project whose token was minted.
+    /// @notice Counts a share issuance whose tranche this hook has not yet recorded, flagging the project's payment as
+    /// in progress until the terminal's after-pay callback records it.
+    /// @dev Only the registered Sticky share token can report mints.
+    /// @param projectId The ID of the sticky project whose shares were issued.
     function recordMint(uint256 projectId) external;
 
-    /// @notice Moves staked accounting between holders for a transferable sticky token: the sender's newest
-    /// tranches are consumed and the moved tokens join the receiver's newest tranche of the current epoch, or a fresh
+    /// @notice Moves staked accounting between holders for a transferable Sticky share token: the sender's newest
+    /// tranches are consumed and the moved shares join the receiver's newest tranche of the current epoch, or a fresh
     /// one. The receiver's existing streak continues.
-    /// @dev Can only be called by the project's registered sticky token. Zero and self transfers are no-ops.
+    /// @dev Can only be called by the project's registered Sticky share token. Zero and self transfers are no-ops.
     /// @param projectId The ID of the sticky project the transfer belongs to.
-    /// @param from The holder the tokens moved from.
-    /// @param to The holder the tokens moved to.
-    /// @param amount The number of tokens moved, as a fixed point number with 18 decimals.
+    /// @param from The holder the shares moved from.
+    /// @param to The holder the shares moved to.
+    /// @param amount The number of shares moved, as a fixed point number with 18 decimals.
     function recordTransfer(uint256 projectId, address from, address to, uint256 amount) external;
 
     /// @notice Allows addresses to airdrop stakes to any holder of a sticky project.
@@ -239,10 +239,10 @@ interface IStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @param granters The addresses allowed to airdrop.
     function setGrantersFor(uint256 projectId, address[] calldata granters) external;
 
-    /// @notice Registers the sticky token allowed to report transfers and burns for a project.
+    /// @notice Registers the Sticky share token allowed to report transfers and burns for a project.
     /// @dev Can only be called by the deployer, which calls it once at launch.
     /// @param projectId The ID of the sticky project.
-    /// @param token The sticky token.
+    /// @param token The Sticky share token.
     function setTokenFor(uint256 projectId, address token) external;
 
     /// @notice Allows or disallows a sender to add stakes to the caller's position.

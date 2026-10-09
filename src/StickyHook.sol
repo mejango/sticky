@@ -32,7 +32,7 @@ import {StickyTranche} from "./structs/StickyTranche.sol";
 /// consume tranches newest-first (splitting the newest tranche if needed, without resetting its timestamp), and each
 /// holder has a streak clock that starts when their staked balance becomes non-zero and resets only when it returns
 /// to zero. Net stake is also bucketed by the epoch it joined in, so the distributor can weigh tenure rewards by
-/// tranche age without checkpoints. Streak views are informational; default-group rewards use the token's voting
+/// tranche age without checkpoints. Streak views are informational; default-group rewards use the share token's voting
 /// checkpoints.
 // Callbacks are payable to implement the core interfaces, but both explicitly reject ETH.
 // slither-disable-next-line locked-ether
@@ -42,51 +42,81 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
     //*********************************************************************//
 
     /// @notice Thrown when a pay or cash out hook callback comes from an address that isn't a terminal of the project.
+    /// @param caller The address that attempted the callback.
     error StickyHook_CallerNotTerminal(address caller);
 
-    /// @notice Thrown when a transfer or burn report comes from an address other than the project's registered token.
+    /// @notice Thrown when a transfer or burn report comes from an address other than the registered share token.
+    /// @param caller The address that reported the Sticky share movement.
+    /// @param token The project's registered Sticky share token.
     error StickyHook_CallerNotToken(address caller, address token);
 
-    /// @notice Thrown when a token reports more tokens leaving than the holder has staked.
+    /// @notice Thrown when a share token reports more shares leaving than the holder has staked.
+    /// @param projectId The ID of the Sticky project.
+    /// @param holder The holder whose Sticky shares are leaving.
+    /// @param balance The holder's tracked Sticky share balance.
+    /// @param count The number of Sticky shares reported as leaving.
     error StickyHook_InsufficientStakedBalance(uint256 projectId, address holder, uint256 balance, uint256 count);
 
     /// @notice Thrown when the terminal's backing is below the excluded orphaned balance, since share-owned backing
     /// cannot be negative.
+    /// @param projectId The ID of the Sticky project.
+    /// @param backing The terminal's current backing for the project.
+    /// @param orphanedBalance The backing excluded from Sticky share ownership.
     error StickyHook_InvalidBacking(uint256 projectId, uint256 backing, uint256 orphanedBalance);
 
     /// @notice Thrown when an epoch range ends before it starts, so it selects no buckets.
+    /// @param fromEpoch The first epoch in the requested range.
+    /// @param toEpoch The last epoch in the requested range.
     error StickyHook_InvalidEpochRange(uint256 fromEpoch, uint256 toEpoch);
 
     /// @notice Thrown when a payment callback does not carry the pricing snapshot produced by this hook, so its
     /// issuance cannot be authenticated.
+    /// @param projectId The ID of the Sticky project receiving the payment.
+    /// @param length The byte length of the callback's hook metadata.
     error StickyHook_InvalidPricingMetadata(uint256 projectId, uint256 length);
 
-    /// @notice Thrown when a token callback changes aggregate pricing state before this payment is accounted for, so a
-    /// stale quote cannot issue shares.
+    /// @notice Thrown when a share-token callback changes aggregate pricing state before this payment is accounted for,
+    /// so a stale quote cannot issue shares.
+    /// @param projectId The ID of the Sticky project receiving the payment.
+    /// @param expectedSupply The Sticky share supply expected after this payment's issuance.
+    /// @param actualSupply The Sticky share supply observed after issuance.
+    /// @param expectedBacking The terminal backing expected after this payment.
+    /// @param actualBacking The terminal backing observed after the payment.
     error StickyHook_PricingStateChanged(
         uint256 projectId, uint256 expectedSupply, uint256 actualSupply, uint256 expectedBacking, uint256 actualBacking
     );
 
     /// @notice Thrown when a payer stakes to a beneficiary who hasn't trusted them, without being one of the
     /// project's granters.
+    /// @param payer The address paying to add the stake.
+    /// @param beneficiary The holder whose position would receive the stake.
     error StickyHook_SenderNotTrusted(address payer, address beneficiary);
 
-    /// @notice Thrown when an address other than the deployer attempts to set a project's granters or token.
+    /// @notice Thrown when an address other than the deployer attempts to set a project's granters or share token.
+    /// @param caller The address that attempted the restricted operation.
+    /// @param deployer The address permitted to perform the operation.
     error StickyHook_Unauthorized(address caller, address deployer);
 
     /// @notice Thrown when the terminal issues a share count other than the one priced by the authenticated
     /// pre-payment snapshot.
+    /// @param projectId The ID of the Sticky project receiving the payment.
+    /// @param expected The Sticky share count priced from the authenticated snapshot.
+    /// @param actual The Sticky share count issued by the terminal.
     error StickyHook_UnexpectedIssuedCount(uint256 projectId, uint256 expected, uint256 actual);
 
     /// @notice Thrown when a callback receives native funds, which this hook has no path to withdraw.
+    /// @param value The amount of native currency received.
     error StickyHook_UnexpectedValue(uint256 value);
 
-    /// @notice Thrown when pricing a payment for a project without a registered Sticky token, since issuance depends on
-    /// its share supply.
+    /// @notice Thrown when pricing a payment for a project without a registered Sticky share token, since issuance
+    /// depends on its share supply.
+    /// @param projectId The ID of the project without a registered Sticky share token.
     error StickyHook_UnknownProject(uint256 projectId);
 
-    /// @notice Thrown when a positive payment would issue no sticky tokens, so the payer keeps funds that bought no
+    /// @notice Thrown when a positive payment would issue no Sticky shares, so the payer keeps funds that bought no
     /// shares.
+    /// @param projectId The ID of the Sticky project receiving the payment.
+    /// @param amount The payment amount that would issue no Sticky shares.
     error StickyHook_ZeroIssuance(uint256 projectId, uint256 amount);
 
     //*********************************************************************//
@@ -138,7 +168,7 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
 
     /// @notice The net stake still held from tranches created in each epoch, as a fixed point number with 18
     /// decimals.
-    /// @dev Grows when tokens join a position during the epoch and shrinks when a tranche created in the epoch is
+    /// @dev Grows when shares join a position during the epoch and shrinks when a tranche created in the epoch is
     /// later consumed, so a project's buckets always sum to its holders' staked balances.
     /// @custom:param projectId The ID of the sticky project.
     /// @custom:param epoch The epoch, measured as `timestamp / EPOCH_DURATION`.
@@ -150,7 +180,7 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
     /// @custom:param projectId The ID of the sticky project.
     mapping(uint256 projectId => uint256) public override orphanedBalanceOf;
 
-    /// @notice The total number of staked project tokens a holder has, as a fixed point number with 18 decimals.
+    /// @notice The total number of Sticky shares in a holder's position, as a fixed point number with 18 decimals.
     /// @custom:param projectId The ID of the sticky project the balance belongs to.
     /// @custom:param holder The address the balance belongs to.
     mapping(uint256 projectId => mapping(address holder => uint256)) public override stakedBalanceOf;
@@ -161,7 +191,7 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
     /// @custom:param holder The address the streak belongs to.
     mapping(uint256 projectId => mapping(address holder => uint256)) public override streakStartOf;
 
-    /// @notice The sticky token allowed to report transfers and burns for a project.
+    /// @notice The Sticky share token allowed to report transfers and burns for a project.
     /// @custom:param projectId The ID of the sticky project.
     mapping(uint256 projectId => address) public override tokenOf;
 
@@ -360,17 +390,17 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
         });
     }
 
-    /// @notice Consumes the newest tranches for every token burn, including burns that reclaim no backing.
-    /// @dev Only the project's registered sticky token can report burns. Zero burns leave accounting unchanged.
+    /// @notice Consumes the newest tranches for every Sticky share burn, including burns that reclaim no backing.
+    /// @dev Only the project's registered Sticky share token can report burns. Zero burns leave accounting unchanged.
     /// A holder's exit never depends on the share supply left with other holders. Small supplies can make later
     /// deposits unissuable, in which case the payment's rounding checks reject them without taking funds.
     /// @param projectId The ID of the sticky project.
-    /// @param holder The holder whose tokens were burned.
-    /// @param amount The number of tokens burned, as a fixed point number with 18 decimals.
+    /// @param holder The holder whose shares were burned.
+    /// @param amount The number of shares burned, as a fixed point number with 18 decimals.
     function recordBurn(uint256 projectId, address holder, uint256 amount) external override {
         // Only the registered share token can report a burn as part of its authenticated balance update.
         if (msg.sender != tokenOf[projectId]) {
-            // Reject fabricated burns that would reduce another holder's tranches without reducing their tokens.
+            // Reject fabricated burns that would reduce another holder's tranches without reducing their shares.
             revert StickyHook_CallerNotToken({caller: msg.sender, token: tokenOf[projectId]});
         }
 
@@ -386,11 +416,11 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
         });
     }
 
-    /// @notice Counts a mint whose tranche this hook has not yet recorded, flagging the project's payment as in
-    /// progress until the terminal's after-pay callback records it.
-    /// @dev Can only be called by the project's registered sticky token, which mints only when a terminal pays the
-    /// project. The count lives in transient storage, so a payment that reverts leaves no flag behind.
-    /// @param projectId The ID of the sticky project whose token was minted.
+    /// @notice Counts a share issuance whose tranche this hook has not yet recorded, flagging the project's payment as
+    /// in progress until the terminal's after-pay callback records it.
+    /// @dev Can only be called by the project's registered Sticky share token, which mints only when a terminal pays
+    /// the project. The count lives in transient storage, so a payment that reverts leaves no flag behind.
+    /// @param projectId The ID of the sticky project whose shares were issued.
     function recordMint(uint256 projectId) external override {
         // Only the registered share token can report a mint as part of its authenticated balance update.
         if (msg.sender != tokenOf[projectId]) {
@@ -402,14 +432,14 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
         _setPayingCountOf({projectId: projectId, count: _payingCountOf(projectId) + 1});
     }
 
-    /// @notice Moves staked accounting between holders for a transferable sticky token: the sender's newest
-    /// tranches are consumed and the moved tokens join the receiver's newest tranche of the current epoch, or a fresh
+    /// @notice Moves staked accounting between holders for a transferable Sticky share token: the sender's newest
+    /// tranches are consumed and the moved shares join the receiver's newest tranche of the current epoch, or a fresh
     /// one. The receiver's existing streak continues.
-    /// @dev Can only be called by the project's registered sticky token.
+    /// @dev Can only be called by the project's registered Sticky share token.
     /// @param projectId The ID of the sticky project the transfer belongs to.
-    /// @param from The holder the tokens moved from.
-    /// @param to The holder the tokens moved to.
-    /// @param amount The number of tokens moved, as a fixed point number with 18 decimals.
+    /// @param from The holder the shares moved from.
+    /// @param to The holder the shares moved to.
+    /// @param amount The number of shares moved, as a fixed point number with 18 decimals.
     function recordTransfer(uint256 projectId, address from, address to, uint256 amount) external override {
         // Only the registered share token can report a transfer as part of its authenticated balance update.
         if (msg.sender != tokenOf[projectId]) {
@@ -428,7 +458,7 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
             projectId: projectId, holder: from, count: amount, stakedBalance: fromBalance, caller: msg.sender
         });
 
-        // The moved tokens restart their clock in the receiver's newest tranche.
+        // The moved shares restart their clock in the receiver's newest tranche.
         uint256 toBalance = _addTo({projectId: projectId, holder: to, count: amount});
 
         // Attribute the receiver's added stake to the sender while preserving their resulting balance.
@@ -458,10 +488,10 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
         }
     }
 
-    /// @notice Registers the sticky token allowed to report transfers and burns for a project.
+    /// @notice Registers the Sticky share token allowed to report transfers and burns for a project.
     /// @dev Can only be called by the deployer, which calls it once at launch.
     /// @param projectId The ID of the sticky project.
-    /// @param token The sticky token.
+    /// @param token The Sticky share token.
     function setTokenFor(uint256 projectId, address token) external override {
         // Only the launch deployer may choose the token trusted to report this project's ownership changes.
         if (msg.sender != DEPLOYER) revert StickyHook_Unauthorized({caller: msg.sender, deployer: DEPLOYER});
@@ -494,10 +524,10 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
     /// @notice Prices a cash out against share-owned backing, excluding funds that existed without any shares.
     /// @param context The cash out context passed to this hook by the terminal.
     /// @return cashOutTaxRate The ruleset's cash out tax rate, unchanged.
-    /// @return effectiveCashOutCount The number of tokens being cashed out, unchanged.
+    /// @return effectiveCashOutCount The number of shares being cashed out, unchanged.
     /// @return effectiveTotalSupply The project token's total supply, unchanged.
     /// @return effectiveSurplusValue The project's surplus less the excluded orphaned backing.
-    /// @return hookSpecifications No cash out callbacks; the token records every burn exactly once.
+    /// @return hookSpecifications No cash out callbacks; the share token records every burn exactly once.
     function beforeCashOutRecordedWith(JBBeforeCashOutRecordedContext calldata context)
         external
         view
@@ -510,7 +540,7 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
             JBCashOutHookSpecification[] memory hookSpecifications
         )
     {
-        // The token reports every burn, so no additional callback is needed to account for this exit.
+        // The share token reports every burn, so no additional callback is needed to account for this exit.
         hookSpecifications = new JBCashOutHookSpecification[](0);
 
         // Funds left without any shares must remain excluded from subsequent holders' redemption claims.
@@ -531,7 +561,7 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
             context.totalSupply,
             // Orphaned funds have no share owner and cannot subsidize this cash out.
             context.surplus.value - orphanedBalance,
-            // Burn accounting belongs to the token, so the terminal has no follow-up hook to invoke.
+            // Burn accounting belongs to the share token, so the terminal has no follow-up hook to invoke.
             hookSpecifications
         );
     }
@@ -609,9 +639,8 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
         return (weight, hookSpecifications);
     }
 
-    /// @notice No address can mint a sticky project's tokens on demand; tokens only exist against stakes.
+    /// @notice No address can mint a sticky project's shares on demand; shares only exist against stakes.
     /// @dev The project ID, ruleset and address do not affect the unconditional denial.
-    /// @inheritdoc IJBRulesetDataHook
     /// @return permitted Always false.
     function hasMintPermissionFor(uint256, JBRuleset memory, address) external pure override returns (bool permitted) {
         // Unbacked discretionary issuance would dilute holders, so this hook never grants mint permission.
@@ -619,8 +648,9 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
     }
 
     /// @notice Whether a payment to a project has minted shares this hook has not yet recorded.
-    /// @dev The terminal mints before it calls `afterPayRecordedWith`, so during that gap the token's supply exceeds
-    /// the sum of the project's epoch buckets. The distributor refuses to read a tenure denominator while this is set.
+    /// @dev The terminal mints before it calls `afterPayRecordedWith`, so during that gap the share-token supply
+    /// exceeds the sum of the project's epoch buckets. The distributor refuses to read a tenure denominator while this
+    /// is set.
     /// @param projectId The ID of the sticky project to check.
     /// @return isPaying Whether a payment's minted shares are still waiting for their tranche.
     function isPayingFor(uint256 projectId) external view override returns (bool isPaying) {
@@ -791,15 +821,15 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
     // ---------------------- internal transactions ---------------------- //
     //*********************************************************************//
 
-    /// @notice Records tokens joining a holder's position, merging them into the newest tranche when it was created
+    /// @notice Records shares joining a holder's position, merging them into the newest tranche when it was created
     /// in the current epoch and appending a fresh tranche otherwise, and starts their streak if their staked balance
     /// was zero.
     /// @dev Merging keeps every active tranche in a distinct epoch, which bounds the bucket updates an exit makes to
     /// the number of epochs the holder staked in. A merged tranche takes the current timestamp, so its recorded age
-    /// never overstates the age of the tokens that joined last.
+    /// never overstates the age of the shares that joined last.
     /// @param projectId The ID of the sticky project.
-    /// @param holder The holder the tokens joined.
-    /// @param count The number of tokens joining, as a fixed point number with 18 decimals.
+    /// @param holder The holder the shares joined.
+    /// @param count The number of shares joining, as a fixed point number with 18 decimals.
     /// @return stakedBalance The holder's staked balance after the addition.
     function _addTo(uint256 projectId, address holder, uint256 count) internal returns (uint256 stakedBalance) {
         // Extend the existing position so a top-up preserves earlier tranches and any uninterrupted streak.
@@ -817,7 +847,7 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
         // Bucket the addition by the epoch it joins in, so aged stake can be totaled without checkpoints.
         uint256 epoch = block.timestamp / EPOCH_DURATION;
 
-        // Tokens joining in the epoch of the newest tranche share its age, so they extend it instead of a new entry.
+        // Shares joining in the epoch of the newest tranche share its age, so they extend it instead of a new entry.
         // Whole-epoch comparison; a validator moving the timestamp within a block cannot change entitlements.
         // forge-lint: disable-next-item(block-timestamp)
         // slither-disable-next-line incorrect-equality
@@ -828,10 +858,10 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
             // Read the tranche once for both the amount extension and the timestamp refresh.
             StickyTranche storage tranche = _tranchesOf[projectId][holder][index];
 
-            // Grow the tranche by the joining tokens; the checked cast prevents truncating the amount.
+            // Grow the tranche by the joining shares; the checked cast prevents truncating the amount.
             tranche.amount = SafeCast.toUint208(uint256(tranche.amount) + count);
 
-            // Move the tranche's age to the latest joining, so it never overstates how long its tokens have stuck.
+            // Move the tranche's age to the latest joining, so it never overstates how long its shares have stuck.
             tranche.timestamp = SafeCast.toUint48(block.timestamp);
         } else {
             // Give incoming shares their own deposit age; checked casts prevent truncating the amount or timestamp.
@@ -863,15 +893,15 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
         }
     }
 
-    /// @notice Consumes a holder's newest tranches to cover tokens leaving their position, splitting the last tranche
+    /// @notice Consumes a holder's newest tranches to cover shares leaving their position, splitting the last tranche
     /// in place (keeping its original timestamp), debiting each consumed tranche's original epoch bucket, and ending
     /// the holder's streak if their balance reached zero.
     /// @dev The retained tail is found by binary search. Each fully consumed tranche then debits its own epoch's
     /// bucket, so an exit's cost grows with the number of distinct epochs it consumes, not with the number of
     /// deposits made in them.
     /// @param projectId The ID of the sticky project.
-    /// @param holder The holder the tokens left.
-    /// @param count The number of tokens leaving, as a fixed point number with 18 decimals.
+    /// @param holder The holder the shares left.
+    /// @param count The number of shares leaving, as a fixed point number with 18 decimals.
     /// @return stakedBalance The holder's staked balance after the consumption.
     function _consumeFrom(uint256 projectId, address holder, uint256 count) internal returns (uint256 stakedBalance) {
         // Use the aggregate tracked balance to bound the exit before touching individual tranche records.

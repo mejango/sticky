@@ -22,7 +22,7 @@
   "scripts": {
     "test": "forge test",
     "test:fork": "sh script/test-fork.sh",
-    "coverage": "forge coverage --match-path \"./src/*.sol\" --report lcov --report summary",
+    "coverage": "FOUNDRY_FUZZ_RUNS=256 FOUNDRY_INVARIANT_RUNS=64 FOUNDRY_INVARIANT_DEPTH=64 forge coverage --ir-minimum --skip script CTPublisher.sol --exclude-tests --no-match-path 'test/{fork,deployment}/**' --no-match-test 'distributorFitsEip170|exitGasGrowsWithDistinctWeeksNotDeposits' --no-match-coverage '^script/' --report lcov --report summary",
     "deploy:mainnets": "npm run deploy:propose:mainnets",
     "deploy:testnets": "npm run deploy:propose:testnets",
     "deploy:rehearse": "PATH=$HOME/.foundry/versions/v1.8.1:$PATH FOUNDRY_PROFILE=deploy forge script script/Rehearse.s.sol:Rehearse",

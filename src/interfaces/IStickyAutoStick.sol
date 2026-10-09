@@ -20,7 +20,7 @@ interface IStickyAutoStick {
     /// @param token The underlying token that was compounded.
     /// @param groupIds The reward groups the rewards were collected from.
     /// @param underlyingAmount The underlying-token amount collected and stuck.
-    /// @param stickyTokenCount The sticky tokens minted to the holder, as a fixed point number with 18 decimals.
+    /// @param stickyTokenCount The Sticky shares minted to the holder, as a fixed point number with 18 decimals.
     /// @param caller The address that triggered the compound.
     event AutoStuck(
         uint256 indexed projectId,
@@ -130,7 +130,7 @@ interface IStickyAutoStick {
     /// @param holder The holder whose rewards are compounded.
     /// @param groupIds The reward groups to collect from, strictly ascending.
     /// @return underlyingAmount The underlying-token amount collected and stuck.
-    /// @return stickyTokenCount The sticky tokens minted to the holder, as a fixed point number with 18 decimals.
+    /// @return stickyTokenCount The Sticky shares minted to the holder, as a fixed point number with 18 decimals.
     function compoundFor(
         uint256 projectId,
         address holder,
@@ -148,11 +148,11 @@ interface IStickyAutoStick {
     function setConfigFor(uint256 projectId, bool enabled, uint128 minimumAmount, uint48 cooldown) external;
 
     /// @notice Claims the caller's vested underlying-token rewards and sticks them, atomically, in one call.
-    /// @dev Reverts before payment if the reward would issue zero Sticky token atoms.
+    /// @dev Reverts before payment if the reward would issue zero Sticky share atoms.
     /// @param projectId The ID of the sticky project whose rewards are claimed and stuck.
     /// @param groupIds The reward groups to collect from, strictly ascending.
     /// @return underlyingAmount The underlying-token amount claimed and stuck.
-    /// @return stickyTokenCount The sticky tokens minted to the caller, as a fixed point number with 18 decimals.
+    /// @return stickyTokenCount The Sticky shares minted to the caller, as a fixed point number with 18 decimals.
     function stickRewardsFor(
         uint256 projectId,
         uint256[] calldata groupIds
