@@ -50,10 +50,9 @@ export type StickyProjectInfo = {
   /** The unowned backing the hook has recorded. It is `orphaned` except while no shares exist, when
    * `orphaned` is all of `rawBacking` and this stays what was recorded. The backing chart needs it. */
   savedOrphaned: bigint
-  /** Shared by every chain's copy of one launch, so it groups them. Null when the uri names none. */
+  /** Historical launch metadata, never a pool identity. Null when the uri names none. */
   launchId: string | null
-  /** The chains the launch was planned on, as its uri lists them: where the Chains card expects a copy. Null when the
-   * uri lists none. */
+  /** Historical chain selection in untrusted metadata. The pool lives only on `chainId`. */
   plannedChains: number[] | null
   blockNumber: bigint
 }
@@ -112,11 +111,6 @@ export function answered<T extends readonly Answer<unknown>[]>(answers: T): T {
 function launchIn(uri: string): Pick<StickyProjectInfo, 'launchId' | 'plannedChains'> {
   const sticky = parseStickyUri(uri)
   return { launchId: sticky?.launchId ?? null, plannedChains: sticky?.chains ?? null }
-}
-
-/** The launch id in a Sticky project's uri, which a launch stores as a data URI. Anything else has none. */
-export function launchIdIn(uri: string): string | null {
-  return launchIn(uri).launchId
 }
 
 /** How a read takes an unowned balance the hook recorded above what the terminal holds, which consistent
@@ -335,7 +329,7 @@ function figuresOf(
     orphaned,
     rawBacking: held,
     savedOrphaned,
-    // The launch id only groups sibling chains, so a uri that will not read means no siblings, and no planned chains.
+    // Metadata is optional history; the verified chain/project identity does not depend on it.
     ...(uriOf.status === 'success' ? launchIn(uriOf.result) : { launchId: null, plannedChains: null }),
     blockNumber,
   }

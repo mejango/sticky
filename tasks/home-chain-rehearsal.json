@@ -116,5 +116,6 @@
       "estimatedFactoryCallGas": 2499702,
       "ok": true
     }
-  ]
+  ],
+  "qualifiedContractCommit": "db352cc3a88c4ab7e2de12acf315ea63e98e4ced"
 }

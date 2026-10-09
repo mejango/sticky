@@ -51,6 +51,19 @@
         }
       ]
     },
+    "src/components/project/flows/CollectorFlow.tsx": {
+      "hooks": 1,
+      "sends": 1,
+      "sendSites": [
+        {
+          "id": "collector-delivery",
+          "actions": [
+            "Deliver queued rewards",
+            "Settle queued rewards"
+          ]
+        }
+      ]
+    },
     "src/components/project/flows/FundFlow.tsx": {
       "hooks": 1,
       "sends": 1,

@@ -31,13 +31,14 @@ import {
   type TransactionReviewCall,
 } from '@/lib/transaction-review'
 import { chainName } from '@/lib/urn'
+import { stickySourceCollectors } from '@/lib/sticky-source-collectors'
 
 import { FeeBuybackNotice, useFeeBuybackReview } from './FeeBuybackNotice'
 
 import type { PendingReview, PendingFundingChainSelection, TransactionReviewDialogProps } from './TransactionReviewProvider'
 
 function knownContractName(call: TransactionReviewCall): string | null {
-  return call.contractName ?? knownAddressName(call.chainId, call.to)
+  return call.contractName ?? knownAddressName(call.chainId, call.to, stickySourceCollectors)
 }
 
 function hasComponents(
@@ -121,7 +122,7 @@ function V4PlanRow({ label, children }: { label: string; children: React.ReactNo
 
 /** "Name | 0x…" for a known address, otherwise the address. */
 function addressLabel(chainId: number, address: string): string {
-  const label = knownAddressName(chainId, address)
+  const label = knownAddressName(chainId, address, stickySourceCollectors)
   return label ? `${label} | ${address}` : address
 }
 
@@ -323,7 +324,7 @@ function specialArgumentView(
     if (steps) return <UrPlanView steps={steps} />
   }
   if (fn.name === 'execTransaction' && inputName === 'data') {
-    const steps = describeSafeInnerCall(call.chainId, call.args?.[0], value)
+    const steps = describeSafeInnerCall(call.chainId, call.args?.[0], value, stickySourceCollectors)
     if (steps) return <UrPlanView steps={steps} />
   }
   if (fn.name === 'execTransaction' && inputName === 'operation') {
@@ -346,7 +347,7 @@ function specialArgumentView(
     if (steps) return <UrPlanView steps={steps} />
   }
   if (fn.name === 'setSplitGroupsOf' && inputName === 'splitGroups') {
-    const steps = describeSplitGroups(call.chainId, value)
+    const steps = describeSplitGroups(call.chainId, value, stickySourceCollectors)
     if (steps) return <UrPlanView steps={steps} />
   }
   if (inputName === 'transactions' && nestsCallsInArgument(fn) && call.calls?.length) {

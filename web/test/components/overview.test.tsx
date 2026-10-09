@@ -9,11 +9,10 @@ import type { Flow } from '@/lib/sticky-backing'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import type { StickyEvent, StickyEventsResult } from '@/lib/sticky-events'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
-import type { Sibling } from '@/lib/sticky-siblings'
 import { E18, E6, HOLDER, TOKEN, stickyInfo } from '../home-fixtures'
 import { memoryStorage } from '../memory-storage'
 
-// The Overview tab: the chart of what is stuck, the Details card and the Chains card. Every read is a mock; the read
+// The Overview tab: the chart of what is stuck and the Details card. Every read is a mock; the read
 // model has tests of its own. The clock is fake, Date included, so a chart's dates and the copy label's timer are
 // exact and move only when a test moves it.
 
@@ -22,7 +21,6 @@ const mocks = vi.hoisted(() => ({
   events: vi.fn(),
   creation: vi.fn(),
   flows: vi.fn(),
-  siblings: vi.fn(),
   holders: vi.fn(),
   pinned: vi.fn(),
   moves: vi.fn(),
@@ -40,10 +38,6 @@ vi.mock('@/lib/sticky-events', async importOriginal => ({
 vi.mock('@/lib/sticky-backing', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-backing')>()),
   backingFlows: mocks.flows,
-}))
-vi.mock('@/lib/sticky-siblings', async importOriginal => ({
-  ...(await importOriginal<typeof import('@/lib/sticky-siblings')>()),
-  launchSiblings: mocks.siblings,
 }))
 vi.mock('@/lib/sticky-holders', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-holders')>()),
@@ -75,7 +69,7 @@ const ADAPTER = stickyDeployment(8453)!.autoStick
 const XSS = '<img src=x onerror=alert(1)>'
 
 /** STICKYSLOPSHOP #23 on Base: SLOPSHOP has 6 decimals, its Sticky shares always 18. 1,000 shares claim 1,010 SLOPSHOP
- * (a 10% stickiness bonus, transferable), and the launch planned Optimism and Base. */
+ * (a 10% stickiness bonus, transferable). Historical launch metadata also names Optimism. */
 const slopshop = (extra: Partial<StickyProjectInfo> = {}) =>
   stickyInfo(8453, 23n, {
     stToken: ST_TOKEN,
@@ -93,13 +87,6 @@ const slopshop = (extra: Partial<StickyProjectInfo> = {}) =>
     plannedChains: [10, 8453],
     ...extra,
   })
-
-/** The launch's copy on Optimism: 400 shares claim 500 SLOPSHOP. */
-const optimism = (extra: Partial<StickyProjectInfo> = {}) =>
-  slopshop({ chainId: 10, projectId: 5n, totalSupply: 400n * E18, backing: 500n * E6, rawBacking: 500n * E6, ...extra })
-
-const HERE: Sibling = { chainId: 8453, projectId: 23n, self: true }
-const THERE: Sibling = { chainId: 10, projectId: 5n, self: false }
 
 const tx = (at: number) => `0x${at.toString(16).padStart(64, '0')}` as Hex
 let logs = 0
@@ -129,11 +116,10 @@ beforeEach(() => {
   notifyManager.setScheduler(callback => queueMicrotask(callback))
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
   vi.setSystemTime(NOW * 1_000)
-  mocks.project.mockReset().mockImplementation(async (chainId: number) => (chainId === 10 ? optimism() : slopshop()))
+  mocks.project.mockReset().mockResolvedValue(slopshop())
   mocks.events.mockReset().mockResolvedValue(history(...stuck()))
   mocks.creation.mockReset().mockResolvedValue(1_234n)
   mocks.flows.mockReset().mockResolvedValue(paid)
-  mocks.siblings.mockReset().mockResolvedValue([HERE, THERE])
   mocks.holders.mockReset().mockResolvedValue({ rows: [], source: 'indexed', degraded: null })
   mocks.pinned.mockReset().mockResolvedValue({ number: 100n, timestamp: NOW })
   mocks.moves.mockReset().mockResolvedValue(new Map())
@@ -160,7 +146,6 @@ async function renderTab(using = client) {
 
 const section = (id: string) => host.querySelector<HTMLElement>(`section[aria-labelledby="${id}"]`)
 const detailsCard = () => section('details-title')!
-const chainsCard = () => section('chains-title')
 const chart = () => host.querySelector<SVGSVGElement>('svg[role="img"]')
 const text = (node: Element | null | undefined) => node?.textContent ?? ''
 const revalidating = (node: Element | null | undefined) => node?.closest('.revalidating') ?? node?.querySelector('.revalidating') ?? null
@@ -175,10 +160,6 @@ const contracts = () => {
 }
 const copyButton = (label: string) =>
   detailsCard().querySelector<HTMLButtonElement>(`button[aria-label="Copy ${label} address"]`)
-
-/** The Chains card's rows, each as the text of its cells. */
-const chainRows = () => [...chainsCard()!.querySelectorAll('tbody tr')].map(row => [...row.children].map(text))
-const chainNote = () => text(chainsCard()!.querySelector('p'))
 
 /** The chart's two peak labels, and what its legend calls the plotted amount. */
 const peaks = () => [...chart()!.querySelectorAll('text')].map(text).filter(label => label.startsWith('Peak:'))
@@ -289,7 +270,7 @@ describe('the Details card', () => {
     expect(detailsCard().querySelector('[role="alert"]')?.textContent).toContain('Could not read the details.')
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('Could not read a Sticky project'), { chainId: 8453, projectId: 23 }, failure)
 
-    mocks.project.mockImplementation(async (chainId: number) => (chainId === 10 ? optimism() : slopshop()))
+    mocks.project.mockResolvedValue(slopshop())
     const retry = [...detailsCard().querySelectorAll('button')].find(button => button.textContent === 'Try again')!
     await act(async () => retry.click())
     await settle()
@@ -458,171 +439,20 @@ describe('the contracts\' names', () => {
   })
 })
 
-describe('the Chains card', () => {
-  it('lists each chain\'s project with its backing and supply, and the totals', async () => {
-    await renderTab()
-    expect(chainsCard()!.querySelector('h2')?.textContent).toBe('Chains')
-    expect([...chainsCard()!.querySelectorAll('th')].map(text)).toEqual(['CHAIN', 'BACKING', 'SUPPLY'])
-    expect(chainRows()).toEqual([
-      ['Base #23 (this page)', '1,010 SLOPSHOP', '1,000 STICKYSLOPSHOP'],
-      ['Optimism #5', '500 SLOPSHOP', '400 STICKYSLOPSHOP'],
-      ['Total', '1,510 SLOPSHOP', '1,400 STICKYSLOPSHOP'],
-    ])
-  })
-
-  it('links a copy on another chain to its own page, and the page\'s own project to nothing', async () => {
-    await renderTab()
-    const [own, other] = [...chainsCard()!.querySelectorAll('tbody tr')]
-    expect(own.querySelector('a')).toBeNull()
-    expect(other.querySelector('a')?.getAttribute('href')).toBe('/op:5')
-    expect(text(other.querySelector('a'))).toBe('Optimism #5')
-  })
-
-  it('reads each chain\'s figures for itself, the page\'s own included, and searches for the copies from the page\'s project', async () => {
-    await renderTab()
-    expect(mocks.siblings).toHaveBeenCalledTimes(1)
-    expect(mocks.siblings.mock.calls[0][0]).toMatchObject({
-      chainId: 8453,
-      projectId: 23n,
-      launchId: LAUNCH,
-      cashOutTaxRate: 1_000n,
-      soulbound: false,
-      plannedChains: [10, 8453],
-    })
-    expect(mocks.siblings.mock.calls[0][1]).toEqual({ signal: expect.any(AbortSignal) })
-    // A copy's figures clamp an unowned balance recorded above the terminal's, where the page's own read does not. Each
-    // read goes with its signal.
-    const signal = expect.any(AbortSignal)
-    expect(mocks.project.mock.calls).toEqual([
-      [8453, 23n, { signal }],
-      [8453, 23n, { orphans: 'clamp', signal }],
-      [10, 5n, { orphans: 'clamp', signal }],
-    ])
-  })
-
-  it('has a row for a planned chain with no copy: "Planned at launch. Not deployed yet."', async () => {
-    mocks.project.mockImplementation(async (chainId: number) => (chainId === 10 ? optimism() : slopshop({ plannedChains: [10, 8453, 42161] })))
-    await renderTab()
-    expect(chainRows()).toEqual([
-      ['Base #23 (this page)', '1,010 SLOPSHOP', '1,000 STICKYSLOPSHOP'],
-      ['Optimism #5', '500 SLOPSHOP', '400 STICKYSLOPSHOP'],
-      ['Arbitrum', 'Planned at launch. Not deployed yet.'],
-      ['Total', '1,510 SLOPSHOP', '1,400 STICKYSLOPSHOP'],
-    ])
-    const planned = chainsCard()!.querySelectorAll('tbody tr')[2].querySelector('td:last-child')!
-    expect(planned.getAttribute('colspan')).toBe('2')
-  })
-
-  it('shows a launch that only one chain has yet, with each planned chain that is not deployed', async () => {
-    mocks.siblings.mockResolvedValue([HERE])
-    await renderTab()
-    expect(chainRows()).toEqual([
-      ['Base #23 (this page)', '1,010 SLOPSHOP', '1,000 STICKYSLOPSHOP'],
-      ['Optimism', 'Planned at launch. Not deployed yet.'],
-      ['Total', '1,010 SLOPSHOP', '1,000 STICKYSLOPSHOP'],
-    ])
-  })
-
-  it('totals the backing only when every chain is backed by the same token, and the supply always', async () => {
-    mocks.project.mockImplementation(async (chainId: number) => (chainId === 10 ? optimism({ symbol: 'USDC' }) : slopshop()))
-    await renderTab()
-    expect(chainRows().at(-1)).toEqual(['Total', 'Backed by different tokens', '1,400 STICKYSLOPSHOP'])
-    // Each chain stands alone.
-    expect(chainRows()[1]).toEqual(['Optimism #5', '500 USDC', '400 STICKYSLOPSHOP'])
-    expect(chainNote()).toBe('')
-  })
-
-  it('counts the same symbol with other decimals as another token', async () => {
-    mocks.project.mockImplementation(async (chainId: number) => (chainId === 10 ? optimism({ decimals: 18 }) : slopshop()))
-    await renderTab()
-    expect(chainRows().at(-1)?.[1]).toBe('Backed by different tokens')
-  })
-
-  it('gives a chain that could not be searched a row that says so, and totals the chains it could read', async () => {
-    mocks.siblings.mockResolvedValue([HERE, { chainId: 10, error: new Error('down') }])
-    await renderTab()
-    expect(chainRows()).toEqual([
-      ['Base #23 (this page)', '1,010 SLOPSHOP', '1,000 STICKYSLOPSHOP'],
-      ['Optimism', 'Could not read this chain.'],
-      ['Total', '1,010 SLOPSHOP', '1,000 STICKYSLOPSHOP'],
-    ])
-    expect(chainNote()).toBe('Some chains could not be read. Totals cover the chains shown.')
-    expect(chainsCard()!.querySelectorAll('tbody tr')[1].querySelector('a')).toBeNull()
-  })
-
-  it('tells the console why a chain could not be read', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const down = new Error('down')
-    mocks.siblings.mockResolvedValue([HERE, { chainId: 10, error: down }])
-    await renderTab()
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('chains'), { chainId: 10 }, down)
-  })
-
-  it('gives a copy whose figures could not be read a row that says so, still linked, and reads the others', async () => {
-    mocks.project.mockImplementation(async (chainId: number) => {
-      if (chainId === 10) throw new Error('down')
-      return slopshop()
+describe('the pool identity', () => {
+  it.each([{ plannedChains: [10, 8453] }, { plannedChains: [10] }])('ignores historical planned chains $plannedChains when reading and displaying this pool', async ({ plannedChains }) => {
+    mocks.project.mockImplementation(async (chainId: number, projectId: bigint) => {
+      if (chainId !== 8453 || projectId !== 23n) throw new Error('Another pool was read.')
+      return slopshop({ plannedChains })
     })
     await renderTab()
-    expect(chainRows()).toEqual([
-      ['Base #23 (this page)', '1,010 SLOPSHOP', '1,000 STICKYSLOPSHOP'],
-      ['Optimism #5', 'Could not read this chain.'],
-      ['Total', '1,010 SLOPSHOP', '1,000 STICKYSLOPSHOP'],
-    ])
-    expect(chainNote()).toContain('Some chains could not be read.')
-  })
-
-  it('shows no total where nothing could be read, rather than a total of nothing', async () => {
-    mocks.project.mockImplementation(async (chainId: number, _projectId: bigint, options?: { orphans?: string }) => {
-      if (options?.orphans === 'clamp') throw new Error('down')
-      return chainId === 10 ? optimism() : slopshop()
-    })
-    await renderTab()
-    expect(chainRows()).toEqual([
-      ['Base #23 (this page)', 'Could not read this chain.'],
-      ['Optimism #5', 'Could not read this chain.'],
-      ['Total', '–', '–'],
-    ])
-    expect(chainNote()).toContain('Some chains could not be read.')
-  })
-
-  it.each([
-    ['carries no launch and plans no chain', { launchId: null, plannedChains: null }],
-    ['plans only its own chain', { launchId: null, plannedChains: [8453] }],
-  ])('has no card for a project whose uri %s, and searches nothing', async (_what, extra) => {
-    mocks.project.mockResolvedValue(slopshop(extra))
-    await renderTab()
-    expect(chainsCard()).toBeNull()
-    expect(mocks.siblings).not.toHaveBeenCalled()
-  })
-
-  it('has no card for a launch that only its own chain has and planned no other', async () => {
-    mocks.project.mockResolvedValue(slopshop({ plannedChains: [8453] }))
-    mocks.siblings.mockResolvedValue([HERE])
-    await renderTab()
-    expect(chainsCard()).toBeNull()
-  })
-
-  it('draws placeholders while the copies are searched for', async () => {
-    mocks.siblings.mockReturnValue(new Promise(() => {}))
-    await renderTab()
-    expect(chainsCard()!.querySelector('h2')?.textContent).toBe('Chains')
-    expect(chainsCard()!.querySelector('table')).toBeNull()
-    expect(chainsCard()!.querySelectorAll('.skeleton-shimmer').length).toBeGreaterThan(0)
-  })
-
-  it('says the chains could not be read, tells the console why, and searches again on Try again', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const failure = new Error('429')
-    mocks.siblings.mockRejectedValueOnce(failure)
-    await renderTab()
-    expect(chainsCard()!.querySelector('[role="alert"]')?.textContent).toContain('Could not read the chains.')
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('chains'), { chainId: 8453, projectId: 23 }, failure)
-
-    const retry = [...chainsCard()!.querySelectorAll('button')].find(button => button.textContent === 'Try again')!
-    await act(async () => retry.click())
-    await settle()
-    expect(chainRows()).toHaveLength(3)
+    expect(mocks.project.mock.calls).toEqual([[8453, 23n, { signal: expect.any(AbortSignal) }]])
+    expect(value('Supply')).toBe('1,000 STICKYSLOPSHOP')
+    expect(value('Backing')).toBe('1,010 SLOPSHOP')
+    expect(peaks()).toEqual(['Peak: 1 active stick', 'Peak: 1,010 SLOPSHOP stuck'])
+    expect(section('chains-title')).toBeNull()
+    expect(host.querySelector('table')).toBeNull()
+    expect(host.textContent).not.toContain('Planned at launch')
   })
 })
 
@@ -725,14 +555,13 @@ describe('the chart', () => {
     expect(legend()).toEqual(['Total stuck', 'Active sticks'])
   })
 
-  it('stops pulsing its placeholder, and draws no chains, when the project itself cannot be read', async () => {
+  it('stops pulsing its placeholder when the project itself cannot be read', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     mocks.project.mockRejectedValue(new Error('429'))
     await renderTab()
     expect(chart()).toBeNull()
     const placeholder = host.querySelector('section .skeleton-shimmer')!
     expect(placeholder.className).toContain('[animation:none]')
-    expect(chainsCard()).toBeNull()
     expect(detailsCard().querySelector('[role="alert"]')).not.toBeNull()
   })
 
@@ -829,7 +658,7 @@ describe('the chart', () => {
 })
 
 describe('leaving the page', () => {
-  it('cancels the balance flows and the chains being read side by side, and tells the console of no failure', async () => {
+  it('cancels the balance flows being read, and tells the console of no failure', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const untilAborted = (signal: AbortSignal) =>
       new Promise<never>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason)))
@@ -838,13 +667,9 @@ describe('leaving the page', () => {
       started.push(['flows', signal])
       return untilAborted(signal)
     })
-    mocks.siblings.mockImplementation((_info: StickyProjectInfo, { signal }: { signal: AbortSignal }) => {
-      started.push(['chains', signal])
-      return untilAborted(signal)
-    })
     await renderTab()
-    // Both are under way: the flows have their turn first, and read the creation block before the balance history.
-    expect(started.map(([name]) => name).sort()).toEqual(['chains', 'flows'])
+    // The flows read the creation block before the balance history.
+    expect(started.map(([name]) => name)).toEqual(['flows'])
     await act(async () => root.unmount())
     root = createRoot(host)
     await settle()
@@ -873,23 +698,8 @@ describe('leaving the page', () => {
     root = createRoot(host)
     await settle()
     expect(started.every(signal => signal.aborted)).toBe(true)
-    // Neither the balance flows nor the chains, which wait for both, ever start.
+    // The balance flows, which wait for both, never start.
     expect(mocks.flows).not.toHaveBeenCalled()
-    expect(mocks.siblings).not.toHaveBeenCalled()
-    expect(warn).not.toHaveBeenCalled()
-  })
-
-  it('cancels a search for the chains under way, and tells the console of no failure', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    mocks.siblings.mockImplementation(
-      (_info: StickyProjectInfo, { signal }: { signal: AbortSignal }) =>
-        new Promise<never>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason))),
-    )
-    await renderTab()
-    expect(mocks.siblings).toHaveBeenCalledTimes(1)
-    await act(async () => root.unmount())
-    root = createRoot(host)
-    await settle()
     expect(warn).not.toHaveBeenCalled()
   })
 })
@@ -897,11 +707,7 @@ describe('leaving the page', () => {
 describe('what the browser shows for a symbol that is markup', () => {
   it('renders every place a token\'s symbol or name appears as text, and creates no element from it', async () => {
     const name = `${XSS} name`
-    mocks.project.mockImplementation(async (chainId: number) =>
-      chainId === 10
-        ? optimism({ symbol: XSS, stSymbol: XSS })
-        : slopshop({ symbol: XSS, name, stSymbol: XSS, stName: name, plannedChains: [10, 8453, 42161] }),
-    )
+    mocks.project.mockResolvedValue(slopshop({ symbol: XSS, name, stSymbol: XSS, stName: name }))
     mocks.events.mockResolvedValue(history(...stuck(), event('granter', NOW, { holder: SECOND, trusted: true })))
     await renderTab()
 
@@ -914,8 +720,6 @@ describe('what the browser shows for a symbol that is markup', () => {
     expect(contracts().map(([label]) => label)).toEqual([`${XSS} token`, `${XSS} token`, 'Stick accounting'])
     expect(copyButton(`${XSS} token`)).not.toBeNull()
     expect(peaks()).toEqual(['Peak: 1 active stick', `Peak: 1,010 ${XSS} stuck`])
-    expect(chainRows()[1]).toEqual(['Optimism #5', `500 ${XSS}`, `400 ${XSS}`])
-    expect(chainRows().at(-1)).toEqual(['Total', `1,510 ${XSS}`, `1,400 ${XSS}`])
     // The same on the fallback, where the chart is in the Sticky symbol.
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     mocks.flows.mockRejectedValue(new Error('down'))
@@ -934,7 +738,7 @@ describe('the reads behind the tab', () => {
     expect(mocks.flows).toHaveBeenCalledTimes(1)
   })
 
-  it('run the history beside the header\'s holders, then Latest, then the balance flows beside the chains: never more than two at once', async () => {
+  it('run the history beside the header\'s holders, then Latest, then the balance flows: never more than two at once', async () => {
     const order: string[] = []
     let running = 0
     let most = 0
@@ -950,7 +754,6 @@ describe('the reads behind the tab', () => {
     mocks.holders.mockImplementation(slow('holders', { rows: [], source: 'indexed', degraded: null }))
     mocks.moves.mockImplementation(slow('moves', new Map()))
     mocks.flows.mockImplementation(slow('flows', paid))
-    mocks.siblings.mockImplementation(slow('chains', [HERE, THERE]))
     // The pinned block takes longer than the holders' own read, and the holders are through once it is in.
     mocks.pinned.mockImplementation(async () => {
       await new Promise(resolve => setTimeout(resolve, 300))
@@ -960,21 +763,19 @@ describe('the reads behind the tab', () => {
     await settle(2_000)
     // The chart's balance flows are the longest read, and the header's holders and Latest are not held up by them.
     expect(order.slice(0, 3)).toEqual(['history', 'holders', 'moves'])
-    // The flows and the chains are read side by side, the flows in line first: they read the creation block first.
-    expect(order.slice(3).sort()).toEqual(['chains', 'flows'])
-    expect(mocks.creation.mock.invocationCallOrder[0]).toBeLessThan(mocks.siblings.mock.invocationCallOrder[0])
+    // The flows read the creation block first, once the header's reads are through.
+    expect(order.slice(3)).toEqual(['flows'])
+    expect(mocks.creation.mock.invocationCallOrder[0]).toBeLessThan(mocks.flows.mock.invocationCallOrder[0])
     expect(most).toBe(2)
     expect(peaks()).toEqual(['Peak: 1 active stick', 'Peak: 1,010 SLOPSHOP stuck'])
-    expect(chainRows()).toHaveLength(3)
   })
 
-  it('draw the chart, and search for the chains, when the header\'s holders and Latest cannot be read', async () => {
+  it('draw the chart when the header\'s holders and Latest cannot be read', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     mocks.holders.mockRejectedValue(new Error('429'))
     mocks.moves.mockRejectedValue(new Error('429'))
     await renderTab()
     expect(peaks()).toEqual(['Peak: 1 active stick', 'Peak: 1,010 SLOPSHOP stuck'])
-    expect(chainRows()).toHaveLength(3)
   })
 
   it('read the balance flows again without reading the history, the holders or Latest again for it', async () => {
@@ -991,23 +792,21 @@ describe('the reads behind the tab', () => {
     mocks.project.mockRejectedValue(new Error('Project 23 is not a Sticky token of this deployer.'))
     await renderTab()
     await settle(60_000)
-    // One read of the project, never a scan: not the history, the holders, Latest, the balance flows or the chains.
+    // One read of the project, never a scan: not the history, the holders, Latest or the balance flows.
     expect(mocks.project).toHaveBeenCalledTimes(1)
-    for (const read of [mocks.events, mocks.holders, mocks.pinned, mocks.moves, mocks.creation, mocks.flows, mocks.siblings]) {
+    for (const read of [mocks.events, mocks.holders, mocks.pinned, mocks.moves, mocks.creation, mocks.flows]) {
       expect(read).not.toHaveBeenCalled()
     }
     expect(chart()).toBeNull()
-    expect(chainsCard()).toBeNull()
 
-    mocks.project.mockImplementation(async (chainId: number) => (chainId === 10 ? optimism() : slopshop()))
+    mocks.project.mockResolvedValue(slopshop())
     const retry = [...detailsCard().querySelectorAll('button')].find(button => button.textContent === 'Try again')!
     await act(async () => retry.click())
     await settle()
-    for (const read of [mocks.events, mocks.holders, mocks.moves, mocks.creation, mocks.flows, mocks.siblings]) {
+    for (const read of [mocks.events, mocks.holders, mocks.moves, mocks.creation, mocks.flows]) {
       expect(read).toHaveBeenCalledTimes(1)
     }
     expect(peaks()).toEqual(['Peak: 1 active stick', 'Peak: 1,010 SLOPSHOP stuck'])
-    expect(chainRows()).toHaveLength(3)
   })
 
   it('read the history of a project that an earlier visit read, before this visit\'s read of it answers', async () => {
@@ -1019,91 +818,85 @@ describe('the reads behind the tab', () => {
     stop()
     await act(async () => root.unmount())
     root = createRoot(host)
-    // A minute later, what was kept of the chains is no longer fresh.
+    // A minute later, what was kept of the project is no longer fresh.
     await settle(60_000)
-    for (const read of [mocks.events, mocks.holders, mocks.flows, mocks.siblings]) read.mockClear()
+    for (const read of [mocks.events, mocks.holders, mocks.flows]) read.mockClear()
 
     // The copy the browser kept names a Sticky project, which is all the history and the holders wait for. Latest, which
-    // the balance flows and the chains wait behind, waits for this visit's read.
+    // the balance flows wait behind, waits for this visit's read.
     const read = Promise.withResolvers<StickyProjectInfo>()
     mocks.project.mockReset().mockReturnValue(read.promise)
     const now = newClient()
     installQueryPersistence(now, storage)
     await renderTab(now)
     for (const each of [mocks.events, mocks.holders]) expect(each).toHaveBeenCalledTimes(1)
-    for (const each of [mocks.flows, mocks.siblings]) expect(each).not.toHaveBeenCalled()
+    expect(mocks.flows).not.toHaveBeenCalled()
 
     await act(async () => read.resolve(slopshop()))
     await settle()
-    for (const each of [mocks.flows, mocks.siblings]) expect(each).toHaveBeenCalledTimes(1)
+    expect(mocks.flows).toHaveBeenCalledTimes(1)
   })
 
-  it.each([
-    ['balance history', () => mocks.flows.mockRejectedValue(new Error('429')), () => mocks.flows],
-    ['search for the chains', () => mocks.siblings.mockRejectedValue(new Error('429')), () => mocks.siblings],
-  ])('read a failing %s once, with the site\'s own query defaults', async (_what, fail, read) => {
+  it('reads a failing balance history once, with the site\'s own query defaults', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
-    fail()
+    mocks.flows.mockRejectedValue(new Error('429'))
     const site = siteClient()
     await renderTab(site)
     await settle(120_000)
-    expect(read()).toHaveBeenCalledTimes(1)
+    expect(mocks.flows).toHaveBeenCalledTimes(1)
     site.clear()
   })
 
-  it('take their turn with every other read of the page: the flows and the chains wait while two are under way', async () => {
+  it('take their turn with every other read of the page: the flows wait while two are under way', async () => {
     await renderTab()
     // Two reads of another tab are under way, and hold both turns.
     const done = [Promise.withResolvers<void>(), Promise.withResolvers<void>()]
     for (const read of done) void inTurn(client, new AbortController().signal, () => read.promise)
-    // The reads are invalidated, and are under way but not started: what an invalidation waits for is not over.
+    // The flows are invalidated, and are under way but not started: what an invalidation waits for is not over.
     await act(async () => {
       void client.invalidateQueries({ queryKey: ['sticky-project', 8453, 23, 'flows'] })
-      void client.invalidateQueries({ queryKey: ['sticky-project', 8453, 23, 'siblings'] })
     })
     await settle()
-    expect([mocks.creation, mocks.flows, mocks.siblings].map(read => read.mock.calls.length)).toEqual([1, 1, 1])
+    expect([mocks.creation, mocks.flows].map(read => read.mock.calls.length)).toEqual([1, 1])
 
-    // When one of them ends, they are read in the turn it leaves, the flows first.
+    // When one of them ends, the flows are read in the turn it leaves.
     await act(async () => done[0].resolve())
     await settle()
-    expect([mocks.creation, mocks.flows, mocks.siblings].map(read => read.mock.calls.length)).toEqual([2, 2, 2])
-    expect(mocks.flows.mock.invocationCallOrder[1]).toBeLessThan(mocks.siblings.mock.invocationCallOrder[1])
+    expect([mocks.creation, mocks.flows].map(read => read.mock.calls.length)).toEqual([2, 2])
     await act(async () => done[1].resolve())
   })
 
-  it('wait for a retry of the header\'s Latest, and read the flows and the chains again only once they have gone stale', async () => {
+  it('wait for a retry of the header\'s Latest, and read the flows again only once they have gone stale', async () => {
     await renderTab()
     const latest = ['sticky-project', 8453, 23, 'latest']
     // A retry of Latest while what was read is fresh: only Latest is read again.
     await act(async () => void (await client.invalidateQueries({ queryKey: latest })))
     await settle()
     expect(mocks.moves).toHaveBeenCalledTimes(2)
-    expect([mocks.flows, mocks.siblings].map(read => read.mock.calls.length)).toEqual([1, 1])
+    expect(mocks.flows).toHaveBeenCalledTimes(1)
 
-    // A minute on, the flows and the chains are stale, and are read again once Latest is.
+    // A minute on, the flows are stale, and are read again once Latest is.
     await settle(60_000)
     await act(async () => void (await client.invalidateQueries({ queryKey: latest })))
     await settle()
     expect(mocks.moves).toHaveBeenCalledTimes(3)
-    expect([mocks.flows, mocks.siblings].map(read => read.mock.calls.length)).toEqual([2, 2])
+    expect(mocks.flows).toHaveBeenCalledTimes(2)
     // The holders, which nothing invalidated, were read once.
     expect(mocks.holders).toHaveBeenCalledTimes(1)
   })
 
-  it('show the details at once, before the history and the chains are read', async () => {
+  it('show the details at once, before the history is read', async () => {
     mocks.events.mockReturnValue(new Promise(() => {}))
     await renderTab()
     expect(value('Supply')).toBe('1,000 STICKYSLOPSHOP')
     expect(mocks.flows).not.toHaveBeenCalled()
-    expect(mocks.siblings).not.toHaveBeenCalled()
   })
 
-  it('search for the chains even when the history cannot be read', async () => {
+  it('show the known rules even when the history cannot be read', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     mocks.events.mockRejectedValue(new Error('429'))
     await renderTab()
-    expect(chainRows()).toHaveLength(3)
+    expect(value('Supply')).toBe('1,000 STICKYSLOPSHOP')
     expect(rules().filter(Boolean)).toHaveLength(2)
   })
 
@@ -1112,7 +905,6 @@ describe('the reads behind the tab', () => {
     mocks.project.mockImplementation(async (_chainId: number, projectId: bigint) =>
       projectId === 23n ? first.promise : slopshop({ projectId, stSymbol: `STICKY${projectId}` }),
     )
-    mocks.siblings.mockImplementation(async (info: StickyProjectInfo) => [{ chainId: info.chainId, projectId: info.projectId, self: true }])
     await renderTab()
     await act(async () => root.render(inClient(<OverviewTab chainId={8453} projectId={24} />)))
     await settle()
@@ -1126,9 +918,9 @@ describe('the reads behind the tab', () => {
 })
 
 describe('what the browser keeps', () => {
-  it('shows the details and the chains of the last visit at once, unconfirmed until this visit reads them again', async () => {
+  it('shows the details of the last visit at once, unconfirmed until this visit reads them again', async () => {
     const storage = memoryStorage()
-    // An earlier visit read the project, and the browser kept its details and chains.
+    // An earlier visit read the project, and the browser kept its details.
     const earlier = newClient()
     const stop = installQueryPersistence(earlier, storage)
     await renderTab(earlier)
@@ -1140,39 +932,18 @@ describe('what the browser keeps', () => {
     await settle(60_000)
 
     // This visit: none of the reads has answered yet.
-    for (const read of [mocks.project, mocks.events, mocks.siblings]) read.mockReset().mockReturnValue(new Promise(() => {}))
+    for (const read of [mocks.project, mocks.events]) read.mockReset().mockReturnValue(new Promise(() => {}))
     const now = newClient()
     installQueryPersistence(now, storage)
     await renderTab(now)
 
     expect(value('Supply')).toBe('1,000 STICKYSLOPSHOP')
     expect(revalidating(detailsCard())).not.toBeNull()
-    expect(chainRows()).toEqual([
-      ['Base #23 (this page)', '1,010 SLOPSHOP', '1,000 STICKYSLOPSHOP'],
-      ['Optimism #5', '500 SLOPSHOP', '400 STICKYSLOPSHOP'],
-      ['Total', '1,510 SLOPSHOP', '1,400 STICKYSLOPSHOP'],
-    ])
-    expect(revalidating(chainsCard())).not.toBeNull()
     // What grows with the project's history is not kept: the chart waits for this visit's.
     expect(chart()).toBeNull()
   })
 
-  it('keeps a chain that could not be read as its reason in text, not as the error', async () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const storage = memoryStorage()
-    const down = Object.assign(new Error('down'), { details: 'x'.repeat(10_000) })
-    mocks.siblings.mockResolvedValue([HERE, { chainId: 10, error: down }, { chainId: 42161, error: 'not an error object' }])
-    const stop = installQueryPersistence(client, storage)
-    await renderTab()
-    await settle(1_000)
-    stop()
-    const kept = storage.getItem('sticky:query-cache:v1')!
-    expect(kept).toContain('"error":"down"')
-    expect(kept).toContain('"error":"not an error object"')
-    expect(kept).not.toContain('xxxxxxxxxx')
-  })
-
-  it('keeps the details and the chains, and nothing of the history the chart is drawn from', async () => {
+  it('keeps the details, and nothing of the history the chart is drawn from', async () => {
     const storage = memoryStorage()
     const stop = installQueryPersistence(client, storage)
     await renderTab()
@@ -1180,7 +951,7 @@ describe('what the browser keeps', () => {
     stop()
     const kept = storage.getItem('sticky:query-cache:v1')!
     expect(kept).toContain('"info"')
-    expect(kept).toContain('"siblings"')
+    expect(kept).not.toContain('"siblings"')
     expect(kept).not.toContain('"events"')
     expect(kept).not.toContain('"flows"')
     expect(kept).not.toContain('"holders"')
@@ -1232,7 +1003,7 @@ describe('what the browser keeps', () => {
 })
 
 describe('the project page', () => {
-  it('opens on the Overview tab, with this project\'s chart, details and chains', async () => {
+  it('opens on the Overview tab, with this project\'s chart and details', async () => {
     const page = (await ProjectPage({ params: Promise.resolve({ urn: 'base:23' }), searchParams: Promise.resolve({}) })) as ReactElement<{
       children: ReactElement<{ children: ReactElement<{ tabs?: TabDef[] }>[] }>
     }>

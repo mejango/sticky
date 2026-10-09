@@ -1,7 +1,8 @@
-import { decodeFunctionData, isAddress, isHash, parseAbi, type Address, type Hex } from 'viem'
-import { jbSuckerV6Abi } from '@bananapus/nana-sdk-core/v6'
+import { decodeFunctionData, isAddress, isHash, maxUint256, parseAbi, zeroAddress, type Address, type Hex } from 'viem'
+import { jbSuckerV6Abi, validateStickyGroupId } from '@bananapus/nana-sdk-core/v6'
 import type { TxRequest } from '@/hooks/useSafeTx'
-import { bridgeCalldata, type BridgeMovement, type BridgeRoute, type createStickyBridge } from '@/lib/sticky-bridge'
+import { environmentForChainIds, SUPPORTED_CHAINS } from '@/lib/chains'
+import { bridgeCalldata, bridgeRouteId, type BridgeMovement, type BridgeRoute, type createStickyBridge } from '@/lib/sticky-bridge'
 
 export type StoredBridgeWrite = { chainId: number; address: Address; data: Hex; value: string; label: string }
 export type BridgeRecord = {
@@ -36,6 +37,65 @@ const PREFIX = 'sticky:bridge:v3:'
 export const bridgeStorageKey = (chainId: number, stickyToken: Address, groupId: bigint, owner: Address) =>
   `${PREFIX}${chainId}:${stickyToken.toLowerCase()}:${groupId}:${owner.toLowerCase()}`
 const FAILED = 'Saved bridge recovery data is invalid. Keep this browser’s data and recover the original transfer before sending again.'
+const WATCH_FAILED = 'Saved bridge route recovery data is invalid. Keep this browser’s data and recover the original transfer before sending again.'
+const supportedChain = (chainId: unknown): chainId is number =>
+  typeof chainId === 'number' && SUPPORTED_CHAINS.some(chain => chain.id === chainId)
+const nonzeroAddress = (value: unknown): value is Address =>
+  typeof value === 'string' && isAddress(value, { strict: false }) && value.toLowerCase() !== zeroAddress
+const validProjectId = (value: unknown) =>
+  typeof value === 'string' && /^[1-9]\d{0,77}$/.test(value) && BigInt(value) <= maxUint256
+const validTokenMeta = (value: BridgeRoute['sourceMeta']) =>
+  !!value && typeof value.symbol === 'string' && value.symbol.length > 0 && value.symbol.length <= 256 &&
+  Number.isInteger(value.decimals) && value.decimals >= 0 && value.decimals <= 36
+
+function watchedKey(homeChainId: number, stickyToken: Address, groupId: bigint): string {
+  if (!supportedChain(homeChainId) || !nonzeroAddress(stickyToken) || validateStickyGroupId(groupId) !== null) throw new Error(WATCH_FAILED)
+  return `sticky:bridge:watch:v1:${homeChainId}:${stickyToken.toLowerCase()}:${groupId}`
+}
+/** A route is a bounded recovery hint, with no saved readiness, proof or movement status. */
+function watchedRoute(value: BridgeRoute, homeChainId: number): BridgeRoute {
+  if (!value || !value.source || !value.destination ||
+    !supportedChain(value.source.chainId) || value.destination.chainId !== homeChainId || value.source.chainId === homeChainId ||
+    environmentForChainIds([value.source.chainId]) !== environmentForChainIds([homeChainId]) ||
+    !validProjectId(value.sourceProjectId) || !validProjectId(value.destinationProjectId) ||
+    ![value.sourceSucker, value.destinationSucker, value.sourceToken, value.rewardToken, value.backingToken, value.remoteBackingToken, value.terminal].every(nonzeroAddress) ||
+    !validTokenMeta(value.sourceMeta) || !validTokenMeta(value.rewardMeta) || !validTokenMeta(value.backingMeta)) throw new Error(WATCH_FAILED)
+  const { source, destination, sourceSucker, destinationSucker, sourceProjectId, destinationProjectId,
+    sourceToken, rewardToken, backingToken, remoteBackingToken, terminal, sourceMeta, rewardMeta, backingMeta } = value
+  return { source: { chainId: source.chainId }, destination: { chainId: destination.chainId },
+    sourceSucker, destinationSucker, sourceProjectId, destinationProjectId, sourceToken, rewardToken, backingToken,
+    remoteBackingToken, terminal, sourceMeta: { symbol: sourceMeta.symbol, decimals: sourceMeta.decimals },
+    rewardMeta: { symbol: rewardMeta.symbol, decimals: rewardMeta.decimals },
+    backingMeta: { symbol: backingMeta.symbol, decimals: backingMeta.decimals }, canPrepare: false }
+}
+/** Routes survive wallet changes; current onchain reads must verify every hint before using it. */
+export function readWatchedBridgeRoutes(homeChainId: number, stickyToken: Address, groupId: bigint, storage: BridgeStorage = localStorage): BridgeRoute[] {
+  const raw = storage.getItem(watchedKey(homeChainId, stickyToken, groupId))
+  if (raw === null) return []
+  let values: BridgeRoute[]
+  try { values = JSON.parse(raw) } catch { throw new Error(WATCH_FAILED) }
+  if (!Array.isArray(values) || values.length > 100) throw new Error(WATCH_FAILED)
+  const routes = values.map(value => watchedRoute(value, homeChainId))
+  if (new Set(routes.map(bridgeRouteId)).size !== routes.length) throw new Error(WATCH_FAILED)
+  return routes
+}
+/** Under `withBridgeLock`, retain the route before submitting. Mutable terminal/display hints never replace its binding. */
+export function saveWatchedBridgeRoute(homeChainId: number, stickyToken: Address, groupId: bigint, route: BridgeRoute, storage: BridgeStorage = localStorage): void {
+  const key = watchedKey(homeChainId, stickyToken, groupId)
+  const next = watchedRoute(route, homeChainId)
+  const routes = readWatchedBridgeRoutes(homeChainId, stickyToken, groupId, storage)
+  const existing = routes.find(value => bridgeRouteId(value) === bridgeRouteId(next))
+  if (existing) {
+    const binding = (value: BridgeRoute) => [value.destinationSucker, value.sourceProjectId, value.destinationProjectId,
+      value.sourceToken, value.rewardToken, value.remoteBackingToken].map(part => part.toLowerCase())
+    if (JSON.stringify(binding(existing)) !== JSON.stringify(binding(next))) throw new Error('The saved bridge route has a different endpoint binding. Recover the original route before continuing.')
+    return
+  }
+  if (routes.length >= 100) throw new Error('This browser’s saved bridge route history is full. Recover existing transfers before submitting another route.')
+  const encoded = JSON.stringify([...routes, next])
+  storage.setItem(key, encoded)
+  if (storage.getItem(key) !== encoded) throw new Error('Bridge route recovery could not be saved. No new transfer will be submitted.')
+}
 
 export function storeBridgeWrite(request: TxRequest): StoredBridgeWrite {
   return { chainId: request.chainId, address: request.address, data: bridgeCalldata(request), value: String(request.value ?? 0n), label: request.label ?? request.functionName }
@@ -128,6 +188,11 @@ export function readPendingBridgeWrite(owner: Address, storage: BridgeStorage = 
   try { value = JSON.parse(raw) } catch { throw new Error(FAILED) }
   if (!value || value.owner?.toLowerCase() !== owner.toLowerCase() || !validWrite(value.request) || (value.hash !== undefined && !isHash(value.hash)) || (value.metadata !== undefined && !isHash(value.metadata)) || (value.safeProposal !== undefined && typeof value.safeProposal !== 'boolean') || ((value.recordKey === undefined) !== (value.metadata === undefined)) || (value.recordKey !== undefined && typeof value.recordKey !== 'string')) throw new Error(FAILED)
   return value
+}
+/** Under `withBridgeLock`, require the exact saved snapshot before recovering or clearing its write. */
+export function assertPendingBridgeWrite(expected: PendingBridgeWrite, storage: BridgeStorage = localStorage): void {
+  const current = readPendingBridgeWrite(expected.owner, storage)
+  if (JSON.stringify(current) !== JSON.stringify(expected)) throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
 }
 /** Persist before any wallet call; clearing requires an explicit rejection or canonical exact-call proof. */
 export function savePendingBridgeWrite(owner: Address, value: PendingBridgeWrite | null, storage: BridgeStorage = localStorage) {

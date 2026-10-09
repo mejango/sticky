@@ -44,8 +44,8 @@ const MAX_DOCUMENT_BYTES = 1_000_000
 const SEGMENT = /^[A-Za-z\d._~-]{1,128}$/
 
 /** What a Sticky launch writes in its project's uri, a data URI of `{protocol: 'Sticky', version, launchId,
- * environment, chains}`: the launch id its copies share, and the chains it was planned on. Each is null when the uri
- * has none that reads. */
+ * environment, chains}`. Historical records may name multiple independent deployments; these fields never define
+ * a pool's identity or home chain. Each is null when the uri has none that reads. */
 export type StickyUri = { protocol: 'Sticky'; launchId: string | null; chains: number[] | null }
 
 /** All that is kept of a project's uri. `logoUri` is an https URL, the gateway's for an ipfs one. Render it with

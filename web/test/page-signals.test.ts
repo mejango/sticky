@@ -206,8 +206,8 @@ describe('a read that knows its page\'s signal', () => {
     const found = sourcesUnder(SRC).flatMap(file =>
       readers(file, readFileSync(file, 'utf8')).map(reader => ({ file: relative(SRC, file), ...reader })),
     )
-    // The page's own reads: its scans, its pinned block, its Multicall3 reads of projects, holders, positions, airdrops
-    // and siblings, a quote's preview and a preflight. A floor, so a check that found none would not pass.
+    // The page's own reads: its scans, its pinned block, its Multicall3 reads of projects, holders, positions and
+    // airdrops, a quote's preview and a preflight. A floor, so a check that found none would not pass.
     expect(found.filter(reader => reader.passed).length).toBeGreaterThanOrEqual(12)
     expect(found.filter(reader => reader.signalled && !reader.passed && !reader.shares)).toEqual([])
     // The shared reads made where a signal is in scope, each named here: one more is a choice made in this list.

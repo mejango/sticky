@@ -4,8 +4,8 @@ import type { QueryKey } from '@tanstack/react-query'
 /**
  * The keys Sticky's reads are kept under in the query cache. The hooks read under them and a send's refresh
  * (`sticky-refresh.ts`) invalidates by them, so a key that changes changes for both. Each builder gives the start of a
- * key, and a hook adds what else its read depends on. The queries the browser keeps (a project's info, sticks, Latest
- * and chains) write their keys out in full, with the same start: the persist-scope test reads a kept query's key as it
+ * key, and a hook adds what else its read depends on. The queries the browser keeps (a project's info, sticks and
+ * Latest) write their keys out in full, with the same start: the persist-scope test reads a kept query's key as it
  * is written, to see that it names no account.
  */
 
@@ -18,7 +18,6 @@ export type ProjectPart =
   | 'latest'
   | 'page-balances'
   | 'flows'
-  | 'siblings'
   | 'funding'
   | 'receiver'
 

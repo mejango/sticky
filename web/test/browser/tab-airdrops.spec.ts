@@ -254,7 +254,10 @@ for (const viewport of viewports) {
       const visit = await open(context, page, null)
 
       const send = card(page, 'Send airdrop rewards')
-      await send.getByText("Recurring rewards from a Juicebox project's splits").click()
+      await send.getByText('Same-chain payout splits').click()
+      await send.getByText('Reserved-token rewards', { exact: true }).click()
+      await expect(send).toContainText('No verified collector deployment is configured')
+      await expect(send.locator('[data-reserved-split-recipe]')).toHaveCount(0)
       await send.getByText('Reward address for fee payouts and transfers').click()
       await visit.settled()
 

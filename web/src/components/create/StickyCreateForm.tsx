@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, type FormEvent } from 'react'
+import { useChainId } from 'wagmi'
 import { useWallet } from '@/hooks/useWallet'
 import { chainsForEnvironment, type ChainEnvironment } from '@/lib/chains'
 import { BONUS_PRESETS, launchChainBlocker, prepareStickyLaunch, type LaunchPlan } from '@/lib/sticky-launch-plan'
@@ -18,11 +19,17 @@ export function StickyCreateForm({ environment, busy, prepare, working, failed }
   failed: (error: unknown) => void
 }) {
   const wallet = useWallet()
+  const connectedChainId = useChainId()
   const { requestSignIn } = useWalletAuth()
   const { viewAs } = useViewAs()
   const [network, setNetwork] = useState(environment)
   const selectable = (value: ChainEnvironment) => chainsForEnvironment(value).filter(chain => !launchChainBlocker(chain.id)).map(chain => chain.id)
-  const [chainIds, setChainIds] = useState<number[]>(() => selectable(environment))
+  const defaultChain = (value: ChainEnvironment) => {
+    const available = selectable(value)
+    return wallet.address && available.some(chainId => chainId === connectedChainId) ? connectedChainId
+      : available.includes(1) ? 1 : available[0]
+  }
+  const [homeChainId, setHomeChainId] = useState<number | undefined>(() => defaultChain(environment))
   const [token, setToken] = useState('')
   const [name, setName] = useState('')
   const [symbol, setSymbol] = useState('')
@@ -33,18 +40,18 @@ export function StickyCreateForm({ environment, busy, prepare, working, failed }
 
   async function submit(event: FormEvent) {
     event.preventDefault()
-    if (!wallet.address || wallet.isCenterWallet || busy || viewAs) return
+    if (!wallet.address || wallet.isCenterWallet || busy || viewAs || homeChainId === undefined) return
     working(true)
     try {
       const plan = await prepareStickyLaunch({ tokenInput: token, name, symbol, bonusChoice: bonus,
-        customBonus, trustedSenders: senders, soulbound, chainIds, environment: network }, wallet.address)
+        customBonus, trustedSenders: senders, soulbound, chainIds: [homeChainId], environment: network }, wallet.address)
       const capability = await listingCapability(plan)
       await prepare(plan, capability)
     } catch (error) { failed(error) } finally { working(false) }
   }
 
   return <form onSubmit={submit} className="space-y-4">
-    <p className="text-sm text-muted">Create a Sticky token backed by an existing ERC-20. Its holders share rewards while they stay stuck.</p>
+    <p className="text-sm text-muted">Create a Sticky pool on one home chain, backed by an existing ERC-20 there. Its holders share rewards while they stay stuck.</p>
     <fieldset disabled={busy} className="space-y-4">
       <label className="block space-y-1 text-sm font-medium">Token address or Juicebox project ID
         <input className={inputClass} value={token} onChange={event => setToken(event.target.value)} placeholder="0x… or base:5" required />
@@ -71,18 +78,19 @@ export function StickyCreateForm({ environment, busy, prepare, working, failed }
       <label className="block space-y-1 text-sm font-medium">Networks
         <select className={inputClass} value={network} onChange={event => {
           const next = event.target.value as ChainEnvironment
-          setNetwork(next); setChainIds(selectable(next))
+          setNetwork(next); setHomeChainId(defaultChain(next))
         }}><option value="production">Mainnets</option><option value="testnet">Testnets</option></select>
       </label>
-      <fieldset className="space-y-2"><legend className="mb-2 text-sm font-medium">Launch on</legend>
+      <fieldset className="space-y-2"><legend className="mb-2 text-sm font-medium">Home chain</legend>
         {chainsForEnvironment(network).map(chain => {
           const blocker = launchChainBlocker(chain.id)
           return <label key={chain.id} className="flex items-center gap-2 text-sm">
-            <input type="checkbox" disabled={!!blocker} checked={chainIds.includes(chain.id)} onChange={event => setChainIds(previous => event.target.checked ? [...previous, chain.id] : previous.filter(id => id !== chain.id))} />
+            <input type="radio" name="home-chain" disabled={!!blocker} checked={homeChainId === chain.id} onChange={() => setHomeChainId(chain.id)} />
             {chain.name}{blocker ? <span className="text-muted">— {blocker}</span> : null}
           </label>
         })}
       </fieldset>
+      <p className="text-xs text-muted">Shares, backing and rewards stay on this chain. Supported bridges can bring rewards from other chains.</p>
       <label className="flex items-start gap-2 text-sm"><input className="mt-1" type="checkbox" checked={soulbound} onChange={event => setSoulbound(event.target.checked)} />
         Lock transfers. Holders can still stick and unstick, but cannot send Sticky tokens to another wallet.
       </label>
@@ -94,6 +102,6 @@ export function StickyCreateForm({ environment, busy, prepare, working, failed }
     </fieldset>
     {viewAs ? <p role="alert" className="text-sm text-err">Exit View as to create a token.</p>
       : !wallet.address || wallet.isCenterWallet ? <button type="button" className="btn-primary px-4 py-2" disabled={busy} onClick={() => void requestSignIn({ walletsOnly: true })}>Connect an external wallet</button>
-        : <button type="submit" className="btn-primary px-4 py-2" disabled={busy || !chainIds.length}>{busy ? 'Checking launch…' : 'Prepare launch'}</button>}
+        : <button type="submit" className="btn-primary px-4 py-2" disabled={busy || homeChainId === undefined}>{busy ? 'Checking launch…' : 'Prepare launch'}</button>}
   </form>
 }

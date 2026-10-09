@@ -19,13 +19,13 @@ import { stickyChainIds } from '@/lib/sticky-addresses'
 import { FEED_WINDOW, type FeedRow } from '@/lib/sticky-feed'
 import {
   HOME_VERSION,
-  groupHomeCards,
+  rankHomeCards,
   homeChain,
   homeIndex,
   homeLatest,
   homePrices,
   homeSecuredSeries,
-  type HomeCardGroup,
+  type HomeCard,
   type HomeChain,
   type SecuredSeries,
   type SupplyMove,
@@ -41,7 +41,7 @@ export type StickyHome = {
   /** The network's Sticky chains. None when Sticky is not deployed on it. */
   chains: number[]
   /** The Stickiest cards of the chains read so far, ranked. */
-  cards: HomeCardGroup[]
+  cards: HomeCard[]
   /** The newest FEED_WINDOW rows of Latest and of Airdrops across those chains, newest first. */
   activity: FeedRow[]
   airdrops: FeedRow[]
@@ -139,8 +139,7 @@ function securedOf(
 export function useStickyHome(network: BendystrawNetwork): StickyHome {
   const client = useQueryClient()
   const environment = network === 'testnet' ? 'testnet' : 'production'
-  // In the site's order of chains, Ethereum, Optimism, Base and Arbitrum, as the old home read them: cards that tie,
-  // a launch's chain icons and the chains a note names follow it.
+  // Discovery order is Ethereum, Optimism, Base and Arbitrum. Cards that tie and notes follow this order.
   const chains = useMemo(() => {
     const deployed = stickyChainIds(environment)
     return chainsForEnvironment(environment)
@@ -222,7 +221,7 @@ export function useStickyHome(network: BendystrawNetwork): StickyHome {
 
   return {
     chains,
-    cards: groupHomeCards(loaded.flatMap(chain => chain.cards)),
+    cards: rankHomeCards(loaded.flatMap(chain => chain.cards)),
     activity: newestOf(loaded.map(chain => chain.activity)),
     airdrops: newestOf(loaded.map(chain => chain.airdrops)),
     secured,

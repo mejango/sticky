@@ -57,3 +57,24 @@ for (const viewport of viewports) {
     }
   })
 }
+
+// These recorded pools share historical launch metadata. They remain independently linked even when their names match.
+test('discovery keeps historical multichain launches as separate home-chain pools', async ({ context, page }) => {
+  const externalTraffic = await blockExternalTraffic(context)
+  const settled = settling(page)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.goto('/?network=testnet')
+  await settled()
+
+  for (const [href, chain, projectId] of [
+    ['/basesep:38', 'Base Sepolia', '38'],
+    ['/opsep:20', 'Optimism Sepolia', '20'],
+  ]) {
+    const card = page.locator(`#home-panel-stickiest a[data-card][href="${href}"]`)
+    await expect(card).toBeVisible()
+    await expect(card).toContainText(`#${projectId}`)
+    await expect(card.getByRole('img', { name: chain, exact: true })).toHaveCount(1)
+    await expect(card.locator('[role="img"]')).toHaveCount(1)
+  }
+  expect(externalTraffic).toEqual({ http: [], webSockets: [] })
+})

@@ -15,7 +15,7 @@ import { useWallet } from '@/hooks/useWallet'
 import { parseAmount } from '@/lib/sticky-amount'
 import { bridgeCalldata, bridgeRouteId, bridgeWriteHasUniqueReference, createStickyBridge, type BridgeMovement, type BridgeRoute } from '@/lib/sticky-bridge'
 import {
-  bridgeStorageKey, discardBridgeDraft, readBridgeRecords, readPendingBridgeWrite, reconcileBridgeRecord,
+  assertPendingBridgeWrite, bridgeStorageKey, discardBridgeDraft, readBridgeRecords, readPendingBridgeWrite, readWatchedBridgeRoutes, reconcileBridgeRecord,
   restoreBridgeWrite, savePendingBridgeWrite, storeBridgeWrite, updateBridgeRecord, updateBridgeRecords, withBridgeLock,
   type BridgeRecord, type PendingBridgeWrite,
 } from '@/lib/sticky-bridge-journal'
@@ -49,9 +49,11 @@ const messages = {
 const changed = 'The wallet, project or bridge changed. Review this transfer again.'
 
 /** The complete cross-chain airdrop, with saved exact requests and independently verified effects. */
-export function BridgeFlow({ info, sourceChainId, onClose, onFunded }: {
+export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }: {
   info: StickyProjectInfo
   sourceChainId: JBChainId
+  /** Watch collector deliveries without preparing another wallet-funded transfer. The group is fixed. */
+  delivery?: { route?: BridgeRoute; groupId: bigint }
   onClose: () => void
   onFunded: (token: Address) => void
 }) {
@@ -62,22 +64,23 @@ export function BridgeFlow({ info, sourceChainId, onClose, onFunded }: {
   const [amount, setAmount] = useState('')
   const [minWeeks, setMinWeeks] = useState('')
   const [maxWeeks, setMaxWeeks] = useState('')
-  const [routes, setRoutes] = useState<BridgeRoute[]>([])
+  const [routes, setRoutes] = useState<BridgeRoute[]>(delivery?.route ? [delivery.route] : [])
   const [selected, setSelected] = useState(0)
   const [records, setRecords] = useState<BridgeRecord[]>([])
   const [items, setItems] = useState<Item[]>([])
+  const [loadedIdentity, setLoadedIdentity] = useState<string | null>(null)
   const [pending, setPending] = useState<PendingBridgeWrite | null>(null)
   const [recoveryHash, setRecoveryHash] = useState('')
   const [review, setReview] = useState<Review | null>(null)
   const [working, setWorking] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [settle, setSettle] = useState<{ token: Address; groupId: bigint } | null>(null)
+  const [settle, setSettle] = useState<{ token: Address; groupId: bigint; identity: string } | null>(null)
   const tx = useSafeTx(review?.request.chainId ?? sourceChainId)
   const generation = useRef(0)
   const handledHash = useRef<Hex | null>(null)
-  const identity = `${info.chainId}:${info.projectId}:${info.stToken}:${sourceChainId}:${wallet.address ?? ''}:${minWeeks}:${maxWeeks}`
+  const identity = `${info.chainId}:${info.projectId}:${info.stToken}:${sourceChainId}:${wallet.address ?? ''}:${minWeeks}:${maxWeeks}:${delivery?.groupId ?? 'manual'}:${delivery?.route ? bridgeRouteId(delivery.route) : ''}`
   const currentIdentity = useRef(identity)
-  useEffect(() => { currentIdentity.current = identity; generation.current += 1; return () => { generation.current += 1 } }, [identity])
+  useEffect(() => { currentIdentity.current = identity; generation.current += 1; return () => { currentIdentity.current = ''; generation.current += 1 } }, [identity])
   const active = review?.identity === identity ? review : null
   const busy = working || tx.busy || tx.phase === 'review'
 
@@ -91,8 +94,11 @@ export function BridgeFlow({ info, sourceChainId, onClose, onFunded }: {
     return gate.account
   }
   async function context() {
-    const groupId = groupIdFromWeeks(minWeeks, maxWeeks)
+    const groupId = delivery?.groupId ?? groupIdFromWeeks(minWeeks, maxWeeks)
     const account = owner()
+    if (delivery?.route && (delivery.route.source.chainId !== sourceChainId || delivery.route.destination.chainId !== info.chainId)) {
+      throw new Error('The saved route does not belong to this source and home chain.')
+    }
     const receiver = (await readReceiver(info.chainId, info.stToken, groupId)).address
     assertCurrent(identity)
     return { groupId, account, receiver, key: bridgeStorageKey(info.chainId, info.stToken, groupId, account) }
@@ -105,19 +111,26 @@ export function BridgeFlow({ info, sourceChainId, onClose, onFunded }: {
       const contextValue = await context()
       const saved = readBridgeRecords(contextValue.key)
       if (mine === generation.current) setRecords(saved)
-      const allRoutes = new Map(routes.map(route => [bridgeRouteId(route), route]))
+      const watched = readWatchedBridgeRoutes(info.chainId, info.stToken, contextValue.groupId)
+      const selectedRoutes = delivery ? (delivery.route ? [delivery.route] : []) : routes
+      const allRoutes = new Map([...watched, ...selectedRoutes].map(route => [bridgeRouteId(route), route]))
       for (const record of saved) allRoutes.set(bridgeRouteId(record.route), record.route)
       const next: Item[] = []
+      const failures: string[] = []
       for (const route of allRoutes.values()) {
-        const rows = await bridge.movements(route, contextValue.receiver)
-        for (const record of saved.filter(item => bridgeRouteId(item.route) === bridgeRouteId(route))) await reconcileBridgeRecord(bridge, contextValue.key, record, rows)
-        if (route.source.chainId === sourceChainId) next.push(...rows.map(row => ({ route, row })))
+        if (route.source.chainId !== sourceChainId || route.destination.chainId !== info.chainId) continue
+        try {
+          const rows = await bridge.movements(route, contextValue.receiver)
+          for (const record of saved.filter(item => bridgeRouteId(item.route) === bridgeRouteId(route))) await reconcileBridgeRecord(bridge, contextValue.key, record, rows)
+          next.push(...rows.map(row => ({ route, row })))
+        } catch (reason) { failures.push((reason as Error).message) }
       }
       if (mine !== generation.current) return
       setRecords(readBridgeRecords(contextValue.key))
       setItems(next)
+      setLoadedIdentity(identity)
       setPending(readPendingBridgeWrite(contextValue.account))
-      setError(null)
+      setError(failures.length ? `Some delivery routes could not be read: ${failures.join(' ')}` : null)
     } catch (reason) { if (mine === generation.current) setError((reason as Error).message) }
   }
   useEffect(() => {
@@ -152,6 +165,7 @@ export function BridgeFlow({ info, sourceChainId, onClose, onFunded }: {
     { label: 'Afterward', value: 'Send the queued batch, wait for delivery, claim the arrival, then settle it into airdrops.' },
   ]
   async function start(record?: BridgeRecord) {
+    if (delivery) throw new Error('Use the allocation panel to deliver queued collector rewards.')
     const { account, receiver, groupId, key } = await context()
     if (readPendingBridgeWrite(account)) throw new Error('Recover the pending bridge transaction before starting another.')
     const saved = readBridgeRecords(key)
@@ -178,6 +192,9 @@ export function BridgeFlow({ info, sourceChainId, onClose, onFunded }: {
     setRecords(readBridgeRecords(key))
   }
   async function reviewMovement(item: Item) {
+    if (item.route.source.chainId !== sourceChainId || item.route.destination.chainId !== info.chainId || loadedIdentity !== identity) {
+      throw new Error('This arrival belongs to another source or home chain. Refresh delivery status.')
+    }
     const { account, receiver, key, groupId } = await context()
     if (readPendingBridgeWrite(account)) throw new Error('Recover the pending bridge transaction before starting another.')
     const request = item.row.status === 'queued' ? await bridge.flush(item.route, account, receiver) : await bridge.claim(item.route, item.row, account, receiver)
@@ -236,6 +253,7 @@ export function BridgeFlow({ info, sourceChainId, onClose, onFunded }: {
     })
   }
   async function recover(hash: Hex, held: PendingBridgeWrite) {
+    assertPendingBridgeWrite(held)
     const outcome = await bridge.verifyWrite({ chainId: held.request.chainId as JBChainId }, held.owner, hash, { ...held.request, value: BigInt(held.request.value) }, held.hash ? { hash: held.hash, safeProposal: held.safeProposal } : undefined)
     if (held.metadata && held.recordKey) {
       const record = readBridgeRecords(held.recordKey).find(item => item.metadata === held.metadata)
@@ -277,9 +295,10 @@ export function BridgeFlow({ info, sourceChainId, onClose, onFunded }: {
     void refresh()
   }
   return (
-    <ModalShell title="Airdrop across chains" onClose={active ? closeReview : onClose} busy={busy} maxWidth="max-w-lg">
+    <ModalShell title={delivery ? "Track reward delivery" : "Airdrop across chains"} onClose={active ? closeReview : onClose} busy={busy} maxWidth="max-w-lg">
       <div className="space-y-3">
         <p className="text-sm text-muted">From {chainName(sourceChainId)} to {chainName(info.chainId)}.</p>
+        {delivery ? <p className="text-sm text-muted">{groupLabel(delivery.groupId)}. Only verified bridge arrivals can be claimed into this pool’s rewards.</p> : <>
         <label htmlFor={`${id}-token`} className={FIELD_LABEL}>Origin project token</label>
         <input disabled={busy || !!active} id={`${id}-token`} className={`${FIELD_INPUT} font-mono text-xs`} value={token} placeholder="0x…" onChange={event => { setToken(event.target.value); setRoutes([]) }} />
         <button className="btn-link" disabled={busy} onClick={() => void run(findRoutes)}>Find bridge</button>
@@ -287,7 +306,9 @@ export function BridgeFlow({ info, sourceChainId, onClose, onFunded }: {
         <fieldset disabled={busy || !!active}><StakeAgeFields minWeeks={minWeeks} maxWeeks={maxWeeks} onMinWeeks={setMinWeeks} onMaxWeeks={setMaxWeeks} /></fieldset>
         <label htmlFor={`${id}-amount`} className={FIELD_LABEL}>Amount</label>
         <input disabled={busy || !!active} id={`${id}-amount`} className={FIELD_INPUT} value={amount} onChange={event => setAmount(event.target.value)} inputMode="decimal" placeholder="100" />
-        <div className="flex flex-wrap gap-3"><button className="btn-primary" disabled={busy || !!pending || !routes[selected]?.canPrepare} onClick={() => void run(() => start())}>Review transfer</button><button className="btn-link" disabled={busy} onClick={() => void refresh()}>Refresh bridge status</button></div>
+        <div className="flex flex-wrap gap-3"><button className="btn-primary" disabled={busy || !!pending || !routes[selected]?.canPrepare} onClick={() => void run(() => start())}>Review transfer</button></div>
+        </>}
+        <button className="btn-link" disabled={busy} onClick={() => void refresh()}>Refresh bridge status</button>
         {pending ? <div role="status" className="space-y-2 border-t border-line pt-3">
           <p className="text-sm">A bridge transaction may still execute. Check its wallet status before continuing.</p>
           {!pending.hash && !bridgeWriteHasUniqueReference(pending.request.data) ? <p className="text-sm text-muted">The wallet did not return a submission reference. A matching historical approval or bridge-send transaction cannot prove this attempt finished; this browser keeps further bridge actions locked.</p> : null}
@@ -300,17 +321,17 @@ export function BridgeFlow({ info, sourceChainId, onClose, onFunded }: {
             await recover(hash, pending); await refresh()
           })}>Check transaction</button>
         </div> : null}
-        {records.filter(record => !record.sourceVerified).map(record => <div key={record.metadata} className="space-y-2 border-t border-line pt-3">
+        {records.filter(record => loadedIdentity === identity && !record.sourceVerified && !delivery).map(record => <div key={record.metadata} className="space-y-2 border-t border-line pt-3">
           <p className="text-sm">Saved transfer: {formatUnits(BigInt(record.amount), record.route.sourceMeta.decimals)} {record.route.sourceMeta.symbol} from {chainName(record.route.source.chainId)}.</p>
           {!record.submission && !record.sourceHash ? <div className="flex gap-3"><button className="btn-link" disabled={busy || !!pending} onClick={() => void run(() => start(record))}>Continue transfer</button><button className="btn-link" disabled={busy || !!pending} onClick={() => void run(async () => { await discardBridgeDraft(bridgeStorageKey(info.chainId, info.stToken, BigInt(record.groupId), record.owner), record.metadata); await refresh() })}>Cancel unsubmitted transfer</button></div> : <p className="text-sm text-muted">Keep this saved reference until the origin transaction is verified.</p>}
         </div>)}
-        {items.map(item => <div key={`${bridgeRouteId(item.route)}:${item.row.leaf.index}`} className="space-y-2 border-t border-line pt-3">
+        {(loadedIdentity === identity ? items : []).map(item => <div key={`${bridgeRouteId(item.route)}:${item.row.leaf.index}`} className="space-y-2 border-t border-line pt-3">
           <p className="text-sm">{formatUnits(item.row.leaf.projectTokenCount, item.route.sourceMeta.decimals)} {item.route.sourceMeta.symbol}: {messages[item.row.status]}</p>
           <ViewTransactionLink chainId={item.route.source.chainId} hash={item.row.sourceHash} />
           {item.row.status === 'queued' || item.row.status === 'claimable' ? <button className="btn-link" disabled={busy || !!pending} onClick={() => void run(() => reviewMovement(item))}>{item.row.status === 'queued' ? 'Send across chains' : 'Claim arrival'}</button> : null}
-          {item.row.status === 'claimed' ? <button className="btn-link" onClick={() => setSettle({ token: item.route.rewardToken, groupId: groupIdFromWeeks(minWeeks, maxWeeks) })}>Check unsettled rewards</button> : null}
+          {item.row.status === 'claimed' ? <button className="btn-link" onClick={() => setSettle({ token: item.route.rewardToken, groupId: delivery?.groupId ?? groupIdFromWeeks(minWeeks, maxWeeks), identity })}>Check unsettled rewards</button> : null}
         </div>)}
-        {settle ? <ReceiverFlow key={`${settle.token}:${settle.groupId}`} info={info} chainId={info.chainId} projectId={Number(info.projectId)} initialToken={settle.token} initialGroupId={settle.groupId} initiallyOpen onSettled={onFunded} /> : null}
+        {settle?.identity === identity ? <ReceiverFlow key={`${settle.token}:${settle.groupId}`} info={info} chainId={info.chainId} projectId={Number(info.projectId)} initialToken={settle.token} initialGroupId={settle.groupId} initiallyOpen onSettled={onFunded} /> : null}
         <TxError error={error} />
       </div>
       {active ? <TxConfirmDialog open title={active.request.label ?? 'Confirm bridge step'} rows={[...active.rows, ...(active.request.functionName === 'approve' ? [{ label: 'Allowance after approval', value: `${formatUnits(BigInt(active.request.args[1] as bigint), active.route.sourceMeta.decimals)} ${active.route.sourceMeta.symbol}` }] : [])]} steps={(active.record?.steps ?? [storeBridgeWrite(active.request)]).map(step => ({ title: step.label }))} activeIndex={0} onClose={closeReview} onConfirm={() => void confirm()} busy={busy} settled={tx.phase === 'submitted'} complete={false} action={confirmAction(tx.phase, active.request.functionName === 'approve' ? 'Confirm & approve' : active.request.functionName === 'prepare' ? 'Confirm & queue' : active.request.functionName === 'claim' ? 'Confirm & claim' : 'Confirm & send')} status={sendingStatus(tx) ?? undefined} error={tx.error} /> : null}

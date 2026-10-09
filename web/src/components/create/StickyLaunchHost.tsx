@@ -97,11 +97,12 @@ export function StickyLaunchHost() {
     await current.prepare(plan, capability)
   }
   const complete = session ? launchComplete(session) : false
+  const recoveryOnly = !!session && session.plan.targets.length !== 1
   const chainId = hashChain ?? session?.plan.targets[0].chainId
   return <>
     {session || corrupt ? <div className="fixed inset-x-0 bottom-0 z-20 border-t border-line bg-card px-4 py-3 text-center shadow-lg">
       <button type="button" className="btn-link font-semibold" onClick={() => setOpen(true)}>
-        {session ? `${session.plan.symbol}: ${Object.keys(session.results).length} of ${session.plan.targets.length} chains confirmed. ${complete ? 'View launch' : 'Resume launch'}` : 'Saved launch needs recovery'}
+        {session ? `${session.plan.symbol}: ${recoveryOnly ? `${Object.keys(session.results).length} of ${session.plan.targets.length} separate pools confirmed` : `${displayChainName(session.plan.targets[0].chainId)} pool ${complete ? 'confirmed' : 'pending'}`}. ${complete ? 'View launch' : 'Resume launch'}` : 'Saved launch needs recovery'}
       </button>
     </div> : null}
     {open ? <ModalShell title={session ? `${session.plan.symbol} launch` : 'Make your token sticky'} onClose={() => setOpen(false)} busy={busy}>
@@ -112,6 +113,7 @@ export function StickyLaunchHost() {
           : corrupt ? <p className="text-sm">Keep this browser’s recovery data. A new launch is blocked until the saved record can be recovered.</p>
           : session ? <>
             <p className="text-sm text-muted">{session.plan.name} backs {session.plan.symbol} with {session.plan.tokenSymbol}. This launch is saved in this browser.</p>
+            {recoveryOnly ? <p role="status" className="text-sm">This saved launch contains separate pools on multiple chains. Its submission evidence is kept for recovery; no further launches can be sent.</p> : null}
             <p className="break-all text-xs text-muted">Wallet: {session.plan.owner}</p>
             <ul className="space-y-3">{session.plan.targets.map(target => {
               const result = session.results[target.chainId]
@@ -125,11 +127,11 @@ export function StickyLaunchHost() {
             {session.error || session.listing.error ? <p className="break-words text-sm text-err">{session.error || session.listing.error}</p> : null}
             <div className="flex flex-wrap gap-3">
               <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(current => current.refresh())}>Check again</button>
-              {!complete && (session.direct?.started || session.payment?.started) ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(current => current.retry())}>Check failed transaction for retry</button> : null}
-              {!complete && !session.direct?.started && !session.payment?.started && (!session.listing.requested || session.listing.selfPaid) ?
+              {!recoveryOnly && !complete && (session.direct?.started || session.payment?.started) ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(current => current.retry())}>Check failed transaction for retry</button> : null}
+              {!recoveryOnly && !complete && !session.direct?.started && !session.payment?.started && (!session.listing.requested || session.listing.selfPaid) ?
                 <button type="button" className="btn-primary px-3 py-2" disabled={busy} onClick={() => void action(current => current.run())}>{session.mode === 'center' ? 'Request sponsored launch' : 'Continue launch'}</button> : null}
-              {!complete && session.mode === 'center' && !session.listing.requested ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(async current => { await current.selfPay(); await current.run() })}>Pay for launch myself</button> : null}
-              {!session.listing.intentId && session.listing.state !== 'unavailable' ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(current => current.list())}>List on Juicebox Center</button> : null}
+              {!recoveryOnly && !complete && session.mode === 'center' && !session.listing.requested ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(async current => { await current.selfPay(); await current.run() })}>Pay for launch myself</button> : null}
+              {!recoveryOnly && !session.listing.intentId && session.listing.state !== 'unavailable' ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(current => current.list())}>List on Juicebox Center</button> : null}
               {launchCanClear(session) ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(async current => { await current.clear(); setOpen(false) })}>{complete ? 'Finish' : session.directAttempts?.length ? 'Discard failed launch' : 'Discard unsubmitted launch'}</button> : null}
             </div>
             {!complete ? <details className="text-sm"><summary className="cursor-pointer font-medium">Recover with a transaction hash</summary>

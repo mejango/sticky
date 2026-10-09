@@ -357,8 +357,7 @@ async function measure(
 /** What a measurement is held to: the times, the requests and the peak, and not the timeline itself. */
 const summary = ({ at, center, bendystraw, peak }: Measured) => ({ at, center, bendystraw, peak })
 
-/** The reads the project page makes as it opens on the Overview: its header, its holder figures, Latest, the chart and
- * the Chains card (which a project of no launch does not search for). */
+/** The reads the project page makes as it opens on the Overview: its header, its holder figures, Latest and chart. */
 function projectPage({ react, project, overview, metadata }: Modules, chainId: number, projectId: number) {
   function Logo({ token }: { token: Address }) {
     metadata.useProjectMetadata(chainId, token)
@@ -369,7 +368,6 @@ function projectPage({ react, project, overview, metadata }: Modules, chainId: n
     project.useProjectSticks(chainId, projectId)
     project.useProjectLatest(chainId, projectId)
     overview.useBackingSeries(chainId, projectId)
-    overview.useProjectSiblings(chainId, projectId)
     return info ? react.createElement(Logo, { token: info.stakedToken }) : null
   }
   return react.createElement(Page)

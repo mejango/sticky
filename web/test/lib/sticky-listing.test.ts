@@ -17,7 +17,7 @@ function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
   return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`).join(',')}}`
 }
-function plan(ids = [11155420, 84532]): LaunchPlan {
+function plan(ids = [84532]): LaunchPlan {
   return { id: '11111111-2222-4333-8444-555555555555', owner: OWNER, name: 'Sticky Art', symbol: 'STICKYART',
     token: TOKEN, tokenName: 'Art', tokenSymbol: 'ART', tokenDecimals: 18, cashOutTaxRate: '1000', soulbound: false,
     projectUri: 'data:,sticky-launch', environment: 'testnet',
@@ -34,8 +34,14 @@ beforeEach(() => {
 })
 
 describe('Sticky listing envelope', () => {
+  it('refuses new multi-home publication before requesting a signature or publishing', () => {
+    const sign = vi.fn()
+    expect(() => publishStickyListing(plan([84532, 11155420]), sign)).toThrow('one home chain')
+    expect(sign).not.toHaveBeenCalled()
+  })
+
   it('preserves legacy metadata, sorts chain calls, omits unsigned creation fees and leaves the plan untouched', () => {
-    const launch = plan()
+    const launch = plan([11155420, 84532])
     expect(buildStickyEnvelope(launch)).toEqual({
       format: 'sticky.center/deploy.v1', deploymentVersion: '6', chainIds: [84532, 11155420],
       deploymentCalls: [84532, 11155420].map(chainId => ({ chainId, to: DEPLOYER, data: '0xabcdef' })),
@@ -76,22 +82,25 @@ describe('Sticky listing envelope', () => {
 describe('listing eligibility', () => {
   it('keeps current deployers self-paid and checks the exact canonical forwarder', async () => {
     expect(await listingCapability(plan())).toBe('self-paid')
-    expect(readContract).toHaveBeenCalledTimes(2)
+    expect(readContract).toHaveBeenCalledTimes(1)
     expect(readContract).toHaveBeenCalledWith(expect.objectContaining({ address: DEPLOYER,
       functionName: 'isTrustedForwarder', args: [STICKY_LISTING_FORWARDER] }))
     expect(STICKY_LISTING_FORWARDER.toLowerCase()).toBe('0x3ba60b60933916a7c87d0860dcee62a0ce34e3e2')
   })
 
-  it('requires forwarder trust on every eligible chain and never sponsors Ethereum mainnet', async () => {
+  it('requires forwarder trust on the home chain and never sponsors Ethereum mainnet', async () => {
     readContract.mockResolvedValue(true)
     expect(await listingCapability(plan())).toBe('sponsored')
     expect(await listingCapability(plan([8453]))).toBe('sponsored')
     readContract.mockClear()
-    expect(await listingCapability(plan([1, 8453]))).toBe('self-paid')
+    expect(await listingCapability(plan([1]))).toBe('self-paid')
     expect(readContract).not.toHaveBeenCalled()
     readContract.mockResolvedValueOnce(false)
     expect(await listingCapability(plan())).toBe('self-paid')
     expect(await listingCapability(plan([]))).toBe('unavailable')
+    getCode.mockClear()
+    expect(await listingCapability(plan([84532, 11155420]))).toBe('unavailable')
+    expect(getCode).not.toHaveBeenCalled()
   })
 
   it('accepts empty-code and exact delegated EOAs; rejects contracts, malformed delegation and unknown code', async () => {

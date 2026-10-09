@@ -36,7 +36,6 @@ const KEYS: Record<string, QueryKey> = {
   latest: ['sticky-project', CHAIN, 23, 'latest', 'v1'],
   'page balances': ['sticky-project', CHAIN, 23, 'page-balances', [HOLDER]],
   flows: ['sticky-project', CHAIN, 23, 'flows'],
-  siblings: ['sticky-project', CHAIN, 23, 'siblings', 'v1'],
   funding: ['sticky-project', CHAIN, 23, 'funding'],
   receiver: ['sticky-project', CHAIN, 23, 'receiver', '4000'],
   arrivals: ['sticky-project', CHAIN, 23, 'receiver', 'arrivals', '0x8', '0x2'],
@@ -259,7 +258,7 @@ describe('the refresh after a send', () => {
   it("never reads a project's whole page again, nor another project's, another chain's or the home", async () => {
     for (const [, refresh] of SCOPES) refresh(client)
     await vi.advanceTimersByTimeAsync(0)
-    const untouched = ['flows', 'siblings', 'another project', 'another chain', "another project's position", 'home']
+    const untouched = ['flows', 'another project', 'another chain', "another project's position", 'home']
     expect(invalidated().filter(name => untouched.includes(name))).toEqual([])
   })
 

@@ -4,6 +4,7 @@ import { useState } from 'react'
 import type { Address } from 'viem'
 import { FundFlow } from '@/components/project/flows/FundFlow'
 import { ReceiverFlow } from '@/components/project/flows/ReceiverFlow'
+import { ReservedSplitRecipe } from '@/components/project/ReservedSplitRecipe'
 import { StakeAgeFields } from '@/components/project/StakeAgeFields'
 import { CopyAddress } from '@/components/ui/CopyAddress'
 import { DETAIL_LABEL, DETAIL_LIST, DETAIL_VALUE } from '@/components/ui/detail-list'
@@ -11,6 +12,7 @@ import { Disclosure } from '@/components/ui/Disclosure'
 import { useStickyProject } from '@/hooks/useStickyProject'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import { groupLabel, groupNote } from '@/lib/sticky-rewards'
+import { chainName } from '@/lib/urn'
 
 /** One of the split's values, with a copy button when it is an address. */
 function SplitValue({ label, address, text }: { label: string; address?: string; text?: string }) {
@@ -43,14 +45,13 @@ function SplitRecipe({ chainId, stToken }: { chainId: number; stToken: Address }
   const distributor = stickyDeployment(chainId)?.distributor
   if (!distributor) return null
   return (
-    <Disclosure summary="Recurring rewards from a Juicebox project's splits" className="mt-3.5 text-[13px]">
+    <Disclosure summary="Same-chain payout splits" className="mt-3.5 text-[13px]">
       <div className="mt-2.5 space-y-3">
         <p className="text-muted">
-          Add a split with these values to any Juicebox project with an ERC-20 token, and each distribution funds rewards
-          here.
+          Add a payout split with these values to a Juicebox project on {chainName(chainId)}. Each distribution funds rewards here.
         </p>
         <StakeAgeFields minWeeks={minWeeks} maxWeeks={maxWeeks} onMinWeeks={setMinWeeks} onMaxWeeks={setMaxWeeks} />
-        <dl
+        {groupId !== null ? <dl
           data-split-recipe
           className={DETAIL_LIST}
         >
@@ -58,9 +59,9 @@ function SplitRecipe({ chainId, stToken }: { chainId: number; stToken: Address }
           <SplitValue label="Beneficiary" address={stToken} />
           <SplitValue
             label="Project ID"
-            text={groupId === null ? 'None' : `${groupId} (reward group: ${groupLabel(groupId).toLowerCase()})`}
+            text={`${groupId} (reward group: ${groupLabel(groupId).toLowerCase()})`}
           />
-        </dl>
+        </dl> : null}
       </div>
     </Disclosure>
   )
@@ -92,7 +93,8 @@ export function SendAirdropsCard({
       <button type="button" disabled={!verified} onClick={() => setSending(true)} className="btn-primary px-4 py-[9px]">
         Send
       </button>
-      {info ? <SplitRecipe chainId={chainId} stToken={info.stToken} /> : null}
+      {info && verified ? <SplitRecipe chainId={chainId} stToken={info.stToken} /> : null}
+      {info && verified ? <ReservedSplitRecipe info={info} onFunded={onFunded} /> : null}
       {info && verified ? <ReceiverFlow chainId={chainId} projectId={projectId} info={info} onSettled={onFunded} /> : null}
       {sending && info && verified ? (
         <FundFlow chainId={chainId} projectId={projectId} info={info} onClose={() => setSending(false)} onFunded={onFunded} />

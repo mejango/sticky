@@ -5,25 +5,13 @@ import { ProjectLink } from '@/components/ProjectLink'
 import { ProjectLogo } from '@/components/ProjectLogo'
 import { useProjectMetadata } from '@/hooks/useProjectMetadata'
 import { formatAmount, stickyLabel } from '@/lib/sticky-format'
-import type { HomeCardGroup } from '@/lib/sticky-home'
+import type { HomeCard } from '@/lib/sticky-home'
 import { chainName } from '@/lib/urn'
 
-/**
- * A Stickiest card: its rank, the logo of the project behind the staked token and the Sticky token's name, its
- * project ID or, for a launch on several chains, only their icons, then the backing holders can claim, how many hold
- * shares and the stickiness bonus. It opens the first chain's project.
- */
-export function StickiestCard({ group, rank }: { group: HomeCardGroup; rank: number }) {
-  const [{ info }] = group.cards
+/** One pool's rank, home chain, project identity and local backing, holders and stickiness bonus. */
+export function StickiestCard({ card: { info, sticks }, rank }: { card: HomeCard; rank: number }) {
   const metadata = useProjectMetadata(info.chainId, info.stakedToken)
-  const sameToken = group.cards.every(card => card.info.symbol === info.symbol && card.info.decimals === info.decimals)
-  // What holders can claim is in the staked token, never in Sticky shares. Chains backed by different tokens cannot
-  // be added up, so each is listed.
-  const backing = sameToken
-    ? `${formatAmount(group.cards.reduce((sum, card) => sum + card.info.backing, 0n), info.decimals)} ${info.symbol}`
-    : group.cards.map(({ info: each }) => `${formatAmount(each.backing, each.decimals)} ${each.symbol}`).join(', ')
-  const sticks = group.cards.reduce((sum, card) => sum + card.sticks, 0)
-  const chains = group.cards.map(card => card.info.chainId)
+  const backing = `${formatAmount(info.backing, info.decimals)} ${info.symbol}`
   return (
     <ProjectLink
       data-card
@@ -37,11 +25,9 @@ export function StickiestCard({ group, rank }: { group: HomeCardGroup; rank: num
         <div className="min-w-0 flex-1">
           <div className="font-bold">
             {stickyLabel(info)}
-            {group.cards.length === 1 ? <span className="font-normal text-muted"> #{info.projectId.toString()}</span> : null}{' '}
-            <span role="img" aria-label={chains.map(chainName).join(', ')} className="inline-flex gap-[3px] align-[-2px]">
-              {chains.map(chainId => (
-                <ChainIcon key={chainId} chainId={chainId} size={14} />
-              ))}
+            <span className="font-normal text-muted"> #{info.projectId.toString()}</span>{' '}
+            <span role="img" aria-label={chainName(info.chainId)} className="inline-flex gap-[3px] align-[-2px]">
+              <ChainIcon chainId={info.chainId} size={14} />
             </span>
           </div>
           <div className="text-[13px]">

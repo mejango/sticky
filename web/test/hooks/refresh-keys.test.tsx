@@ -19,7 +19,7 @@ const PROJECT = 23
 const HOLDER = getAddress(`0x${'ab'.repeat(20)}`)
 
 /** What each read answers. Each is its own object, which the query that holds it is found by. */
-const INFO = stickyInfo(CHAIN, BigInt(PROJECT), { launchId: 'launch' })
+const INFO = stickyInfo(CHAIN, BigInt(PROJECT))
 const EVENTS = { events: [], source: 'indexed', degraded: null }
 const HOLDERS = { rows: [] as HolderRow[], source: 'indexed', degraded: null }
 const ROWS: HolderRow[] = [{ holder: HOLDER, staked: 1n, start: 0, current: 0, longest: 0 }]
@@ -41,7 +41,6 @@ const REWARDS: unknown[] = []
 const AUTOSTICK = { enabled: false }
 const TRUSTED: unknown[] = []
 const FLOWS: unknown[] = []
-const SIBLING = { chainId: CHAIN, projectId: BigInt(PROJECT), self: true, info: INFO }
 const INDEX = { positions: null, projects: null }
 const DEPLOYED = [BigInt(PROJECT)]
 const POSITIONS = { chainId: CHAIN, positions: [], skipped: 0 }
@@ -63,8 +62,6 @@ const mocks = vi.hoisted(() => ({
   autoStick: vi.fn(),
   trusted: vi.fn(),
   flows: vi.fn(),
-  launch: vi.fn(),
-  siblings: vi.fn(),
   index: vi.fn(),
   deployed: vi.fn(),
   positions: vi.fn(),
@@ -110,11 +107,6 @@ vi.mock('@/lib/sticky-backing', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-backing')>()),
   backingFlows: mocks.flows,
 }))
-vi.mock('@/lib/sticky-siblings', async importOriginal => ({
-  ...(await importOriginal<typeof import('@/lib/sticky-siblings')>()),
-  launchSiblings: mocks.launch,
-  siblingRows: mocks.siblings,
-}))
 vi.mock('@/lib/sticky-account', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-account')>()),
   accountChains: () => [84532],
@@ -127,7 +119,7 @@ vi.mock('@/hooks/useWallet', () => ({ useWallet: () => ({ address: undefined }) 
 
 import { useAccountActivity, useAccountPositions } from '@/hooks/useStickyAccount'
 import { useAutoStick, useRewards, useTrustedSenders } from '@/hooks/useStickyAirdrops'
-import { useBackingSeries, useProjectSiblings } from '@/hooks/useStickyOverview'
+import { useBackingSeries } from '@/hooks/useStickyOverview'
 import { useProjectLatest, useProjectSticks, useStickyPosition, useStickyProject } from '@/hooks/useStickyProject'
 import { useCheckedBalances, useHolderTranches } from '@/hooks/useStickyTokens'
 import {
@@ -156,7 +148,6 @@ const READS: Record<string, (data: unknown) => boolean> = {
   'auto-stick': data => data === AUTOSTICK,
   trusted: data => data === TRUSTED,
   flows: data => data === FLOWS,
-  siblings: data => Array.isArray(data) && data[0] === SIBLING,
   'account index': data => data === INDEX,
   "a chain's projects": data => data === DEPLOYED,
   'account positions': data => data === POSITIONS,
@@ -175,7 +166,6 @@ function Pages() {
   useAutoStick(CHAIN, PROJECT, HOLDER)
   useTrustedSenders(CHAIN, PROJECT, HOLDER)
   useBackingSeries(CHAIN, PROJECT)
-  useProjectSiblings(CHAIN, PROJECT)
   useAccountPositions('testnet', HOLDER)
   useAccountActivity('testnet', HOLDER)
   return null
@@ -204,8 +194,6 @@ beforeEach(() => {
   mocks.autoStick.mockReset().mockResolvedValue(AUTOSTICK)
   mocks.trusted.mockReset().mockResolvedValue(TRUSTED)
   mocks.flows.mockReset().mockResolvedValue(FLOWS)
-  mocks.launch.mockReset().mockResolvedValue([])
-  mocks.siblings.mockReset().mockResolvedValue([SIBLING])
   mocks.index.mockReset().mockResolvedValue(INDEX)
   mocks.deployed.mockReset().mockResolvedValue(DEPLOYED)
   mocks.positions.mockReset().mockResolvedValue(POSITIONS)

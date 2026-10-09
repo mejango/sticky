@@ -1100,7 +1100,6 @@ describe('after a confirmed send', () => {
     trusted: ['sticky-trusted', CHAIN, 12, HOLDER, ''],
     'account page': ['sticky-account', 'mainnet', HOLDER.toLowerCase(), 'positions', CHAIN],
     flows: [...p, 'flows'],
-    siblings: [...p, 'siblings', 'v1'],
     funding: [...p, 'funding'],
     'another project': ['sticky-project', CHAIN, 13, 'holders'],
     'another chain': ['sticky-project', 1, 12, 'holders'],

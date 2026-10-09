@@ -172,7 +172,7 @@ export function HomeLists({ network }: { network: BendystrawNetwork }) {
   const create = () => openStickyLaunch(network === 'testnet' ? 'testnet' : 'production')
 
   const labels = new Map(
-    home.cards.flatMap(group => group.cards.map(({ info }) => [`${info.chainId}:${info.projectId}`, stickyLabel(info)])),
+    home.cards.map(({ info }) => [`${info.chainId}:${info.projectId}`, stickyLabel(info)]),
   )
   const labelOf = (row: FeedRow) => labels.get(`${row.chainId}:${row.projectId}`)
   const shownOnPhone = (name: List) => (list === name ? 'block' : 'hidden')
@@ -231,10 +231,10 @@ export function HomeLists({ network }: { network: BendystrawNetwork }) {
                 {loading ? (
                   <FeedPlaceholder />
                 ) : (
-                  home.cards.map((group, at) => (
+                  home.cards.map((card, at) => (
                     <StickiestCard
-                      key={`${group.cards[0].info.chainId}:${group.cards[0].info.projectId}`}
-                      group={group}
+                      key={`${card.info.chainId}:${card.info.projectId}`}
+                      card={card}
                       rank={at + 1}
                     />
                   ))

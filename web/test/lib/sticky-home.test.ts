@@ -5,7 +5,7 @@ import { stickyChainIds } from '@/lib/sticky-addresses'
 import type { StickyEvent, StickyProjectsResult } from '@/lib/sticky-events'
 import { FEED_WINDOW, type FeedRow } from '@/lib/sticky-feed'
 import {
-  groupHomeCards,
+  rankHomeCards,
   homeChain,
   homeIndex,
   homeLatest,
@@ -13,7 +13,6 @@ import {
   homeSecuredSeries,
   securedBars,
   type HomeCard,
-  type HomeCardGroup,
   type HomeChain,
   type HomeReadDeps,
 } from '@/lib/sticky-home'
@@ -477,73 +476,31 @@ describe('the network\'s reads', () => {
 })
 
 
-describe('groupHomeCards', () => {
-  it('collapses one launch\'s projects into one card, one project per chain, and keeps the others apart', () => {
-    const groups = groupHomeCards([
-      card(84532, 37n, { launchId: 'L1' }),
-      card(84532, 38n, { launchId: 'L1' }),
-      card(84532, 39n),
-      card(11155420, 20n, { launchId: 'L1' }),
-      card(11155420, 21n),
+describe('rankHomeCards', () => {
+  it('keeps independent pools with identical token addresses and launch metadata separate', () => {
+    const shared = { launchId: 'L1', plannedChains: [84532, 11155420] }
+    const cards = [
+      card(84532, 37n, { ...shared, totalSupply: 2n * E18 }),
+      card(11155420, 37n, { ...shared, totalSupply: 3n * E18 }),
+      card(84532, 38n, { ...shared, totalSupply: E18 }),
+    ]
+    const ranked = rankHomeCards(cards)
+    expect(ranked.map(({ info }) => [info.chainId, info.projectId, info.totalSupply])).toEqual([
+      [11155420, 37n, 3n * E18],
+      [84532, 37n, 2n * E18],
+      [84532, 38n, E18],
     ])
-    expect(groups.map(group => group.cards.map(({ info: { chainId, projectId } }) => `${chainId}:${projectId}`))).toEqual([
-      ['84532:37', '11155420:20'],
-      ['84532:38'],
-      ['84532:39'],
-      ['11155420:21'],
-    ])
-    expect(groups[0].totalStaked).toBe(2n * E18)
+    expect(ranked).toEqual([cards[1], cards[0], cards[2]])
+    expect(cards.map(({ info }) => info.chainId)).toEqual([84532, 11155420, 84532])
   })
 
-  it('needs the same stickiness bonus and transfer mode to be one launch', () => {
-    const groups = groupHomeCards([
-      card(1, 1n, { launchId: 'L' }),
-      card(10, 2n, { launchId: 'L', cashOutTaxRate: 5n }),
-      card(8453, 3n, { launchId: 'L' }),
-      card(42161, 4n, { launchId: 'L', soulbound: true }),
-    ])
-    expect(groups.map(group => group.cards.map(({ info }) => info.chainId))).toEqual([[1, 8453], [10], [42161]])
-  })
-
-  it('keeps a copy of a launch\'s uri on a chain the launch was not planned on apart, even when it comes first', () => {
-    const plan = { launchId: 'L', plannedChains: [84532, 11155420] }
-    const groups = groupHomeCards([
-      // Ethereum Sepolia comes first in the site's order of chains; the launch was planned on the other two.
-      card(11155111, 5n, plan),
-      card(11155420, 20n, plan),
-      card(84532, 37n, plan),
-    ])
-    expect(groups.map(group => group.cards.map(({ info: { chainId, projectId } }) => `${chainId}:${projectId}`))).toEqual([
-      ['11155420:20', '84532:37'],
-      ['11155111:5'],
-    ])
-  })
-
-  it('keeps a copy apart whose uri adds its own chain to the launch\'s plan, whichever comes first', () => {
-    const plan = { launchId: 'L', plannedChains: [84532, 11155420] }
-    // The copier edits the uri's chains to name its own chain, Ethereum Sepolia, beside the launch's two.
-    const copied = { launchId: 'L', plannedChains: [84532, 11155420, 11155111] }
-    const named = (groups: HomeCardGroup[]) =>
-      groups.map(group => group.cards.map(({ info: { chainId, projectId } }) => `${chainId}:${projectId}`))
-
-    expect(named(groupHomeCards([card(84532, 37n, plan), card(11155111, 5n, copied), card(11155420, 20n, plan)]))).toEqual([
-      ['84532:37', '11155420:20'],
-      ['11155111:5'],
-    ])
-    // Ethereum Sepolia comes first in the site's order of chains, so the copy heads a group the launch must not join.
-    expect(named(groupHomeCards([card(11155111, 5n, copied), card(11155420, 20n, plan), card(84532, 37n, plan)]))).toEqual([
-      ['11155420:20', '84532:37'],
-      ['11155111:5'],
-    ])
-  })
-
-  it('ranks by Sticky supply, most first, and keeps the order of cards that tie', () => {
-    const groups = groupHomeCards([
-      card(1, 1n, { totalSupply: 1n }),
-      card(1, 2n, { totalSupply: 5n }),
-      card(1, 3n, { totalSupply: 1n }),
-    ])
-    expect(groups.map(group => group.cards[0].info.projectId)).toEqual([2n, 1n, 3n])
+  it('ignores metadata chain claims and retains discovery order when local supplies tie', () => {
+    const cards = [
+      card(1, 1n, { launchId: 'L', plannedChains: [10] }),
+      card(10, 2n, { launchId: 'L', plannedChains: [1] }),
+      card(8453, 3n, { totalSupply: 5n * E18 }),
+    ]
+    expect(rankHomeCards(cards)).toEqual([cards[2], cards[0], cards[1]])
   })
 })
 

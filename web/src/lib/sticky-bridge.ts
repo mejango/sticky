@@ -162,13 +162,14 @@ export function createStickyBridge(clientFor: (chainId: number) => PublicClient 
     }
     return route
   }
-  async function discover({ source, destination, sourceToken }: { source: BridgeChain; destination: BridgeChain; sourceToken: Address }) {
-    sourceToken = address(sourceToken)
+  async function discover(input: { source: BridgeChain; destination: BridgeChain } & ({ sourceToken: Address } | { sourceProjectId: bigint })) {
+    const { source, destination } = input
     await Promise.all([verifyChain(source), verifyChain(destination)])
     const sc = contracts(source.chainId), dc = contracts(destination.chainId)
     await Promise.all([verifyCode(source, sc.tokens), verifyCode(source, sc.registry), verifyCode(destination, dc.tokens), verifyCode(destination, dc.registry)])
-    const sourceProjectId = await read<bigint>(source, sc.tokens, 'projectIdOf', [sourceToken])
-    if (!sourceProjectId) throw new Error('This is not a Juicebox V6 project token on the origin chain.')
+    const sourceProjectId = 'sourceToken' in input ? await read<bigint>(source, sc.tokens, 'projectIdOf', [address(input.sourceToken)]) : input.sourceProjectId
+    if (sourceProjectId <= 0n) throw new Error('This is not a Juicebox V6 project token on the origin chain.')
+    const sourceToken = 'sourceToken' in input ? address(input.sourceToken) : (await read<Address>(source, sc.tokens, 'tokenOf', [sourceProjectId])).toLowerCase() as Address
     const locals = await read<Address[]>(source, sc.registry, 'allSuckersOf', [sourceProjectId])
     const contexts = await read<Context[]>(source, sc.terminal, 'accountingContextsOf', [sourceProjectId])
     if (locals.length > 256 || contexts.length > 256) throw new Error('The bridge returned too many routes.')
@@ -184,7 +185,10 @@ export function createStickyBridge(clientFor: (chainId: number) => PublicClient 
         if (mapping.addr === zeroHash) continue
         const remoteBackingToken = suckerBytes32ToAddress(mapping.addr)
         const terminal = await read<Address>(source, sc.directory, 'primaryTerminalOf', [sourceProjectId, backingToken])
-        const [sourceMeta, rewardMeta, backingMeta, state] = await Promise.all([tokenMeta(source, sourceToken), tokenMeta(destination, rewardToken), tokenMeta(source, backingToken), read<number>(source, sourceSucker, 'state')])
+        const [rewardMeta, backingMeta, state] = await Promise.all([tokenMeta(destination, rewardToken), tokenMeta(source, backingToken), read<number>(source, sourceSucker, 'state')])
+        // A collector can accept project credits before an ERC-20 exists. Discovery and claims remain readable;
+        // its send boundary requires deployment before the contract can materialize those credits.
+        const sourceMeta = same(sourceToken, zeroAddress) ? { symbol: `Project #${sourceProjectId} credits`, decimals: rewardMeta.decimals } : await tokenMeta(source, sourceToken)
         if (sourceMeta.decimals !== rewardMeta.decimals) throw new Error('The source and destination project token decimals do not match.')
         const route: BridgeRoute = { source, destination, sourceSucker, destinationSucker, sourceProjectId: String(sourceProjectId), destinationProjectId: String(destinationProjectId), sourceToken, rewardToken, backingToken, remoteBackingToken, terminal, sourceMeta, rewardMeta, backingMeta, canPrepare: mapping.enabled && !mapping.emergencyHatch && state < 2 }
         await validateRoute(route, { preparing: true })
@@ -275,9 +279,8 @@ export function createStickyBridge(clientFor: (chainId: number) => PublicClient 
     return { steps, ...quote }
   }
   const simulate = (chain: BridgeChain, owner: Address, request: TxRequest) => client(chain).call({ account: owner, to: request.address, data: bridgeCalldata(request), value: request.value ?? 0n })
-  async function flush(route: BridgeRoute, owner: Address, receiver: Address): Promise<TxRequest> {
-    await validateRoute(route, { sending: true })
-    if (!(await movements(route, receiver)).some(row => row.status === 'queued')) throw new Error('No rewards are waiting to leave the origin chain. Refresh their status.')
+  /** Quote the existing bounded transport budgets by simulating the exact caller's complete transaction. */
+  async function transportValue(route: BridgeRoute, owner: Address, request: (value: bigint) => TxRequest): Promise<bigint> {
     let transport: 'unknown' | 'native' | 'funded' = 'unknown'
     for (const probe of ['CCIP_ROUTER', 'OPMESSENGER']) {
       try { address(await read<Address>(route.source, route.sourceSucker, probe)); transport = probe === 'CCIP_ROUTER' ? 'funded' : 'native'; break } catch { /* A failed probe cannot identify a transport. */ }
@@ -293,10 +296,15 @@ export function createStickyBridge(clientFor: (chainId: number) => PublicClient 
     }
     if (transport === 'unknown') throw new Error('This bridge transport cannot be verified. The queued transfer is saved for recovery.')
     const fee = await read<bigint>(route.source, contracts(route.source.chainId).registry, 'toRemoteFee')
-    const request = (value: bigint): TxRequest => ({ ...buildToRemoteTx({ chainId: route.source.chainId, sucker: route.sourceSucker, token: route.backingToken, value }), label: 'Send queued rewards across chains' })
     const value = await findSuckerTransportValue((transport === 'funded' ? CCIP_SUCKER_TRANSPORT_VALUES : [0n]).map(budget => fee + budget), candidate => simulate(route.source, owner, request(candidate)))
     if (value === null) throw new Error('The bridge transport could not be quoted. The queued rewards remain recoverable; refresh and try again.')
-    return request(value)
+    return value
+  }
+  async function flush(route: BridgeRoute, owner: Address, receiver: Address): Promise<TxRequest> {
+    await validateRoute(route, { sending: true })
+    if (!(await movements(route, receiver)).some(row => row.status === 'queued')) throw new Error('No rewards are waiting to leave the origin chain. Refresh their status.')
+    const request = (value: bigint): TxRequest => ({ ...buildToRemoteTx({ chainId: route.source.chainId, sucker: route.sourceSucker, token: route.backingToken, value }), label: 'Send queued rewards across chains' })
+    return request(await transportValue(route, owner, request))
   }
   async function claim(route: BridgeRoute, row: BridgeMovement, owner: Address, receiver: Address): Promise<TxRequest> {
     const live = (await movements(route, receiver)).find(item => item.leaf.index === row.leaf.index && same(item.leafHash, row.leafHash))
@@ -339,5 +347,5 @@ export function createStickyBridge(clientFor: (chainId: number) => PublicClient 
     if (!included) throw new Error('The source receipt does not include this bridge event.')
     return receipt
   }
-  return { discover, validateRoute, tokenMeta, movements, prepare, flush, claim, verifySource, verifyWrite }
+  return { discover, validateRoute, tokenMeta, movements, prepare, transportValue, flush, claim, verifySource, verifyWrite }
 }

@@ -59,6 +59,9 @@ vi.mock('@/components/project/flows/StickFlow', () => ({
     <div data-stick-flow={JSON.stringify(props)} />
   ),
 }))
+vi.mock('@/components/project/ReservedSplitRecipe', () => ({
+  ReservedSplitRecipe: ({ info }: { info: { chainId: number; stToken: Address } }) => <div data-reserved-pool={`${info.chainId}:${info.stToken}`} />,
+}))
 vi.mock('@/components/project/flows/TrustFlow', () => ({
   TrustFlow: ({
     chainId,
@@ -394,9 +397,11 @@ describe('sending airdrop rewards', () => {
     mocks.project.mockReturnValue(read.promise)
     await renderTab()
     expect(card().querySelector('[data-flow="receiver"]')).toBeNull()
+    expect(card().querySelector('[data-reserved-pool]')).toBeNull()
     await act(async () => read.resolve(slopshop()))
     await settled()
     const flow = card().querySelector<HTMLElement>('[data-flow="receiver"]')!
+    expect(card().querySelector('[data-reserved-pool]')?.getAttribute('data-reserved-pool')).toBe(`${CHAIN}:${slopshop().stToken}`)
     expect(flow.dataset).toMatchObject({ chain: String(CHAIN), project: '23', token: 'STICKYSLOPSHOP' })
 
     await act(async () => buttonNamed(flow, 'Settled').click())
@@ -407,7 +412,7 @@ describe('sending airdrop rewards', () => {
 
   it('gives the split that funds airdrops from a Juicebox project\'s payouts: the distributor, the Sticky token and the group', async () => {
     await renderTab()
-    expect(card().querySelector('summary')?.textContent).toBe("Recurring rewards from a Juicebox project's splits")
+    expect(card().querySelector('summary')?.textContent).toBe('Same-chain payout splits')
     expect(recipe()).toEqual({
       'Split hook': `${stickyDeployment(CHAIN)!.distributor}Copy`,
       Beneficiary: `${slopshop().stToken}Copy`,
@@ -420,7 +425,8 @@ describe('sending airdrop rewards', () => {
     await typeWeeks('Maximum stake age (weeks)', '8')
     expect(recipe()['Project ID']).toBe('4008 (reward group: staked 4–8 weeks)')
     await typeWeeks('Minimum stake age (weeks)', '9')
-    expect(recipe()['Project ID']).toBe('None')
+    expect(card().querySelector('[data-split-recipe]')).toBeNull()
+    expect(card().querySelector('button[aria-label="Copy split hook address"]')).toBeNull()
     expect(card().querySelector('[data-group-note]')?.textContent).toBe('The maximum stake age must be at least the minimum.')
   })
 })

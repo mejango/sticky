@@ -8,7 +8,7 @@ import { erc20Abi, pad, zeroHash, type Address, type Hex } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TxRequest, TxSendOptions } from '@/hooks/useSafeTx'
 import { bridgeCalldata, type BridgeMovement, type BridgeRoute } from '@/lib/sticky-bridge'
-import { bridgeStorageKey, readBridgeRecords, readPendingBridgeWrite, saveBridgeRecords, savePendingBridgeWrite, storeBridgeWrite } from '@/lib/sticky-bridge-journal'
+import { bridgeStorageKey, readBridgeRecords, readPendingBridgeWrite, saveBridgeRecords, savePendingBridgeWrite, saveWatchedBridgeRoute, storeBridgeWrite } from '@/lib/sticky-bridge-journal'
 import { WalletAuthContext } from '@/providers/WalletAuthContext'
 import { stickyInfo } from '../home-fixtures'
 
@@ -56,8 +56,8 @@ beforeEach(() => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 })
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); client.clear() })
-async function render(info = INFO) {
-  await act(async () => root.render(<QueryClientProvider client={client}><WalletAuthContext.Provider value={{ requestSignIn: vi.fn() }}><BridgeFlow info={info} sourceChainId={1} onClose={onClose} onFunded={onFunded} /></WalletAuthContext.Provider></QueryClientProvider>))
+async function render(info = INFO, delivery?: { route?: BridgeRoute; groupId: bigint }) {
+  await act(async () => root.render(<QueryClientProvider client={client}><WalletAuthContext.Provider value={{ requestSignIn: vi.fn() }}><BridgeFlow info={info} sourceChainId={1} delivery={delivery} onClose={onClose} onFunded={onFunded} /></WalletAuthContext.Provider></QueryClientProvider>))
 }
 const text = () => document.body.textContent ?? ''
 const button = (name: string) => [...document.querySelectorAll('button')].find(node => node.textContent === name)!
@@ -191,4 +191,69 @@ describe('reviewed durable bridge workflow', () => {
     expect(readPendingBridgeWrite(OWNER)?.hash).toBe(HASH)
     expect(text()).toContain('not finalized')
   })
+  it('monitors collector leaves at a fixed reward group without preparing another wallet transfer', async () => {
+    mocks.movements.mockResolvedValue([movement('claimed')])
+    await render(INFO, { route: ROUTE, groupId: 4000n })
+    expect(text()).toContain('Track reward delivery')
+    expect(text()).not.toContain('Origin project token')
+    expect(button('Review transfer')).toBeUndefined()
+    expect(mocks.receiver).toHaveBeenCalledWith(10, INFO.stToken, 4000n)
+    await press('Check unsettled rewards')
+    expect(mocks.settle).toHaveBeenCalledWith(expect.objectContaining({ initialGroupId: 4000n, initialToken: ROUTE.rewardToken }))
+    expect(mocks.prepare).not.toHaveBeenCalled()
+  })
+
+  it('recovers a watched retired route after reload without live send discovery', async () => {
+    saveWatchedBridgeRoute(10, INFO.stToken, 4000n, ROUTE)
+    mocks.movements.mockResolvedValue([movement('claimable')])
+    await render(INFO, { groupId: 4000n })
+    expect(mocks.discover).not.toHaveBeenCalled()
+    expect(mocks.movements).toHaveBeenCalledWith(expect.objectContaining({ sourceSucker: ROUTE.sourceSucker, canPrepare: false }), RECEIVER)
+    expect(text()).toContain('Arrived. Ready to claim')
+    await press('Claim arrival')
+    await press('Confirm & claim')
+    expect(mocks.walletWrite).toHaveBeenCalledWith(expect.objectContaining({ chainId: 10, address: ROUTE.destinationSucker, functionName: 'claim' }))
+  })
+
+  it('refuses a handoff for another home chain before reading its movements', async () => {
+    await render(INFO, { route: { ...ROUTE, destination: { chainId: 8453 } }, groupId: 0n })
+    expect(text()).toContain('does not belong to this source and home chain')
+    expect(mocks.movements).not.toHaveBeenCalled()
+  })
+
+  it('a stale recovery click cannot clear a newer pending transaction with identical calldata', async () => {
+    const old = { owner: OWNER, request: storeBridgeWrite(queuedRequest()), hash: HASH }
+    savePendingBridgeWrite(OWNER, old)
+    await render()
+    const next = { ...old, hash: H(91) }
+    savePendingBridgeWrite(OWNER, next)
+    await press('Check transaction')
+    expect(mocks.verifyWrite).not.toHaveBeenCalled()
+    expect(readPendingBridgeWrite(OWNER)).toEqual(next)
+  })
+
+  it('reads only this source and retains claimable arrivals when another watched lane fails', async () => {
+    const otherSource = { ...ROUTE, source: { chainId: 8453 as const }, sourceSucker: A(71) }
+    const broken = { ...ROUTE, sourceSucker: A(72), destinationSucker: A(73) }
+    for (const route of [otherSource, broken, ROUTE]) saveWatchedBridgeRoute(10, INFO.stToken, 0n, route)
+    mocks.movements.mockImplementation(async (route: BridgeRoute) => {
+      if (route.sourceSucker === broken.sourceSucker) throw new Error('Old route unavailable')
+      return [movement('claimable')]
+    })
+    await render(INFO, { groupId: 0n })
+    expect(mocks.movements.mock.calls.map(([route]) => route.sourceSucker)).toEqual([broken.sourceSucker, ROUTE.sourceSucker])
+    expect(text()).toContain('Arrived. Ready to claim')
+    expect(text()).toContain('Old route unavailable')
+  })
+
+  it('hides the previous pool’s arrivals immediately when a new home-pool read stalls', async () => {
+    mocks.movements.mockResolvedValue([movement('claimable')])
+    await render(INFO, { route: ROUTE, groupId: 0n })
+    expect(text()).toContain('Claim arrival')
+    mocks.receiver.mockReturnValue(new Promise(() => {}))
+    await render({ ...INFO, projectId: 99n, stToken: A(99) }, { groupId: 0n })
+    expect(text()).not.toContain('Claim arrival')
+    expect(mocks.walletWrite).not.toHaveBeenCalled()
+  })
+
 })

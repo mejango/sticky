@@ -2,12 +2,13 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildBridgePrepareTx } from '@bananapus/nana-sdk-core/v6'
-import { pad, type Address, type Hex } from 'viem'
+import { maxUint256, pad, zeroAddress, type Address, type Hex } from 'viem'
 import { bridgeCalldata, type BridgeMovement, type BridgeRoute } from '@/lib/sticky-bridge'
 import {
-  bridgeStorageKey, discardBridgeDraft, readBridgeRecords, readPendingBridgeWrite, reconcileBridgeRecord,
+  assertPendingBridgeWrite, bridgeStorageKey, discardBridgeDraft, readBridgeRecords, readPendingBridgeWrite, reconcileBridgeRecord,
   restoreBridgeWrite, saveBridgeRecords, savePendingBridgeWrite, storeBridgeWrite, updateBridgeRecords, withBridgeLock,
-  type BridgeRecord,
+  readWatchedBridgeRoutes, saveWatchedBridgeRoute,
+  type BridgeRecord, type PendingBridgeWrite,
 } from '@/lib/sticky-bridge-journal'
 
 vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: vi.fn() }))
@@ -27,6 +28,113 @@ beforeEach(() => {
   localStorage.clear()
   vi.stubGlobal('navigator', { locks: { request: locks } })
   locks.mockClear()
+})
+
+describe('pool-scoped bridge route recovery hints', () => {
+  const watchKey = `sticky:bridge:watch:v1:10:${stToken.toLowerCase()}:4008`
+  const recoveryRoute = { ...route, canPrepare: false }
+
+  it('keeps the route across reload and wallet changes, scoped to the home token and reward group', async () => {
+    expect(readWatchedBridgeRoutes(10, stToken, 4008n)).toEqual([])
+    await withBridgeLock(async () => saveWatchedBridgeRoute(10, stToken, 4008n, route))
+    expect(readWatchedBridgeRoutes(10, stToken.toUpperCase().replace('0X', '0x') as Address, 4008n)).toEqual([recoveryRoute])
+    savePendingBridgeWrite(owner, null)
+    savePendingBridgeWrite(A(99), null)
+    expect(readWatchedBridgeRoutes(10, stToken, 4008n)).toEqual([recoveryRoute])
+    expect(readWatchedBridgeRoutes(8453, stToken, 4008n)).toEqual([])
+    expect(readWatchedBridgeRoutes(10, A(99), 4008n)).toEqual([])
+    expect(readWatchedBridgeRoutes(10, stToken, 0n)).toEqual([])
+  })
+
+  it('keeps only route hints, never saved readiness, transfer status or proof', () => {
+    const forged = { ...route, canPrepare: true, status: 'claimed', proof: [H(1)], sourceVerified: true,
+      source: { ...route.source, confirmed: true }, sourceMeta: { ...route.sourceMeta, verified: true } }
+    saveWatchedBridgeRoute(10, stToken, 4008n, forged)
+    expect(readWatchedBridgeRoutes(10, stToken, 4008n)).toEqual([recoveryRoute])
+    expect(JSON.parse(localStorage.getItem(watchKey)!)).toEqual([recoveryRoute])
+  })
+
+  it('retains the original route after terminal, label and readiness changes without adding a duplicate', () => {
+    saveWatchedBridgeRoute(10, stToken, 4008n, route)
+    const original = localStorage.getItem(watchKey)
+    saveWatchedBridgeRoute(10, stToken, 4008n, { ...route, terminal: A(88), canPrepare: false,
+      sourceMeta: { symbol: 'RENAMED', decimals: 6 }, rewardMeta: { symbol: 'UPDATED', decimals: 8 } })
+    expect(localStorage.getItem(watchKey)).toBe(original)
+    expect(readWatchedBridgeRoutes(10, stToken, 4008n)).toEqual([recoveryRoute])
+  })
+
+  it.each<keyof BridgeRoute>(['destinationSucker', 'sourceProjectId', 'destinationProjectId', 'sourceToken', 'rewardToken', 'remoteBackingToken'])('rejects a conflicting %s on the same route identity without replacing evidence', field => {
+    saveWatchedBridgeRoute(10, stToken, 4008n, route)
+    const original = localStorage.getItem(watchKey)
+    const changed = { ...route, [field]: field.endsWith('ProjectId') ? '99' : A(99) }
+    expect(() => saveWatchedBridgeRoute(10, stToken, 4008n, changed)).toThrow('different endpoint binding')
+    expect(localStorage.getItem(watchKey)).toBe(original)
+  })
+
+  it.each<[string, unknown]>([
+    ['missing route', null],
+    ['missing source', { ...route, source: null }],
+    ['unsupported source', { ...route, source: { chainId: 999 } }],
+    ['wrong home', { ...route, destination: { chainId: 8453 } }],
+    ['same chain', { ...route, source: { chainId: 10 } }],
+    ['different environment', { ...route, source: { chainId: 11155111 } }],
+    ['zero source project', { ...route, sourceProjectId: '0' }],
+    ['noncanonical project', { ...route, sourceProjectId: '021' }],
+    ['overflowed destination project', { ...route, destinationProjectId: String(maxUint256 + 1n) }],
+    ['zero source sucker', { ...route, sourceSucker: zeroAddress }],
+    ['zero destination sucker', { ...route, destinationSucker: zeroAddress }],
+    ['credits-only source token', { ...route, sourceToken: zeroAddress }],
+    ['zero reward token', { ...route, rewardToken: zeroAddress }],
+    ['invalid backing token', { ...route, backingToken: '0x1234' }],
+    ['zero remote backing token', { ...route, remoteBackingToken: zeroAddress }],
+    ['zero terminal', { ...route, terminal: zeroAddress }],
+    ['missing metadata', { ...route, sourceMeta: null }],
+    ['oversized symbol', { ...route, sourceMeta: { symbol: 'x'.repeat(257), decimals: 18 } }],
+    ['nonstring symbol', { ...route, rewardMeta: { symbol: 42, decimals: 18 } }],
+    ['negative decimals', { ...route, backingMeta: { symbol: 'ETH', decimals: -1 } }],
+    ['fractional decimals', { ...route, backingMeta: { symbol: 'ETH', decimals: 1.5 } }],
+    ['unsupported decimals', { ...route, backingMeta: { symbol: 'ETH', decimals: 37 } }],
+  ])('refuses a forged %s watch on read and save without overwriting it', (_field, forged) => {
+    const raw = JSON.stringify([forged])
+    localStorage.setItem(watchKey, raw)
+    expect(() => readWatchedBridgeRoutes(10, stToken, 4008n)).toThrow('route recovery data is invalid')
+    expect(() => saveWatchedBridgeRoute(10, stToken, 4008n, route)).toThrow('route recovery data is invalid')
+    expect(localStorage.getItem(watchKey)).toBe(raw)
+    localStorage.removeItem(watchKey)
+    expect(() => saveWatchedBridgeRoute(10, stToken, 4008n, forged as BridgeRoute)).toThrow('route recovery data is invalid')
+    expect(localStorage.getItem(watchKey)).toBeNull()
+  })
+
+  it.each<[number, Address, bigint]>([[999, stToken, 0n], [10, zeroAddress, 0n], [10, stToken, 1n]])('rejects an invalid home pool scope %s/%s/%s before accessing storage', (homeChainId, stickyToken, groupId) => {
+    const storage = { getItem: vi.fn(), setItem: vi.fn() }
+    expect(() => readWatchedBridgeRoutes(homeChainId, stickyToken, groupId, storage)).toThrow('route recovery data is invalid')
+    expect(() => saveWatchedBridgeRoute(homeChainId, stickyToken, groupId, route, storage)).toThrow('route recovery data is invalid')
+    expect(storage.getItem).not.toHaveBeenCalled()
+    expect(storage.setItem).not.toHaveBeenCalled()
+  })
+
+  it.each(['not JSON', 'null', '{}', JSON.stringify([route, route])])('refuses malformed or duplicate route history (%s)', raw => {
+    localStorage.setItem(watchKey, raw)
+    expect(() => readWatchedBridgeRoutes(10, stToken, 4008n)).toThrow('route recovery data is invalid')
+    expect(() => saveWatchedBridgeRoute(10, stToken, 4008n, route)).toThrow('route recovery data is invalid')
+    expect(localStorage.getItem(watchKey)).toBe(raw)
+  })
+
+  it('allows an existing route at capacity and refuses a 101st route without losing history', () => {
+    const routes = Array.from({ length: 100 }, (_, index) => ({ ...route, sourceSucker: A(index + 100) }))
+    for (const route of routes) saveWatchedBridgeRoute(10, stToken, 4008n, route)
+    const original = localStorage.getItem(watchKey)
+    expect(() => saveWatchedBridgeRoute(10, stToken, 4008n, routes[0])).not.toThrow()
+    expect(() => saveWatchedBridgeRoute(10, stToken, 4008n, route)).toThrow('route history is full')
+    expect(localStorage.getItem(watchKey)).toBe(original)
+    localStorage.setItem(watchKey, JSON.stringify([...routes, route]))
+    expect(() => readWatchedBridgeRoutes(10, stToken, 4008n)).toThrow('route recovery data is invalid')
+  })
+
+  it('refuses denied storage or a write that does not survive readback', () => {
+    expect(() => saveWatchedBridgeRoute(10, stToken, 4008n, route, { getItem: () => null, setItem: () => { throw new Error('Storage denied') } })).toThrow('Storage denied')
+    expect(() => saveWatchedBridgeRoute(10, stToken, 4008n, route, { getItem: () => null, setItem: () => {} })).toThrow('route recovery could not be saved')
+  })
 })
 
 describe('new bridge durable intent and source recovery', () => {
@@ -52,6 +160,51 @@ describe('new bridge durable intent and source recovery', () => {
   it('requires durable verified storage before writing and retains history at its limit', () => {
     expect(() => savePendingBridgeWrite(owner, { owner, request: storeBridgeWrite(request) }, { getItem: () => null, setItem: () => {} })).toThrow('could not be saved')
     expect(() => saveBridgeRecords(key, Array<BridgeRecord>(101).fill(record))).toThrow('history is full')
+  })
+  it.each([undefined, H(90)])('accepts an unchanged pending snapshot with submission %s without writing storage', hash => {
+    const held: PendingBridgeWrite = { owner, request: storeBridgeWrite(request), hash }
+    let saved: string | null = null
+    const storage = { getItem: () => saved, setItem: vi.fn((_key: string, value: string) => { saved = value }) }
+    savePendingBridgeWrite(owner, held, storage)
+    const snapshot = readPendingBridgeWrite(owner, storage)!
+    storage.setItem.mockClear()
+    expect(() => assertPendingBridgeWrite(snapshot, storage)).not.toThrow()
+    expect(storage.setItem).not.toHaveBeenCalled()
+    expect(readPendingBridgeWrite(owner, storage)).toEqual(snapshot)
+  })
+  it.each<[string, (held: PendingBridgeWrite) => PendingBridgeWrite]>([
+    ['hash despite identical calldata', held => ({ ...held, hash: H(91) })],
+    ['Safe routing flag', held => ({ ...held, safeProposal: true })],
+    ['chain', held => ({ ...held, request: { ...held.request, chainId: 10 } })],
+    ['contract', held => ({ ...held, request: { ...held.request, address: A(99) } })],
+    ['calldata', held => ({ ...held, request: { ...held.request, data: '0x12345678' } })],
+    ['value', held => ({ ...held, request: { ...held.request, value: '1' } })],
+    ['label', held => ({ ...held, request: { ...held.request, label: 'Another delivery' } })],
+    ['record key', held => ({ ...held, recordKey: `${key}:new` })],
+    ['metadata', held => ({ ...held, metadata: H(92) })],
+  ])('refuses stale recovery after the pending %s changes and leaves the newer write intact', async (_field, replace) => {
+    const held: PendingBridgeWrite = { owner, request: storeBridgeWrite(request), hash: H(90), safeProposal: false, recordKey: key, metadata }
+    savePendingBridgeWrite(owner, held)
+    const snapshot = readPendingBridgeWrite(owner)!
+    const newer = replace(held)
+    savePendingBridgeWrite(owner, newer)
+    await expect(withBridgeLock(async () => {
+      assertPendingBridgeWrite(snapshot)
+      savePendingBridgeWrite(owner, null)
+    })).rejects.toThrow('pending bridge transaction changed')
+    expect(readPendingBridgeWrite(owner)).toEqual(newer)
+  })
+  it.each([null, 'null'])('refuses a disappeared pending snapshot (%s) without recreating it', raw => {
+    const held: PendingBridgeWrite = { owner, request: storeBridgeWrite(request), hash: H(90) }
+    const storage = { getItem: () => raw, setItem: vi.fn() }
+    expect(() => assertPendingBridgeWrite(held, storage)).toThrow('pending bridge transaction changed')
+    expect(storage.setItem).not.toHaveBeenCalled()
+  })
+  it.each(['not JSON', '{"owner":false}', '{"request":{}}'])('refuses malformed pending storage (%s) without modifying it', raw => {
+    const held: PendingBridgeWrite = { owner, request: storeBridgeWrite(request), hash: H(90) }
+    const storage = { getItem: () => raw, setItem: vi.fn() }
+    expect(() => assertPendingBridgeWrite(held, storage)).toThrow()
+    expect(storage.setItem).not.toHaveBeenCalled()
   })
   it('does not infer that an unknown submission without a hash was never sent', async () => {
     saveBridgeRecords(key, [record])

@@ -7,17 +7,11 @@ import { Revalidating } from '@/components/ui/Revalidating'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { useProjectMetadata } from '@/hooks/useProjectMetadata'
 import { useProjectSticks, useStickyProject, type ProjectSticks } from '@/hooks/useStickyProject'
-import { SUPPORTED_CHAINS } from '@/lib/chains'
 import { formatAmount, formatDuration, stickyLabel } from '@/lib/sticky-format'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { chainName } from '@/lib/urn'
 
 const LOGO_SIZE = 104
-const supported = new Set<number>(SUPPORTED_CHAINS.map(chain => chain.id))
-
-/** The chains the launch was planned on, each once, or the project's own chain when its uri lists none. */
-const chainsOf = ({ chainId, plannedChains }: StickyProjectInfo) =>
-  [...new Set(plannedChains ?? [chainId])].filter(id => supported.has(id))
 
 /** The logo of the Juicebox project behind the staked token, or a tile with its first letter. */
 function HeaderLogo({ info }: { info: StickyProjectInfo }) {
@@ -43,8 +37,8 @@ function Pair({ label, value, pending = false }: { label: string; value: ReactNo
 
 /**
  * A Sticky project's header: the logo of the project behind the staked token, the Sticky token's symbol and name, and a
- * row of what it holds: Stuck (the backing its shares claim, in the staked token), Sticks (how many hold shares), On
- * (the chains the launch planned), and the average and longest active stick. Stuck and the chains come with the
+ * row of what it holds: Stuck (the backing its shares claim, in the staked token), Sticks (how many hold shares),
+ * Home chain, and the average and longest active stick. Stuck and the home chain come with the
  * project's own read, before its holders are counted. What the browser kept from an earlier visit shows at once, and
  * reads as unconfirmed until this visit reads it again.
  */
@@ -58,7 +52,6 @@ export function ProjectHeader({ chainId, projectId }: { chainId: number; project
   const stuck = info ? `${formatAmount(info.backing, info.decimals)} ${info.symbol}` : failed ? '–' : null
   const counted = (read: (data: ProjectSticks) => string) =>
     sticks.data ? read(sticks.data) : sticks.isError || failed ? '–' : null
-  const chains = info ? chainsOf(info) : []
 
   return (
     <header
@@ -90,15 +83,13 @@ export function ProjectHeader({ chainId, projectId }: { chainId: number; project
           <div className="meta-line">
             <Pair label="Stuck" value={stuck} pending={unconfirmed} />
             <Pair label="Sticks" value={counted(data => String(data.sticks))} pending={recounting} />
-            {chains.length ? (
-              <span className="meta-pair" title="Chains chosen at launch.">
-                <span className="text-muted">On:</span>{' '}
+            {info ? (
+              <span className="meta-pair" title="Shares, backing and rewards are accounted for on this chain.">
+                <span className="text-muted">Home chain:</span>{' '}
                 <Revalidating pending={unconfirmed} className="inline-flex gap-[3px] align-[-3px]">
-                  {chains.map(id => (
-                    <span key={id} title={chainName(id)} className="inline-flex">
-                      <ChainIcon chainId={id} size={18} standalone />
-                    </span>
-                  ))}
+                  <span title={chainName(info.chainId)} className="inline-flex">
+                    <ChainIcon chainId={info.chainId} size={18} standalone />
+                  </span>
                 </Revalidating>
               </span>
             ) : null}

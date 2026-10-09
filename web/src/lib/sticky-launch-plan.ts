@@ -56,6 +56,11 @@ export const isAddress = (value: unknown): value is Address =>
   typeof value === 'string' && addressPattern.test(value) && !same(value, ZERO)
 const chainName = (chainId: number) => SUPPORTED_CHAINS.find(chain => chain.id === chainId)?.name ?? `chain ${chainId}`
 
+/** New preparation and every execution boundary require one local pool; saved evidence may still name older calls. */
+export function requireSingleHomeChain(choices: readonly unknown[]): void {
+  if (choices.length !== 1) throw new Error('Choose exactly one home chain for this Sticky pool. Saved launch evidence is kept for recovery.')
+}
+
 /** At 100% an unstick returns nothing, so the form stops at 99.99%. */
 export function bonusBasisPoints(choice: string, custom?: string): bigint {
   const text = choice === 'custom' ? String(custom ?? '').trim() : String(choice)
@@ -99,7 +104,11 @@ export function parseTokenInput(input: string, aliases = TOKEN_CHAIN_ALIASES): T
   return chainId ? { kind: 'project', projectId: BigInt(id), chainId } : { kind: 'unknown-chain', prefix }
 }
 
-/** A bare project ID must resolve to one token on every selected chain. A prefix resolves it once. */
+function requireProjectHomeChain(chainId: number | null, homeChainId: number, name: string): void {
+  if (chainId !== null && chainId !== homeChainId) throw new Error(`The project prefix must match the selected home chain, ${name}.`)
+}
+
+/** Project IDs resolve on the pool's home chain; a prefix cannot silently substitute another chain's asset. */
 export async function resolveProjectToken({ projectId, chainId, targetChainIds, tokenOfAt, nameOf }: {
   projectId: bigint
   chainId: number | null
@@ -107,18 +116,12 @@ export async function resolveProjectToken({ projectId, chainId, targetChainIds, 
   tokenOfAt: (chainId: number, projectId: bigint) => Promise<Address>
   nameOf: (chainId: number) => string
 }): Promise<{ address: Address; chainIds: number[] }> {
-  const lookup = async (id: number) => {
-    const address = await tokenOfAt(id, projectId).catch(() => ZERO)
-    if (!isAddress(address)) throw new Error(`Project #${projectId} has no ERC-20 on ${nameOf(id)}.`)
-    return address
-  }
-  if (chainId) return { address: await lookup(chainId), chainIds: [chainId] }
-  if (!targetChainIds.length) throw new Error('Choose at least one chain.')
-  const found = await Promise.all(targetChainIds.map(lookup))
-  for (let i = 1; i < found.length; i++) {
-    if (!same(found[i], found[0])) throw new Error(`Project #${projectId} has a different token on ${nameOf(targetChainIds[i])} than on ${nameOf(targetChainIds[0])}. Enter the token address, or name the chain, like base:5.`)
-  }
-  return { address: found[0], chainIds: [...targetChainIds] }
+  requireSingleHomeChain(targetChainIds)
+  const [homeChainId] = targetChainIds
+  requireProjectHomeChain(chainId, homeChainId, nameOf(homeChainId))
+  const address = await tokenOfAt(homeChainId, projectId).catch(() => ZERO)
+  if (!isAddress(address)) throw new Error(`Project #${projectId} has no ERC-20 on ${nameOf(homeChainId)}.`)
+  return { address, chainIds: [homeChainId] }
 }
 
 export function checkSameToken<T extends { name: string; tokenName: string; tokenSymbol: string; tokenDecimals: number }>(reads: readonly T[]): T {
@@ -203,6 +206,7 @@ export function validateLaunchCall(plan: LaunchPlan, target: LaunchTarget) {
 /** Reuse saved intent identity, but never stale preparation evidence at the wallet boundary. */
 export async function revalidateStickyLaunch(plan: LaunchPlan): Promise<void> {
   if (!isAddress(plan.owner) || !isAddress(plan.token) || !plan.targets.length) throw new Error('The saved launch is invalid.')
+  requireSingleHomeChain(plan.targets)
   const allowed = chainsForEnvironment(plan.environment)
   if (new Set(plan.targets.map(target => target.chainId)).size !== plan.targets.length
     || plan.targets.some(target => !allowed.some(chain => chain.id === target.chainId))) {
@@ -230,39 +234,34 @@ export async function prepareStickyLaunch(input: LaunchInput, owner: Address): P
   if (!isAddress(owner)) throw new Error('Connect a wallet to create a Sticky token.')
   const cashOutTaxRate = bonusBasisPoints(input.bonusChoice, input.customBonus)
   const senders = parseSenders(input.trustedSenders)
-  if (!input.chainIds.length) throw new Error('Choose at least one chain.')
+  requireSingleHomeChain(input.chainIds)
   const allowed = chainsForEnvironment(input.environment)
   if (new Set(input.chainIds).size !== input.chainIds.length || input.chainIds.some(id => !allowed.some(chain => chain.id === id))) {
     throw new Error('Choose each chain once, in the selected network environment.')
   }
-  // Only one preparation owns this cache: changing the form rechecks fees and deployment evidence.
-  const runtimes = new Map<number, ReturnType<typeof loadStickyRuntime>>()
-  const runtime = (chainId: number) => {
-    let pending = runtimes.get(chainId)
-    if (!pending) { pending = loadStickyRuntime(chainId); runtimes.set(chainId, pending) }
-    return pending
-  }
-  const selected = await Promise.all(input.chainIds.map(runtime))
+  const [homeChainId] = input.chainIds
   const parsed = parseTokenInput(input.tokenInput)
   if (parsed.kind === 'unknown-chain') throw new Error(`Unknown chain "${parsed.prefix}". Try eth, op, base or arb.`)
   if (parsed.kind !== 'address' && parsed.kind !== 'project') throw new Error('Enter a token address or a Juicebox project ID.')
+  if (parsed.kind === 'project') requireProjectHomeChain(parsed.chainId, homeChainId, chainName(homeChainId))
+  const runtime = await loadStickyRuntime(homeChainId)
   const token = parsed.kind === 'address' ? parsed.address : (await resolveProjectToken({
     projectId: parsed.projectId, chainId: parsed.chainId, targetChainIds: input.chainIds, nameOf: chainName,
     tokenOfAt: async (chainId, projectId) => jbCenterPublicClient(chainId).readContract({
-      address: (await runtime(chainId)).tokens, abi: tokensAbi, functionName: 'tokenOf', args: [projectId],
+      address: runtime.tokens, abi: tokensAbi, functionName: 'tokenOf', args: [projectId],
     }),
   })).address
   if (!isAddress(token)) throw new Error('Enter a token address or a Juicebox project ID.')
-  const reads = await Promise.all(selected.map(async target => ({ ...target, ...await readLaunchToken(target, token) })))
-  const { tokenName, tokenSymbol, tokenDecimals } = checkSameToken(reads)
+  const { tokenName, tokenSymbol, tokenDecimals } = await readLaunchToken(runtime, token)
   const defaults = defaultNames(tokenName, tokenSymbol)
   const name = input.name?.trim() || defaults.name
   const symbol = input.symbol?.trim() || defaults.symbol
   const id = crypto.randomUUID()
   const projectUri = `data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify({
-    protocol: 'Sticky', version: 1, launchId: id, environment: input.environment, chains: [...input.chainIds],
+    protocol: 'Sticky', version: 1, launchId: id, environment: input.environment, chains: [homeChainId],
   }))}`
-  const targets = reads.map(({ chainId, deployer, controller, projects, autoStick, fee, name: chain }) => ({
+  const { chainId, deployer, controller, projects, autoStick, fee, name: chain } = runtime
+  const targets = [{
     chainId, deployer, controller, projects,
     call: {
       chain: chainId, target: deployer, value: fee.toString(),
@@ -270,7 +269,7 @@ export async function prepareStickyLaunch(input: LaunchInput, owner: Address): P
         token, name, symbol, projectUri, cashOutTaxRate, launchGranters(senders, autoStick, chain), input.soulbound,
       ] }),
     },
-  }))
+  }]
   return { id, owner, name, symbol, token, tokenName, tokenSymbol, tokenDecimals,
     cashOutTaxRate: cashOutTaxRate.toString(), soulbound: input.soulbound, projectUri, environment: input.environment, targets }
 }
