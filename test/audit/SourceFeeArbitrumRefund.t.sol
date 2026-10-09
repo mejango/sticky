@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {IInbox} from "@arbitrum/nitro-contracts/src/bridge/IInbox.sol";
 import {IInboxBase} from "@arbitrum/nitro-contracts/src/bridge/IInboxBase.sol";
+import {AddressAliasHelper} from "@arbitrum/nitro-contracts/src/libraries/AddressAliasHelper.sol";
 import {IJBDirectory} from "@bananapus/core-v6/src/interfaces/IJBDirectory.sol";
 import {IJBTokens} from "@bananapus/core-v6/src/interfaces/IJBTokens.sol";
 import {JBConstants} from "@bananapus/core-v6/src/libraries/JBConstants.sol";
@@ -63,8 +64,8 @@ contract SourceFeeArbitrumRefundTest is Test {
         vm.deal(address(_child), 1 ether);
     }
 
-    /// @notice Root and token retryables both name the child as refund recipient, not the delivery caller.
-    function test_erc20TransportAlsoAssignsRefundsToChild() public {
+    /// @notice The token-gateway request names the child before the safe Inbox aliases its final refund account.
+    function test_erc20TransportAssignsGatewayRequestToChildBeforeAliasing() public {
         StickySourceToken token = new StickySourceToken();
         address gateway = makeAddr("gateway");
         vm.mockCall(_router, abi.encodeCall(IArbGatewayRouter.getGateway, (address(token))), abi.encode(gateway));
@@ -89,10 +90,13 @@ contract SourceFeeArbitrumRefundTest is Test {
         _expectRootTicket(0.5 ether);
         vm.prank(address(_child));
         _sucker.transport{value: 1 ether}({token: address(token), amount: 1});
+
+        // Safe Inbox submission aliases an L1 contract recipient, unlike the root's unsafe retryable below.
+        assertNotEq(AddressAliasHelper.applyL1ToL2Alias(address(_child)), address(_child));
     }
 
-    /// @notice A later native balance at the child cannot subsidize or leave through its only submission entrypoint.
-    function test_feeChildOnlyForwardsFreshValue() public {
+    /// @notice A later native balance at the child cannot subsidize or leave through its `send` entrypoint.
+    function test_sendOnlyForwardsFreshValue() public {
         vm.deal(address(_child), 3 ether);
         vm.deal(address(this), 1 ether);
         bytes memory submission = abi.encodeCall(IJBSucker.toRemote, (JBConstants.NATIVE_TOKEN));

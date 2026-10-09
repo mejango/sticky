@@ -518,7 +518,10 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         }
     }
 
+    /// @notice A prefunded nonce-1 child remains deployable and bound to its verified collector.
     function test_sourceCollectorBindsCanonicalDependenciesAndItsOnlyFeePayer() public {
+        StickyDeploymentAddresses memory predicted = _deployment.predict({core: _core, destinationChainId: 1});
+        vm.deal({account: predicted.sourceFeePayer, newBalance: 3 ether});
         StickyDeploymentAddresses memory deployed = _deployment.deployFor({core: _core, destinationChainId: 1});
         StickySourceCollector collector = StickySourceCollector(deployed.sourceCollector);
         assertEq(collector.DESTINATION_CHAIN_ID(), deployed.destinationChainId);
@@ -529,6 +532,7 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         assertEq(address(collector.FEE_PAYER()), deployed.sourceFeePayer);
         assertEq(StickySourceFeePayer(deployed.sourceFeePayer).COLLECTOR(), deployed.sourceCollector);
         assertEq(deployed.sourceFeePayer, vm.computeCreateAddress({deployer: deployed.sourceCollector, nonce: 1}));
+        assertEq(deployed.sourceFeePayer.balance, 3 ether);
         assertEq(_deployment.STICKY_SALT(), bytes32("StickyDeployerV6"));
         assertEq(_deployment.AUTO_STICK_SALT(), bytes32("StickyAutoStickV6"));
         assertEq(_deployment.SOURCE_COLLECTOR_SALT(), bytes32("StickySourceCollectorV6"));

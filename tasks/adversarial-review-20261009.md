@@ -1,5 +1,7 @@
 # Sticky adversarial review — 2026-10-09
 
+> **Revision-bound task record.** The later fixed project-1 raw-fee contribution changes the collector and fee-payer runtime, so the pass counts, source identities and native Ethereum-to-Arbitrum conclusion below do not qualify final source. Preserve this body as the record of its review pass; the [current report](../ADVERSARIAL_REVIEW_2026-10-09.md) and [operative hook plan](omnichain-split-hook.md) own the refreshed status.
+
 Baseline: `74dc08798976f2a78a560ee5b2c2c98656affc4b`, PR #58. This is an independent agent review, not an external audit certification. Prior reports are evidence to challenge rather than findings to inherit.
 
 ## Plan refinement

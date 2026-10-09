@@ -3,6 +3,7 @@ pragma solidity ^0.8.0;
 
 import {IJBDirectory} from "@bananapus/core-v6/src/interfaces/IJBDirectory.sol";
 import {IJBSplitHook} from "@bananapus/core-v6/src/interfaces/IJBSplitHook.sol";
+import {IJBTerminal} from "@bananapus/core-v6/src/interfaces/IJBTerminal.sol";
 import {IJBTokens} from "@bananapus/core-v6/src/interfaces/IJBTokens.sol";
 import {IJBSucker} from "@bananapus/suckers-v6/src/interfaces/IJBSucker.sol";
 import {IJBSuckerRegistry} from "@bananapus/suckers-v6/src/interfaces/IJBSuckerRegistry.sol";
@@ -15,6 +16,12 @@ import {IStickySourceFeePayer} from "./IStickySourceFeePayer.sol";
 /// the reward group. Authenticated acceptance queues ERC-20 tokens or credits independently of delivery availability.
 /// Permissionless callers can deliver part of a bucket but cannot change its home chain, share token or group.
 interface IStickySourceCollector is IJBSplitHook {
+    /// @notice Emitted after the fee child's raw-address native balance is contributed to the protocol fee project.
+    /// @param terminal The protocol fee project's primary native terminal that received the balance.
+    /// @param amount The native balance contributed, in wei.
+    /// @param caller The account that permissionlessly executed the contribution.
+    event AddFeeRefundToBalance(IJBTerminal indexed terminal, uint256 amount, address caller);
+
     /// @notice Emitted when an authenticated reserved allocation enters its destination's pending custody.
     /// @param sourceProjectId The source project whose ERC-20 tokens or credits arrived.
     /// @param stickyToken The home-chain Sticky share token whose holders receive the allocation.
@@ -84,7 +91,8 @@ interface IStickySourceCollector is IJBSplitHook {
     /// @return directory The directory derived from the collector's sucker registry.
     function DIRECTORY() external view returns (IJBDirectory directory);
 
-    /// @notice The isolated fee payer that returns each delivery caller's fee receipts and source-chain native refunds.
+    /// @notice The isolated fee payer that returns caller refunds and holds native currency credited to its raw
+    /// address for the fixed destination contribution.
     /// @return feePayer The child permanently authorized to serve this collector.
     function FEE_PAYER() external view returns (IStickySourceFeePayer feePayer);
 
@@ -119,6 +127,13 @@ interface IStickySourceCollector is IJBSplitHook {
     /// @return amount The aggregate pending amount, covered by combined held ERC-20 tokens and credits.
     function totalPendingOf(uint256 sourceProjectId) external view returns (uint256 amount);
 
+    /// @notice Contributes the destination fee child's complete raw-address native balance to project 1.
+    /// @dev Anyone can call on this collector's configured destination chain. The project, native token and terminal
+    /// source are fixed, so the caller cannot redirect the balance. The original caller is not reimbursed, an aliased
+    /// gateway balance is excluded, and a zero balance is a no-op.
+    /// @return amount The native balance contributed, in wei.
+    function addFeeRefundToBalance() external returns (uint256 amount);
+
     /// @notice Atomically sends part of one destination bucket through a registered, usable sucker route to the
     /// configured home chain.
     /// @dev The caller funds the registry fee and any native transport budget. The minimum uses the selected backing
@@ -126,8 +141,9 @@ interface IStickySourceCollector is IJBSplitHook {
     /// remains valid because the destination remints the leaf's project-token count. A caller-sensitive custom cashout
     /// hook may make preview and execution differ; a failed minimum restores custody and liabilities for another
     /// attempt. Native finality, destination claim and receiver settlement remain separate after source submission
-    /// succeeds. The fee child recovers only source-chain retained registry and transport refunds; it cannot attribute
-    /// or recover asynchronous destination refunds.
+    /// succeeds. The fee child returns source-chain retained registry and transport refunds to this caller. A matching
+    /// destination-family collector can separately contribute an unattributed raw native refund to the protocol fee
+    /// project; this call does not reimburse the caller or recover an aliased gateway refund.
     /// @param sourceProjectId The project whose attributed reserved-token custody is being delivered.
     /// @param stickyToken The home-chain Sticky share token whose holders receive the selected bucket.
     /// @param groupId The bucket's destination reward group.

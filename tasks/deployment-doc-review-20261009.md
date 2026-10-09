@@ -1,5 +1,7 @@
 # Deployment provenance and documentation review — 2026-10-09
 
+> **Historical revision-bound record.** The later fixed project-1 raw-fee contribution changes the collector and fee-payer runtime and supersedes this record's asynchronous-refund conclusion. Preserve the evidence below for its reviewed revision; use the [current adversarial report](../ADVERSARIAL_REVIEW_2026-10-09.md), [operative hook plan](omnichain-split-hook.md) and [deployment procedure](../DEPLOYMENT.md) for current status.
+
 This work supplements [the adversarial review](adversarial-review-20261009.md). No deployment, source split change or merge is authorized.
 
 ## Plan refinement

@@ -31,11 +31,13 @@ import {StickySourceCollector} from "../src/StickySourceCollector.sol";
 import {StickySourceFeePayer} from "../src/StickySourceFeePayer.sol";
 import {IStickyDistributor} from "../src/interfaces/IStickyDistributor.sol";
 import {IStickyRewardReceiverFactory} from "../src/interfaces/IStickyRewardReceiverFactory.sol";
+import {IStickySourceCollector} from "../src/interfaces/IStickySourceCollector.sol";
 
 import {StickyPricingToken} from "./helpers/StickyPricingToken.sol";
 import {StickySourceCaller} from "./helpers/StickySourceCaller.sol";
 import {StickySourceController} from "./helpers/StickySourceController.sol";
 import {StickySourceDistributor} from "./helpers/StickySourceDistributor.sol";
+import {StickySourceFeeTerminal} from "./helpers/StickySourceFeeTerminal.sol";
 import {StickySourceSucker} from "./helpers/StickySourceSucker.sol";
 import {StickySourceToken} from "./helpers/StickySourceToken.sol";
 import {StickySourceTokens} from "./helpers/StickySourceTokens.sol";
@@ -549,6 +551,15 @@ contract StickySourceCollectorTest is Test {
         assertEq(_one.balanceOf(child), 7e18);
     }
 
+    /// @notice Empty-calldata transfers remain rejected so source refunds use their caller-attributed ledgers.
+    function test_feePayerRejectsDirectNativeTransfer() public {
+        address child = address(_collector.FEE_PAYER());
+        vm.prank(_caller);
+        (bool success,) = child.call{value: 1}("");
+        assertFalse(success);
+        assertEq(child.balance, 0);
+    }
+
     /// @notice Only the fixed collector can invoke its dynamic-route fee payer.
     function test_feePayerRejectsOtherCallers() public {
         StickySourceFeePayer child = StickySourceFeePayer(address(_collector.FEE_PAYER()));
@@ -560,6 +571,171 @@ contract StickySourceCollectorTest is Test {
             backingToken: JBConstants.NATIVE_TOKEN,
             beneficiary: payable(_caller)
         });
+
+        vm.expectRevert(
+            abi.encodeWithSelector(StickySourceFeePayer.StickySourceFeePayer_Unauthorized.selector, address(this))
+        );
+        child.addFeeRefundToBalance(IJBTerminal(_terminal));
+    }
+
+    /// @notice Fee-refund contribution cannot mutate custody while an inbound allocation is being measured.
+    function test_feeRefundDuringAcceptanceIsRejected() public {
+        vm.chainId(1);
+        address child = address(_collector.FEE_PAYER());
+        vm.deal({account: child, newBalance: 3 ether});
+        _mockTerminal({
+            projectId: JBConstants.FEE_BENEFICIARY_PROJECT_ID, backing: JBConstants.NATIVE_TOKEN, terminal: _terminal
+        });
+        _three.setTransferCallback({
+            target: address(_collector),
+            data: abi.encodeCall(StickySourceCollector.addFeeRefundToBalance, ()),
+            rejectOnFailure: false
+        });
+
+        _queueDefault(7e18);
+
+        assertFalse(_three.callbackSucceeded());
+        assertEq(
+            _three.callbackReason(),
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InboundTransfer.selector, address(_three), uint256(1)
+            )
+        );
+        assertEq(child.balance, 3 ether);
+        assertEq(_terminal.balance, 0);
+        assertEq(_collector.totalPendingOf(3), 7e18);
+        assertEq(_three.balanceOf(address(_collector)), 7e18);
+    }
+
+    /// @notice Any keeper can contribute the destination child's complete native balance only to project 1.
+    function test_feeRefundFundsFixedProjectOneBalance() public {
+        vm.chainId(1);
+        address child = address(_collector.FEE_PAYER());
+        uint256 amount = 3 ether;
+        vm.deal({account: child, newBalance: amount});
+        _mockTerminal({
+            projectId: JBConstants.FEE_BENEFICIARY_PROJECT_ID, backing: JBConstants.NATIVE_TOKEN, terminal: _terminal
+        });
+        bytes memory terminalCall = abi.encodeCall(
+            IJBTerminal.addToBalanceOf,
+            (JBConstants.FEE_BENEFICIARY_PROJECT_ID, JBConstants.NATIVE_TOKEN, amount, false, "", bytes(""))
+        );
+        vm.expectCall(_terminal, amount, terminalCall);
+        vm.expectEmit(true, false, false, true, address(_collector));
+        emit IStickySourceCollector.AddFeeRefundToBalance({
+            terminal: IJBTerminal(_terminal), amount: amount, caller: _caller
+        });
+
+        vm.prank(_caller);
+        assertEq(_collector.addFeeRefundToBalance(), amount);
+
+        assertEq(child.balance, 0);
+        assertEq(_terminal.balance, amount);
+    }
+
+    /// @notice A terminal callback cannot recursively spend or duplicate the child's fee contribution.
+    function test_feeRefundReentryIsBlocked() public {
+        vm.chainId(1);
+        address child = address(_collector.FEE_PAYER());
+        uint256 amount = 3 ether;
+        vm.deal({account: child, newBalance: amount});
+        StickySourceFeeTerminal terminal = new StickySourceFeeTerminal(IStickySourceCollector(address(_collector)));
+        _mockTerminal({
+            projectId: JBConstants.FEE_BENEFICIARY_PROJECT_ID,
+            backing: JBConstants.NATIVE_TOKEN,
+            terminal: address(terminal)
+        });
+
+        vm.prank(_caller);
+        assertEq(_collector.addFeeRefundToBalance(), amount);
+
+        assertFalse(terminal.reentrySucceeded());
+        assertEq(
+            terminal.reentryReason(), abi.encodeWithSelector(ReentrancyGuard.ReentrancyGuardReentrantCall.selector)
+        );
+        assertEq(child.balance, 0);
+        assertEq(address(terminal).balance, amount);
+    }
+
+    /// @notice Only the destination copy can contribute an unattributed raw native balance.
+    function test_feeRefundRejectsSourceChain() public {
+        address child = address(_collector.FEE_PAYER());
+        vm.deal({account: child, newBalance: 3 ether});
+        vm.prank(_caller);
+        vm.expectRevert(
+            abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_DestinationOnly.selector, uint256(10))
+        );
+        _collector.addFeeRefundToBalance();
+        assertEq(child.balance, 3 ether);
+    }
+
+    /// @notice A rejected project-1 contribution reverts atomically and keeps the full refund retryable.
+    function test_feeRefundTerminalFailurePreservesBalance() public {
+        vm.chainId(1);
+        address child = address(_collector.FEE_PAYER());
+        uint256 amount = 3 ether;
+        vm.deal({account: child, newBalance: amount});
+        _mockTerminal({
+            projectId: JBConstants.FEE_BENEFICIARY_PROJECT_ID, backing: JBConstants.NATIVE_TOKEN, terminal: _terminal
+        });
+        bytes memory terminalCall = abi.encodeCall(
+            IJBTerminal.addToBalanceOf,
+            (JBConstants.FEE_BENEFICIARY_PROJECT_ID, JBConstants.NATIVE_TOKEN, amount, false, "", bytes(""))
+        );
+        vm.mockCallRevert({callee: _terminal, data: terminalCall, revertData: hex"deadbeef"});
+        vm.prank(_caller);
+        vm.expectRevert(bytes(hex"deadbeef"));
+        _collector.addFeeRefundToBalance();
+        assertEq(child.balance, amount);
+    }
+
+    /// @notice An empty destination child is a no-op without requiring a configured project-1 terminal.
+    function test_feeRefundWithNoBalanceIsNoOp() public {
+        vm.chainId(1);
+        vm.prank(_caller);
+        assertEq(_collector.addFeeRefundToBalance(), 0);
+    }
+
+    /// @notice Missing destination routing preserves the full refund for a later permissionless attempt.
+    function test_feeRefundWithoutTerminalPreservesBalance() public {
+        vm.chainId(1);
+        address child = address(_collector.FEE_PAYER());
+        vm.deal({account: child, newBalance: 3 ether});
+        _mockTerminal({
+            projectId: JBConstants.FEE_BENEFICIARY_PROJECT_ID, backing: JBConstants.NATIVE_TOKEN, terminal: address(0)
+        });
+        vm.prank(_caller);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_NoTerminal.selector,
+                JBConstants.FEE_BENEFICIARY_PROJECT_ID,
+                JBConstants.NATIVE_TOKEN
+            )
+        );
+        _collector.addFeeRefundToBalance();
+        assertEq(child.balance, 3 ether);
+    }
+
+    /// @notice A non-contract terminal identity cannot consume the refund and leaves it retryable.
+    function test_feeRefundWithoutTerminalCodePreservesBalance() public {
+        vm.chainId(1);
+        address child = address(_collector.FEE_PAYER());
+        vm.deal({account: child, newBalance: 3 ether});
+        _mockTerminal({
+            projectId: JBConstants.FEE_BENEFICIARY_PROJECT_ID,
+            backing: JBConstants.NATIVE_TOKEN,
+            terminal: makeAddr("terminal without code")
+        });
+        vm.prank(_caller);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_NoTerminal.selector,
+                JBConstants.FEE_BENEFICIARY_PROJECT_ID,
+                JBConstants.NATIVE_TOKEN
+            )
+        );
+        _collector.addFeeRefundToBalance();
+        assertEq(child.balance, 3 ether);
     }
 
     /// @notice Rejected receipt transfers and failed or incomplete refunds unwind the entire send.

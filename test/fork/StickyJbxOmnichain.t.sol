@@ -205,10 +205,11 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         _assertCollectorTokenConservation(logs, source, collector, reward, supplyBefore, callerFeeTokensBefore);
     }
 
-    /// @notice A real Ethereum-to-Arbitrum submission directs destination gas refunds to the isolated fee child.
-    /// @dev This source-boundary regression captures the deployed Inbox payload without mocking transport. It does
-    /// not execute ArbOS or claim to establish destination refund delivery. The Ethereum share-token bytes identify
-    /// only the bucket here; this test does not claim that a corresponding Arbitrum Sticky pool exists.
+    /// @notice A native Ethereum-to-Arbitrum refund is controlled by the matching destination child and funds project
+    /// 1.
+    /// @dev This captures the deployed unsafe Inbox payload without mocking transport, then uses `vm.deal` to model its
+    /// finalized raw ArbOS balance credit. It proves same-family control and live terminal accounting, not retryable
+    /// finality. The Ethereum share-token bytes identify only the bucket; no Arbitrum Sticky pool is claimed.
     function test_adversarialEthereumToArbitrum_retryableRefundUsesFeeChild() public {
         Source memory source = _source({chainId: 1, projectId: _REV_PROJECT});
         source.sucker = _checkedSucker({chainId: 1, projectId: _REV_PROJECT, peerChain: _ARBITRUM});
@@ -261,6 +262,35 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         assertEq(source.sucker.retainedTransportPaymentRefundOf(feeChild), 0, "no source ledger recovers L2 excess");
         assertEq(feeChild.balance, 0, "the source fee child cannot return destination escrow");
         assertEq(collector.pendingOf(source.projectId, address(_sticky), 0), 0, "source send reports success");
+
+        Source memory destination = _source({chainId: _ARBITRUM, projectId: JBConstants.FEE_BENEFICIARY_PROJECT_ID});
+        StickySourceCollector destinationCollector =
+            _deployCollector({source: destination, destinationChainId: _ARBITRUM});
+        assertEq(address(destinationCollector), address(collector), "same Arbitrum-home collector on both chains");
+        assertEq(address(destinationCollector.FEE_PAYER()), feeChild, "same raw fee child on both chains");
+        assertEq(
+            StickySourceFeePayer(feeChild).COLLECTOR(),
+            address(destinationCollector),
+            "destination parent controls child"
+        );
+        IJBTerminal feeTerminal = destination.controller.DIRECTORY().primaryTerminalOf({
+            projectId: JBConstants.FEE_BENEFICIARY_PROJECT_ID, token: JBConstants.NATIVE_TOKEN
+        });
+        assertEq(address(feeTerminal), address(destination.terminal), "live project-1 native terminal");
+        uint256 contribution = 0.01 ether;
+        uint256 backingBefore = _backing(destination);
+        uint256 terminalBalanceBefore = address(feeTerminal).balance;
+        uint256 supplyBefore = destination.token.totalSupply();
+        uint256 keeperBalanceBefore = _keeper.balance;
+        assertEq(feeChild.balance, 0, "fresh destination child");
+        vm.deal({account: feeChild, newBalance: contribution});
+        vm.prank(_keeper);
+        assertEq(destinationCollector.addFeeRefundToBalance(), contribution);
+        assertEq(feeChild.balance, 0, "complete raw refund contributed");
+        assertEq(_backing(destination), backingBefore + contribution, "project 1 receives exact refund");
+        assertEq(address(feeTerminal).balance, terminalBalanceBefore + contribution, "live terminal receives value");
+        assertEq(destination.token.totalSupply(), supplyBefore, "add-to-balance mints no JBP6");
+        assertEq(_keeper.balance, keeperBalanceBefore, "permissionless caller receives nothing");
     }
 
     /// @notice Actual Ethereum project 1 reserves enter the shared hook before permissionless settlement.

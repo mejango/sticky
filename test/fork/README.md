@@ -184,6 +184,23 @@ tries its Ethereum peer; the Ethereum-home family cannot spend that allocation.
 Address parity establishes a family identity, not a direct transport path between
 every source and home chain.
 
+The Ethereum-to-Arbitrum refund case captures the real unsafe root-retryable
+payload on the Ethereum fork and verifies that it names the raw fee-child address.
+It then deploys the same Arbitrum-home family on the Arbitrum fork, checks equal
+parent and nonce-1 child addresses and the child-to-parent binding, and uses
+`vm.deal` to model only the finalized ArbOS balance credit. A permissionless call
+must add that complete raw balance to project 1 through its live native terminal,
+mint no project tokens and pay nothing to the caller. The test does not execute or
+prove retryable finality. The separate local transport regression proves that
+the gateway request names `feeChild` and that its Nitro alias is distinct.
+Pinned `AbsInbox` source establishes that the safe Inbox rewrites a contract
+refund recipient to that alias; this test does not execute the gateway or Inbox
+rewrite. The raw-address contribution does not cover that account, so positive
+mapped-ERC-20 backing remains unqualified. Pinned WETH gateway/Inbox source also
+shows that cancellation or expiry can credit bridged call value to
+`alias(source sucker)`, which Sticky does not control; this fork case does
+not execute that cancellation path.
+
 Generic source cases launch ordinary projects with IDs above `3` through deployed
 core. The OP tests cover zero native backing, zero ERC-20 backing, and positive
 six-decimal USDC.e backing through a real registered OP sucker. The positive case

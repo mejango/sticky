@@ -7,6 +7,7 @@ import {IJBDirectory} from "@bananapus/core-v6/src/interfaces/IJBDirectory.sol";
 import {IJBSplitHook} from "@bananapus/core-v6/src/interfaces/IJBSplitHook.sol";
 import {IJBTerminal} from "@bananapus/core-v6/src/interfaces/IJBTerminal.sol";
 import {IJBTokens} from "@bananapus/core-v6/src/interfaces/IJBTokens.sol";
+import {JBConstants} from "@bananapus/core-v6/src/libraries/JBConstants.sol";
 import {JBFees} from "@bananapus/core-v6/src/libraries/JBFees.sol";
 import {JBSplitGroupIds} from "@bananapus/core-v6/src/libraries/JBSplitGroupIds.sol";
 import {JBSplitHookContext} from "@bananapus/core-v6/src/structs/JBSplitHookContext.sol";
@@ -35,9 +36,10 @@ import {IStickySourceFeePayer} from "./interfaces/IStickySourceFeePayer.sol";
 /// spend another bucket or claim unattributed donations. Canonical project and transport dependencies still govern
 /// issuance and delivery. The home-chain reward ERC-20 and intended Sticky receiver must be usable before remote
 /// claims.
-/// @dev There is no owner, upgrade, withdrawal or general rescue. A caller may select another registered route to that
-/// home chain when one stops sending; if none is usable, rewards remain queued. Native finality and destination claims
-/// are separate.
+/// @dev There is no owner, upgrade, withdrawal or general rescue. The only fee-child recovery contributes its full
+/// native balance to the protocol fee project on this family's home chain. A caller may select another registered
+/// route to that home chain when one stops sending; if none is usable, rewards remain queued. Native finality and
+/// destination claims are separate.
 contract StickySourceCollector is IStickySourceCollector, ReentrancyGuard {
     // A library that safely pulls allocated rewards and limits each sucker to one delivery's approved amount.
     using SafeERC20 for IERC20;
@@ -46,12 +48,12 @@ contract StickySourceCollector is IStickySourceCollector, ReentrancyGuard {
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
 
-    /// @notice Thrown when a home-chain settlement is called on another chain.
-    /// @param chainId The chain on which settlement was attempted.
+    /// @notice Thrown when a destination-chain operation is called on another chain.
+    /// @param chainId The chain on which the destination operation was attempted.
     error StickySourceCollector_DestinationOnly(uint256 chainId);
 
-    /// @notice Thrown when outbound delivery would change custody during an inbound receipt measurement.
-    /// @param caller The account attempting delivery.
+    /// @notice Thrown when an outbound custody operation would run during an inbound receipt measurement.
+    /// @param caller The account attempting the outbound custody operation.
     /// @param depth The number of active, possibly nested, acceptance callbacks.
     error StickySourceCollector_InboundTransfer(address caller, uint256 depth);
 
@@ -102,8 +104,8 @@ contract StickySourceCollector is IStickySourceCollector, ReentrancyGuard {
     /// @param decimals The context's project-token decimals, which must be 18.
     error StickySourceCollector_InvalidSplit(uint256 sourceProjectId, uint256 groupId, address hook, uint256 decimals);
 
-    /// @notice Thrown when the source project has no primary terminal for the selected backing asset.
-    /// @param sourceProjectId The project without a primary cashout terminal.
+    /// @notice Thrown when a project has no deployed primary terminal for the selected token.
+    /// @param sourceProjectId The project without a usable primary terminal.
     /// @param backingToken The selected terminal token.
     error StickySourceCollector_NoTerminal(uint256 sourceProjectId, address backingToken);
 
@@ -180,8 +182,8 @@ contract StickySourceCollector is IStickySourceCollector, ReentrancyGuard {
     /// @dev Derived from the supplied canonical sucker registry, whose deployment identity must be verified.
     IJBDirectory public immutable override DIRECTORY;
 
-    /// @notice The parent-only child that separates callers' fee receipts and source-chain refunds from queued
-    /// principal.
+    /// @notice The parent-only child that separates caller refunds from queued principal and holds raw destination
+    /// refunds until their fixed project-1 contribution.
     IStickySourceFeePayer public immutable override FEE_PAYER;
 
     /// @notice The receiver factory whose address and implementation match the configured home-chain factory.
@@ -264,6 +266,40 @@ contract StickySourceCollector is IStickySourceCollector, ReentrancyGuard {
     // ---------------------- external transactions ---------------------- //
     //*********************************************************************//
 
+    /// @notice Contributes the destination copy's full raw-address native balance to project 1.
+    /// @dev Anyone can call on this collector's configured destination chain. The current primary terminal is resolved
+    /// from the canonical directory, while the child fixes the project, native token and held-fee behavior. A zero
+    /// balance is a no-op. The original delivery caller is not reimbursed, and an aliased gateway balance is outside
+    /// this operation. Terminal failure leaves the complete balance available for another attempt.
+    /// @return amount The native balance contributed, in wei.
+    function addFeeRefundToBalance() external override nonReentrant returns (uint256 amount) {
+        // Never move fee custody during a nested reserved-token receipt measurement.
+        _requireNotAccepting();
+        if (block.chainid != DESTINATION_CHAIN_ID) revert StickySourceCollector_DestinationOnly(block.chainid);
+
+        // Skip the external directory lookup when there is nothing to contribute.
+        // An exact zero is the only balance that cannot fund a contribution.
+        // forge-lint: disable-next-item(incorrect-strict-equality)
+        // slither-disable-next-line incorrect-equality
+        if (address(FEE_PAYER).balance == 0) return 0;
+
+        // Resolve the protocol fee project's live native terminal without giving the caller a routing choice.
+        IJBTerminal terminal = DIRECTORY.primaryTerminalOf({
+            projectId: JBConstants.FEE_BENEFICIARY_PROJECT_ID, token: JBConstants.NATIVE_TOKEN
+        });
+        if (address(terminal).code.length == 0) {
+            revert StickySourceCollector_NoTerminal({
+                sourceProjectId: JBConstants.FEE_BENEFICIARY_PROJECT_ID, backingToken: JBConstants.NATIVE_TOKEN
+            });
+        }
+
+        // The child fixes the terminal call's project and token, and returns the exact amount transferred.
+        amount = FEE_PAYER.addFeeRefundToBalance(terminal);
+        // The terminal call finishes before this receipt is emitted, and the outer guard rejects reentry.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit AddFeeRefundToBalance({terminal: terminal, amount: amount, caller: msg.sender});
+    }
+
     /// @notice Accepts and attributes one authenticated reserved split without attempting delivery or charging a fee.
     /// @dev The split beneficiary is the home-chain Sticky share token; its projectId is the reward group. ERC-20 pulls
     /// measure combined project custody and exclude nested allocations already recorded by this hook. Credit contexts
@@ -334,8 +370,9 @@ contract StickySourceCollector is IStickySourceCollector, ReentrancyGuard {
     /// remains valid because the destination remints the leaf's project-token count. A caller-sensitive custom cashout
     /// hook may make preview and execution differ; a failed minimum restores custody and liabilities for another
     /// attempt. Native finality, destination claim and receiver settlement remain separate after source submission
-    /// succeeds. The fee child recovers only source-chain retained registry and transport refunds; it cannot attribute
-    /// or recover asynchronous destination refunds.
+    /// succeeds. The fee child returns source-chain retained registry and transport refunds to this caller. A matching
+    /// destination-family collector can separately contribute an unattributed raw native refund to the protocol fee
+    /// project; this call does not reimburse the caller or recover an aliased gateway refund.
     /// @param sourceProjectId The project whose attributed reserved-token custody is being delivered.
     /// @param stickyToken The home-chain Sticky share token whose holders receive the selected bucket.
     /// @param groupId The bucket's destination reward group.

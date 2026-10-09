@@ -1,6 +1,6 @@
 # Sticky JBX qualification — 2026-10-08
 
-> **Historical fixed-route qualification.** The evidence below describes the 2026-10-08 qualification revision merged in `137e607`, before the shared destination-bound collector. Its collector counts, call signatures, fees and routing setup are not current instructions. Use [DEPLOYMENT.md](../DEPLOYMENT.md#source-collectors) for the operative setup and [the home-chain review](../OMNICHAIN_SPLIT_HOOK_REVIEW.md) for later evidence. No mainnet transaction, split edit, deployment, or user signature was sent during this qualification.
+> **Historical fixed-route qualification.** The evidence below describes the 2026-10-08 qualification revision merged in `137e607`, before the shared destination-bound collector and its later fixed project-1 raw-fee contribution. Its collector counts, call signatures, fees and routing setup are not current instructions. Use [DEPLOYMENT.md](../DEPLOYMENT.md#source-collectors) for the operative setup and [the current adversarial report](../ADVERSARIAL_REVIEW_2026-10-09.md) for maintained evidence and gates; the intervening [home-chain review](../OMNICHAIN_SPLIT_HOOK_REVIEW.md) is also revision-bound. No mainnet transaction, split edit, deployment, or user signature was sent during this qualification.
 
 ## Plan refinement
 

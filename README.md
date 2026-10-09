@@ -8,11 +8,11 @@ Each pool has one home chain. Its shares, backing, reward snapshots and redempti
 
 ## Documentation
 
-- [Current adversarial review](ADVERSARIAL_REVIEW_2026-10-09.md): findings, exact-source verification and launch gates; supersedes earlier readiness conclusions and records the open native Ethereum-to-Arbitrum refund defect.
+- [Current adversarial review](ADVERSARIAL_REVIEW_2026-10-09.md): findings, pending final-source verification and launch gates; supersedes earlier readiness conclusions and records the Ethereum-to-Arbitrum refund boundary.
 - [Historical production review](AUDIT_REPORT.md): September findings, fixes and validation at the recorded revision.
 - [One home chain per pool](tasks/home-chain-pools.md): accepted launch, identity and direct-route delivery design.
 - [Shared omnichain split hook](tasks/omnichain-split-hook.md): current implementation gates and historical Ethereum-only evidence.
-- [Omnichain split-hook review](OMNICHAIN_SPLIT_HOOK_REVIEW.md): current source review, verification evidence and remaining release gates.
+- [Historical omnichain split-hook review](OMNICHAIN_SPLIT_HOOK_REVIEW.md): former home-chain and Ethereum-only review evidence; its runtime conclusions are superseded.
 - [Historical source collector audit](SOURCE_COLLECTOR_AUDIT.md): fixed-route predecessor review; its results do not certify the shared-hook redesign.
 - [Historical Sticky JBX qualification](tasks/sticky-jbx-qualification.md): deployed JBX custody and V6 reward evidence, with links to current source-collector setup.
 
@@ -78,9 +78,9 @@ For cross-chain rewards, `StickyRewardReceiverFactory` predicts and clones a `St
 
 `StickySourceCollector` provides a reserved-token split hook for V6 projects, with one immutable destination chain per collector family. On the home chain and each qualified source, use `hook = verified collector for that home chain`, `beneficiary = home-chain Sticky share token`, and `split.projectId = reward group`. The family has the same address across matching source deployments; another home chain uses a different family. The authenticated source project comes from the controller's callback context. Acceptance only queues the allocation. Anyone can later settle a positive partial amount on the home chain or submit it through a qualified direct source-project route whose peer is that home chain. Source credits can wait for their ERC-20; the destination reward ERC-20 must exist before a remote claim because receivers settle ERC-20 balances only.
 
-Route availability is checked per source and home chain. The pinned native routes connect Ethereum with each supported L2; they do not establish L2-to-L2 delivery. The native Ethereum-to-Arbitrum collector lane is not qualified: asynchronous destination refunds can be sent to an address that cannot recover them. See [the route limits](RISKS.md#operational-limits). Unsupported combinations require a separately qualified direct route. There is no implicit relay or fallback through Ethereum.
+Route availability is checked per source and home chain. The pinned native routes connect Ethereum with each supported L2; they do not establish L2-to-L2 delivery. An Ethereum-to-Arbitrum lane requires the same verified Arbitrum-home collector family on both chains; its destination copy can permissionlessly contribute the unsafe root retryable's raw refund to project 1. A positive mapped-ERC-20 transfer additionally creates a gateway retryable whose refund uses the fee child's aliased address and remains unqualified; zero backing creates no gateway ticket. A WETH gateway cancellation or expiry can also place bridged call value at `alias(source sucker)`, outside Sticky control. See [the route limits](RISKS.md#operational-limits). Unsupported combinations require a separately qualified direct route. There is no implicit relay or fallback through Ethereum.
 
-The constructor-created `StickySourceFeePayer` keeps caller fee receipts and transport refunds separate from queued reward principal. No recurring Safe custody or signature is needed after authorized split setup. The destination-bound hook requires fresh review, regenerated predictions and verified execution; historical fixed-route and Ethereum-only results do not qualify the changed constructor or establish a live family. Follow [the source-collector setup and verification recipe](DEPLOYMENT.md#source-collectors). Contract changes remain in PRs through review, deployment and verification, and require explicit approval of the final PR before merge.
+The constructor-created `StickySourceFeePayer` keeps caller fee receipts and source-chain refunds separate from queued reward principal. On the configured destination chain, anyone can make its parent add the child's complete raw native balance to protocol fee project 1; the caller cannot redirect or receive that balance, and the operation does not reach a safe-Inbox alias. No recurring Safe custody or signature is needed after authorized split setup. The destination-bound hook requires fresh review, regenerated predictions and verified execution; historical fixed-route and Ethereum-only results do not qualify the changed runtime or establish a live family. Follow [the source-collector setup and verification recipe](DEPLOYMENT.md#source-collectors). Contract changes remain in PRs through review, deployment and verification, and require explicit approval of the final PR before merge.
 
 ## Contracts
 
@@ -95,7 +95,7 @@ The constructor-created `StickySourceFeePayer` keeps caller fee receipts and tra
 | `StickyRewardReceiverFactory` | Predicts/deploys reward receivers per Sticky token and group and settles their balances into the distributor. |
 | `StickyRewardReceiver` | Holds arriving reward tokens for one destination Sticky token and group and its bound distributor. |
 | `StickySourceCollector` | Shared reserved-token split hook with attributed custody per source project, home-chain Sticky token and group; permissionless partial local settlement or registered-route submission. |
-| `StickySourceFeePayer` | Only-parent child that submits the validated route and returns that send's fee-token increase, retained registry fee and transport refund to its caller; never a split recipient. |
+| `StickySourceFeePayer` | Only-parent child that submits the validated route, returns that send's fee-token increase and source-retained refunds to the collector send's original delivery caller, and allows its destination parent to contribute the child's complete raw native balance to protocol fee project 1; never a split recipient. |
 
 Integrations consume the typed public contracts in [src/interfaces](src/interfaces/). Interfaces own declarations and events; implementations own execution and errors. The [API architecture](ARCHITECTURE.md#public-interfaces) identifies receiver, collector and fee-payer boundaries and the upstream interface reuse.
 

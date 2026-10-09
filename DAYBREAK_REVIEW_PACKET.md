@@ -1,6 +1,6 @@
 # Sticky: Daybreak review handoff
 
-**Prepared, not submitted or run.** This packet supports an independent review through the user's Daybreak access. No Daybreak result or external certification is established here. The final review bundle must bind the source identities below before any result is treated as a release review.
+**Regeneration required; not submitted or run.** The fixed project-1 raw-fee contribution changes the collector and fee-payer runtime after the source identity previously recorded here. Do not submit the old bundle. Regenerate its final commit, tree, archive, source digests, compiled identities and verification evidence first. This packet supports an independent review through the user's Daybreak access; no Daybreak result or external certification is established here.
 
 ## Scope and source identity
 
@@ -8,9 +8,9 @@ Review Sticky's contracts, their actual V6 dependencies, deployment verification
 
 | Input | Identity and current status |
 | --- | --- |
-| Sticky baseline | `74dc08798976f2a78a560ee5b2c2c98656affc4b`; PR #58 |
-| Final Sticky review commit | The supplied review bundle manifest records the final commit, tree and archive SHA-256; PR #58 may lag the local SDK-dependent client snapshot until its release branch and hosted checks are complete. |
-| Current Solidity/source-script digests | [adversarial-equivalence-20261009.json](tasks/adversarial-equivalence-20261009.json), `sourceSHA256`; 34 files. This limited manifest does not identify the web, tests, JavaScript tooling or documentation; use the final bundle commit and complete archive identity for those. |
+| Superseded Sticky review baseline | `74dc08798976f2a78a560ee5b2c2c98656affc4b`; PR #58 |
+| Final Sticky review commit | Pending regeneration after the fixed project-1 raw-fee contribution is committed and every required check passes. The supplied review bundle manifest must record that final commit, tree and archive SHA-256. |
+| Current Solidity/source-script digests | Pending regeneration. [adversarial-equivalence-20261009.json](tasks/adversarial-equivalence-20261009.json) records the superseded source and must not identify the final bundle. The replacement limited manifest still will not identify the web, tests, JavaScript tooling or documentation; use the final bundle commit and complete archive identity for those. |
 | Core Solidity | `feff600654aee6fb1747dded692f18068b2230a6` |
 | Distributor Solidity | `44d6d5d2e7cca77422ee0ac4909cf42ccf7839b5` |
 | Other Solidity dependencies | Exact root lockfile and remappings; reproduce the layout in [DEPLOYMENT.md](DEPLOYMENT.md#reproducible-checkout) |
@@ -20,7 +20,7 @@ Review Sticky's contracts, their actual V6 dependencies, deployment verification
 ### Finalize an exact review bundle
 
 1. Record the full final commit and Git tree for Sticky, the SDK, all four clients and both linked Solidity dependencies. Sticky's client is part of its own repository. Record dirty status for each; a baseline commit plus a dirty working tree is not an exact review revision. Use committed snapshots for the final bundle, or explicitly attach and hash every reviewed patch and added file if an interim review is intentional.
-2. Verify the current limited Solidity digest manifest from the Sticky root:
+2. Generate the replacement limited Solidity digest manifest from the final Sticky source, then verify that replacement from the Sticky root. The existing `tasks/adversarial-equivalence-20261009.json` is superseded and currently must not be used as a final-source qualification check. Once the replacement occupies that path, run:
 
    ```sh
    python3 - <<'PY'
@@ -34,7 +34,7 @@ Review Sticky's contracts, their actual V6 dependencies, deployment verification
    PY
    ```
 
-   A mismatch invalidates the old identity for that file; investigate it and regenerate evidence against the intended revision. This check does not establish deployment, finality, a passing test run or equivalence of unlisted files.
+   A mismatch invalidates the replacement identity for that file; investigate it and regenerate evidence against the intended revision. This check does not establish deployment, finality, a passing test run or equivalence of unlisted files.
 3. Export each final committed repository with `git archive --format=tar --output=<repository>.tar <full-commit>` and record its SHA-256. Record the SHA-256 of every supplied lockfile, the exact Node/Foundry/compiler versions, dependency revisions, and the SDK tarball's SHA-256 and npm integrity. Git archives omit submodule content: include the pinned `forge-std` checkout or its exact gitlink plus retrieval instructions. Do not package `.env` files, credentials, wallet material or ignored runtime caches.
 4. Keep a review-bundle manifest beside the exports containing repository name, commit, tree, archive SHA-256, dependency/lockfile digests, SDK package identity, included patches and evidence files. Hash the manifest itself. Verify installed SDK runtime/support files against the supplied preview or published tarball in each client; a `package.json` version alone does not identify a local overlay. Record every exact-source identity above and report any remaining dirty/preview input explicitly.
 5. Attach commands, outputs and exit codes from the exact bundle. [AUDIT_INSTRUCTIONS.md](AUDIT_INSTRUCTIONS.md#verification) owns the verification commands; [the fork guide](test/fork/README.md) owns RPC inputs and modeled transport boundaries. Supply RPC access separately if the reviewer needs it. Never include credential values in artifacts or logs.
@@ -65,12 +65,12 @@ Open this section after the independent pass. The [owning adversarial report](AD
 
 | Comparison area | Owning evidence |
 | --- | --- |
-| Native Ethereum-to-Arbitrum asynchronous fee refunds | Report A-01; [local transport reproduction](test/audit/SourceFeeArbitrumRefund.t.sol), [fork proof](test/fork/StickyJbxOmnichain.t.sol), specifically `test_adversarialEthereumToArbitrum_retryableRefundUsesFeeChild` |
+| Ethereum-to-Arbitrum raw/aliased fee refunds and WETH cancellation value | Report A-01; [local transport reproduction](test/audit/SourceFeeArbitrumRefund.t.sol), pinned gateway/Inbox source, plus the raw-address and project-1 contribution proofs in [the fork suite](test/fork/StickyJbxOmnichain.t.sol) |
 | Destination mint readiness and shared SDK callers | Report A-02; `web/test/lib/sticky-bridge-readiness.test.ts` in the final client bundle, shared SDK patch/tests and equivalent consumer tests in the final bundle |
 | Uncertain ordinary-wallet/Safe outcomes and retries | Report A-03/A-04; [ordinary writes](web/test/transactions/use-safe-tx.test.ts), [Safe proposal recovery](web/test/transactions/use-safe-tx-proposals.test.ts), SDK patch/tests and other client consumers |
 | Deployment provenance and misleading operational documentation | Report A-05/A-06; [sync regressions](web/test/sync-deployments.test.ts) and [documentation/source inventory](tasks/deployment-doc-review-20261009.md) |
 
-The refund finding concerns the **native** Ethereum-to-Arbitrum transport; CCIP has distinct fee/refund mechanics and needs separate evidence. Additional registered CCIP routes are observed, not generally qualified. The CCIP source-only proof `test_adversarialEthereumToArbitrum_ccipReturnsSourceTransportRefund` passes for the existing REV Ethereum-to-Arbitrum lane: actual reserves, complete singleton runtime checked against replayed committed creation code/arguments, wrapping, deployed router submission and source refund attribution. This does not qualify destination delivery or an Arbitrum pool; the final bundle binds its tested revision. [The live-state census](tasks/adversarial-live-state-20261009.json) is a configuration observation, not a substitute for implementation or lane verification.
+Every `JBArbitrumSucker` submission creates an unsafe root retryable whose excess refund targets the fee child's raw address. A positive mapped-ERC-20 transfer additionally creates a gateway retryable through the safe Inbox, which credits `alias(feeChild)`; a zero-backing ERC-20 send creates no gateway ticket. With a WETH gateway, cancellation or expiry can also credit bridged call value to `alias(source sucker)`. The matching destination family can add the complete raw balance to protocol fee project 1 without reimbursing the original caller. Current Sticky contracts cannot spend either aliased account, so positive mapped-ERC-20 backing remains unqualified. CCIP has distinct fee/refund mechanics and needs separate evidence. Additional registered CCIP routes are observed, not generally qualified. The CCIP source-only proof `test_adversarialEthereumToArbitrum_ccipReturnsSourceTransportRefund` passes for the existing REV Ethereum-to-Arbitrum lane: actual reserves, complete singleton runtime checked against replayed committed creation code/arguments, wrapping, deployed router submission and source refund attribution. This does not qualify destination delivery or an Arbitrum pool; the final bundle binds its tested revision. [The live-state census](tasks/adversarial-live-state-20261009.json) is a configuration observation, not a substitute for implementation or lane verification.
 
 ## Review return and authority
 
@@ -81,6 +81,6 @@ Return the review-bundle manifest hash, exact reviewed commits, commands/results
 - **Objective:** Prepare a reviewable Daybreak handoff with independent first-pass instructions, exact-source identification and a separately presented prior-findings appendix; do not claim an external review ran.
 - **System fit:** Existing source, reports, reproduction tests and deployment evidence remain their own authorities. This packet only connects them to an external review input/output boundary; no execution authority changes.
 - **Reuse and simplicity:** Link to current owning instructions and use Git snapshots, the existing source digests and standard SHA-256 manifests. Add no uploader, integration, dependency or competing audit specification.
-- **Evidence and unknowns:** The baseline and 34-file manifest identify limited Solidity inputs; the supplied bundle manifest binds final committed archives and verification records. SDK 2.27.0 is published and preview-equivalent, while each client's official lock/install/hosted evidence remains separately owned. Remaining release checks and complete live lane qualification remain separate from the passing CCIP source-only proof.
-- **Verification:** Check the recorded source digests, all local document links and the workspace plan-refinement gate. These checks establish packet consistency only; actual Daybreak execution and final bundle verification require their own evidence.
+- **Evidence and unknowns:** The baseline remains historical, while the 34-file digest manifest and former bundle identity are superseded by the fixed raw-fee contribution and require regeneration. The replacement bundle manifest must bind the final committed archives and verification records. SDK 2.27.0 is published and preview-equivalent, while each client's official lock/install/hosted evidence remains separately owned. Remaining release checks, the raw-address contribution proof and complete live lane qualification remain separate from the passing CCIP source-only proof.
+- **Verification:** Check the replacement final-source digests, all local document links and the workspace plan-refinement gate. These checks establish packet consistency only; actual Daybreak execution and final bundle verification require their own evidence.
 - **Resource budget:** Reuse committed snapshots, existing test evidence and standard archive/hash tools. Check handoff consistency and exact artifact identities without repeating unchanged expensive tests. No uploads, deployment, source configuration, package publication or merges.

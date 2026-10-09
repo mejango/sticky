@@ -1,6 +1,6 @@
 # Omnichain reserved-token split hook review
 
-> The [2026-10-09 adversarial review](ADVERSARIAL_REVIEW_2026-10-09.md) supersedes this report's readiness conclusions. The implementation and test evidence below remains tied to its recorded revisions. The later review identifies an open Ethereum-to-Arbitrum asynchronous-refund defect; that collector lane is not qualified for live use.
+> **Historical revision-bound review.** The [2026-10-09 adversarial review](ADVERSARIAL_REVIEW_2026-10-09.md) and the subsequent fixed project-1 raw-fee contribution supersede this report's readiness conclusions. All implementation evidence, pass counts, addresses, hashes, sizes, gas estimates, rehearsal and deployment payloads below remain tied to their recorded revisions and do not qualify the changed runtime. The unsafe Ethereum-to-Arbitrum root refund now has an implemented same-address destination contribution path, pending exact-source qualification and deployment; a mapped ERC-20 gateway's safe-Inbox alias remains outside it. Regenerate complete evidence before deployment or final review.
 
 ## Current home-chain revision
 
