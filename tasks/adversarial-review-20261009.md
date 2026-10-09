@@ -19,12 +19,15 @@ Baseline: `74dc08798976f2a78a560ee5b2c2c98656affc4b`, PR #58. This is an indepen
 - [x] Qualify JBX and generic routes against real dependencies; challenge fork test assumptions.
 - [x] Review client/SDK authorization, one-home identity and recovery.
 - [x] Review deployment identities, V6 interfaces/style and complete current documentation.
-- [ ] Reproduce and resolve findings, add meaningful missing security proofs, and run required gates.
-- [ ] Publish exact-revision findings and launch prerequisites in the unmerged PR; update root task tracking.
+- [x] Reproduce findings, fix the supported scope, add meaningful missing security proofs, and classify remaining transport/release blockers.
+- [ ] Complete Homerun’s fresh production dependency audit after explicit npm metadata-upload authorization; all other authorized local preview checks are recorded separately.
+- [x] Publish exact-revision findings and launch prerequisites in the unmerged PR; update root task tracking.
 
 ## Review results
 
-Pending independent review. No deployment, source configuration or merge is authorized by this task.
+Six independent source-review domains and a separate remediation rereview are complete. The owning [report](../ADVERSARIAL_REVIEW_2026-10-09.md) records six findings, fixes, economic choices and residual release gates. Contract proofs pass 296 local tests, 86 archive-fork tests, 69 tooling checks and a 409,600-action invariant campaign. SDK and all four clients have independent rereview and final preview evidence. Native Ethereum-to-Arbitrum refund attribution remains an upstream transport blocker; it does not affect the selected inbound Ethereum-home JBX lanes.
+
+The audit/docs increment is published separately from new-API client commits, which remain local until SDK release. Core 2.27.0/automatic React 41.0.0 publication, official-package client checks, Homerun’s blocked npm audit, actual deployment/configuration/finality receipts and explicit final contract merge approval remain pending. The exact-source Daybreak bundle is prepared, not submitted or run. No deployment, source configuration, package publication or merge is authorized by this task.
 
 ## Plan refinement
 
@@ -34,3 +37,12 @@ Pending independent review. No deployment, source configuration or merge is auth
 - **Evidence and unknowns:** Source-first review reproduced a manual prepare despite destination mint rejection, two transfers after a lost first wallet reply, and simulation/failed-receipt acceptance by flat deployment sync. Arbitrum Inbox source credits excess retryable gas to the fee child; a real transport calldata proof is being added. These are separate from Ethereum-home JBX route viability.
 - **Verification:** Require regressions before fixes, all affected shared-helper consumers, uncertain-submission versus explicit-rejection cases, real Inbox recipient proof, current manifest acceptance and invalid-manifest rejection. Re-run scoped/full gates after final changes and keep evidence attached to final revisions. Publishing a required SDK patch remains a distinct release step.
 - **Resource budget:** Existing six review owners handle disjoint fixes and tests; root keeps one Forge/RPC queue. Do not introduce new cross-chain custody to hide a finding. Report architecture-dependent blockers explicitly rather than claiming full generic readiness or silently dropping accepted support.
+
+## Plan refinement
+
+- **Objective:** Complete the recovery fixes through each client's real persistence owner, including concurrent tabs, repeated storage read/write failures, late replies and exact saved Safe/domain attempts; bind final qualification to the ensuing SDK artifact.
+- **System fit:** The SDK owns ordinary reviewed-write recovery. Existing launch/bridge/activity owners retain domain recovery. Authorization proceeds only after durable reservation; canonical proof and exact attempt identity govern completion or release. Revnet's activity and batch arrays must not let another scope erase a saved unknown write. Known wallet hashes need recoverable session evidence while persistent storage is unavailable.
+- **Reuse and simplicity:** Keep each domain journal as its sole owner. Revnet's roughly 70 synchronous activity mutations make an asynchronous global-array lock invasive, so use one small per-record persistence primitive for its two existing owners, without a shared mutable index; read-through/tombstones preserve existing pending operations. Sticky reuses its bridge journal and SDK-style private known-hash evidence; no timer, second journal or arbitrary historical receipt unlock. The SDK's analogous stale-cache conflict is fixed once in `writeRecovery`.
+- **Evidence and unknowns:** Independent reviewers reproduced healthy cross-tab array overwrites, reservations stranded before any wallet call when post-save reads fail, raw-receipt domain completion, and stale or unreadable hash repair losing a newer known hash. The a402258/9ee3 SDK preview passed its recorded gates but is superseded if the new shared-cache fix changes its bytes. The contract audit increment f7812f4 is pushed separately and remains executable-equivalent to the feature baseline.
+- **Verification:** Require failing-before/passing-after regressions for different-scope coexistence, exact pre-wallet abort cleanup, finalized Safe/domain proof, repeated get/set outages through close/remount, and stale-ID exclusion. Independently reread frozen fixes, rebuild one final SDK preview, then run final affected client gates and record hashes. Homerun's fresh npm audit remains blocked by automatic approval review pending explicit dependency-metadata upload authorization; unaffected checks continue.
+- **Resource budget:** Reuse existing source owners and two coordinated web pipeline slots. Hold repeated expensive app qualification until the final shared SDK freeze; preserve earlier runs as historical evidence. No further Forge/RPC runs are needed for client-only changes. Keep new-API consumers local until an approved package publication, and keep contract deployment/configuration/merge outside this review.

@@ -58,13 +58,14 @@
     },
     {
       "name": "invariants",
-      "command": "forge test with invariant runs 2048, depth 200 and seed 0x20261009",
+      "command": "FOUNDRY_INVARIANT_RUNS=2048 FOUNDRY_INVARIANT_DEPTH=200 forge test --deny notes --fail-fast --summary --detailed --match-contract StickyDistributorInvariantTest --fuzz-seed 0x20261009 --skip '*/script/**'",
       "exitCode": 0,
       "logFile": "sticky-adversarial-invariants.log",
       "logSHA256": "d347d86838cb38ebeb3e5a718a34b5a7fb405d80193325a4235f80ebf16af7e1",
       "invariants": 6,
       "generatedActions": 409600,
-      "nonVacuityProof": true
+      "nonVacuityProof": true,
+      "commandQualification": "Executable reproduction with the recorded campaign, seed, runs and depth; the retained log does not echo the original full shell argv."
     },
     {
       "name": "forks",
@@ -118,7 +119,7 @@
     },
     {
       "name": "singleton-equivalence",
-      "command": "six singleton creation/runtime/normalized ABI tests",
+      "command": "node --test test/deployment/existing-singletons.test.mjs",
       "exitCode": 0,
       "logFile": "sticky-adversarial-equivalence.log",
       "logSHA256": "4e1c85999220dee6915558c145d913e61993815f34c3239b9acb547af2aeb848",
@@ -126,39 +127,46 @@
     }
   ],
   "sdk": {
-    "sourceCommit": "a4022589502dada1507c1b40be7e9c13308bc630",
-    "preview": "2.27.0-preview.adversarial.9ee3da134017",
-    "sourceDigest": "9ee3da13401741294223a507feaad88fead30fb35371d32992b9231125d1e027",
-    "integrity": "sha512-VtasQlUSXb8M7azUYdiK14iBFI8bz07ZoCJo5YrPDTa2f5v5O1KPsWEiE7+SCXWBeiUNd5rWgx6TJ/GT+BtGDg==",
+    "sourceCommit": "930f89f2f2cd06afaced3d5fddfd466b29edd24e",
+    "preview": "2.27.0-preview.adversarial.4006a0bca708",
+    "sourceDigest": "4006a0bca708ba4929942a7b62b48e566a44ba347db0f002661712af513df4b9",
+    "artifact": "bananapus-nana-sdk-core-2.27.0-preview.adversarial.4006a0bca708.tgz",
+    "integrity": "sha512-fThcFUgkSBojaeoZRsg1fB0b2tkQ9iztjKvETLo0aAeMvlzwhQz9kCq+xA067sGxFClRUZQnL1IgDPhBVlR25g==",
+    "sha256": "7107a0ff2af3b373d5c7708468651090a165deb254a8f93071488d2fafba8116",
     "toolchain": {
       "node": "22.23.1",
       "npm": "10.9.8"
     },
+    "packageLockSHA256": "606b58de4e6ec34899ae367a68c8246cf8e632785fc9c9efa243658dcee55337",
     "cleanInstall": {
       "command": "npm ci",
       "exitCode": 0,
-      "log": "/private/tmp/sdk-sticky-adversarial-preview/npm-ci.log"
+      "log": "/private/tmp/sdk-sticky-adversarial-preview/npm-ci.log",
+      "qualification": "Same unchanged committed dependency graph; runtime-only followup."
     },
     "check": {
-      "command": "TURBO_FORCE=true npm run check",
+      "command": "npm run check",
       "exitCode": 0,
-      "log": "/private/tmp/sdk-sticky-adversarial-preview/clean-check.log"
+      "log": "/private/tmp/sdk-sticky-adversarial-preview/final-check.log",
+      "qualification": "Complete final gate. Same source also passed forced build/type/coverage before the measured package-cap adjustment; final repeat reused unchanged task caches."
     },
     "productionAudit": {
       "command": "npm run audit:prod",
       "exitCode": 0,
       "vulnerabilities": 0,
-      "log": "/private/tmp/sdk-sticky-adversarial-preview/clean-audit.log"
+      "log": "/private/tmp/sdk-sticky-adversarial-preview/clean-audit.log",
+      "qualification": "Production dependency graph unchanged by runtime-only followup."
     },
     "compiledFilesEqual": 769,
+    "transportClassifierSHA256": "635ace1cd8c73e6ac6a1844826b5d97031db71efdd4d56532278e49eef93c5eb",
     "tests": {
       "core": {
-        "passed": 2274,
+        "passed": 2277,
         "coverage": {
           "lines": 98.38,
           "statements": 98.38,
           "functions": 99.75,
-          "branches": 96.35
+          "branches": 96.37
         }
       },
       "react": {
@@ -179,6 +187,170 @@
           "branches": 97.41
         }
       }
+    },
+    "releasePR": "https://github.com/Bananapus/juice-sdk-v4/pull/198",
+    "releaseStatus": "draft; package publication and official-client release gates pending",
+    "hostedCheck": {
+      "headRefOid": "930f89f2f2cd06afaced3d5fddfd466b29edd24e",
+      "name": "build-and-test",
+      "conclusion": "SUCCESS",
+      "completedAt": "2026-10-09T05:28:12Z",
+      "url": "https://github.com/Bananapus/juice-sdk-v4/actions/runs/37888415295/job/113683569858"
+    },
+    "reviewedWriteRecoveryCoverage": {
+      "lines": 100,
+      "statements": 100,
+      "functions": 100,
+      "branches": 97.28
     }
-  }
+  },
+  "hostedSticky": {
+    "commit": "f7812f461a7fb3a846fa110fb947f4a7532b6e72",
+    "checks": 6,
+    "result": "success",
+    "contractRun": "https://github.com/mejango/sticky/actions/runs/37886660933",
+    "webRun": "https://github.com/mejango/sticky/actions/runs/37886660826",
+    "scope": "Published contract/audit/provenance increment; new SDK-dependent client changes remain separate."
+  },
+  "pricingCrossCheck": {
+    "command": "python3 evidence/sticky-pricing-arithmetic-20261009.py",
+    "cases": 221987,
+    "sha256": "ddba30cc273bdc7f5150baef6eb4580aab0e7f5aaad415811c69420fce329e5e",
+    "scope": "Independent integer arithmetic; supplied in the Daybreak bundle, not an EVM test."
+  },
+  "clients": [
+    {
+      "client": "sticky",
+      "evidenceFile": "sticky-client-verification.json",
+      "evidenceSHA256": "f934c754e45875194c27bf67a3baa123cb8d9da4de23d0db920552cbcb4a2985",
+      "status": "Applicable local preview checks passed; official package and release checks pending.",
+      "counts": {
+        "audit": "0 vulnerabilities",
+        "lint": "passed",
+        "types": "passed",
+        "deployments": "passed",
+        "schemaOperations": 10,
+        "transactionInventory": {
+          "reviewedUseSafeTxSends": 10,
+          "reviewedDirectWrites": 4,
+          "unreviewedWalletSites": 0
+        },
+        "unit": {
+          "files": 163,
+          "passed": 3777,
+          "failed": 0,
+          "durationSeconds": 87.68
+        },
+        "coverage": {
+          "statements": {
+            "percent": 94.64,
+            "covered": 9544,
+            "total": 10084
+          },
+          "branches": {
+            "percent": 91.14,
+            "covered": 7521,
+            "total": 8252
+          },
+          "functions": {
+            "percent": 94.9,
+            "covered": 2423,
+            "total": 2553
+          },
+          "lines": {
+            "percent": 96.61,
+            "covered": 8068,
+            "total": 8351
+          }
+        },
+        "productionBuilds": {
+          "standard": {
+            "status": "passed",
+            "buildId": "A489f0HUCc9OV_oMFx41W"
+          },
+          "deterministic": {
+            "status": "passed",
+            "buildId": "build-TfctsWXpff2fKS"
+          },
+          "signa": {
+            "status": "passed",
+            "buildId": "build-TfctsWXpff2fKS"
+          }
+        },
+        "browser": {
+          "passed": 54,
+          "failed": 0,
+          "retries": 0,
+          "duration": "3.1m",
+          "workers": 2,
+          "report": "/Users/jango/Documents/jb/v6/evm/.worktrees/sticky-client-reconciliation/web/playwright-report/index.html"
+        }
+      },
+      "commitBinding": "Final Daybreak bundle manifest; the referenced sourceFiles hashes identify the tested client snapshot."
+    },
+    {
+      "client": "juicebox-money",
+      "evidenceFile": "juicebox-client-verification.json",
+      "evidenceSHA256": "5b8b3e69f7d610f898e1db776068d27059d313fc2bdc9ed0c7d158fad3ffdc09",
+      "localCommit": "172a172b51979a7ebe0fd9651cc9b7410e00dad5",
+      "status": "Applicable local preview checks passed; official package and release checks pending.",
+      "counts": {
+        "unitFiles": 215,
+        "unitPassed": 2970,
+        "unitSkipped": 0,
+        "browserPassed": 66,
+        "browserSkipped": 0,
+        "browserFlaky": 0,
+        "browserRetries": 0,
+        "installedPackageFilesVerified": 771,
+        "servedFilesVerified": 564,
+        "protocolEntries": 252,
+        "protocolChainRollouts": 8,
+        "graphqlDocuments": 38,
+        "transactionUseSafeTxSends": 33,
+        "authorityEntryPoints": 14,
+        "reviewedDirectWriteEntryPoints": 5
+      }
+    },
+    {
+      "client": "homerun",
+      "evidenceFile": "homerun-client-verification.json",
+      "evidenceSHA256": "d62c0f91572072a434c7dc85d428e8acfd1d765853bea0dd1ecea8799b1afddd",
+      "localCommit": "3b3b70062e06d57e16341f86107570c8b5810f4f",
+      "status": "Local preview checks passed; Homerun production audit remains blocked; official package and release checks pending.",
+      "counts": {
+        "model_tests": 340,
+        "model_suites": 5,
+        "vitest_tests": 3000,
+        "vitest_suites": 157,
+        "indexer_documents": 17
+      }
+    },
+    {
+      "client": "revnet-money",
+      "evidenceFile": "revnet-client-verification.json",
+      "evidenceSHA256": "4721c914d57b026bfa6b0e4ded6fbe1be2c0ba990e44c409b8078dbea671f709",
+      "localCommit": "ddb213732bd91367b5ba5a77053521de7c4e4ff6",
+      "status": "Applicable local preview checks passed; official package and release checks pending.",
+      "counts": {
+        "unit": {
+          "passed": 2766,
+          "skipped": 1,
+          "suitePassed": 257,
+          "suiteSkipped": 1,
+          "reason": "Existing optional native-direct-pay-live.test.ts needs LIVE_BASE_RPC_URL"
+        },
+        "browser": {
+          "passed": 139,
+          "skipped": 6,
+          "reasons": [
+            "project-link-prefetch:4 non-desktop cases intentionally omitted",
+            "project-shape Latest single-column control:2 viewports wider than800 omitted"
+          ]
+        },
+        "budgetRegressionTests": 19
+      },
+      "runtimeChangedAfterBrowser": false
+    }
+  ]
 }

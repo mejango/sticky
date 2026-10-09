@@ -342,8 +342,8 @@
     }
   ],
   "passed": true,
-  "qualifiedSdkCommit": "a4022589502dada1507c1b40be7e9c13308bc630",
-  "qualifiedPreviewVersion": "2.27.0-preview.adversarial.9ee3da134017",
+  "qualifiedSdkCommit": "930f89f2f2cd06afaced3d5fddfd466b29edd24e",
+  "qualifiedPreviewVersion": "2.27.0-preview.adversarial.4006a0bca708",
   "compiledSuckersSHA256": "635ace1cd8c73e6ac6a1844826b5d97031db71efdd4d56532278e49eef93c5eb",
-  "carryForwardEvidence": "All 769 compiled package files are byte-identical between the probe preview and immutable final preview; classifier module digest independently matches."
+  "carryForwardEvidence": "The classifier module remains byte-identical to the original probe artifact (SHA-256 recorded here). The final SDK followup changes the separate writeRecovery owner; it does not change classifier code or its dependency graph."
 }
