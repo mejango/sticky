@@ -9,10 +9,15 @@ Use Node 22.23.1, Foundry v1.8.1, and the committed npm lockfile. It installs ex
 ```sh
 npm ci
 forge fmt --check
+npm run lint:solidity
 forge test
 forge build --sizes --skip '*/test/**' --skip '*/script/**' --skip SphinxUtils
 forge build --skip '*/test/**'
 ```
+
+Like the other V6 suites, Foundry builds disable automatic whole-tree lint while compiling deployment and test
+fixtures. `npm run lint:solidity` separately rejects every production-contract warning or note and remains part of CI
+and `npm run test:deployment`.
 
 Like the other V6 contract suites, `remappings.txt` contains only the explicit `forge-std` mapping. Foundry resolves npm package imports through the configured `node_modules` library directory.
 
@@ -22,7 +27,7 @@ The source collector additionally binds one nonzero destination chain. Matching 
 
 ## Configuration and preflight
 
-Copy `.env.example` to `.env`, provide RPC endpoints for the intended network group, configure `SPHINX_ORG_ID`, `SPHINX_API_KEY`, and `SPHINX_MANAGED_BASE_URL` for the existing Sphinx organization, and `ETHERSCAN_API_KEY` (one Etherscan v2 key serves every chain) for the post-execution artifacts. The npm deployment commands select the `deploy` Foundry profile (`isolate = false`), which is compatible with Sphinx and avoids Foundry 1.8.1's isolated Optimism factory-call failure. Local contract tests keep the default isolated execution model; the real-project `fork` profile uses non-isolated execution for the same production artifact inspection as rehearsals. For direct `sphinx` or deployment `forge script` commands, set `FOUNDRY_PROFILE=deploy`. The deployment commands load `.env` with portable POSIX shell syntax and also accept environment variables supplied by CI. Never commit credentials.
+Copy `.env.example` to `.env`, provide RPC endpoints for the intended network group, configure `SPHINX_ORG_ID`, `SPHINX_API_KEY`, and `SPHINX_MANAGED_BASE_URL` for the existing Sphinx organization, and `ETHERSCAN_API_KEY` (one Etherscan v2 key serves every chain) for the post-execution artifacts. The npm deployment commands select the `deploy` Foundry profile (`isolate = false`, dynamic test linking disabled), which is compatible with Sphinx, avoids Foundry 1.8.1's isolated Optimism factory-call failure, and prevents stale temporary test-link warnings during repeated proposal collection. Local contract tests keep the default isolated execution model; the real-project `fork` profile uses non-isolated execution for the same production artifact inspection as rehearsals. For direct `sphinx` or deployment `forge script` commands, set `FOUNDRY_PROFILE=deploy`. The deployment commands load `.env` with portable POSIX shell syntax and also accept environment variables supplied by CI. Never commit credentials.
 
 The production, rehearsal and verification entrypoints derive the exact four home chains from the connected source environment: Ethereum, OP, Base and Arbitrum on mainnet, or their four testnets. There is no destination environment variable. A grouped command deploys all four families on all four sources in that environment. This complete deployment grid does not establish a usable route between every source and home.
 

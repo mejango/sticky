@@ -110,11 +110,16 @@ Use Node 22.23.1, Foundry v1.8.1, and the committed npm lockfile. A clean `npm c
 ```sh
 npm ci
 forge fmt --check
+npm run lint:solidity
 forge test
 npm run test:deployment
 forge build --sizes --skip '*/test/**' --skip '*/script/**' --skip SphinxUtils
 forge build --skip '*/test/**'
 ```
+
+Like the other V6 suites, Foundry builds disable automatic whole-repository lint because they compile deployment and
+test fixtures. `npm run lint:solidity` remains the fail-closed lint gate for production contracts and is part of both
+deployment checks and CI.
 
 The tests cover accounting invariants and adversarial dust, direct burns, share pricing and orphaned backing, rounding/decimal boundaries, reward compounding, and deployment restart/verification behavior. The repository also runs Slither and the [Next client checks](.github/workflows/web.yml) in CI. Passing local checks is not evidence that contracts have been deployed or that a particular target chain's dependencies have been verified.
 

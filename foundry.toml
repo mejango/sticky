@@ -22,6 +22,7 @@ fs_permissions = [
 # CREATE2 factory even when the same call succeeds on its RPC. Use this execution model for production setup.
 [profile.deploy]
 isolate = false
+dynamic_test_linking = false
 
 [profile.fork]
 # Real-project setup uses the same production artifact inspection as deployment rehearsals.
@@ -37,6 +38,9 @@ runs = 4096
 runs = 1024
 depth = 100
 fail_on_revert = false
+
+[lint]
+lint_on_build = false
 
 [fmt]
 number_underscore = "thousands"

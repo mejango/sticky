@@ -41,6 +41,19 @@ test('Sphinx accepts both configured network groups and the required Foundry art
   const config = JSON.parse(result.stdout)
   checkRequiredTomlOptions({ extraOutput: config.extra_output })
   assert.equal(config.isolate, false, "Sphinx deployment profile must use its compatible call model")
+  assert.equal(config.dynamic_test_linking, false, 'Sphinx deployment builds must not retain temporary test links')
+  assert.equal(config.lint.lint_on_build, false, 'Sphinx deployment builds must not lint non-production fixtures')
+
+  const defaultResult = spawnSync('forge', ['config', '--json'], {
+    encoding: 'utf8',
+    env: { ...process.env, FOUNDRY_PROFILE: 'default' },
+  })
+  assert.equal(defaultResult.status, 0, defaultResult.stderr)
+  assert.equal(JSON.parse(defaultResult.stdout).lint.lint_on_build, false, 'builds must use the V6 lint convention')
+
+  const scripts = JSON.parse(readFileSync('package.json', 'utf8')).scripts
+  assert.equal(scripts['lint:solidity'], 'PATH=$HOME/.foundry/versions/v1.8.1:$PATH forge lint --deny notes src')
+  assert.match(scripts['test:deployment'], /^npm run lint:solidity && /)
 
   const source = readFileSync('script/Deploy.s.sol', 'utf8')
   const mainnets = JSON.parse(source.match(/sphinxConfig\.mainnets\s*=\s*(\[[^;]+\]);/)[1])

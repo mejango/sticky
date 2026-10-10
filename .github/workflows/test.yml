@@ -63,7 +63,9 @@ jobs:
           FOUNDRY_PROFILE=deploy forge build --force --contracts script/Deploy.s.sol
           node --test test/deployment/*.test.cjs test/deployment/*.test.mjs
       - name: Check runtime lint and contract sizes
-        run: forge build --deny notes --sizes --skip "*/test/**" --skip "*/script/**" --skip SphinxUtils
+        run: |
+          npm run lint:solidity
+          forge build --deny notes --sizes --skip "*/test/**" --skip "*/script/**" --skip SphinxUtils
       - name: Compile deployment entrypoints
         run: forge build --skip "*/test/**"
       - name: Rehearse every home-chain family and restart on the selected source or group
