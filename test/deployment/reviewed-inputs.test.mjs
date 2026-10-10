@@ -20,6 +20,10 @@ function changedJson(target, change) {
   return changedRead(target, value => `${JSON.stringify(change(JSON.parse(value)))}\n`);
 }
 
+test('the repository keeps the canonical V6 remapping file', () => {
+  assert.equal(readFileSync('remappings.txt', 'utf8'), 'forge-std/=lib/forge-std/src/\n');
+});
+
 test('the reviewed manifest binds the exact Deploy closure and all 32 deployment inputs', () => {
   verifyReviewedInputs(networks, 'testnets');
   verifyReviewedInputs(networks, 'mainnets');
