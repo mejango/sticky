@@ -133,7 +133,7 @@ abstract contract StickyRealProjectFork is Test {
         assertEq(block.number, forkBlock, "fork must remain pinned");
         context.underlyingProjectId = underlyingProjectId;
         StickyDeploymentHarness deployment = new StickyDeploymentHarness();
-        context.core = deployment.loadCore("../../nana-core-v6/deployments");
+        context.core = deployment.loadCore("node_modules/@bananapus/core-v6/deployments");
         assertEq(
             address(context.core.directory.controllerOf(underlyingProjectId)),
             address(context.core.controller),

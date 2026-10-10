@@ -160,6 +160,25 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         _deployment.verify({core: _core, deployed: base});
     }
 
+    /// @notice The shared production operation deploys the exact four homes with one shared singleton suite.
+    function test_deployAllCoversEveryHomeInCanonicalOrder() public {
+        StickyDeploymentAddresses[4] memory deployed = _deployment.deployAllFor(_core);
+        uint256[4] memory expected = _deployment.destinationChainIds();
+        for (uint256 i; i < deployed.length; i++) {
+            assertEq(deployed[i].destinationChainId, expected[i]);
+            assertEq(deployed[i].deployer, deployed[0].deployer);
+            assertEq(deployed[i].hook, deployed[0].hook);
+            assertEq(deployed[i].distributor, deployed[0].distributor);
+            assertEq(deployed[i].rewardReceiver, deployed[0].rewardReceiver);
+            assertEq(deployed[i].rewardReceiverFactory, deployed[0].rewardReceiverFactory);
+            assertEq(deployed[i].autoStick, deployed[0].autoStick);
+            for (uint256 j; j < i; j++) {
+                assertNotEq(deployed[i].sourceCollector, deployed[j].sourceCollector);
+                assertNotEq(deployed[i].sourceFeePayer, deployed[j].sourceFeePayer);
+            }
+        }
+    }
+
     function test_distributorBindsTheDeployedHookWithProductionPolicy() public {
         StickyDeploymentAddresses memory deployed = _deployment.deployFor({core: _core, destinationChainId: 1});
         StickyDistributor distributor = StickyDistributor(payable(deployed.distributor));
@@ -198,28 +217,25 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         _deployment.verify(_core, deployed);
     }
 
-    /// @notice An entrypoint has no default family, and a source cannot select a home in another environment.
-    function test_loadDestinationRequiresExplicitMatchingEnvironment() public {
-        string memory previous = vm.envOr({name: "STICKY_DESTINATION_CHAIN_ID", defaultValue: string("")});
-        vm.setEnv({name: "STICKY_DESTINATION_CHAIN_ID", value: ""});
-        vm.expectRevert();
-        // The absent operator choice must stop before any artifact or transaction is created.
-        // forge-lint: disable-next-line(unused-return)
-        _deployment.loadDestinationChainId();
-        vm.setEnv({name: "STICKY_DESTINATION_CHAIN_ID", value: "8453"});
-        assertEq(_deployment.loadDestinationChainId(), 8453);
-        vm.setEnv({name: "STICKY_DESTINATION_CHAIN_ID", value: "11155111"});
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                StickyDeployment.StickyDeployment_InvalidDestinationChainId.selector, uint256(1), uint256(11_155_111)
-            )
-        );
-        // No mainnet proposal may reuse a testnet family's explicit destination.
-        // forge-lint: disable-next-line(unused-return)
-        _deployment.loadDestinationChainId();
+    /// @notice Every supported source selects the complete ordered home set for its own environment.
+    function test_destinationChainIdsFollowSourceEnvironment() public {
+        uint256[4] memory mainnets = _deployment.destinationChainIds();
+        uint256[4] memory expectedMainnets = [uint256(1), 10, 8453, 42_161];
+        for (uint256 i; i < expectedMainnets.length; i++) {
+            assertEq(mainnets[i], expectedMainnets[i]);
+        }
+
         vm.chainId(84_532);
-        assertEq(_deployment.loadDestinationChainId(), 11_155_111);
-        vm.setEnv({name: "STICKY_DESTINATION_CHAIN_ID", value: previous});
+        uint256[4] memory testnets = _deployment.destinationChainIds();
+        uint256[4] memory expectedTestnets = [uint256(11_155_111), 11_155_420, 84_532, 421_614];
+        for (uint256 i; i < expectedTestnets.length; i++) {
+            assertEq(testnets[i], expectedTestnets[i]);
+        }
+
+        vm.chainId(999);
+        vm.expectRevert(abi.encodeWithSelector(StickyDeployment.StickyDeployment_UnsupportedChain.selector, 999));
+        // forge-lint: disable-next-line(unused-return)
+        _deployment.destinationChainIds();
     }
 
     function test_loadsFlatCoreArtifactsWithoutForwarder() public {

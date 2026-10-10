@@ -8,7 +8,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { destinationChainId, familyDirectory, networks, requireOneAddressPerGroup } from './deploy.mjs';
+import { familyDirectory, networks, requireAllAddressFamilies } from './deploy.mjs';
 
 // Core's ERC-2771 forwarder, the same on every chain. The runner's verify step checks each Sticky contract trusts it.
 export const trustedForwarder = '0x3bA60b60933916a7C87D0860DcEE62a0CE34E3e2';
@@ -18,13 +18,13 @@ export const trustedForwarder = '0x3bA60b60933916a7C87D0860DcEE62a0CE34E3e2';
 export const contracts = [
   { name: 'StickyDeployer', field: 'deployer', args: ['controller', 'terminal'] },
   // The deployer's constructor creates the hook, so the explorer attributes it to the deployer's creation transaction.
-  { name: 'StickyHook', field: 'hook', args: ['directory', 'deployer', trustedForwarder], child: true },
+  { name: 'StickyHook', field: 'hook', args: ['directory', 'deployer', trustedForwarder], parent: 'deployer' },
   { name: 'StickyDistributor', field: 'distributor', args: ['controller', 'directory', 'hook', 7n * 86_400n, 4n, 2n * 365n * 86_400n] },
   { name: 'StickyRewardReceiver', field: 'rewardReceiver', args: ['distributor'] },
   { name: 'StickyRewardReceiverFactory', field: 'rewardReceiverFactory', args: ['rewardReceiver'] },
   { name: 'StickyAutoStick', field: 'autoStick', args: ['deployer', 'distributor'] },
   { name: 'StickySourceCollector', field: 'sourceCollector', args: ['registry', 'tokens', 'rewardReceiverFactory', 'destinationChainId'], family: true },
-  { name: 'StickySourceFeePayer', field: 'sourceFeePayer', args: [], child: true, family: true },
+  { name: 'StickySourceFeePayer', field: 'sourceFeePayer', args: [], parent: 'sourceCollector', family: true },
 ];
 
 // One Etherscan v2 key serves every chain.
@@ -37,17 +37,40 @@ export async function emit(group, {
   if (!networks[group]) throw new Error('Network group must be testnets or mainnets.');
   const key = env.ETHERSCAN_API_KEY?.trim();
   if (!key) throw new Error('Missing ETHERSCAN_API_KEY');
-  const destination = destinationChainId(group, env);
-  // Check the entire selected family and every constructor before any explorer request or artifact write.
-  const manifests = requireOneAddressPerGroup(group, 'verified', destination, read);
+  const revision = env.STICKY_REVISION?.trim();
+  if (!revision) throw new Error('Missing STICKY_REVISION');
+  // Check every family and constructor before any explorer request or artifact write.
+  const families = requireAllAddressFamilies(group, 'verified', read, { expectedRevision: revision });
+  const childEnv = { ...env, FOUNDRY_PROFILE: 'deploy' };
   const artifacts = new Map(contracts.map(contract => [contract.name,
     JSON.parse(read(`out/${contract.name}.sol/${contract.name}.json`, 'utf8'))]));
-  const prepared = manifests.map(context => ({ ...context, records: contracts.map(contract => ({
-    contract, artifact: artifacts.get(contract.name),
-    ...constructorArgs(contract, context.manifest, artifacts.get(contract.name)),
-  })) }));
-  const childEnv = { ...env, FOUNDRY_PROFILE: 'deploy' };
-  for (const { alias, chainId, folder, manifest, records } of prepared) {
+  const sharedContracts = contracts.filter(contract => !contract.family);
+  const familyContracts = contracts.filter(contract => contract.family);
+  const prepared = families.flatMap(({ destinationChainId, manifests }, familyIndex) => manifests.map(context => ({
+    ...context,
+    destinationChainId,
+    // The six shared singleton artifacts have one canonical path per source and need writing only once.
+    records: [...(familyIndex === 0 ? sharedContracts : []), ...familyContracts].map(contract => ({
+      contract, artifact: artifacts.get(contract.name),
+      ...constructorArgs(contract, context.manifest, artifacts.get(contract.name)),
+    })),
+  })));
+  const checkedChildren = new Set();
+  for (const { manifest, records } of prepared) {
+    for (const { contract } of records) {
+      if (!contract.parent) continue;
+      const parent = manifest[contract.parent];
+      const child = manifest[contract.field];
+      const binding = `${parent.toLowerCase()}:${child.toLowerCase()}`;
+      if (checkedChildren.has(binding)) continue;
+      checkedChildren.add(binding);
+      const result = spawn('cast', ['compute-address', '--nonce', '1', parent], { env: childEnv, encoding: 'utf8' });
+      if (result.error || result.status !== 0 || result.stdout?.trim().toLowerCase() !== child.toLowerCase()) {
+        throw new Error(`${contract.name}: recorded address is not the ${contract.parent} nonce-1 CREATE child.`);
+      }
+    }
+  }
+  for (const { alias, chainId, folder, destinationChainId, manifest, records } of prepared) {
     for (const { contract, artifact, args, argsHex } of records) {
       const address = manifest[contract.field];
       const creation = await fetchJson(`${explorer}?chainid=${chainId}&module=contract&action=getcontractcreation&contractaddresses=${address}&apikey=${key}`);
@@ -55,7 +78,7 @@ export async function emit(group, {
       if (!txHash) throw new Error(`${alias}: no creation transaction for ${contract.name} at ${address}`);
       // The explorer's creation bytecode is the factory's payload without the salt: creation code then arguments.
       // It must agree with the bindings the manifest recorded; a constructor-created child has no payload of its own.
-      if (!contract.child && String(creation.result[0].creationBytecode || '').replace(/^0x/, '').toLowerCase()
+      if (!contract.parent && String(creation.result[0].creationBytecode || '').replace(/^0x/, '').toLowerCase()
         !== `${artifact.bytecode.object.replace(/^0x/, '')}${argsHex}`.toLowerCase()) {
         throw new Error(`${alias}: the creation bytecode of ${contract.name} does not match the compiled code and recorded bindings.`);
       }
@@ -68,7 +91,7 @@ export async function emit(group, {
         sourceName: `src/${contract.name}.sol`,
         contractName: contract.name,
         chainId: `0x${Number(chainId).toString(16)}`,
-        ...(contract.family ? { destinationChainId: destination } : {}),
+        ...(contract.family ? { destinationChainId } : {}),
         abi: artifact.abi,
         args,
         solcInputHash: createHash('md5').update(artifact.rawMetadata).digest('hex'),
@@ -80,7 +103,7 @@ export async function emit(group, {
         gitDirty: String(manifest.revision).endsWith('-dirty'),
         history: [],
       };
-      const directory = contract.family ? familyDirectory(folder, destination) : `deployments/${folder}`;
+      const directory = contract.family ? familyDirectory(folder, destinationChainId) : `deployments/${folder}`;
       write(`${directory}/${contract.name}.json`, `${JSON.stringify(record, null, '\t')}\n`);
       console.log(`${alias}: ${contract.name}.json`);
     }

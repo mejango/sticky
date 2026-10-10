@@ -55,7 +55,7 @@ Public declarations, typed getters and events belong in [src/interfaces](src/int
 
 These declaration boundaries do not add authority or storage. Interface refactoring preserves the six deployed singleton contracts' creation bytecode, runtime bytecode, normalized public ABI, selectors, event topics and behavior. ABI `internalType` metadata can change from a concrete contract to its interface without changing the encoded address type. `StickySourceCollector` is not one of those deployed singletons: its final implementation explicitly reports support for `IStickySourceCollector`, `IJBSplitHook` and `IERC165`, and returns false for unknown interface IDs. The collector's destination constructor argument, fee-balance contribution and ERC-165 declaration are executable changes. Together they invalidate prior collector and child addresses, hashes, calldata, rehearsal, deployment payload and review evidence; regenerate each from the final source.
 
-Interface-source changes alone do not require redeploying the six existing singletons. `StickyToken` and `StickyPriceFeed` retain their bytecode and remain per-pool contracts created during each new Sticky launch. The destination-family release deploys only `StickySourceCollector` on each participating source chain; its constructor creates the corresponding `StickySourceFeePayer` child.
+Interface-source changes alone do not require redeploying the six existing singletons. `StickyToken` and `StickyPriceFeed` retain their bytecode and remain per-pool contracts created during each new Sticky launch. An environment release deploys all four `StickySourceCollector` families on each participating source chain; each constructor creates its corresponding `StickySourceFeePayer` child.
 
 ### Why a receiver and a factory?
 
