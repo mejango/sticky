@@ -12,6 +12,16 @@ contract StickyDeploymentHarness is StickyDeployment {
     // ---------------------- external transactions ---------------------- //
     //*********************************************************************//
 
+    /// @notice Deploys or verifies every home-chain family in canonical proposal order.
+    /// @param core The V6 core contracts every family binds to.
+    /// @return deployed The four complete family deployments.
+    function deployAllFor(StickyCoreDeployment memory core)
+        external
+        returns (StickyDeploymentAddresses[4] memory deployed)
+    {
+        return _deployAll(core);
+    }
+
     /// @notice Deploys only the factory so a later full deployment resumes from partial state.
     /// @param core The V6 core contracts the factory binds to.
     function deployDeployerOnly(StickyCoreDeployment memory core) external {
@@ -33,16 +43,6 @@ contract StickyDeploymentHarness is StickyDeployment {
         return _deploy({core: core, destinationChainId: destinationChainId});
     }
 
-    /// @notice Deploys or verifies every home-chain family in canonical proposal order.
-    /// @param core The V6 core contracts every family binds to.
-    /// @return deployed The four complete family deployments.
-    function deployAllFor(StickyCoreDeployment memory core)
-        external
-        returns (StickyDeploymentAddresses[4] memory deployed)
-    {
-        return _deployAll(core);
-    }
-
     /// @notice Writes the test manifest for a deployed suite.
     /// @param core The V6 core contracts the suite binds to.
     /// @param deployed The addresses of the deployed suite.
@@ -53,6 +53,12 @@ contract StickyDeploymentHarness is StickyDeployment {
     //*********************************************************************//
     // ----------------------- external views ---------------------------- //
     //*********************************************************************//
+
+    /// @notice Lists every supported collector home in the connected source chain's environment.
+    /// @return chainIds The four mainnet or testnet home chain IDs in proposal order.
+    function destinationChainIds() external view returns (uint256[4] memory chainIds) {
+        return _destinationChainIds();
+    }
 
     /// @notice Loads the V6 core contracts from deployment artifacts under a root directory.
     /// @param root The directory holding the per-network artifact folders.
@@ -80,12 +86,6 @@ contract StickyDeploymentHarness is StickyDeployment {
         returns (StickyCoreDeployment memory core)
     {
         return _loadCoreFrom({root: root, suckerRoot: suckerRoot});
-    }
-
-    /// @notice Lists every supported collector home in the connected source chain's environment.
-    /// @return chainIds The four mainnet or testnet home chain IDs in proposal order.
-    function destinationChainIds() external view returns (uint256[4] memory chainIds) {
-        return _destinationChainIds();
     }
 
     /// @notice Resolves the deployment folder name for a chain.

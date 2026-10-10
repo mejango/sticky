@@ -35,11 +35,12 @@ function fixture(group, { revision = 'abc123' } = {}) {
       }
     }
   }
-  return { env, files, read: file => files[file] ?? readFileSync(file, 'utf8') };
+  return { env, files, read: file => files[file] ?? readFileSync(file, 'utf8'), verifyInputs() {} };
 }
 
 function readOnlyTool(command, args) {
   if (command === 'cast') return { status: 0, stdout: JSON.stringify({ schema_version: 1, success: true, data: block }) };
+  if (command === 'forge' && args[0] === 'build') return { status: 0 };
   if (command !== 'git') return;
   if (args[0] === '-C') {
     return { status: 0, stdout: args[2] === 'rev-parse' ? dependencies[args[1].replace('node_modules/', '')] : '' };
@@ -50,7 +51,11 @@ function readOnlyTool(command, args) {
 for (const group of Object.keys(networks)) {
   test(`${group}: all four source rehearsals validate every home before the Sphinx proposal`, () => {
     const calls = [];
+    const buildCalls = [];
+    const castCalls = [];
     run('propose', group, { ...fixture(group), spawn(command, args, options) {
+      if (command === 'forge' && args[0] === 'build') buildCalls.push(args);
+      if (command === 'cast') castCalls.push(args);
       const tool = readOnlyTool(command, args);
       if (tool) return tool;
       calls.push({ command, args, chainId: options.env.STICKY_EXPECTED_CHAIN_ID });
@@ -70,8 +75,36 @@ for (const group of Object.keys(networks)) {
     assert.equal(calls[4].command, 'node_modules/.bin/sphinx');
     assert.deepEqual(calls[4].args.slice(-2), ['--networks', group]);
     assert.equal(calls.length, 5);
+    assert.deepEqual(buildCalls, [['build', '--force', '--contracts', 'script/Deploy.s.sol']]);
+    assert.deepEqual(castCalls, networks[group].flatMap(([alias]) => [
+      ['block', 'finalized', '--json', '--rpc-url', alias],
+      ['block', '100', '--json', '--rpc-url', alias],
+    ]));
   });
 }
+
+test('the reviewed-input gate follows a forced Deploy build and precedes RPC rehearsal', () => {
+  const sequence = [];
+  const setup = fixture('testnets');
+  run('dry-run', 'testnets', { ...setup, verifyInputs() {
+    sequence.push('reviewed inputs');
+  }, spawn(command, args, options) {
+    if (command === 'forge' && args[0] === 'build') sequence.push('forced build');
+    if (command === 'cast' && args[1] === 'finalized' && sequence.length === 2) sequence.push('finalized RPC');
+    return readOnlyTool(command, args) ?? { status: 0 };
+  } });
+  assert.deepEqual(sequence, ['forced build', 'reviewed inputs', 'finalized RPC']);
+});
+
+test('direct development rehearsals do not claim reviewed-input release evidence', () => {
+  let checked = false;
+  run('rehearse', 'testnets', { ...fixture('testnets'), verifyInputs() {
+    checked = true;
+  }, spawn(command, args) {
+    return readOnlyTool(command, args) ?? { status: 0 };
+  } });
+  assert.equal(checked, false);
+});
 
 test('the review-only Sphinx dry run uses the same all-family rehearsals without submitting', () => {
   const calls = [];
@@ -144,6 +177,20 @@ test('runner networks match the Sphinx entrypoint and grouped homes need no work
   }
 });
 
+test('Sphinx cannot overwrite rehearsal records and Verify validates every family before writing', () => {
+  const deploy = readFileSync('script/Deploy.s.sol', 'utf8');
+  const rehearse = readFileSync('script/Rehearse.s.sol', 'utf8');
+  const verify = readFileSync('script/Verify.s.sol', 'utf8');
+  const manifestKinds = source => [...source.matchAll(/_writeManifest\(\{[^}]+kind: "(\w+)"\}\)/g)]
+    .map(([, kind]) => kind);
+  assert.match(deploy, /_deployAll\(_core\);/);
+  assert.deepEqual(manifestKinds(deploy), []);
+  assert.deepEqual(manifestKinds(rehearse), ['simulation']);
+  assert.deepEqual(manifestKinds(verify), ['verified']);
+  assert.match(verify,
+    /for \(uint256 i; i < deployed\.length; i\+\+\) \{\s*_verify\(\{core: core, deployed: deployed\[i\]\}\);\s*\}\s*for \(uint256 i; i < deployed\.length; i\+\+\) \{\s*_writeManifest/);
+});
+
 
 test('release dependencies must match pinned clean sources', () => {
   verifyDependencies(readOnlyTool);
@@ -162,9 +209,29 @@ test('release dependencies must match pinned clean sources', () => {
 test('missing block identity stops before any Forge or Sphinx execution', () => {
   assert.throws(() => run('rehearse', 'testnets', { ...fixture('testnets'), spawn(command, args) {
     if (command === 'cast') return { status: 1, stdout: '' };
+    const tool = readOnlyTool(command, args);
+    if (tool) return tool;
     assert.equal(command, 'git');
-    return readOnlyTool(command, args);
-  } }), /canonical RPC block/);
+    return { status: 0 };
+  } }), /finalized RPC block/);
+});
+
+test('a changed pinned finalized block hash stops before the next source or Sphinx', () => {
+  let rehearsals = 0;
+  let submitted = false;
+  assert.throws(() => run('propose', 'testnets', { ...fixture('testnets'), spawn(command, args) {
+    if (command === 'cast') {
+      const changed = args[1] === 'finalized' ? block : { ...block, hash: '0x' + 'cd'.repeat(32) };
+      return { status: 0, stdout: JSON.stringify({ schema_version: 1, success: true, data: changed }) };
+    }
+    const tool = readOnlyTool(command, args);
+    if (tool) return tool;
+    if (command === 'forge') rehearsals++;
+    if (command === 'node_modules/.bin/sphinx') submitted = true;
+    return { status: 0 };
+  } }), /finalized RPC block identity changed/);
+  assert.equal(rehearsals, 1);
+  assert.equal(submitted, false);
 });
 
 test('proposal rejects a missing lock, wrong organization, or unregistered project', () => {
@@ -183,7 +250,7 @@ test('proposal rejects a missing lock, wrong organization, or unregistered proje
   }
 });
 
-test('every compiled source root is pinned: linked checkouts by revision, packages by the lockfile', () => {
+test('dependency provenance is declared before the reviewed manifest authenticates installed source bytes', () => {
   const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
   for (const name of ['StickyDeployer', 'StickyHook', 'StickyDistributor', 'StickyRewardReceiver', 'StickyRewardReceiverFactory', 'StickyAutoStick', 'StickySourceCollector', 'StickySourceFeePayer']) {
     const artifact = JSON.parse(readFileSync(`out/${name}.sol/${name}.json`, 'utf8'));
@@ -336,7 +403,7 @@ test('a wrong second-chain destination, source or kind prevents proposal submiss
   }
 });
 
-test('stale revision or RPC-block evidence cannot satisfy a fresh proposal rehearsal', () => {
+test('stale revision or finalized RPC-block evidence cannot satisfy a fresh proposal rehearsal', () => {
   for (const mismatch of [
     { revision: 'stale' }, { revision: undefined }, { rpcBlockNumber: 99 }, { rpcBlockNumber: undefined },
     { rpcBlockHash: '0x' + 'cd'.repeat(32) }, { rpcBlockHash: undefined },

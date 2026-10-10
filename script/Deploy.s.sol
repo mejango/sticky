@@ -6,7 +6,6 @@ import {Sphinx} from "@sphinx-labs/contracts/contracts/foundry/SphinxPlugin.sol"
 
 import {StickyDeployment} from "./helpers/StickyDeployment.sol";
 import {StickyCoreDeployment} from "./structs/StickyCoreDeployment.sol";
-import {StickyDeploymentAddresses} from "./structs/StickyDeploymentAddresses.sol";
 
 /// @notice Proposes the deterministic Sticky singleton suite through the Juicebox V6 Sphinx workflow.
 contract Deploy is StickyDeployment, Sphinx {
@@ -44,10 +43,7 @@ contract Deploy is StickyDeployment, Sphinx {
 
     /// @notice Collects missing transactions for every home-chain family and validates every reused contract.
     function deploy() public sphinx {
-        StickyDeploymentAddresses[4] memory deployed = _deployAll(_core);
-        for (uint256 i; i < deployed.length; i++) {
-            _writeManifest({core: _core, deployed: deployed[i], kind: "simulation"});
-        }
+        _deployAll(_core);
     }
 
     /// @notice Validates connected-chain dependencies before collecting the Sphinx proposal.

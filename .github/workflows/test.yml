@@ -73,7 +73,9 @@ jobs:
           RPC_BASE_MAINNET: ${{ secrets.RPC_BASE_MAINNET }}
           RPC_ARBITRUM_MAINNET: ${{ secrets.RPC_ARBITRUM_MAINNET }}
       - name: Check Sphinx configuration without public RPC calls
-        run: node --test test/deployment/*.test.cjs test/deployment/*.test.mjs
+        run: |
+          FOUNDRY_PROFILE=deploy forge build --force --contracts script/Deploy.s.sol
+          node --test test/deployment/*.test.cjs test/deployment/*.test.mjs
       - name: Check runtime lint and contract sizes
         run: forge build --deny notes --sizes --skip "*/test/**" --skip "*/script/**" --skip SphinxUtils
       - name: Compile deployment entrypoints

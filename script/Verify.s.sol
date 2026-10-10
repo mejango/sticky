@@ -11,6 +11,10 @@ contract Verify is StickyDeployment {
     function run() public {
         StickyCoreDeployment memory core = _loadCore();
         StickyDeploymentAddresses[4] memory deployed = _predictAll(core);
+        // Validate the complete family set before publishing any live record.
+        for (uint256 i; i < deployed.length; i++) {
+            _verify({core: core, deployed: deployed[i]});
+        }
         for (uint256 i; i < deployed.length; i++) {
             _writeManifest({core: core, deployed: deployed[i], kind: "verified"});
         }

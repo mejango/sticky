@@ -139,21 +139,32 @@ npm run deploy:post:mainnets
 
 Preflight checks all four RPC variables, the three core address/chain-ID artifacts
 and the sucker registry artifact per source. It does not contact RPCs. Rehearsal binds each RPC to its expected chain ID, checks live core/registry bindings, and
-simulates fresh deployment and restart for all four home families on every source. It reads a canonical
-RPC block header and pins Forge to that height; the header number and hash are
-recorded separately from the EVM block height. After the group's rehearsals the
+simulates fresh deployment and restart for all four home families on every source. It reads the
+RPC's `finalized` block header and pins Forge to that height. After Forge returns,
+the runner reads that exact height again and requires the same number and hash
+before accepting its manifests. The finalized header identity is recorded
+separately from the EVM block height. After the group's rehearsals the
 runner requires every chain to have predicted the same deployer, hook, distributor,
 reward receiver implementation, reward receiver factory and adapter. For every home, it requires one matching source collector and fee payer across all sources, an exact `destinationChainId`, and distinct collector and child addresses from the other three families. Complete deployment is not evidence of direct-route availability.
 Proposal commands require Sphinx credentials, the public project lock, and clean
-core/distributor checkouts at the reviewed commits recorded in `script/deploy.mjs`,
-and rerun the entire group's
-rehearsals before invoking the pinned local Sphinx CLI. A failed or divergent chain
+core/distributor checkouts at the reviewed commits recorded in `script/deploy.mjs`.
+They force-build `Deploy.s.sol` with the deployment profile, then compare the exact
+external compiler source set, compiler settings, nine known artifact targets and
+creation/runtime bytecodes, and all 32 core/sucker deployment inputs with
+[`script/reviewed-inputs.json`](script/reviewed-inputs.json). The package lock records
+download provenance; this manifest authenticates the physical installed bytes used
+by the proposal. Sphinx JS, Foundry and Node remain trusted operator tools. Proposal
+commands then rerun the entire group's rehearsals before invoking the pinned local
+Sphinx CLI. A failed or divergent chain
 stops the command before proposal submission. `deploy:testnets` and
 `deploy:mainnets` are aliases for these proposal commands. Sphinx execution remains
 a separate step.
 
-`deploy:post:*` runs `deploy:verify:*`, which verifies the complete 4-by-4 group on live RPCs,
-requires the same shared and per-family agreement, and writes `deployments/<network>/source-collectors/<homeChainId>/verified.json` for every home; it
+`deploy:post:*` runs `deploy:verify:*` after the execution blocks are finalized. It
+verifies the complete 4-by-4 group on finalized live RPC state, requires the same
+shared and per-family agreement, validates all four families on a source before
+writing any of that source's records, and writes
+`deployments/<network>/source-collectors/<homeChainId>/verified.json` for every home; it
 then runs `deploy:artifacts:*` (`script/artifacts.mjs`), which verifies the four
 sources on Etherscan and writes `deployments/<network>/StickyDeployer.json`,
 `StickyHook.json`, `StickyDistributor.json`, `StickyRewardReceiver.json`,
@@ -172,18 +183,26 @@ core and distributor dependencies (their commits, and any change under their
 `src/`; tests and scratch files do not compile into the contracts), and an
 uncommitted Sticky checkout, where the runner's own outputs under `deployments/`
 do not count. A clean Sticky tree alone cannot identify symlinked sources.
-Rehearsals allow development changes. CI and runner tests keep the reviewed
-dependency commits aligned, and `npm run test:deployment` checks that every source
-root of the compiled suite is pinned: the linked checkouts by revision, the npm
-packages by the lockfile's integrity hashes.
+Direct rehearsals allow development changes and deliberately do not claim release
+input authentication. Dry runs and proposals repeat the rehearsal after the
+reviewed-input gate. CI and runner tests keep linked dependency revisions aligned
+and prove that any missing, added or changed compiled external source, deployment
+JSON, compiler setting, artifact target or bytecode stops a release path. When an
+intentional reviewed input changes, run
+`node script/generate-reviewed-inputs.mjs --write`, inspect the complete manifest
+diff, rebuild and rerun the deployment checks before committing it.
 
 The grouped commands record the current Git commit automatically, appending
 `-dirty` when a rehearsal's checkout has changes. Commit the reviewed release and
 rerun its rehearsals before proposal collection; use the identical checkout for
 verification.
 Match each family's recorded revision to that reviewed checkout before publishing artifacts. Source-chain, destination, kind and address validation do not themselves compare `manifest.revision` with the current commit.
-The single-chain `deploy:rehearse` and `deploy:verify` commands remain available
-for diagnosis, cover all four homes for the connected source, and accept normal Forge options; source your environment and set `STICKY_REVISION` explicitly when using those commands.
+The grouped CLI requires every simulation or verified manifest to carry the exact
+current revision. The direct single-chain `deploy:rehearse` and `deploy:verify`
+Forge commands remain available for diagnosis, cover all four homes for the
+connected source, and accept normal Forge options; source your environment and set
+`STICKY_REVISION` explicitly when using those commands. Without it, those direct
+commands write `revision: unrecorded`, which cannot satisfy grouped release gates.
 
 ## Proposal and execution
 
@@ -210,18 +229,19 @@ A repeated proposal collection skips existing deployments only after checking th
 
 ## Verification and publication
 
-A rehearsal or Sphinx collection writes one `deployments/<network>/source-collectors/<homeChainId>/simulation.json` per home family. These ignored files describe simulated state and are **not deployment evidence**. Each corresponding `verified.json` and pair of collector artifacts uses the same family directory. Earlier flat manifests remain untouched and do not qualify the revised destination-bound constructor.
+`Rehearse` alone writes one `deployments/<network>/source-collectors/<homeChainId>/simulation.json` per home family. The Sphinx `Deploy` entrypoint writes no manifests, so proposal collection cannot overwrite freshly pinned rehearsal evidence with an unbound RPC context. These ignored files describe simulated state and are **not deployment evidence**. Each corresponding `verified.json` and pair of collector artifacts uses the same family directory. Earlier flat manifests remain untouched and do not qualify the revised destination-bound constructor.
 
-After Sphinx executes, verify the unchanged reviewed compilation against each live RPC:
+After Sphinx executes and every receipt block is finalized, run the grouped post-execution path against the unchanged reviewed compilation:
 
 ```sh
-npm run deploy:verify -- --rpc-url ethereum_sepolia -vv
+npm run deploy:post:testnets
 ```
 
-`Verify` sends no transactions. It requires the predicted suite for all four homes in the connected environment to already exist and rechecks runtime code, every immutable dependency including destination chain, distributor settings, hook prediction, and core bindings. Only then does it write each family's `verified.json`, containing source and destination chain identity, source revision, addresses, salts and complete runtime hashes.
+`Verify` sends no transactions. It requires the predicted suite for all four homes in the connected environment to already exist and rechecks runtime code, every immutable dependency including destination chain, distributor settings, hook prediction, and core bindings. It validates the complete four-family set before writing the first `verified.json`, then writes source and destination chain identity, source revision, addresses, salts and complete runtime hashes for each family.
 `evmBlockNumber` and `evmParentBlockHash` describe the EVM context. On Arbitrum,
 these are not the L2 RPC block identity. Grouped commands additionally record
-`rpcBlockNumber` and `rpcBlockHash` from the header used to pin their fork. Direct
+`rpcBlockNumber` and `rpcBlockHash` from the finalized header used to pin their fork,
+after rereading that exact height and hash. Direct
 single-chain Forge calls do not provide those RPC fields automatically; retain
 their fork context separately. Deployment start blocks for client event discovery
 must come from execution receipts, not verification manifests. `revision: unrecorded` means the operator did not set `STICKY_REVISION`; fill that gap by rerunning with the actual reviewed commit before publishing artifacts.

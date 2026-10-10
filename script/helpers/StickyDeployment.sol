@@ -186,7 +186,8 @@ abstract contract StickyDeployment is Script {
         vm.serializeUint({objectKey: key, valueKey: "evmBlockNumber", value: block.number});
         // forge-lint: disable-next-line(unused-return)
         vm.serializeUint({objectKey: key, valueKey: "timestamp", value: block.timestamp});
-        // The grouped runner pins the fork to this RPC block, which can differ from the EVM height on Arbitrum.
+        // The grouped runner pins the fork to this finalized RPC block, which can differ from the EVM height on
+        // Arbitrum.
         uint256 rpcBlockNumber = vm.envOr({name: "STICKY_RPC_BLOCK_NUMBER", defaultValue: uint256(0)});
         if (rpcBlockNumber != 0) {
             // forge-lint: disable-next-line(unused-return)
@@ -258,6 +259,13 @@ abstract contract StickyDeployment is Script {
     // ----------------------- internal views ---------------------------- //
     //*********************************************************************//
 
+    /// @notice Lists every supported collector home in the connected source chain's environment.
+    /// @return chainIds The four mainnet or testnet home chain IDs in proposal order.
+    function _destinationChainIds() internal view returns (uint256[4] memory chainIds) {
+        if (_isMainnetNetwork(_network(block.chainid))) return [uint256(1), 10, 8453, 42_161];
+        return [uint256(11_155_111), 11_155_420, 84_532, 421_614];
+    }
+
     /// @notice Loads the core and sucker registry artifacts from their flat deployment trees.
     /// @return core The validated core dependencies for the connected chain.
     function _loadCore() internal view returns (StickyCoreDeployment memory core) {
@@ -284,7 +292,7 @@ abstract contract StickyDeployment is Script {
         view
         returns (StickyCoreDeployment memory core)
     {
-        // Bind grouped rehearsals and verification to the requested destination before selecting its artifacts.
+        // Bind grouped rehearsals and verification to the expected source RPC before selecting its artifacts.
         uint256 expectedChainId = vm.envOr({name: "STICKY_EXPECTED_CHAIN_ID", defaultValue: uint256(0)});
         if (expectedChainId != 0 && expectedChainId != block.chainid) {
             revert StickyDeployment_ChainMismatch({path: "RPC", expected: expectedChainId, actual: block.chainid});
@@ -297,13 +305,6 @@ abstract contract StickyDeployment is Script {
             _readAddress(string.concat(suckerRoot, "/", _network(block.chainid), "/JBSuckerRegistry.json"))
         );
         _verifyCore(core);
-    }
-
-    /// @notice Lists every supported collector home in the connected source chain's environment.
-    /// @return chainIds The four mainnet or testnet home chain IDs in proposal order.
-    function _destinationChainIds() internal view returns (uint256[4] memory chainIds) {
-        if (_isMainnetNetwork(_network(block.chainid))) return [uint256(1), 10, 8453, 42_161];
-        return [uint256(11_155_111), 11_155_420, 84_532, 421_614];
     }
 
     /// @notice Predicts every singleton, including the hook created by the deployer's constructor.

@@ -3,6 +3,8 @@ import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { verifyReviewedInputs } from './reviewed-inputs.mjs';
+
 // Match the reviewed source checkouts used by CI; local file dependencies have no npm integrity hash.
 export const dependencies = {
   '@bananapus/core-v6': 'feff600654aee6fb1747dded692f18068b2230a6',
@@ -155,7 +157,9 @@ export function sameLock(spawn = spawnSync, read = readFileSync) {
   }
 }
 
-export function run(action, group, { env = process.env, spawn = spawnSync, read = readFileSync } = {}) {
+export function run(action, group, {
+  env = process.env, spawn = spawnSync, read = readFileSync, verifyInputs = verifyReviewedInputs,
+} = {}) {
   if (!['preflight', 'rehearse', 'dry-run', 'propose', 'verify', 'artifacts'].includes(action)) {
     throw new Error('Usage: deploy.sh <preflight|rehearse|dry-run|propose|verify|artifacts> <testnets|mainnets>');
   }
@@ -201,6 +205,12 @@ export function run(action, group, { env = process.env, spawn = spawnSync, read 
     }, stdio: 'inherit' });
     if (result.error || result.status !== 0) throw new Error(`${command} failed; stopping ${group} ${action}.`);
   };
+  // Release paths rebuild the exact proposal entrypoint before authenticating its external inputs and bytecode.
+  // Direct rehearsals deliberately remain available for dirty local development; dry-run and propose rehearse again.
+  if (['dry-run', 'propose', 'verify', 'artifacts'].includes(action)) {
+    execute('forge', ['build', '--force', '--contracts', 'script/Deploy.s.sol']);
+    verifyInputs(networks, group, { env: childEnv, read });
+  }
   // Explorer verification and per-contract artifacts read the verified manifests, so they follow a verify.
   if (action === 'artifacts') {
     execute('node', ['script/artifacts.mjs', group]);
@@ -209,24 +219,31 @@ export function run(action, group, { env = process.env, spawn = spawnSync, read 
   // Rehearse every source and all four of its destination families before creating a Sphinx proposal.
   const script = action === 'verify' ? 'Verify' : 'Rehearse';
   const expectedRpcBlocks = {};
-  for (const [alias, chainId] of networks[group]) {
-    console.log(`${action}: ${alias}`);
-    // RPC block heights identify fork state even on chains where EVM block.number means an L1 height.
-    const header = spawn('cast', ['block', 'latest', '--json', '--rpc-url', alias], { env: childEnv, encoding: 'utf8' });
-    let block;
+  const readRpcBlock = (alias, tag, description) => {
+    const header = spawn('cast', ['block', tag, '--json', '--rpc-url', alias], { env: childEnv, encoding: 'utf8' });
     try {
       if (header.status !== 0) throw new Error();
       const payload = JSON.parse(header.stdout);
       if (payload.success === false) throw new Error();
-      block = payload.data ?? payload;
-      block.number = BigInt(block.number).toString();
-      if (BigInt(block.number) <= 0n || !/^0x[\da-fA-F]{64}$/.test(block.hash)) throw new Error();
+      const rpcBlock = payload.data ?? payload;
+      rpcBlock.number = BigInt(rpcBlock.number).toString();
+      if (BigInt(rpcBlock.number) <= 0n || !/^0x[\da-fA-F]{64}$/.test(rpcBlock.hash)) throw new Error();
+      return rpcBlock;
     } catch {
-      throw new Error(`${alias}: cannot read a canonical RPC block; stopping ${action}.`);
+      throw new Error(`${alias}: cannot read ${description} RPC block; stopping ${action}.`);
     }
-    expectedRpcBlocks[alias] = block;
+  };
+  for (const [alias, chainId] of networks[group]) {
+    console.log(`${action}: ${alias}`);
+    // Finalized RPC block heights identify fork state even on chains where EVM block.number means an L1 height.
+    const block = readRpcBlock(alias, 'finalized', 'a finalized');
     execute('forge', ['script', `script/${script}.s.sol:${script}`, '--rpc-url', alias,
       '--fork-block-number', block.number, '-vv'], chainId, block);
+    const pinnedBlock = readRpcBlock(alias, block.number, 'the pinned finalized');
+    if (pinnedBlock.number !== block.number || pinnedBlock.hash.toLowerCase() !== block.hash.toLowerCase()) {
+      throw new Error(`${alias}: finalized RPC block identity changed during ${action}.`);
+    }
+    expectedRpcBlocks[alias] = block;
   }
   requireAllAddressFamilies(group, script === 'Verify' ? 'verified' : 'simulation', read, {
     expectedRevision: childEnv.STICKY_REVISION,
