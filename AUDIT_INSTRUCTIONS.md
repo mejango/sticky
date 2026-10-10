@@ -74,7 +74,7 @@ forge test --deny notes --fail-fast --summary --detailed --skip '*/script/**'
 npm run test:deployment
 STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork
 forge build --deny notes --sizes --skip '*/test/**' --skip '*/script/**' --skip SphinxUtils
-forge build --skip '*/test/**'
+forge build --deny notes --skip '*/test/**'
 slither . --config-file slither-ci.config.json --fail-medium
 ```
 

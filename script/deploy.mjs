@@ -197,7 +197,7 @@ export function run(action, group, {
   // Release paths rebuild the exact proposal entrypoint before authenticating its external inputs and bytecode.
   // Direct rehearsals deliberately remain available for dirty local development; dry-run and propose rehearse again.
   const verifyReleaseInputs = () => {
-    execute('forge', ['build', '--force', '--contracts', 'script/Deploy.s.sol']);
+    execute('forge', ['build', '--force', 'script/Deploy.s.sol']);
     verifyInputs(networks, group, { env: childEnv, read });
   };
   if (['dry-run', 'propose', 'verify', 'artifacts'].includes(action)) verifyReleaseInputs();

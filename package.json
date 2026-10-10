@@ -28,7 +28,7 @@
     "deploy:testnets": "npm run deploy:propose:testnets",
     "deploy:rehearse": "PATH=$HOME/.foundry/versions/v1.8.1:$PATH FOUNDRY_PROFILE=deploy forge script script/Rehearse.s.sol:Rehearse",
     "deploy:verify": "PATH=$HOME/.foundry/versions/v1.8.1:$PATH FOUNDRY_PROFILE=deploy forge script script/Verify.s.sol:Verify",
-    "test:deployment": "npm run lint:solidity && forge test --match-path \"test/deployment/*.t.sol\" && FOUNDRY_PROFILE=deploy forge build --force --contracts script/Deploy.s.sol && node --test test/deployment/*.test.cjs test/deployment/*.test.mjs",
+    "test:deployment": "npm run lint:solidity && forge test --match-path \"test/deployment/*.t.sol\" && FOUNDRY_PROFILE=deploy forge build --force script/Deploy.s.sol && node --test test/deployment/*.test.cjs test/deployment/*.test.mjs",
     "deploy:preflight:testnets": "PATH=$HOME/.foundry/versions/v1.8.1:$PATH sh script/deploy.sh preflight testnets",
     "deploy:rehearse:testnets": "PATH=$HOME/.foundry/versions/v1.8.1:$PATH sh script/deploy.sh rehearse testnets",
     "deploy:dry-run:testnets": "PATH=$HOME/.foundry/versions/v1.8.1:$PATH sh script/deploy.sh dry-run testnets",

@@ -76,8 +76,8 @@ for (const group of Object.keys(networks)) {
     assert.deepEqual(calls[4].args.slice(-2), ['--networks', group]);
     assert.equal(calls.length, 5);
     assert.deepEqual(buildCalls, [
-      ['build', '--force', '--contracts', 'script/Deploy.s.sol'],
-      ['build', '--force', '--contracts', 'script/Deploy.s.sol'],
+      ['build', '--force', 'script/Deploy.s.sol'],
+      ['build', '--force', 'script/Deploy.s.sol'],
     ]);
     assert.deepEqual(castCalls, networks[group].flatMap(([alias]) => [
       ['block', 'finalized', '--json', '--rpc-url', alias],
@@ -310,6 +310,8 @@ test('runner networks match the Sphinx entrypoint and grouped homes need no work
   }
   const workflow = readFileSync('.github/workflows/test.yml', 'utf8');
   assert.doesNotMatch(workflow, /destination_chain_id|STICKY_DESTINATION_CHAIN_ID/);
+  assert.match(workflow, /FOUNDRY_PROFILE=deploy forge build --force script\/Deploy\.s\.sol/);
+  assert.doesNotMatch(workflow, /forge build --force --contracts/);
   for (const [group, configured] of Object.entries(networks)) {
     assert.deepEqual(destinationChainIds(group), configured.map(([, chainId]) => chainId));
   }

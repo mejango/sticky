@@ -62,7 +62,19 @@ function fixture(group, { revision = 'abc123' } = {}) {
       env: { ETHERSCAN_API_KEY: 'key', STICKY_REVISION: revision },
       read: file => { if (!files[file]) throw new Error(`missing ${file}`); return files[file]; },
       write: (file, content) => { written[file] = JSON.parse(content); },
-      spawn: (command, args) => { verified.push({ command, args }); return { status: 0, stdout: '' }; },
+      spawn: (command, args) => {
+        if (command === 'cast') {
+          if (args.at(-1).toLowerCase() === addresses.deployer.toLowerCase()) {
+            return { status: 0, stdout: `${addresses.hook}\n` };
+          }
+          const destination = destinationChainIds(group).find(destination =>
+            familyAddresses(group, destination).sourceCollector.toLowerCase() === args.at(-1).toLowerCase());
+          return { status: destination === undefined ? 1 : 0,
+            stdout: destination === undefined ? '' : `${familyAddresses(group, destination).sourceFeePayer}\n` };
+        }
+        verified.push({ command, args });
+        return { status: 0, stdout: '' };
+      },
       async fetchJson(url) {
         fetched.push(url);
         const { searchParams } = new URL(url);
@@ -72,10 +84,10 @@ function fixture(group, { revision = 'abc123' } = {}) {
             Object.values(familyAddresses(group, destination)).includes(target));
           const bindings = destination === undefined ? addresses : { ...addresses, ...familyAddresses(group, destination) };
           const name = contracts.find(contract => bindings[contract.field] === target).name;
-          const parent = name === 'StickyHook' ? 'StickyDeployer' : name === 'StickySourceFeePayer' ? 'StickySourceCollector' : undefined;
-          const child = Boolean(parent);
+          const contract = contracts.find(contract => contract.name === name);
+          const parent = contract.parent && contracts.find(candidate => candidate.field === contract.parent).name;
           return { result: [{ txHash: `0xtx-${parent ?? name}`,
-            creationBytecode: child ? undefined : `${code}${argsFor(name, destination ?? destinationChainIds(group)[0]).map(word).join('')}` }] };
+            creationBytecode: parent ? undefined : `${code}${argsFor(name, destination ?? destinationChainIds(group)[0]).map(word).join('')}` }] };
         }
         return { result: { blockHash: '0x' + 'bb'.repeat(32), transactionHash: searchParams.get('txhash') } };
       },
@@ -168,10 +180,14 @@ test('creation bytecode that disagrees with the recorded bindings stops the grou
 
 test('explorer verification failure stops the group, but an already verified source does not', async () => {
   const failing = fixture('testnets');
-  failing.options.spawn = () => ({ status: 1, stdout: 'Compiler error' });
+  const failingSpawn = failing.options.spawn;
+  failing.options.spawn = (command, args, options) => command === 'cast'
+    ? failingSpawn(command, args, options) : { status: 1, stdout: 'Compiler error' };
   await assert.rejects(emit('testnets', failing.options), /explorer verification of StickyDeployer failed/);
   const verified = fixture('testnets');
-  verified.options.spawn = () => ({ status: 1, stderr: 'Contract source code already verified' });
+  const verifiedSpawn = verified.options.spawn;
+  verified.options.spawn = (command, args, options) => command === 'cast'
+    ? verifiedSpawn(command, args, options) : { status: 1, stderr: 'Contract source code already verified' };
   await emit('testnets', verified.options);
   assert.equal(Object.keys(verified.written).length,
     networks.testnets.length * (6 + 2 * destinationChainIds('testnets').length));
@@ -235,6 +251,38 @@ test('all four family manifests and constructor bindings are validated before an
     assert.equal(setup.verified.length, 0);
     assert.deepEqual(setup.written, {});
   }
+});
+
+test('a fee payer assigned to the wrong collector family stops before any explorer request or write', async () => {
+  const setup = fixture('mainnets');
+  const [first, second] = destinationChainIds('mainnets');
+  for (const [, , , folder] of networks.mainnets) {
+    const firstFile = `${familyDirectory(folder, first)}/verified.json`;
+    const secondFile = `${familyDirectory(folder, second)}/verified.json`;
+    const firstManifest = JSON.parse(setup.files[firstFile]);
+    const secondManifest = JSON.parse(setup.files[secondFile]);
+    [firstManifest.sourceFeePayer, secondManifest.sourceFeePayer] =
+      [secondManifest.sourceFeePayer, firstManifest.sourceFeePayer];
+    setup.files[firstFile] = JSON.stringify(firstManifest);
+    setup.files[secondFile] = JSON.stringify(secondManifest);
+  }
+  await assert.rejects(emit('mainnets', setup.options), /StickySourceFeePayer.*sourceCollector nonce-1 CREATE child/);
+  assert.equal(setup.fetched.length, 0);
+  assert.equal(setup.verified.length, 0);
+  assert.deepEqual(setup.written, {});
+});
+
+test('a constructor-created singleton assigned to the wrong parent stops before any explorer request or write', async () => {
+  const setup = fixture('mainnets');
+  for (const file of Object.keys(setup.files).filter(file => file.endsWith('/verified.json'))) {
+    const manifest = JSON.parse(setup.files[file]);
+    manifest.hook = addresses.autoStick;
+    setup.files[file] = JSON.stringify(manifest);
+  }
+  await assert.rejects(emit('mainnets', setup.options), /StickyHook.*deployer nonce-1 CREATE child/);
+  assert.equal(setup.fetched.length, 0);
+  assert.equal(setup.verified.length, 0);
+  assert.deepEqual(setup.written, {});
 });
 
 test('shared contracts are emitted once per source while every family keeps its own namespace', async () => {

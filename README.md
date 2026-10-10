@@ -114,7 +114,7 @@ npm run lint:solidity
 forge test
 npm run test:deployment
 forge build --sizes --skip '*/test/**' --skip '*/script/**' --skip SphinxUtils
-forge build --skip '*/test/**'
+forge build --deny notes --skip '*/test/**'
 ```
 
 Like the other V6 suites, Foundry builds disable automatic whole-repository lint because they compile deployment and

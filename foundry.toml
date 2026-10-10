@@ -22,7 +22,7 @@ fs_permissions = [
 # CREATE2 factory even when the same call succeeds on its RPC. Use this execution model for production setup.
 [profile.deploy]
 isolate = false
-dynamic_test_linking = false
+deny = "notes"
 
 [profile.fork]
 # Real-project setup uses the same production artifact inspection as deployment rehearsals.

@@ -60,14 +60,14 @@ jobs:
           RPC_ARBITRUM_MAINNET: ${{ secrets.RPC_ARBITRUM_MAINNET }}
       - name: Check Sphinx configuration without public RPC calls
         run: |
-          FOUNDRY_PROFILE=deploy forge build --force --contracts script/Deploy.s.sol
+          FOUNDRY_PROFILE=deploy forge build --force script/Deploy.s.sol
           node --test test/deployment/*.test.cjs test/deployment/*.test.mjs
       - name: Check runtime lint and contract sizes
         run: |
           npm run lint:solidity
           forge build --deny notes --sizes --skip "*/test/**" --skip "*/script/**" --skip SphinxUtils
       - name: Compile deployment entrypoints
-        run: forge build --skip "*/test/**"
+        run: forge build --deny notes --skip "*/test/**"
       - name: Rehearse every home-chain family and restart on the selected source or group
         if: github.event_name == 'workflow_dispatch'
         run: |
