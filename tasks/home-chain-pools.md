@@ -1,6 +1,6 @@
 # One home chain per Sticky pool
 
-Status: contract, client and SDK implementation and qualification merged in Sticky PR #58 at `ae0f0b0efa56ace36f44fd27bd545b6e9c7318fb`. The separate all-family deployment-tooling change is implemented and locally checked; fresh finalized grouped rehearsals, address census, Sphinx dry-run evidence, tooling review/CI, deployment and live source-split changes remain separate gates. Preserve and reuse all six deployed Sticky singleton identities; each environment release deploys all four collector families and their constructor-created fee payers across all four sources. New pools create their own `StickyToken` and `StickyPriceFeed` during launch.
+Status: contract, client and SDK implementation and qualification merged in Sticky PR #58 at `ae0f0b0efa56ace36f44fd27bd545b6e9c7318fb`. The separate all-family deployment-tooling change has complete local review, exact-source grouped rehearsals, unused-address census, Sphinx dry-run evidence and hosted CI at `bac103b7cf5c3f2537df5c9c8a8301eb034d203e`; deployment and live source-split changes remain separate gates. Preserve and reuse all six deployed Sticky singleton identities; each environment release deploys all four collector families and their constructor-created fee payers across all four sources. New pools create their own `StickyToken` and `StickyPriceFeed` during launch.
 
 ## Plan refinement
 
@@ -39,8 +39,9 @@ Status: contract, client and SDK implementation and qualification merged in Stic
 - [x] Re-run the contract/fork/style/static gates and affected web/SDK checks. Refresh PR #58's review report, addresses and bytecode hashes. Earlier Ethereum-only evidence does not certify the revised constructor/routing implementation.
 - [x] Preserve the selected-family Ethereum/Arbitrum rehearsals and prepared Ethereum-home transactions as historical evidence without sending them; the all-family runner supersedes their script and proposal evidence.
 - [x] Implement the exact four-source/four-home runner, destination-scoped manifests/artifacts, fail-closed matrix validation and focused local deployment checks without changing runtime contracts.
-- [ ] Regenerate exact-source all-family grouped rehearsals, address census and Sphinx dry-run/prepared-proposal evidence from the final clean deployment revision.
-- [ ] Complete review/CI for the all-family deployment tooling, obtain applicable execution approval, deploy and verify all four live families on all four sources, and publish artifacts plus the checked client configuration.
+- [x] Regenerate exact-source all-family grouped rehearsals, address census and Sphinx dry-run/prepared-proposal evidence from the final clean deployment revision.
+- [x] Complete review and hosted CI for the all-family deployment tooling.
+- [ ] Obtain applicable execution approval, deploy and verify all four live families on all four sources, and publish artifacts plus the checked client configuration.
 - [ ] Launch Sticky JBX on Ethereum after confirming its final bonus/transfer/group settings; configure the authorized JBP6/REV source allocations, verify onchain splits, and exercise a bounded complete acceptance-to-holder-collection cycle. REV's requested approximately10% of total issuance is converted from each stage's current reserved percentage; JBP6 allocation remains a separate setup decision.
 
 ## Review and scope
