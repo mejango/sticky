@@ -4,15 +4,7 @@ Sticky uses the same Sphinx proposal workflow and canonical CREATE2 factory as t
 
 ## Reproducible checkout
 
-Use Node 22.23.1, Foundry v1.8.1, and the committed npm lockfile. CI reproduces this workspace layout:
-
-```text
-nana-core-v6/                 # feff600654aee6fb1747dded692f18068b2230a6
-nana-distributor-v6/          # 44d6d5d2e7cca77422ee0ac4909cf42ccf7839b5
-extensions/Sticky/
-```
-
-The core and distributor are intentionally linked `file:` dependencies. Install all dependencies, including the pinned Sphinx CLI, before compiling scripts:
+Use Node 22.23.1, Foundry v1.8.1, and the committed npm lockfile. It installs exact physical copies of `@bananapus/core-v6@1.2.1` and `@bananapus/distributor-v6@2.0.0`, including the core deployment records consumed by the scripts. Install all dependencies, including the pinned Sphinx CLI, before compiling scripts:
 
 ```sh
 npm ci
@@ -22,7 +14,7 @@ forge build --sizes --skip '*/test/**' --skip '*/script/**' --skip SphinxUtils
 forge build --skip '*/test/**'
 ```
 
-Keep `remappings.txt` as the source of import mappings. In this workspace, explicit global package mappings also unify nested dependency copies: removing the OpenZeppelin and protocol mappings can compile duplicate `IERC20`/`IERC165`/Revnet interface types. They are not redundant merely because the top-level packages are real directories.
+Like the other V6 contract suites, `remappings.txt` contains only the explicit `forge-std` mapping. Foundry resolves npm package imports through the configured `node_modules` library directory.
 
 Changing source, compiler settings, dependency versions, or constructor arguments changes CREATE2 predictions. All chains must use the same reviewed checkout, compiler, lockfile, salts, and core dependency addresses to obtain matching singleton and reward receiver addresses. Distributor `STARTING_TIMESTAMP` is chain-specific; it does not enter its CREATE2 init code.
 
@@ -58,7 +50,7 @@ The core reader defaults to `node_modules/@bananapus/core-v6/deployments/<networ
 
 The pinned core and sucker artifacts are the trusted address sources. Their `deployedBytecode` fields are templates with unresolved immutable words, so comparing those fields directly to live runtime hashes would be incorrect. Sticky checks dependency code existence and immutable cross-bindings, and records the observed full runtime hashes in its manifest. Verify the upstream releases independently when changing those trusted artifacts.
 
-Foundry's local script memory and gas budgets match `deploy-all-v6` so repeated artifact inspection can complete. Sphinx still estimates and checks the actual deployment transactions separately. Foundry file access permits reads from the checkout and the sibling core deployment tree, and writes only to `cache/` (required by Sphinx) and `deployments/`. A custom artifact path outside these locations needs an explicit additional read permission.
+Foundry's local script memory and gas budgets match `deploy-all-v6` so repeated artifact inspection can complete. Sphinx still estimates and checks the actual deployment transactions separately. Foundry file access permits reads from the checkout, including installed packages, and writes only to `cache/` (required by Sphinx) and `deployments/`. A custom artifact path outside the checkout needs an explicit additional read permission.
 
 Run the deployment twice on a fork of each intended chain before making a proposal. This exercises fresh deployment, partial deployment recovery, or verified reuse, depending on the fork state, without sending transactions:
 
@@ -111,13 +103,13 @@ without copying credentials, set:
 
 ```sh
 export STICKY_ENV_FILE=../../deploy-all-v6/.env
-export NANA_CORE_DEPLOYMENT_PATH=../../nana-core-v6/deployments
 ```
 
 An explicit `STICKY_ENV_FILE` must exist; otherwise commands load the package's
-`.env` when present, or use the current environment. The exact-source rehearsals
-used the shown core deployment override; omit it to use the configured core
-package instead. Core artifact selection is independent of the credentials file.
+`.env` when present, or use the current environment. Core artifact selection is
+independent of the credentials file. `NANA_CORE_DEPLOYMENT_PATH` remains available
+for a reviewed override whose bytes match the committed input manifest; a path
+outside the checkout also needs explicit Foundry read permission.
 
 No destination selection is required. The testnet commands cover Sepolia, OP Sepolia, Base Sepolia and Arbitrum Sepolia as both source networks and destination families. The mainnet commands cover Ethereum, OP, Base and Arbitrum in the same 4-by-4 grid. Testnet and mainnet remain separate proposals.
 
@@ -146,19 +138,23 @@ before accepting its manifests. The finalized header identity is recorded
 separately from the EVM block height. After the group's rehearsals the
 runner requires every chain to have predicted the same deployer, hook, distributor,
 reward receiver implementation, reward receiver factory and adapter. For every home, it requires one matching source collector and fee payer across all sources, an exact `destinationChainId`, and distinct collector and child addresses from the other three families. Complete deployment is not evidence of direct-route availability.
-Proposal commands require Sphinx credentials, the public project lock, and clean
-core/distributor checkouts at the reviewed commits recorded in `script/deploy.mjs`.
-They force-build `Deploy.s.sol` with the deployment profile, then compare the exact
-external compiler source set, compiler settings, nine known artifact targets and
-creation/runtime bytecodes, and all 32 core/sucker deployment inputs with
+Proposal commands require Sphinx credentials, the public project lock and a clean
+Sticky checkout. They force the deployment profile and canonical `out` directory,
+build `Deploy.s.sol`, then compare the exact external compiler source set, compiler
+identity and non-remapping settings, nine known artifact targets, creation/runtime
+bytecodes and semantic immutable-reference groups and ranges, and all 32 core/sucker deployment inputs with
 [`script/reviewed-inputs.json`](script/reviewed-inputs.json). The package lock records
 download provenance; this manifest authenticates the physical installed bytes used
 by the proposal. Sphinx JS, Foundry and Node remain trusted operator tools. Proposal
-commands then rerun the entire group's rehearsals before invoking the pinned local
-Sphinx CLI. A failed or divergent chain
+commands then rerun the entire group's rehearsals, repeat the clean checkout, semantic
+Sphinx lock, forced build and reviewed-input gates, and perform one final clean check
+immediately before invoking the pinned local Sphinx CLI. A failed or divergent chain
 stops the command before proposal submission. `deploy:testnets` and
 `deploy:mainnets` are aliases for these proposal commands. Sphinx execution remains
 a separate step.
+
+Run release commands from an exclusively controlled checkout. Any external filesystem
+mutation after the final inspection syscall invalidates that run and its outputs.
 
 `deploy:post:*` runs `deploy:verify:*` after the execution blocks are finalized. It
 verifies the complete 4-by-4 group on finalized live RPC state, requires the same
@@ -178,16 +174,15 @@ not publish packages or configure the website; follow the publication steps belo
 If a later chain fails, earlier manifests remain valid for their recorded block,
 but the group is incomplete. No group command broadcasts directly through Forge.
 
-Proposal, verification and artifact commands reject changed or mismatched local
-core and distributor dependencies (their commits, and any change under their
-`src/`; tests and scratch files do not compile into the contracts), and an
-uncommitted Sticky checkout, where the runner's own outputs under `deployments/`
-do not count. A clean Sticky tree alone cannot identify symlinked sources.
+Proposal, verification and artifact commands reject an uncommitted Sticky checkout,
+where the runner's own outputs under `deployments/` do not count. Exact registry
+versions and lockfile integrities identify the installed packages; the reviewed-input
+gate authenticates the physical compiler source closure and deployment records.
 Direct rehearsals allow development changes and deliberately do not claim release
-input authentication. Dry runs and proposals repeat the rehearsal after the
-reviewed-input gate. CI and runner tests keep linked dependency revisions aligned
-and prove that any missing, added or changed compiled external source, deployment
-JSON, compiler setting, artifact target or bytecode stops a release path. When an
+input authentication. Dry runs and proposals repeat all release-input gates after
+rehearsal. CI and runner tests prove that any missing, added or changed compiled
+external source, deployment JSON, non-remapping compiler setting, artifact target,
+immutable-reference group or range, or bytecode stops a release path. When an
 intentional reviewed input changes, run
 `node script/generate-reviewed-inputs.mjs --write`, inspect the complete manifest
 diff, rebuild and rerun the deployment checks before committing it.

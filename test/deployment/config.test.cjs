@@ -1,8 +1,10 @@
 const assert = require('node:assert/strict')
 const { spawnSync } = require('node:child_process')
-const { readFileSync } = require('node:fs')
+const { mkdtempSync, readFileSync, rmSync } = require('node:fs')
 const { createServer } = require('node:http')
 const { once } = require('node:events')
+const { tmpdir } = require('node:os')
+const { join } = require('node:path')
 const test = require('node:test')
 
 const { checkRequiredTomlOptions } = require('@sphinx-labs/plugins/dist/foundry/options')
@@ -11,6 +13,26 @@ const { getGnosisSafeProxyAddress } = require('@sphinx-labs/contracts')
 const { assertValidVersions, getSphinxConfigFromScript, readInterface, validateProposalNetworks } = require('@sphinx-labs/plugins/dist/foundry/utils')
 
 const EXPECTED_SAFE = '0xd5136c794ee43BEf1eD4cF1eB6DEe45b7F803437'
+
+async function withIsolatedFoundryOutput(callback) {
+  const root = mkdtempSync(join(tmpdir(), 'sticky-sphinx-config-'))
+  const previous = Object.fromEntries(['FOUNDRY_CACHE_PATH', 'FOUNDRY_OUT', 'FOUNDRY_PROFILE']
+    .map((key) => [key, process.env[key]]))
+  Object.assign(process.env, {
+    FOUNDRY_CACHE_PATH: join(root, 'cache'),
+    FOUNDRY_OUT: join(root, 'out'),
+    FOUNDRY_PROFILE: 'deploy',
+  })
+  try {
+    return await callback()
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    rmSync(root, { recursive: true, force: true })
+  }
+}
 
 // Exercise the installed Sphinx validator and its real JSON-RPC client without contacting public networks.
 test('Sphinx accepts both configured network groups and the required Foundry artifact output', async () => {
@@ -65,14 +87,9 @@ test('Sphinx accepts both configured network groups and the required Foundry art
 
 // This invokes Sphinx's own local compatibility probe; it does not collect a proposal or use an RPC.
 test('the installed Sphinx library and pinned Foundry state-diff recorder are compatible', async () => {
-  const previous = process.env.FOUNDRY_PROFILE
-  process.env.FOUNDRY_PROFILE = 'deploy'
-  try {
+  await withIsolatedFoundryOutput(async () => {
     await assertValidVersions('script/Deploy.s.sol', 'Deploy')
-  } finally {
-    if (previous === undefined) delete process.env.FOUNDRY_PROFILE
-    else process.env.FOUNDRY_PROFILE = previous
-  }
+  })
 })
 
 // Load the committed public organization/project through Sphinx's own readers and resolve its Safe locally.
@@ -83,9 +100,7 @@ test('Sphinx loads the reviewed V6 project and Safe without a proposal or RPC', 
   assert.equal(projectName, 'sticky')
   const project = lock.projects[projectName]
   assert.equal(project.projectName, projectName)
-  const previous = process.env.FOUNDRY_PROFILE
-  process.env.FOUNDRY_PROFILE = 'deploy'
-  try {
+  await withIsolatedFoundryOutput(async () => {
     const config = await getSphinxConfigFromScript(
       'script/Deploy.s.sol', readInterface('out', 'SphinxPluginTypes'), 'Deploy',
     )
@@ -94,8 +109,5 @@ test('Sphinx loads the reviewed V6 project and Safe without a proposal or RPC', 
     assert.equal(config.safeAddress.toLowerCase(), getGnosisSafeProxyAddress(
       project.defaultSafe.owners, project.defaultSafe.threshold, project.defaultSafe.saltNonce,
     ).toLowerCase())
-  } finally {
-    if (previous === undefined) delete process.env.FOUNDRY_PROFILE
-    else process.env.FOUNDRY_PROFILE = previous
-  }
+  })
 })

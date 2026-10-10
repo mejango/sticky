@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readFileSync } from 'node:fs';
+import { lstatSync, readFileSync } from 'node:fs';
 import {
-  dependencies, destinationChainIds, familyDirectory, familySuite, networks, preflight,
-  requireAllAddressFamilies, run, sharedSuite, verifyDependencies,
+  destinationChainIds, familyDirectory, familySuite, networks, preflight, requireAllAddressFamilies, run, sharedSuite,
 } from '../../script/deploy.mjs';
 
 const address = byte => `0x${byte.toString(16).padStart(2, '0').repeat(20)}`;
@@ -42,18 +41,19 @@ function readOnlyTool(command, args) {
   if (command === 'cast') return { status: 0, stdout: JSON.stringify({ schema_version: 1, success: true, data: block }) };
   if (command === 'forge' && args[0] === 'build') return { status: 0 };
   if (command !== 'git') return;
-  if (args[0] === '-C') {
-    return { status: 0, stdout: args[2] === 'rev-parse' ? dependencies[args[1].replace('node_modules/', '')] : '' };
-  }
+  if (args[0] === 'show') return { status: 0, stdout: readFileSync('sphinx.lock', 'utf8') };
   return { status: 0, stdout: args[0] === 'rev-parse' ? 'abc123\n' : '' };
 }
 
 for (const group of Object.keys(networks)) {
   test(`${group}: all four source rehearsals validate every home before the Sphinx proposal`, () => {
+    const setup = fixture(group);
+    setup.env.FOUNDRY_OUT = 'unreviewed-output';
     const calls = [];
     const buildCalls = [];
     const castCalls = [];
-    run('propose', group, { ...fixture(group), spawn(command, args, options) {
+    run('propose', group, { ...setup, spawn(command, args, options) {
+      if (command !== 'git') assert.equal(options.env.FOUNDRY_OUT, 'out');
       if (command === 'forge' && args[0] === 'build') buildCalls.push(args);
       if (command === 'cast') castCalls.push(args);
       const tool = readOnlyTool(command, args);
@@ -75,7 +75,10 @@ for (const group of Object.keys(networks)) {
     assert.equal(calls[4].command, 'node_modules/.bin/sphinx');
     assert.deepEqual(calls[4].args.slice(-2), ['--networks', group]);
     assert.equal(calls.length, 5);
-    assert.deepEqual(buildCalls, [['build', '--force', '--contracts', 'script/Deploy.s.sol']]);
+    assert.deepEqual(buildCalls, [
+      ['build', '--force', '--contracts', 'script/Deploy.s.sol'],
+      ['build', '--force', '--contracts', 'script/Deploy.s.sol'],
+    ]);
     assert.deepEqual(castCalls, networks[group].flatMap(([alias]) => [
       ['block', 'finalized', '--json', '--rpc-url', alias],
       ['block', '100', '--json', '--rpc-url', alias],
@@ -83,7 +86,7 @@ for (const group of Object.keys(networks)) {
   });
 }
 
-test('the reviewed-input gate follows a forced Deploy build and precedes RPC rehearsal', () => {
+test('the reviewed-input gate is repeated after rehearsal immediately before Sphinx', () => {
   const sequence = [];
   const setup = fixture('testnets');
   run('dry-run', 'testnets', { ...setup, verifyInputs() {
@@ -91,9 +94,144 @@ test('the reviewed-input gate follows a forced Deploy build and precedes RPC reh
   }, spawn(command, args, options) {
     if (command === 'forge' && args[0] === 'build') sequence.push('forced build');
     if (command === 'cast' && args[1] === 'finalized' && sequence.length === 2) sequence.push('finalized RPC');
+    if (command === 'node_modules/.bin/sphinx') sequence.push('sphinx');
     return readOnlyTool(command, args) ?? { status: 0 };
   } });
-  assert.deepEqual(sequence, ['forced build', 'reviewed inputs', 'finalized RPC']);
+  assert.deepEqual(sequence, [
+    'forced build', 'reviewed inputs', 'finalized RPC', 'forced build', 'reviewed inputs', 'sphinx',
+  ]);
+});
+
+test('a checkout or lock mutation after the final build cannot reach Sphinx', () => {
+  for (const fault of ['revision', 'status', 'lock']) {
+    const setup = fixture('testnets');
+    const originalRead = setup.read;
+    let buildCount = 0;
+    let revisionReads = 0;
+    let statusReads = 0;
+    let submitted = false;
+    setup.read = file => {
+      if (fault === 'lock' && buildCount === 2 && file === 'sphinx.lock') {
+        return JSON.stringify({ ...JSON.parse(originalRead(file)), orgId: 'changed-after-build' });
+      }
+      return originalRead(file);
+    };
+    assert.throws(() => run('propose', 'testnets', { ...setup, spawn(command, args) {
+      if (command === 'git' && args[0] === 'rev-parse') {
+        revisionReads++;
+        return { status: 0, stdout: fault === 'revision' && buildCount === 2 ? 'changed\n' : 'abc123\n' };
+      }
+      if (command === 'git' && args[0] === 'status') {
+        statusReads++;
+        return { status: 0, stdout: fault === 'status' && buildCount === 2 ? ' M src/StickyHook.sol\n' : '' };
+      }
+      if (command === 'forge' && args[0] === 'build') buildCount++;
+      if (command === 'node_modules/.bin/sphinx') submitted = true;
+      return readOnlyTool(command, args) ?? { status: 0 };
+    } }), fault === 'revision' ? /source revision changed/ : /uncommitted changes/);
+    assert.equal(buildCount, 2);
+    assert.equal(revisionReads, 6);
+    assert.equal(statusReads, 3);
+    assert.equal(submitted, false);
+  }
+});
+
+test('checkout inspection binds the lock to its captured revision and rejects an interleaved HEAD move', () => {
+  const setup = fixture('testnets');
+  let revisionReads = 0;
+  assert.throws(() => run('verify', 'testnets', { ...setup, spawn(command, args) {
+    if (command === 'git' && args[0] === 'rev-parse') {
+      revisionReads++;
+      return { status: 0, stdout: revisionReads === 1 ? 'abc123\n' : 'changed\n' };
+    }
+    if (command === 'git' && args[0] === 'status') return { status: 0, stdout: '' };
+    if (command === 'git' && args[0] === 'show') {
+      assert.equal(args[1], 'abc123:sphinx.lock');
+      return { status: 0, stdout: readFileSync('sphinx.lock', 'utf8') };
+    }
+    assert.fail(`${command} must not run after HEAD moves`);
+  } }), /source revision changed/);
+  assert.equal(revisionReads, 2);
+});
+
+test('a failing final build or reviewed-input check cannot reach Sphinx', () => {
+  for (const fault of ['build', 'inputs']) {
+    const setup = fixture('testnets');
+    let buildCount = 0;
+    let inputChecks = 0;
+    let submitted = false;
+    assert.throws(() => run('propose', 'testnets', { ...setup, verifyInputs() {
+      inputChecks++;
+      if (fault === 'inputs' && inputChecks === 2) throw new Error('changed reviewed input');
+    }, spawn(command, args) {
+      if (command === 'forge' && args[0] === 'build') {
+        buildCount++;
+        if (fault === 'build' && buildCount === 2) return { status: 1 };
+      }
+      if (command === 'node_modules/.bin/sphinx') submitted = true;
+      return readOnlyTool(command, args) ?? { status: 0 };
+    } }), fault === 'build' ? /forge failed/ : /changed reviewed input/);
+    assert.equal(buildCount, 2);
+    assert.equal(inputChecks, fault === 'build' ? 1 : 2);
+    assert.equal(submitted, false);
+  }
+});
+
+test('the final checkout inspection runs after the second reviewed-input verification', () => {
+  const setup = fixture('testnets');
+  let inputChecks = 0;
+  let mutated = false;
+  let submitted = false;
+  assert.throws(() => run('propose', 'testnets', { ...setup, verifyInputs() {
+    inputChecks++;
+    if (inputChecks === 2) mutated = true;
+  }, spawn(command, args) {
+    if (command === 'git' && args[0] === 'status' && mutated) {
+      return { status: 0, stdout: ' M src/StickyHook.sol\n' };
+    }
+    if (command === 'node_modules/.bin/sphinx') submitted = true;
+    return readOnlyTool(command, args) ?? { status: 0 };
+  } }), /uncommitted changes/);
+  assert.equal(inputChecks, 2);
+  assert.equal(submitted, false);
+});
+
+test('verification closes with the same build, input and checkout gate', () => {
+  const setup = fixture('testnets');
+  let inputChecks = 0;
+  let mutated = false;
+  assert.throws(() => run('verify', 'testnets', { ...setup, verifyInputs() {
+    inputChecks++;
+    if (inputChecks === 2) mutated = true;
+  }, spawn(command, args) {
+    if (command === 'git' && args[0] === 'status' && mutated) {
+      return { status: 0, stdout: ' M src/StickyHook.sol\n' };
+    }
+    return readOnlyTool(command, args) ?? { status: 0 };
+  } }), /uncommitted changes/);
+  assert.equal(inputChecks, 2);
+});
+
+test('Sphinx key reordering during rehearsal remains semantically clean', () => {
+  const setup = fixture('testnets');
+  const originalRead = setup.read;
+  let rehearsalCount = 0;
+  let submitted = false;
+  setup.read = file => {
+    if (file !== 'sphinx.lock' || rehearsalCount !== 4) return originalRead(file);
+    const lock = JSON.parse(originalRead(file));
+    return JSON.stringify(Object.fromEntries(Object.entries(lock).reverse()));
+  };
+  run('propose', 'testnets', { ...setup, spawn(command, args) {
+    if (command === 'git' && args[0] === 'status' && rehearsalCount === 4) {
+      return { status: 0, stdout: ' M sphinx.lock\n' };
+    }
+    if (command === 'forge' && args[0] === 'script') rehearsalCount++;
+    if (command === 'node_modules/.bin/sphinx') submitted = true;
+    return readOnlyTool(command, args) ?? { status: 0 };
+  } });
+  assert.equal(rehearsalCount, 4);
+  assert.equal(submitted, true);
 });
 
 test('direct development rehearsals do not claim reviewed-input release evidence', () => {
@@ -192,18 +330,33 @@ test('Sphinx cannot overwrite rehearsal records and Verify validates every famil
 });
 
 
-test('release dependencies must match pinned clean sources', () => {
-  verifyDependencies(readOnlyTool);
-  assert.throws(() => verifyDependencies((command, args) => ({ status: 0, stdout: args[2] === 'rev-parse' ? 'wrong' : '' })), /reviewed revision/);
-  for (const change of [' M src/JBController.sol', '?? src/JBNew.sol', 'R  test/Old.t.sol -> src/Moved.sol']) {
-    assert.throws(() => verifyDependencies((command, args) => args[2] === 'status'
-      ? { status: 0, stdout: change } : readOnlyTool(command, args)), /must be clean/);
+test('core and distributor are exact integrity-bound registry packages', () => {
+  const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+  const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
+  for (const [name, expected] of Object.entries({
+    '@bananapus/core-v6': {
+      version: '1.2.1',
+      resolved: 'https://registry.npmjs.org/@bananapus/core-v6/-/core-v6-1.2.1.tgz',
+      integrity: 'sha512-nHEvg6RPGnrTgEAxBDJE1PgnN0uIBeCM+zKDdMjplfCedr4/swNFDMsRLFw9Wm5chKzGo3LR2stOr5F0og6InQ==',
+    },
+    '@bananapus/distributor-v6': {
+      version: '2.0.0',
+      resolved: 'https://registry.npmjs.org/@bananapus/distributor-v6/-/distributor-v6-2.0.0.tgz',
+      integrity: 'sha512-Zc4O+xqt3yOox96F41+R3BNX5gcF5SWGBH5lDmnp6RRE5LPFTCntgSOXks2qImSJBF/bLB3FjMh8aB1GFHdrbA==',
+    },
+  })) {
+    const { integrity, resolved, version } = expected;
+    assert.equal(pkg.dependencies[name], version);
+    const entry = lock.packages[`node_modules/${name}`];
+    assert.equal(entry.version, version);
+    assert.equal(entry.resolved, resolved);
+    assert.equal(entry.integrity, integrity);
+    assert.equal(entry.link, undefined);
+    assert.equal(lstatSync(`node_modules/${name}`).isSymbolicLink(), false);
+    assert.equal(JSON.parse(readFileSync(`node_modules/${name}/package.json`, 'utf8')).version, version);
   }
-  // Test edits, scratch directories and Finder droppings do not compile into the contracts.
-  verifyDependencies((command, args) => args[2] === 'status'
-    ? { status: 0, stdout: ' M test/JBController.t.sol\n?? .DS_Store\n?? src/.DS_Store\n?? .scratch/\n' } : readOnlyTool(command, args));
-  const workflow = readFileSync('.github/workflows/test.yml', 'utf8');
-  for (const revision of Object.values(dependencies)) assert.ok(workflow.includes(revision));
+  assert.equal(lock.packages['../../nana-core-v6'], undefined);
+  assert.equal(lock.packages['../../nana-distributor-v6'], undefined);
 });
 
 test('missing block identity stops before any Forge or Sphinx execution', () => {
@@ -260,13 +413,13 @@ test('dependency provenance is declared before the reviewed manifest authenticat
       assert.ok(pkg, `${source} must be this repository's or an installed package's source`);
       const entry = lock.packages[`node_modules/${pkg}`];
       assert.ok(entry, `${pkg} must be in the lockfile`);
-      if (entry.link) assert.ok(dependencies[pkg], `${pkg} is linked, so its revision must be pinned for release`);
-      else assert.ok(entry.integrity, `${pkg} must carry a lockfile integrity hash`);
+      assert.notEqual(entry.link, true, `${pkg} must be a physical installed package`);
+      assert.match(entry.integrity, /^sha512-/, `${pkg} must carry a lockfile integrity hash`);
     }
   }
 });
 
-test('an artifacts run executes the explorer script only after the pin and checkout gates', () => {
+test('an artifacts run executes the explorer script only after the checkout and reviewed-input gates', () => {
   const calls = [];
   run('artifacts', 'testnets', { ...fixture('testnets'), spawn(command, args, options) {
     const tool = readOnlyTool(command, args);
@@ -277,12 +430,24 @@ test('an artifacts run executes the explorer script only after the pin and check
     return { status: 0 };
   } });
   assert.deepEqual(calls, [{ command: 'node', args: ['script/artifacts.mjs', 'testnets'] }]);
-  assert.throws(() => run('artifacts', 'mainnets', { ...fixture('mainnets'), spawn(command, args) {
-    if (command === 'git' && args[0] === '-C' && args[2] === 'rev-parse') return { status: 0, stdout: 'wrong' };
+  assert.throws(() => run('artifacts', 'mainnets', { ...fixture('mainnets'), verifyInputs() {
+    throw new Error('unreviewed installed input');
+  }, spawn(command, args) {
     const tool = readOnlyTool(command, args);
     if (tool) return tool;
-    assert.fail('artifacts must not run against unreviewed dependencies');
-  } }), /reviewed revision/);
+    assert.fail('artifacts must not run against unreviewed inputs');
+  } }), /unreviewed installed input/);
+  let mutated = false;
+  assert.throws(() => run('artifacts', 'testnets', { ...fixture('testnets'), verifyInputs() {
+    mutated = true;
+  }, spawn(command, args) {
+    if (command === 'git' && args[0] === 'status' && mutated) {
+      return { status: 0, stdout: ' M src/StickyHook.sol\n' };
+    }
+    const tool = readOnlyTool(command, args);
+    if (tool) return tool;
+    assert.fail('artifacts must not run after the authenticated build mutates the checkout');
+  } }), /uncommitted changes/);
 });
 
 test('an uncommitted checkout can rehearse but cannot dry-run, propose, verify or emit artifacts', () => {
@@ -316,11 +481,14 @@ test('an uncommitted checkout can rehearse but cannot dry-run, propose, verify o
   assert.equal(forgeRuns, 4);
 });
 
-test('a sphinx.lock Sphinx only reordered is clean; a changed one is not', () => {
+test('a sphinx.lock Sphinx only reordered is clean; semantic, staged, mixed or type changes are not', () => {
   const lock = JSON.parse(readFileSync('sphinx.lock', 'utf8'));
-  const reordered = JSON.stringify(Object.fromEntries(Object.entries(lock).reverse()));
-  const lockGit = (command, args) => {
-    if (command === 'git' && args[0] === 'status') return { status: 0, stdout: ' M sphinx.lock\n' };
+  const reorderObjects = value => Array.isArray(value) ? value.map(reorderObjects)
+    : value && typeof value === 'object'
+      ? Object.fromEntries(Object.entries(value).reverse().map(([key, nested]) => [key, reorderObjects(nested)])) : value;
+  const reordered = JSON.stringify(reorderObjects(lock));
+  const lockGit = (command, args, status = ' M sphinx.lock\n') => {
+    if (command === 'git' && args[0] === 'status') return { status: 0, stdout: status };
     if (command === 'git' && args[0] === 'show') return { status: 0, stdout: JSON.stringify(lock) };
     return readOnlyTool(command, args);
   };
@@ -334,12 +502,20 @@ test('a sphinx.lock Sphinx only reordered is clean; a changed one is not', () =>
     return { status: 0 };
   } });
   assert.equal(verifyRuns, 4);
-  const changed = JSON.stringify({ ...lock, orgId: 'someone-else' });
-  assert.throws(() => run('verify', 'testnets', { ...withLock(changed), spawn(command, args) {
-    const tool = lockGit(command, args);
+  const changed = structuredClone(lock);
+  changed.projects.sticky.defaultSafe.owners.reverse();
+  assert.throws(() => run('verify', 'testnets', { ...withLock(JSON.stringify(changed)), spawn(command, args) {
+    const tool = lockGit(command, args, ' M sphinx.lock\n');
     if (tool) return tool;
     assert.fail('a changed lock must not verify');
   } }), /uncommitted/);
+  for (const status of ['M  sphinx.lock\n', 'MM sphinx.lock\n', 'T  sphinx.lock\n', ' T sphinx.lock\n']) {
+    assert.throws(() => run('verify', 'testnets', { ...withLock(JSON.stringify(lock)), spawn(command, args) {
+      const tool = lockGit(command, args, status);
+      if (tool) return tool;
+      assert.fail(`lock status ${JSON.stringify(status)} must not verify`);
+    } }), /uncommitted/);
+  }
 });
 
 test('a chain predicting different addresses stops the group before the Sphinx proposal', () => {

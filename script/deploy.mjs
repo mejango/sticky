@@ -3,27 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { verifyReviewedInputs } from './reviewed-inputs.mjs';
-
-// Match the reviewed source checkouts used by CI; local file dependencies have no npm integrity hash.
-export const dependencies = {
-  '@bananapus/core-v6': 'feff600654aee6fb1747dded692f18068b2230a6',
-  '@bananapus/distributor-v6': '44d6d5d2e7cca77422ee0ac4909cf42ccf7839b5',
-};
-
-export function verifyDependencies(spawn = spawnSync) {
-  for (const [name, expected] of Object.entries(dependencies)) {
-    const args = ['-C', `node_modules/${name}`];
-    const revision = spawn('git', [...args, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
-    const status = spawn('git', [...args, 'status', '--porcelain', '--untracked-files=normal'], { encoding: 'utf8' });
-    // Only a linked package's `src/` compiles into the contracts; tests, scratch files and Finder droppings do not.
-    const sourceChanges = status.stdout?.split('\n')
-      .filter(line => /^.{3}(.* -> )?src\//.test(line) && !/\/\.DS_Store$/.test(line)) ?? [];
-    if (revision.status !== 0 || revision.stdout.trim() !== expected || status.status !== 0 || sourceChanges.length) {
-      throw new Error(`${name} must be clean under src/ at the reviewed revision ${expected}.`);
-    }
-  }
-}
+import { canonicalJson, verifyReviewedInputs } from './reviewed-inputs.mjs';
 
 export const networks = {
   mainnets: [
@@ -144,14 +124,11 @@ export function requireAllAddressFamilies(group, kind, read = readFileSync, {
 }
 
 // Whether the working sphinx.lock holds exactly the committed content, ignoring key order.
-export function sameLock(spawn = spawnSync, read = readFileSync) {
-  const sorted = value => Array.isArray(value) ? value.map(sorted)
-    : value && typeof value === 'object'
-      ? Object.fromEntries(Object.keys(value).sort().map(key => [key, sorted(value[key])])) : value;
-  const committed = spawn('git', ['show', 'HEAD:sphinx.lock'], { encoding: 'utf8' });
+export function sameLock(spawn = spawnSync, read = readFileSync, revision = 'HEAD') {
+  const committed = spawn('git', ['show', `${revision}:sphinx.lock`], { encoding: 'utf8' });
   try {
     return committed.status === 0
-      && JSON.stringify(sorted(JSON.parse(committed.stdout))) === JSON.stringify(sorted(JSON.parse(read('sphinx.lock', 'utf8'))));
+      && canonicalJson(JSON.parse(committed.stdout)) === canonicalJson(JSON.parse(read('sphinx.lock', 'utf8')));
   } catch {
     return false;
   }
@@ -182,21 +159,33 @@ export function run(action, group, {
       throw new Error('SPHINX_ORG_ID does not match the committed sphinx.lock organization.');
     }
   }
-  if (action !== 'rehearse') verifyDependencies(spawn);
   if (action === 'preflight') return;
-  const revision = spawn('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' });
-  if (revision.status !== 0) throw new Error('Cannot record the source revision.');
-  const status = spawn('git', ['status', '--porcelain', '--untracked-files=normal'], { encoding: 'utf8' });
-  if (status.status !== 0) throw new Error('Cannot inspect the source checkout.');
-  // The runner's own outputs under deployments/ do not make the reviewed source dirty, and neither does Sphinx
-  // re-serializing sphinx.lock in a different key order during a proposal.
-  const dirty = status.stdout.split('\n').some(line => line.trim() && !/^.{3}deployments\//.test(line)
-    && !(line.slice(3) === 'sphinx.lock' && sameLock(spawn, read)));
-  // Only a committed checkout may reach the Safe or certify a live deployment; rehearsals may carry development changes.
-  if (dirty && action !== 'rehearse') throw new Error(`Commit the reviewed checkout before ${action}; it has uncommitted changes.`);
+  const inspectCheckout = expectedRevision => {
+    const before = spawn('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' });
+    if (before.status !== 0) throw new Error('Cannot record the source revision.');
+    const currentRevision = before.stdout.trim();
+    const status = spawn('git', ['status', '--porcelain', '--untracked-files=normal'], { encoding: 'utf8' });
+    if (status.status !== 0) throw new Error('Cannot inspect the source checkout.');
+    const lockIsCurrent = sameLock(spawn, read, currentRevision);
+    const after = spawn('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' });
+    if (after.status !== 0) throw new Error('Cannot record the source revision.');
+    if (after.stdout.trim() !== currentRevision || (expectedRevision !== undefined && currentRevision !== expectedRevision)) {
+      throw new Error(`The source revision changed during ${action}; stopping.`);
+    }
+    // The runner's own outputs under deployments/ do not make the reviewed source dirty, and neither does Sphinx
+    // re-serializing sphinx.lock in a different key order during a proposal.
+    const dirty = status.stdout.split('\n').some(line => line.trim() && !/^.{3}deployments\//.test(line)
+      && !(line === ' M sphinx.lock' && lockIsCurrent));
+    // Only a committed checkout may reach the Safe or certify a live deployment; rehearsals may carry development changes.
+    if ((!lockIsCurrent || dirty) && action !== 'rehearse') {
+      throw new Error(`Commit the reviewed checkout before ${action}; it has uncommitted changes.`);
+    }
+    return { dirty, revision: currentRevision };
+  };
+  const checkout = inspectCheckout();
   const childEnv = {
-    ...env, FOUNDRY_PROFILE: 'deploy',
-    STICKY_REVISION: revision.stdout.trim() + (dirty ? '-dirty' : ''),
+    ...env, FOUNDRY_OUT: 'out', FOUNDRY_PROFILE: 'deploy',
+    STICKY_REVISION: checkout.revision + (checkout.dirty ? '-dirty' : ''),
   };
   const execute = (command, args, chainId = 0, block = { number: '0', hash: '0x' + '00'.repeat(32) }) => {
     const result = spawn(command, args, { env: {
@@ -207,12 +196,14 @@ export function run(action, group, {
   };
   // Release paths rebuild the exact proposal entrypoint before authenticating its external inputs and bytecode.
   // Direct rehearsals deliberately remain available for dirty local development; dry-run and propose rehearse again.
-  if (['dry-run', 'propose', 'verify', 'artifacts'].includes(action)) {
+  const verifyReleaseInputs = () => {
     execute('forge', ['build', '--force', '--contracts', 'script/Deploy.s.sol']);
     verifyInputs(networks, group, { env: childEnv, read });
-  }
+  };
+  if (['dry-run', 'propose', 'verify', 'artifacts'].includes(action)) verifyReleaseInputs();
   // Explorer verification and per-contract artifacts read the verified manifests, so they follow a verify.
   if (action === 'artifacts') {
+    inspectCheckout(checkout.revision);
     execute('node', ['script/artifacts.mjs', group]);
     return;
   }
@@ -249,6 +240,11 @@ export function run(action, group, {
     expectedRevision: childEnv.STICKY_REVISION,
     expectedRpcBlocks,
   });
+  if (action === 'verify' || action === 'dry-run' || action === 'propose') {
+    inspectCheckout(checkout.revision);
+    verifyReleaseInputs();
+    inspectCheckout(checkout.revision);
+  }
   if (action === 'dry-run' || action === 'propose') {
     execute('node_modules/.bin/sphinx', [
       'propose', 'script/Deploy.s.sol', '--target-contract', 'Deploy', '--networks', group,

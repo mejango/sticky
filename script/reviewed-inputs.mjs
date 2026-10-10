@@ -34,17 +34,39 @@ export const reviewedArtifacts = {
   },
 };
 
-const format = 'sticky-reviewed-deployment-inputs-1';
+const format = 'sticky-reviewed-deployment-inputs-2';
 const coreContracts = ['JBController', 'JBDirectory', 'JBMultiTerminal'];
 
 const digest = value => createHash('sha256').update(value).digest('hex');
 const sorted = values => [...values].sort();
 
-function canonicalCompilerSettings(settings) {
-  const canonical = structuredClone(settings);
-  canonical.remappings = canonical.remappings?.map(remapping =>
-    remapping.replace(/^\/.*?\/(?=node_modules\/)/, '<CHECKOUT>/')).sort();
-  return canonical;
+function sortedJsonValue(value) {
+  return Array.isArray(value) ? value.map(sortedJsonValue)
+    : value && typeof value === 'object'
+      ? Object.fromEntries(Object.keys(value).sort().map(key => [key, sortedJsonValue(value[key])])) : value;
+}
+
+export const canonicalJson = value => JSON.stringify(sortedJsonValue(value));
+
+function immutableReferenceGroups(value, path) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`Missing compiled immutable references: ${path}`);
+  }
+  const groups = Object.values(value).map(group => {
+    if (!Array.isArray(group) || !group.length) throw new Error(`Invalid compiled immutable references: ${path}`);
+    return group.map(reference => {
+      const { length, start } = reference ?? {};
+      if (!Number.isSafeInteger(length) || length <= 0 || !Number.isSafeInteger(start) || start < 0) {
+        throw new Error(`Invalid compiled immutable references: ${path}`);
+      }
+      return { length, start };
+    }).sort((a, b) => a.start - b.start || a.length - b.length);
+  });
+  return groups.sort((a, b) => {
+    const left = canonicalJson(a);
+    const right = canonicalJson(b);
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
 }
 
 function readJson(path, read) {
@@ -71,7 +93,8 @@ function compilerIdentity(read) {
   if (JSON.stringify(settings.compilationTarget) !== JSON.stringify({ 'script/Deploy.s.sol': 'Deploy' })) {
     throw new Error(`Unexpected compiler target: ${compilerArtifact}`);
   }
-  return { version, settingsSHA256: digest(JSON.stringify(canonicalCompilerSettings(settings))) };
+  const { remappings: _remappings, ...reviewedSettings } = settings;
+  return { version, settingsSHA256: digest(canonicalJson(reviewedSettings)) };
 }
 
 function compiledArtifactDigests(read) {
@@ -79,6 +102,7 @@ function compiledArtifactDigests(read) {
     const artifact = readJson(path, read);
     const creation = artifact.bytecode?.object;
     const runtime = artifact.deployedBytecode?.object;
+    const immutableReferences = artifact.deployedBytecode?.immutableReferences ?? {};
     if (JSON.stringify(artifact.metadata?.settings?.compilationTarget) !== JSON.stringify(target)) {
       throw new Error(`Unexpected compiler target: ${path}`);
     }
@@ -88,6 +112,7 @@ function compiledArtifactDigests(read) {
     return [name, {
       path,
       creationCodeSHA256: digest(creation),
+      immutableReferencesSHA256: digest(canonicalJson(immutableReferenceGroups(immutableReferences, path))),
       runtimeCodeSHA256: digest(runtime),
     }];
   }));
@@ -137,7 +162,7 @@ export function verifyReviewedInputs(networkGroups, group, { env = process.env, 
   }
   if (JSON.stringify(compilerIdentity(read)) !== JSON.stringify(manifest.compiler)
     || JSON.stringify(compiledArtifactDigests(read)) !== JSON.stringify(manifest.artifacts)) {
-    throw new Error('Compiler settings or deployment bytecode differs from the reviewed deployment inputs.');
+    throw new Error('Compiler settings or deployment artifact differs from the reviewed deployment inputs.');
   }
 
   const sources = compiledExternalSources(read);

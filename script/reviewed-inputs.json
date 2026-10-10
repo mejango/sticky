@@ -1,54 +1,63 @@
 {
-  "format": "sticky-reviewed-deployment-inputs-1",
+  "format": "sticky-reviewed-deployment-inputs-2",
   "compilerArtifact": "out/Deploy.s.sol/Deploy.json",
   "compiler": {
     "version": "0.8.28+commit.7893614a",
-    "settingsSHA256": "2bb72f6d445b58ce8483070967c2ddff4bb311ba25b5b483c373dc160e6fbb83"
+    "settingsSHA256": "aa2e5594a75d52cddf2392eb3053e598d839d91a800ca8302d72bf0c16ce3584"
   },
   "artifacts": {
     "Deploy": {
       "path": "out/Deploy.s.sol/Deploy.json",
       "creationCodeSHA256": "a3cf0a4243136e90d74e6bdf2fa291d96defe5dc7f8dad5b8fa08e489e914cfe",
+      "immutableReferencesSHA256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "runtimeCodeSHA256": "73bf5d71d228f76778be7c39ffd5808d0d973045de8e781046153251a18efe29"
     },
     "StickyAutoStick": {
       "path": "out/StickyAutoStick.sol/StickyAutoStick.json",
       "creationCodeSHA256": "0d843cfa7a089bd68c5f1b6cfe0871d0508d756e3c1cc815ce12f6ca40556d6d",
+      "immutableReferencesSHA256": "b316d62d377a1523fdc9b3e27b99358f38b46267d6376e08e1e493584369f882",
       "runtimeCodeSHA256": "01b7f61bbc72d453be3b8e753f9c04eb79bd635eaf131ff8652808c6cb76bdb0"
     },
     "StickyDeployer": {
       "path": "out/StickyDeployer.sol/StickyDeployer.json",
       "creationCodeSHA256": "c0528ef651267fc68e7da40108751fc7bb4eaf2d3003d609c61a20a6fa5d6a8f",
+      "immutableReferencesSHA256": "45ad3617562c4904db74696c57c430ff4fb3eab860f6974a7cc900d53d33f2fe",
       "runtimeCodeSHA256": "02deaa016206d363efbd19fd6b775a5866239c9701a37ff4990bcf35fb74fd36"
     },
     "StickyDistributor": {
       "path": "out/StickyDistributor.sol/StickyDistributor.json",
       "creationCodeSHA256": "cdcdc3b0b55d70579a9ad5c34c654c89edfd13591f2d76338d98b9a635d4aebe",
+      "immutableReferencesSHA256": "ba5ad5383f552555e16e466ed1588beb4a12748f87969e34f415f9bf694ef7ec",
       "runtimeCodeSHA256": "1ecb73c52c24aaa11d8f5da8d12be5b6414a918624782b9fc5c94f02118326cb"
     },
     "StickyHook": {
       "path": "out/StickyHook.sol/StickyHook.json",
       "creationCodeSHA256": "a4b4c198ed1136b6a778baa06552daea8caad1cb7170d7df5a6ca1211447304f",
+      "immutableReferencesSHA256": "f22b5f0a89e24366bcdca599af3ca6aed4e1c194d4b31a699d3804e3e03c5d43",
       "runtimeCodeSHA256": "45dda607e9af9c034da7d6b32b0a4e5bcd7df8a128f309c258381ab8d998c943"
     },
     "StickyRewardReceiver": {
       "path": "out/StickyRewardReceiver.sol/StickyRewardReceiver.json",
       "creationCodeSHA256": "cfa93e6c5ad0bb08e059bdc197e0fc51bf1b8f20959cca914f6de3d19b3fba76",
+      "immutableReferencesSHA256": "beb0270a29b03ab0f4cd0182f59dc71ab2a700928082bbb50e24bac3ba4101f4",
       "runtimeCodeSHA256": "a49117087c3a17c68e1d348956ea4cd2d25c1593a18fc643d3cf65a7a8a44afd"
     },
     "StickyRewardReceiverFactory": {
       "path": "out/StickyRewardReceiverFactory.sol/StickyRewardReceiverFactory.json",
       "creationCodeSHA256": "a446029f0adb1fb203b1640c1f164403581e60e4361310336351f6da724a2a53",
+      "immutableReferencesSHA256": "f7d74a67fb8dd72abfe864d29f1077bc0eaa973e7b143d709ef16ca819ecef9e",
       "runtimeCodeSHA256": "da6fe687ab3fb768ce5b39ff534a0cf99315f2f32e3c39f6c1377b5b703f5eab"
     },
     "StickySourceCollector": {
       "path": "out/StickySourceCollector.sol/StickySourceCollector.json",
       "creationCodeSHA256": "a5502898146731b79371f3ad9ad82d26a7d0df30221489796b5fdb02b2a76ebd",
+      "immutableReferencesSHA256": "cda217660be9ed3ddb9afbbdf987cea29d00cdae1831246a12e55d2b2e6b7c64",
       "runtimeCodeSHA256": "95a47e7ead671d7bdb9007d44c0fa44a219c18f1ca43ad3e666abf42e2c7b0da"
     },
     "StickySourceFeePayer": {
       "path": "out/StickySourceFeePayer.sol/StickySourceFeePayer.json",
       "creationCodeSHA256": "cb533c993f9c74289c432c2a56a4f3d9f2d8c14c0e3f071507a2a7839f170448",
+      "immutableReferencesSHA256": "1afb46765b3f3118dead725f17ab77d7f6bc89e41174dc3d62ec5deedaaadff5",
       "runtimeCodeSHA256": "0e318627c87e914762792b283056b4601740433a541cdf80ce82d00bf250cf21"
     }
   },

@@ -31,6 +31,9 @@ test('the reviewed manifest binds the exact Deploy closure and all 32 deployment
   assert.equal(new Set(deployments.map(({ logicalPath }) => logicalPath)).size, 32);
   const manifest = JSON.parse(readFileSync(reviewedInputsPath));
   assert.equal(Object.keys(manifest.artifacts).length, 9);
+  for (const artifact of Object.values(manifest.artifacts)) {
+    assert.match(artifact.immutableReferencesSHA256, /^[\da-f]{64}$/);
+  }
   assert.equal(Object.keys(manifest.sources).length, 222);
   assert.equal(Object.keys(manifest.deployments).length, 32);
 });
@@ -62,25 +65,19 @@ test('compiled external source additions and omissions are rejected', () => {
   }), /Compiled external source set differs/);
 });
 
-test('compiler settings, artifact targets and bytecode are bound to the reviewed build', () => {
+test('compiler settings, artifact targets, immutable references and bytecode are bound to the reviewed build', () => {
   assert.throws(() => verifyReviewedInputs(networks, 'testnets', {
     read: changedJson(compilerArtifact, artifact => {
       artifact.metadata.settings.optimizer.runs++;
       return artifact;
     }),
-  }), /Compiler settings or deployment bytecode differs/);
+  }), /Compiler settings or deployment artifact differs/);
   assert.throws(() => verifyReviewedInputs(networks, 'testnets', {
     read: changedJson(compilerArtifact, artifact => {
       artifact.metadata.settings.compilationTarget = { 'script/Other.s.sol': 'Deploy' };
       return artifact;
     }),
   }), /Unexpected compiler target/);
-  assert.throws(() => verifyReviewedInputs(networks, 'testnets', {
-    read: changedJson(compilerArtifact, artifact => {
-      artifact.metadata.settings.remappings[0] += 'changed';
-      return artifact;
-    }),
-  }), /Compiler settings or deployment bytecode differs/);
   assert.throws(() => verifyReviewedInputs(networks, 'testnets', {
     read: changedJson('out/StickyHook.sol/StickyHook.json', artifact => {
       artifact.metadata.settings.compilationTarget = { 'src/Other.sol': 'StickyHook' };
@@ -89,20 +86,66 @@ test('compiler settings, artifact targets and bytecode are bound to the reviewed
   }), /Unexpected compiler target/);
   assert.throws(() => verifyReviewedInputs(networks, 'testnets', {
     read: changedJson('out/StickyHook.sol/StickyHook.json', artifact => {
+      const [reference] = Object.values(artifact.deployedBytecode.immutableReferences);
+      reference[0].start++;
+      return artifact;
+    }),
+  }), /Compiler settings or deployment artifact differs/);
+  assert.throws(() => verifyReviewedInputs(networks, 'testnets', {
+    read: changedJson('out/StickyHook.sol/StickyHook.json', artifact => {
       artifact.deployedBytecode.object += '00';
       return artifact;
     }),
-  }), /Compiler settings or deployment bytecode differs/);
+  }), /Compiler settings or deployment artifact differs/);
 });
 
-test('compiler identity is portable across checkout-root remapping contexts', () => {
+test('compiler identity excludes resolver-local remapping metadata', () => {
   verifyReviewedInputs(networks, 'testnets', {
     read: changedJson(compilerArtifact, artifact => {
-      artifact.metadata.settings.remappings = artifact.metadata.settings.remappings.map(remapping =>
-        remapping.replace(/^\/.*?\/(?=node_modules\/)/, '/different/checkout/root/')).reverse();
+      artifact.metadata.settings.remappings = [
+        '/different/checkout/root/node_modules/@example/dependency/=vendor/arbitrary/',
+        'entirely-different/=resolver-path/',
+      ];
+      artifact.metadata.settings = Object.fromEntries(Object.entries(artifact.metadata.settings).reverse());
       return artifact;
     }),
   });
+});
+
+test('immutable reference identity ignores compiler keys and ordering while preserving groups and ranges', () => {
+  verifyReviewedInputs(networks, 'testnets', {
+    read: changedJson('out/StickyDistributor.sol/StickyDistributor.json', artifact => {
+      artifact.deployedBytecode.immutableReferences = Object.fromEntries(
+        Object.values(artifact.deployedBytecode.immutableReferences).reverse()
+          .map((references, index) => [`renamed-${index}`, [...references].reverse()]),
+      );
+      return artifact;
+    }),
+  });
+
+  for (const change of [
+    artifact => {
+      const [[, first], [, second], ...remaining] = Object.entries(artifact.deployedBytecode.immutableReferences);
+      artifact.deployedBytecode.immutableReferences = {
+        merged: [...first, ...second], ...Object.fromEntries(remaining),
+      };
+    },
+    artifact => {
+      const entries = Object.entries(artifact.deployedBytecode.immutableReferences);
+      const index = entries.findIndex(([, references]) => references.length > 1);
+      const [[key, references]] = entries.splice(index, 1);
+      artifact.deployedBytecode.immutableReferences = {
+        ...Object.fromEntries(entries), [`${key}-first`]: [references[0]], [`${key}-rest`]: references.slice(1),
+      };
+    },
+  ]) {
+    assert.throws(() => verifyReviewedInputs(networks, 'testnets', {
+      read: changedJson('out/StickyDistributor.sol/StickyDistributor.json', artifact => {
+        change(artifact);
+        return artifact;
+      }),
+    }), /Compiler settings or deployment artifact differs/);
+  }
 });
 
 test('a changed Sucker deployment address artifact is rejected', () => {

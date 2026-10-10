@@ -1,6 +1,6 @@
 # Style Guide
 
-Sticky follows the [Juicebox V6 style guide](https://github.com/Bananapus/nana-core-v6/blob/feff600654aee6fb1747dded692f18068b2230a6/STYLE_GUIDE.md). The workspace's `nana-core-v6` is the canonical source for Solidity layout, named arguments, complete NatSpec, comments, formatting, and repository conventions.
+Sticky follows the [Juicebox V6 style guide](https://github.com/Bananapus/nana-core-v6/blob/feff600654aee6fb1747dded692f18068b2230a6/STYLE_GUIDE.md). That pinned upstream guide is the canonical source for Solidity layout, named arguments, complete NatSpec, comments, formatting, and repository conventions.
 
 Use the same language in source, documentation, and the client: deposits issue **Sticky shares**, **backing** belongs to those shares after excluding orphaned funds, a **tranche** records the age of a deposit, and a **streak** records uninterrupted positive ownership. State the cash out curve, fee treatment, and rounding limits when describing redemption. A tranche's age and a holder's streak are distinct from the distributor's balance snapshot.
 
