@@ -15,6 +15,8 @@ import {StickyToken} from "../../../src/StickyToken.sol";
 import {StickyCoreDeployment} from "../../../script/structs/StickyCoreDeployment.sol";
 import {StickyDeploymentAddresses} from "../../../script/structs/StickyDeploymentAddresses.sol";
 
+import {StickyDeploymentHarness} from "../../deployment/StickyDeploymentHarness.sol";
+
 import {StickyRealProjectContext, StickyRealProjectFork} from "./StickyRealProjectFork.sol";
 
 /// @notice Qualification fixture for the existing Ethereum Sticky release and real, migrated JBX.
@@ -76,7 +78,53 @@ abstract contract StickyJbxDeployedFork is StickyRealProjectFork {
         assertEq(context.underlying.decimals(), 18, "canonical JBX decimals");
     }
 
-    /// @notice Launches through the real deployed factory with the same sole AutoStick granter as the web client.
+    /// @notice Authenticates existing singleton runtime identities from the connected chain's verified manifest.
+    /// @param deployment The production helper owning canonical network folder names.
+    /// @return legacy The deployed legacy factory, hook, distributor, receiver, receiver factory and adapter.
+    function _legacySingletons(StickyDeploymentHarness deployment) internal view returns (address[6] memory legacy) {
+        string memory manifest =
+            vm.readFile(string.concat("deployments/", deployment.network(block.chainid), "/verified.json"));
+        assertEq(vm.parseJsonUint(manifest, ".chainId"), block.chainid, "legacy deployment manifest chain");
+        legacy = [
+            _checkedAddress(manifest, "deployer"),
+            _checkedAddress(manifest, "hook"),
+            _checkedAddress(manifest, "distributor"),
+            _checkedAddress(manifest, "rewardReceiver"),
+            _checkedAddress(manifest, "rewardReceiverFactory"),
+            _checkedAddress(manifest, "autoStick")
+        ];
+    }
+
+    /// @notice Authenticates the deployed release and actual JBX, then deploys the proposed suite on that fork.
+    /// @dev The candidate is created through the production helper. Existing code, core, tokens and storage remain
+    /// intact.
+    /// @return context The actual JBX fixture with the fully bound proposed Sticky suite.
+    function _proposedJbxContext() internal returns (StickyRealProjectContext memory context) {
+        context = _deployedJbxContext();
+        StickyDeploymentHarness deployment = new StickyDeploymentHarness();
+        address[6] memory legacy = _legacySingletons(deployment);
+        bytes32[6] memory previousHashes;
+        for (uint256 i = 0; i < legacy.length; ++i) {
+            previousHashes[i] = legacy[i].codehash;
+        }
+        StickyCoreDeployment memory core = deployment.loadCore("node_modules/@bananapus/core-v6/deployments");
+        assertEq(
+            address(core.controller), address(context.core.controller), "candidate uses actual deployed controller"
+        );
+        assertEq(address(core.directory), address(context.core.directory), "candidate uses actual deployed directory");
+        assertEq(address(core.terminal), address(context.core.terminal), "candidate uses actual deployed terminal");
+        context.core = core;
+        context.suite = deployment.deployFor({core: core, destinationChainId: 1});
+        deployment.verify({core: core, deployed: context.suite});
+        for (uint256 i = 0; i < legacy.length; ++i) {
+            assertEq(
+                legacy[i].codehash, previousHashes[i], "candidate deployment preserves historical runtime identity"
+            );
+        }
+        assertEq(_JBX.codehash, _JBX_RUNTIME_HASH, "candidate deployment preserves actual JBX");
+    }
+
+    /// @notice Launches through the selected suite with the same sole AutoStick granter as the web client.
     function _launchDeployedJbx(
         StickyRealProjectContext memory context,
         uint256 tax,
@@ -153,6 +201,10 @@ abstract contract StickyJbxDeployedFork is StickyRealProjectFork {
         assertEq(token.totalSupply(), supplyBefore, "no synthetic JBX issuance");
     }
 
+    /// @notice Authenticates one already deployed runtime against the committed manifest.
+    /// @param manifest The selected chain's verified deployment manifest.
+    /// @param key The singleton or core dependency's manifest key.
+    /// @return target The authenticated deployed address.
     function _checkedAddress(string memory manifest, string memory key) private view returns (address target) {
         target = vm.parseJsonAddress(manifest, string.concat(".", key));
         assertGt(target.code.length, 0, string.concat(key, " must already be deployed"));

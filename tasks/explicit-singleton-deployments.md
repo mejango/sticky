@@ -22,6 +22,8 @@
 
 333/333 Solidity tests across 19 suites and 112/112 deployment/artifact/style Node checks pass. Production lint, formatter, diff checks, size checks and changed documentation links pass without warnings/notes. Finalized-fork rehearsals completed for all four testnets and all four mainnets. Independent source/script review found no security blocker; one import-order finding was corrected. External source and core/sucker deployment inputs are unchanged; compiler/artifact identities were refreshed for the intentional constructor changes. Four unchanged singleton implementations retain their prior bytecode/ABI identities.
 
+Four-chain real-project fork qualification also passes 86/86 cases across seven suites, including the current candidate suite routing V6 project 1 and 3 reserved splits from OP, Base and Arbitrum to a real-JBX Ethereum position. Source forks and their candidate singleton accounts are provisioned before creating the Ethereum stake; strict stake-preservation and final redemption assertions remain intact. This corrects fixture ordering without production accounting changes or state substitution.
+
 Finalized live testnet roots: Sepolia previous root is FAILED with leavesExecuted=2/5; the other three are COMPLETED at 5/5. All four have zero active root and nonce14, so no old active root blocks a replacement. The mainnet backend issue remains separate and unresolved. No proposal, transaction, package publication or merge was performed during this revision.
 
 Root resources: /Users/jango/Documents/jb/v6/evm/AGENTS.md, workflow/ponytail/SKILL.md, docs/PLAN_REFINEMENT.md, tasks/lessons.md.
