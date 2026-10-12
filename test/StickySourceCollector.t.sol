@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {IStickySourceFeePayer} from "../src/interfaces/IStickySourceFeePayer.sol";
+
 import {IJBCashOutTerminal} from "@bananapus/core-v6/src/interfaces/IJBCashOutTerminal.sol";
 import {IJBController} from "@bananapus/core-v6/src/interfaces/IJBController.sol";
 import {IJBDirectory} from "@bananapus/core-v6/src/interfaces/IJBDirectory.sol";
@@ -41,6 +43,7 @@ import {StickySourceFeeTerminal} from "./helpers/StickySourceFeeTerminal.sol";
 import {StickySourceSucker} from "./helpers/StickySourceSucker.sol";
 import {StickySourceToken} from "./helpers/StickySourceToken.sol";
 import {StickySourceTokens} from "./helpers/StickySourceTokens.sol";
+import {StickyTestSingletonDeployment} from "./helpers/StickyTestSingletonDeployment.sol";
 
 /// @notice Attributed reserve custody remains conserved across callbacks, partial delivery and retries.
 /// @dev Tokens, credits, controller failure/burn, outboxes and receiver settlement mutate real EVM state. Route
@@ -282,6 +285,7 @@ contract StickySourceCollectorTest is Test {
 
     /// @notice Missing canonical dependencies cannot establish the shared custody boundary.
     function test_constructorRejectsMissingBindings() public {
+        IStickySourceFeePayer feePayer = _collector.FEE_PAYER();
         vm.expectRevert(
             abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_InvalidDependency.selector, address(0))
         );
@@ -289,7 +293,8 @@ contract StickySourceCollectorTest is Test {
             registry: IJBSuckerRegistry(address(0)),
             tokens: IJBTokens(address(_tokens)),
             receiverFactory: IStickyRewardReceiverFactory(address(_factory)),
-            destinationChainId: 1
+            destinationChainId: 1,
+            feePayer: feePayer
         });
         vm.expectRevert(
             abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_InvalidDependency.selector, address(0))
@@ -298,7 +303,8 @@ contract StickySourceCollectorTest is Test {
             registry: IJBSuckerRegistry(_registry),
             tokens: IJBTokens(address(0)),
             receiverFactory: IStickyRewardReceiverFactory(address(_factory)),
-            destinationChainId: 1
+            destinationChainId: 1,
+            feePayer: feePayer
         });
         vm.expectRevert(
             abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_InvalidDependency.selector, address(0))
@@ -307,18 +313,156 @@ contract StickySourceCollectorTest is Test {
             registry: IJBSuckerRegistry(_registry),
             tokens: IJBTokens(address(_tokens)),
             receiverFactory: IStickyRewardReceiverFactory(address(0)),
-            destinationChainId: 1
+            destinationChainId: 1,
+            feePayer: feePayer
         });
+    }
+
+    /// @notice The separately deployed fee payer authorizes only its reciprocal collector.
+    function test_constructorBindsExplicitFeePayer() public view {
+        assertEq(_collector.FEE_PAYER().COLLECTOR(), address(_collector));
+        assertGt(address(_collector.FEE_PAYER()).code.length, 0);
+    }
+
+    /// @notice A counterfactual fee payer must exist before the collector accepts custody.
+    function test_constructorRejectsMissingFeePayerCode() public {
+        address missing = makeAddr("missing fee payer");
+        vm.expectRevert(
+            abi.encodeWithSelector(StickySourceCollector.StickySourceCollector_InvalidDependency.selector, missing)
+        );
+        new StickySourceCollector({
+            registry: IJBSuckerRegistry(_registry),
+            tokens: IJBTokens(address(_tokens)),
+            receiverFactory: IStickyRewardReceiverFactory(address(_factory)),
+            destinationChainId: 1,
+            feePayer: IStickySourceFeePayer(missing)
+        });
+    }
+
+    /// @notice A payer bound to a different collector cannot receive this collector's transport budget.
+    function test_constructorRejectsWrongFeePayerParent() public {
+        IStickySourceFeePayer wrongPayer = _collector.FEE_PAYER();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceCollector.StickySourceCollector_InvalidFeePayer.selector,
+                address(wrongPayer),
+                address(_collector)
+            )
+        );
+        new StickySourceCollector({
+            registry: IJBSuckerRegistry(_registry),
+            tokens: IJBTokens(address(_tokens)),
+            receiverFactory: IStickyRewardReceiverFactory(address(_factory)),
+            destinationChainId: 1,
+            feePayer: wrongPayer
+        });
+    }
+
+    /// @notice Explicit fee payer configuration cannot fix its authorization to an inaccessible zero address.
+    function test_feePayerRejectsZeroDeploymentAuthority() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceFeePayer.StickySourceFeePayer_InvalidDeploymentAuthority.selector, address(0)
+            )
+        );
+        new StickySourceFeePayer({deploymentAuthority: address(0)});
+    }
+
+    /// @notice Only the constructor authority may bind a fee payer, and its parent cannot be replaced.
+    function test_feePayerBindingIsAuthorizedAndOneShot() public {
+        IStickySourceFeePayer feePayer = StickyTestSingletonDeployment.prepareFeePayer();
+        StickySourceCollector parent = new StickySourceCollector({
+            registry: IJBSuckerRegistry(_registry),
+            tokens: IJBTokens(address(_tokens)),
+            receiverFactory: IStickyRewardReceiverFactory(address(_factory)),
+            destinationChainId: 1,
+            feePayer: feePayer
+        });
+        address stranger = makeAddr("fee binding stranger");
+        vm.prank(stranger);
+        vm.expectRevert(
+            abi.encodeWithSelector(StickySourceFeePayer.StickySourceFeePayer_BindingUnauthorized.selector, stranger)
+        );
+        feePayer.setCollector(address(parent));
+        assertEq(feePayer.COLLECTOR(), address(0));
+        feePayer.setCollector(address(parent));
+        assertEq(feePayer.COLLECTOR(), address(parent));
+        vm.expectRevert(
+            abi.encodeWithSelector(StickySourceFeePayer.StickySourceFeePayer_AlreadyBound.selector, address(parent))
+        );
+        feePayer.setCollector(address(parent));
+    }
+
+    /// @notice Missing collector code cannot acquire fee-payer custody.
+    function test_feePayerBindingRejectsMissingParentCode() public {
+        IStickySourceFeePayer feePayer = StickyTestSingletonDeployment.prepareFeePayer();
+        address missing = makeAddr("missing fee parent");
+        vm.expectRevert(
+            abi.encodeWithSelector(StickySourceFeePayer.StickySourceFeePayer_InvalidCollector.selector, missing)
+        );
+        feePayer.setCollector(missing);
+        assertEq(feePayer.COLLECTOR(), address(0));
+    }
+
+    /// @notice A collector permanently referencing another payer cannot bind this payer.
+    function test_feePayerBindingRejectsWrongReciprocalReference() public {
+        IStickySourceFeePayer feePayer = StickyTestSingletonDeployment.prepareFeePayer();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                StickySourceFeePayer.StickySourceFeePayer_InvalidCollector.selector, address(_collector)
+            )
+        );
+        feePayer.setCollector(address(_collector));
+        assertEq(feePayer.COLLECTOR(), address(0));
+    }
+
+    /// @notice Sending before the fee payer is bound rolls back attribution, route preparation and native payment.
+    function test_unboundFeePayerSendRollsBack() public {
+        IStickySourceFeePayer feePayer = StickyTestSingletonDeployment.prepareFeePayer();
+        _collector = new StickySourceCollector({
+            registry: IJBSuckerRegistry(_registry),
+            tokens: IJBTokens(address(_tokens)),
+            receiverFactory: IStickyRewardReceiverFactory(address(_factory)),
+            destinationChainId: 1,
+            feePayer: feePayer
+        });
+        _queueDefault(_AMOUNT);
+        _mockDefaultPreview(_AMOUNT);
+        uint256 callerBalance = _caller.balance;
+        vm.expectRevert(
+            abi.encodeWithSelector(StickySourceFeePayer.StickySourceFeePayer_Unauthorized.selector, address(_collector))
+        );
+        _sendTo({
+            projectId: 3,
+            stickyToken: _stickyA,
+            groupId: 0,
+            amount: _AMOUNT,
+            route: _sucker,
+            backing: JBConstants.NATIVE_TOKEN,
+            value: _FEE
+        });
+        assertEq(_collector.totalPendingOf(3), _AMOUNT);
+        assertEq(_three.balanceOf(address(_collector)), _AMOUNT);
+        assertEq(_sucker.prepareCalls(), 0);
+        assertEq(_caller.balance, callerBalance);
+        assertEq(feePayer.COLLECTOR(), address(0));
     }
 
     /// @notice Every collector must bind a real destination namespace before it can accept any custody.
     function test_constructorRejectsZeroDestinationChain() public {
+        IStickySourceFeePayer preparedFeePayer = StickyTestSingletonDeployment.prepareFeePayer();
         vm.expectRevert(
             abi.encodeWithSelector(
                 StickySourceCollector.StickySourceCollector_InvalidDestinationChainId.selector, uint256(0)
             )
         );
-        _newCollector(0);
+        new StickySourceCollector({
+            registry: IJBSuckerRegistry(_registry),
+            tokens: IJBTokens(address(_tokens)),
+            receiverFactory: IStickyRewardReceiverFactory(address(_factory)),
+            destinationChainId: 0,
+            feePayer: preparedFeePayer
+        });
     }
 
     /// @notice Credits and tokens jointly back all buckets while unrelated donated custody remains unassigned.
@@ -1965,7 +2109,7 @@ contract StickySourceCollectorTest is Test {
     /// @param destinationChainId The home chain bound into this collector's immutable configuration.
     /// @return collector The newly deployed collector and its isolated fee child.
     function _newCollector(uint256 destinationChainId) internal returns (StickySourceCollector collector) {
-        return new StickySourceCollector({
+        return StickyTestSingletonDeployment.deployCollector({
             registry: IJBSuckerRegistry(_registry),
             tokens: IJBTokens(address(_tokens)),
             receiverFactory: IStickyRewardReceiverFactory(address(_factory)),

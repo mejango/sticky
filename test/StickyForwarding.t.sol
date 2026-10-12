@@ -14,6 +14,7 @@ import {StickyDistributor} from "../src/StickyDistributor.sol";
 import {StickyHook} from "../src/StickyHook.sol";
 import {IStickyDistributor} from "../src/interfaces/IStickyDistributor.sol";
 import {IStickyHook} from "../src/interfaces/IStickyHook.sol";
+import {StickyTestSingletonDeployment} from "./helpers/StickyTestSingletonDeployment.sol";
 
 /// @notice A sponsor relays launches and holder actions through core's trusted forwarder, which appends the signer.
 contract StickyForwardingTest is TestBaseWorkflow {
@@ -45,7 +46,8 @@ contract StickyForwardingTest is TestBaseWorkflow {
     /// @notice Deploys the Sticky suite against core, whose forwarder every Sticky contract adopts.
     function setUp() public override {
         super.setUp();
-        _deployer = new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal()});
+        _deployer =
+            StickyTestSingletonDeployment.deployDeployer({controller: jbController(), terminal: jbMultiTerminal()});
         _distributor = new StickyDistributor({
             controller: jbController(),
             directory: jbDirectory(),

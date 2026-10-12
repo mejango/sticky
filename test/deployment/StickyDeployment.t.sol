@@ -19,6 +19,7 @@ import {StickyDeploymentAddresses} from "../../script/structs/StickyDeploymentAd
 import {StickyImmutableReference} from "../../script/structs/StickyImmutableReference.sol";
 
 import {StickyDeploymentHarness} from "./StickyDeploymentHarness.sol";
+import {StickyTestSingletonDeployment} from "../helpers/StickyTestSingletonDeployment.sol";
 
 /// @notice Tests the production deployment helper against real core contracts, without live network writes.
 contract StickyDeploymentTest is TestBaseWorkflow {
@@ -82,6 +83,62 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         // Stand in for the core forwarder contract, which verification requires to have code.
         // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.etch(trustedForwarder(), hex"00");
+    }
+
+    /// @notice A stopped proposal after child CREATE2 deployment safely resumes the same unbound dependencies.
+    function test_resumesUnboundCreate2Dependencies() public {
+        StickyDeploymentAddresses memory predicted =
+            _deployment.deployUnboundDependenciesOnly({core: _core, destinationChainId: 1});
+        assertEq(StickyHook(predicted.hook).DEPLOYER(), address(0));
+        assertEq(StickySourceFeePayer(predicted.sourceFeePayer).COLLECTOR(), address(0));
+        bytes32 hookHash = predicted.hook.codehash;
+        bytes32 feeHash = predicted.sourceFeePayer.codehash;
+        StickyDeploymentAddresses memory deployed = _deployment.deployFor({core: _core, destinationChainId: 1});
+        assertEq(deployed.hook.codehash, hookHash);
+        assertEq(deployed.sourceFeePayer.codehash, feeHash);
+        _deployment.verify({core: _core, deployed: deployed});
+    }
+
+    /// @notice A conflicting hook binding halts before the parent receives permanent accounting authority.
+    function test_rejectsConflictingHookBindingBeforeParentDeployment() public {
+        StickyDeploymentAddresses memory predicted =
+            _deployment.deployUnboundDependenciesOnly({core: _core, destinationChainId: 1});
+        vm.mockCall(predicted.hook, abi.encodeWithSignature("DEPLOYER()"), abi.encode(address(this)));
+        vm.expectPartialRevert(StickyDeployment.StickyDeployment_BindingMismatch.selector);
+        _deployment.deployFor({core: _core, destinationChainId: 1});
+        assertEq(predicted.deployer.code.length, 0);
+    }
+
+    /// @notice A substituted setup authority cannot gain permanent custody through verified deployment reuse.
+    function test_rejectsWrongHookSetupAuthorityBeforeParentDeployment() public {
+        StickyDeploymentAddresses memory predicted =
+            _deployment.deployUnboundDependenciesOnly({core: _core, destinationChainId: 1});
+        vm.mockCall(predicted.hook, abi.encodeWithSignature("DEPLOYMENT_AUTHORITY()"), abi.encode(address(this)));
+        vm.expectPartialRevert(StickyDeployment.StickyDeployment_BindingMismatch.selector);
+        _deployment.deployFor({core: _core, destinationChainId: 1});
+        assertEq(predicted.deployer.code.length, 0);
+    }
+
+    /// @notice A conflicting fee-payer binding halts before collector custody can be deployed.
+    function test_rejectsConflictingFeePayerBindingBeforeCollectorDeployment() public {
+        StickyDeploymentAddresses memory predicted =
+            _deployment.deployUnboundDependenciesOnly({core: _core, destinationChainId: 1});
+        vm.mockCall(predicted.sourceFeePayer, abi.encodeWithSignature("COLLECTOR()"), abi.encode(address(this)));
+        vm.expectPartialRevert(StickyDeployment.StickyDeployment_BindingMismatch.selector);
+        _deployment.deployFor({core: _core, destinationChainId: 1});
+        assertEq(predicted.sourceCollector.code.length, 0);
+    }
+
+    /// @notice Unexpected fee-payer setup authority cannot acquire custody through deployment reuse.
+    function test_rejectsWrongFeePayerSetupAuthorityBeforeCollectorDeployment() public {
+        StickyDeploymentAddresses memory predicted =
+            _deployment.deployUnboundDependenciesOnly({core: _core, destinationChainId: 1});
+        vm.mockCall(
+            predicted.sourceFeePayer, abi.encodeWithSignature("DEPLOYMENT_AUTHORITY()"), abi.encode(address(this))
+        );
+        vm.expectPartialRevert(StickyDeployment.StickyDeployment_BindingMismatch.selector);
+        _deployment.deployFor({core: _core, destinationChainId: 1});
+        assertEq(predicted.sourceCollector.code.length, 0);
     }
 
     function test_cleanDeploymentAndRepeatPreserveEveryAddressAndOriginalTimestamp() public {
@@ -199,7 +256,8 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         assertLe(deployed.distributor.code.length, 24_576);
 
         // A distributor bound to a different hook has identical opcodes and fails the binding check.
-        StickyDeployer other = new StickyDeployer({controller: _core.controller, terminal: _core.terminal});
+        StickyDeployer other =
+            StickyTestSingletonDeployment.deployDeployer({controller: _core.controller, terminal: _core.terminal});
         StickyDistributor different = new StickyDistributor({
             controller: _core.controller,
             directory: _core.directory,
@@ -305,8 +363,9 @@ contract StickyDeploymentTest is TestBaseWorkflow {
 
     function test_rejectsConsistentlyWrongImmutableDependency() public {
         StickyDeploymentAddresses memory deployed = _deployment.deployFor({core: _core, destinationChainId: 1});
-        // A legitimate second factory has identical opcodes and different constructor-created HOOK references.
-        StickyDeployer different = new StickyDeployer({controller: _core.controller, terminal: _core.terminal});
+        // A legitimate second factory has identical opcodes and different injected HOOK references.
+        StickyDeployer different =
+            StickyTestSingletonDeployment.deployDeployer({controller: _core.controller, terminal: _core.terminal});
         vm.etch(deployed.deployer, address(different).code);
         _deployment.verifyRuntime("StickyDeployer", deployed.deployer);
         vm.expectPartialRevert(StickyDeployment.StickyDeployment_BindingMismatch.selector);
@@ -316,7 +375,7 @@ contract StickyDeploymentTest is TestBaseWorkflow {
 
     function test_rejectsConsistentlyWrongSourceCollectorBinding() public {
         StickyDeploymentAddresses memory deployed = _deployment.deployFor({core: _core, destinationChainId: 1});
-        StickySourceCollector different = new StickySourceCollector({
+        StickySourceCollector different = StickyTestSingletonDeployment.deployCollector({
             registry: _core.registry,
             tokens: _core.controller.TOKENS(),
             receiverFactory: StickySourceCollector(deployed.sourceCollector).RECEIVER_FACTORY(),
@@ -330,9 +389,12 @@ contract StickyDeploymentTest is TestBaseWorkflow {
 
     function test_rejectsConsistentlyWrongSourceFeePayerBinding() public {
         StickyDeploymentAddresses memory deployed = _deployment.deployFor({core: _core, destinationChainId: 1});
-        StickySourceFeePayer different = new StickySourceFeePayer();
+        StickySourceFeePayer different = new StickySourceFeePayer({deploymentAuthority: address(this)});
+        vm.mockCall(address(this), abi.encodeWithSignature("FEE_PAYER()"), abi.encode(address(different)));
+        different.setCollector(address(this));
         vm.etch(deployed.sourceFeePayer, address(different).code);
         _deployment.verifyRuntime({name: "StickySourceFeePayer", target: deployed.sourceFeePayer});
+        vm.mockCall(deployed.sourceFeePayer, abi.encodeWithSignature("COLLECTOR()"), abi.encode(address(this)));
         vm.expectPartialRevert(StickyDeployment.StickyDeployment_BindingMismatch.selector);
         _deployment.verify({core: _core, deployed: deployed});
     }
@@ -534,7 +596,7 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         }
     }
 
-    /// @notice A prefunded nonce-1 child remains deployable and bound to its verified collector.
+    /// @notice A prefunded explicit fee payer remains deployable and bound to its verified collector.
     function test_sourceCollectorBindsCanonicalDependenciesAndItsOnlyFeePayer() public {
         StickyDeploymentAddresses memory predicted = _deployment.predict({core: _core, destinationChainId: 1});
         vm.deal({account: predicted.sourceFeePayer, newBalance: 3 ether});
@@ -547,7 +609,7 @@ contract StickyDeploymentTest is TestBaseWorkflow {
         assertEq(address(collector.RECEIVER_FACTORY()), deployed.rewardReceiverFactory);
         assertEq(address(collector.FEE_PAYER()), deployed.sourceFeePayer);
         assertEq(StickySourceFeePayer(deployed.sourceFeePayer).COLLECTOR(), deployed.sourceCollector);
-        assertEq(deployed.sourceFeePayer, vm.computeCreateAddress({deployer: deployed.sourceCollector, nonce: 1}));
+        assertEq(deployed.sourceFeePayer, predicted.sourceFeePayer);
         assertEq(deployed.sourceFeePayer.balance, 3 ether);
         assertEq(_deployment.STICKY_SALT(), bytes32("StickyDeployerV6"));
         assertEq(_deployment.AUTO_STICK_SALT(), bytes32("StickyAutoStickV6"));

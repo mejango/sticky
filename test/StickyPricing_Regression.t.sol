@@ -26,6 +26,7 @@ import {IStickyHook} from "../src/interfaces/IStickyHook.sol";
 import {StickyPricing} from "../src/libraries/StickyPricing.sol";
 
 import {StickyPricingToken} from "./helpers/StickyPricingToken.sol";
+import {StickyTestSingletonDeployment} from "./helpers/StickyTestSingletonDeployment.sol";
 
 /// @notice Economic regressions use the real V6 terminal, controller, token registry, and cash-out curve.
 contract StickyPricingRegressionTest is TestBaseWorkflow {
@@ -63,7 +64,8 @@ contract StickyPricingRegressionTest is TestBaseWorkflow {
 
     function setUp() public override {
         super.setUp();
-        _deployer = new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal()});
+        _deployer =
+            StickyTestSingletonDeployment.deployDeployer({controller: jbController(), terminal: jbMultiTerminal()});
         _hook = _deployer.HOOK();
         // forge-lint: disable-next-line(literal-instead-of-constant)
         _underlying = new StickyPricingToken(6);

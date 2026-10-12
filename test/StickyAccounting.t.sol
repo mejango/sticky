@@ -14,6 +14,7 @@ import {StickyHook} from "../src/StickyHook.sol";
 import {StickyToken} from "../src/StickyToken.sol";
 
 import {StickyTranche} from "../src/structs/StickyTranche.sol";
+import {StickyTestSingletonDeployment} from "./helpers/StickyTestSingletonDeployment.sol";
 
 /// @notice Regression and reference-model coverage for token-driven position accounting.
 contract StickyAccountingTest is Test {
@@ -79,7 +80,8 @@ contract StickyAccountingTest is Test {
 
     function setUp() public {
         IJBDirectory directory = IJBDirectory(makeAddr("directory"));
-        _hook = new StickyHook({directory: directory, deployer: address(this), trustedForwarder: address(0)});
+        _hook = new StickyHook({directory: directory, deploymentAuthority: address(this), trustedForwarder: address(0)});
+        StickyTestSingletonDeployment.bindMockHookParent({hook: _hook, parent: address(this)});
         _token = new StickyToken({
             name: "Sticky",
             symbol: "STICKY",

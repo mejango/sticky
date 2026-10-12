@@ -9,11 +9,19 @@ const sections = [
   'modifiers', 'receive / fallback', 'external transactions', 'external views', 'public views',
   'public transactions', 'internal transactions', 'internal helpers', 'internal views', 'private helpers',
 ];
-const parameters = value => value.trim() ? value.split(',').map(parameter => {
+const allowedUnnamed = new Map([
+  ['StickyDeployer.onERC721Received', ['0:address', '3:bytes calldata']],
+  ['StickyHook.hasMintPermissionFor', ['0:uint256', '1:JBRuleset memory', '2:address']],
+  ['StickyToken.delegateBySig', ['1:uint256', '2:uint256', '3:uint8', '4:bytes32', '5:bytes32']],
+  ['StickyToken.initialize', ['0:string memory', '1:string memory', '2:address']],
+  ['StickyToken.setMetadata', ['0:string memory', '1:string memory']],
+]);
+const parameters = (value, allowUnnamed = false) => value.trim() ? value.split(',').flatMap(parameter => {
+  if (allowUnnamed && /^\w+(?:\[\d*\])*(?:\s+(?:memory|calldata|storage|payable))?$/.test(parameter.trim())) return [];
   assert.match(parameter.trim(), /^\w+(?:\[\d*\])*(?:\s+(?:memory|calldata|storage|payable))?\s+\w+$/, `Unsupported parameter: ${parameter}`);
   return parameter.trim().split(/\s+/).at(-1);
 }) : [];
-const names = ['StickySourceCollector', 'StickySourceFeePayer'];
+const names = ['StickyDeployer', 'StickyHook', 'StickySourceCollector', 'StickySourceFeePayer'];
 
 function sourceNames(directory = new URL('../../src/', import.meta.url), prefix = '') {
   return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
@@ -80,16 +88,21 @@ function check(name, source) {
         const callable = declaration.match(/^(error|event|function) (\w+)\(([^)]*)\)/);
         const constructor = declaration.match(/^constructor\(([^)]*)\)/);
         const transient = declaration.match(/^\w+ transient (public|internal|private) (\w+);$/);
+        const stored = declaration.match(/^address (public|internal|private) (?:override )?(\w+);$/);
         const property = declaration.match(/^\w+ (public|internal|private) (immutable|constant|transient) (?:override )?(\w+)(?: = [^;]+)?;$/)
-          ?? (transient ? [transient[0], transient[1], 'transient', transient[2]] : null);
+          ?? (transient ? [transient[0], transient[1], 'transient', transient[2]] : null)
+          ?? (stored ? [stored[0], stored[1], 'stored', stored[2]] : null);
         const mapping = declaration.match(/^mapping\s*\(.+\)\s+(public|internal|private)\s+(?:override\s+)?(\w+);$/);
         assert.ok(callable || constructor || property || mapping, `Unsupported declaration: ${declaration}`);
         const memberName = callable?.[2] ?? (constructor ? 'constructor' : property?.[3] ?? mapping[2]);
         const docs = documentation.join('\n');
         assert.match(docs, /@notice\s+\S/, `${memberName} needs a notice.`);
-        assert.ok(memberName.toLowerCase() >= previous.toLowerCase(), `${memberName} must be alphabetized.`);
-        previous = memberName;
-        const args = parameters((callable?.[3] ?? constructor?.[1] ?? '').replace(/ indexed/g, ''));
+        // Preserve the existing constant-style getter APIs before camelCase views, as interfaces do.
+        const sortName = `${callable?.[1] === 'function' && /^[A-Z][A-Z0-9_]*$/.test(memberName) ? '0' : '1'}:${memberName.toLowerCase()}`;
+        assert.ok(sortName >= previous, `${memberName} must be alphabetized.`);
+        previous = sortName;
+        const args = parameters((callable?.[3] ?? constructor?.[1] ?? '').replace(/ indexed/g, ''),
+          allowedUnnamed.has(`${name}.${memberName}`));
         const returns = parameters(declaration.match(/returns\s*\(([^)]*)\)/)?.[1] ?? '');
         const keys = mapping ? [...declaration.matchAll(/mapping\s*\(\s*\w+\s+(\w+)\s*=>/g)].map(match => match[1]) : [];
         if (mapping) assert.equal(keys.length, (declaration.match(/mapping\s*\(/g) ?? []).length, 'Every mapping key must be named.');
@@ -97,6 +110,7 @@ function check(name, source) {
         if (callable?.[1] === 'error') assert.ok(args.length, `${memberName} needs relevant error context.`);
         let expectedSection;
         if (property) expectedSection = property[2] === 'transient' ? 'transient stored properties'
+          : property[2] === 'stored' ? `${property[1]} stored properties`
           : `${property[1]} ${property[2] === 'constant' ? 'constants' : 'immutable stored properties'}`;
         else if (mapping) expectedSection = `${mapping[1]} stored properties`;
         else if (constructor) expectedSection = 'constructor';
@@ -186,13 +200,6 @@ test('production implementations keep their NatSpec local', () => {
 });
 
 test('every production function documents its named parameters and preserves reviewed unnamed inputs', () => {
-  const allowedUnnamed = new Map([
-    ['StickyDeployer.onERC721Received', ['0:address', '3:bytes calldata']],
-    ['StickyHook.hasMintPermissionFor', ['0:uint256', '1:JBRuleset memory', '2:address']],
-    ['StickyToken.delegateBySig', ['1:uint256', '2:uint256', '3:uint8', '4:bytes32', '5:bytes32']],
-    ['StickyToken.initialize', ['0:string memory', '1:string memory', '2:address']],
-    ['StickyToken.setMetadata', ['0:string memory', '1:string memory']],
-  ]);
   const seenUnnamed = new Set();
   for (const sourceName of productionSourceNames) {
     const source = read(sourceName);

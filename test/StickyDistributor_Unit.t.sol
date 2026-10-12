@@ -26,6 +26,7 @@ import {StickyToken} from "../src/StickyToken.sol";
 import {IStickyDistributor} from "../src/interfaces/IStickyDistributor.sol";
 import {IStickyHook} from "../src/interfaces/IStickyHook.sol";
 import {StickyTranche} from "../src/structs/StickyTranche.sol";
+import {StickyTestSingletonDeployment} from "./helpers/StickyTestSingletonDeployment.sol";
 
 /// @notice An 18-decimal ERC-20 standing in for a token that gets staked or handed out as a reward.
 // forge-lint: disable-next-line(multi-contract-file)
@@ -156,7 +157,8 @@ contract StickyDistributorUnitTest is TestBaseWorkflow {
         _staked = new MockErc20("Staked", "STK");
         _reward = new MockErc20("Reward", "RWD");
 
-        _deployer = new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal()});
+        _deployer =
+            StickyTestSingletonDeployment.deployDeployer({controller: jbController(), terminal: jbMultiTerminal()});
         _hook = _deployer.HOOK();
 
         // Deploy a sticky project for the staked token, forwarding the project creation fee.

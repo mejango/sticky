@@ -17,13 +17,6 @@ contract Deploy is StickyDeployment, Sphinx {
     error Deploy_UnexpectedSafe(address expected, address actual);
 
     //*********************************************************************//
-    // ------------------------ private constants ------------------------ //
-    //*********************************************************************//
-
-    /// @notice The registered `sticky` project's 1-of-3 `V6 Jango` Safe.
-    address private constant _EXPECTED_SAFE = 0xd5136c794ee43BEf1eD4cF1eB6DEe45b7F803437;
-
-    //*********************************************************************//
     // -------------------- internal stored properties ------------------- //
     //*********************************************************************//
 
@@ -49,8 +42,8 @@ contract Deploy is StickyDeployment, Sphinx {
     /// @notice Validates connected-chain dependencies before collecting the Sphinx proposal.
     function run() public {
         address actualSafe = safeAddress();
-        if (actualSafe != _EXPECTED_SAFE) {
-            revert Deploy_UnexpectedSafe({expected: _EXPECTED_SAFE, actual: actualSafe});
+        if (actualSafe != DEPLOYMENT_AUTHORITY) {
+            revert Deploy_UnexpectedSafe({expected: DEPLOYMENT_AUTHORITY, actual: actualSafe});
         }
         _core = _loadCore();
         deploy();

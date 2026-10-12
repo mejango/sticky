@@ -1,15 +1,21 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {IStickyHook} from "../src/interfaces/IStickyHook.sol";
+import {ERC2771Context} from "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+
+import {IJBController} from "@bananapus/core-v6/src/interfaces/IJBController.sol";
 import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
 import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 import {StickyDeployer} from "../src/StickyDeployer.sol";
+import {StickyHook} from "../src/StickyHook.sol";
 import {StickyToken} from "../src/StickyToken.sol";
 
 import {StickyTestFeeReceiver} from "./helpers/StickyTestFeeReceiver.sol";
 import {StickyTestLauncher} from "./helpers/StickyTestLauncher.sol";
+import {StickyTestSingletonDeployment} from "./helpers/StickyTestSingletonDeployment.sol";
 
 /// @notice Creation fees retain their original payer through Sticky's immutable project owner.
 contract StickyDeployerRegressionTest is TestBaseWorkflow {
@@ -44,14 +50,159 @@ contract StickyDeployerRegressionTest is TestBaseWorkflow {
         _receiver = new StickyTestFeeReceiver();
         vm.prank(jbProjects().owner());
         jbProjects().setCreationFee({fee: _FEE, receiver: payable(address(_receiver))});
-        _deployer = new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal()});
+        _deployer =
+            StickyTestSingletonDeployment.deployDeployer({controller: jbController(), terminal: jbMultiTerminal()});
         vm.deal(_launcher, _FEE);
+    }
+
+    /// @notice The injected hook permanently authorizes this factory and retains canonical callback bindings.
+    function test_constructorBindsExplicitHook() public view {
+        assertEq(_deployer.HOOK().DEPLOYER(), address(_deployer));
+        assertEq(address(_deployer.HOOK().DIRECTORY()), address(jbDirectory()));
+        assertEq(ERC2771Context(address(_deployer.HOOK())).trustedForwarder(), _deployer.trustedForwarder());
+    }
+
+    /// @notice Counterfactual hook authority must still identify an accessible nonzero deployer.
+    function test_hookRejectsZeroDeploymentAuthority() public {
+        vm.expectRevert(abi.encodeWithSelector(StickyHook.StickyHook_InvalidDeploymentAuthority.selector, address(0)));
+        new StickyHook({
+            directory: jbDirectory(), deploymentAuthority: address(0), trustedForwarder: trustedForwarder()
+        });
+    }
+
+    /// @notice Missing hook code cannot become the project's accounting boundary.
+    function test_constructorRejectsMissingHookCode() public {
+        address missing = makeAddr("missing hook");
+        vm.expectRevert(abi.encodeWithSelector(StickyDeployer.StickyDeployer_InvalidHook.selector, missing));
+        new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal(), hook: IStickyHook(missing)});
+    }
+
+    /// @notice A genuine hook bound to another factory cannot authorize this factory's launches.
+    function test_constructorRejectsWrongHookParent() public {
+        IStickyHook wrongHook = _deployer.HOOK();
+        vm.expectRevert(abi.encodeWithSelector(StickyDeployer.StickyDeployer_InvalidHook.selector, address(wrongHook)));
+        new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal(), hook: wrongHook});
+    }
+
+    /// @notice A hook cannot authenticate terminals against a different directory.
+    function test_constructorRejectsWrongHookDirectory() public {
+        IStickyHook preparedHook = StickyTestSingletonDeployment.prepareHook(jbController());
+        vm.mockCall(
+            address(preparedHook), abi.encodeCall(IStickyHook.DIRECTORY, ()), abi.encode(makeAddr("wrong directory"))
+        );
+        vm.expectRevert(
+            abi.encodeWithSelector(StickyDeployer.StickyDeployer_InvalidHook.selector, address(preparedHook))
+        );
+        new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal(), hook: preparedHook});
+    }
+
+    /// @notice The hook and factory cannot interpret forwarded signers under different trust policies.
+    function test_constructorRejectsWrongHookForwarder() public {
+        IStickyHook preparedHook = StickyTestSingletonDeployment.prepareHook(jbController());
+        vm.mockCall(
+            address(preparedHook),
+            abi.encodeCall(ERC2771Context.trustedForwarder, ()),
+            abi.encode(makeAddr("wrong forwarder"))
+        );
+        vm.expectRevert(
+            abi.encodeWithSelector(StickyDeployer.StickyDeployer_InvalidHook.selector, address(preparedHook))
+        );
+        new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal(), hook: preparedHook});
+    }
+
+    /// @notice Only the constructor-selected authority may complete an initially unbound hook.
+    function test_hookBindingIsAuthorizedAndOneShot() public {
+        IStickyHook hook = StickyTestSingletonDeployment.prepareHook(jbController());
+        StickyDeployer parent =
+            new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal(), hook: hook});
+        address stranger = makeAddr("binding stranger");
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(StickyHook.StickyHook_BindingUnauthorized.selector, stranger));
+        hook.setDeployer(address(parent));
+        assertEq(hook.DEPLOYER(), address(0));
+        hook.setDeployer(address(parent));
+        assertEq(hook.DEPLOYER(), address(parent));
+        vm.expectRevert(abi.encodeWithSelector(StickyHook.StickyHook_AlreadyBound.selector, address(parent)));
+        hook.setDeployer(address(parent));
+    }
+
+    /// @notice Missing parent code cannot complete a hook binding.
+    function test_hookBindingRejectsMissingParentCode() public {
+        IStickyHook hook = StickyTestSingletonDeployment.prepareHook(jbController());
+        address missing = makeAddr("missing hook parent");
+        vm.expectRevert(abi.encodeWithSelector(StickyHook.StickyHook_InvalidDeployer.selector, missing));
+        hook.setDeployer(missing);
+        assertEq(hook.DEPLOYER(), address(0));
+    }
+
+    /// @notice A parent's different immutable hook cannot acquire this hook's accounting authority.
+    function test_hookBindingRejectsWrongReciprocalReference() public {
+        IStickyHook hook = StickyTestSingletonDeployment.prepareHook(jbController());
+        vm.expectRevert(abi.encodeWithSelector(StickyHook.StickyHook_InvalidDeployer.selector, address(_deployer)));
+        hook.setDeployer(address(_deployer));
+        assertEq(hook.DEPLOYER(), address(0));
+    }
+
+    /// @notice One-time binding verifies the parent controller's actual terminal directory.
+    function test_hookBindingRejectsWrongParentDirectory() public {
+        IStickyHook hook = StickyTestSingletonDeployment.prepareHook(jbController());
+        StickyDeployer parent =
+            new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal(), hook: hook});
+        vm.mockCall(
+            address(parent.CONTROLLER()),
+            abi.encodeCall(IJBController.DIRECTORY, ()),
+            abi.encode(makeAddr("wrong binding directory"))
+        );
+        vm.expectRevert(abi.encodeWithSelector(StickyHook.StickyHook_InvalidDeployer.selector, address(parent)));
+        hook.setDeployer(address(parent));
+        assertEq(hook.DEPLOYER(), address(0));
+    }
+
+    /// @notice One-time binding verifies the parent interprets forwarded signers under the same trust policy.
+    function test_hookBindingRejectsWrongParentForwarder() public {
+        IStickyHook hook = StickyTestSingletonDeployment.prepareHook(jbController());
+        StickyDeployer parent =
+            new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal(), hook: hook});
+        vm.mockCall(
+            address(parent),
+            abi.encodeCall(ERC2771Context.trustedForwarder, ()),
+            abi.encode(makeAddr("wrong binding forwarder"))
+        );
+        vm.expectRevert(abi.encodeWithSelector(StickyHook.StickyHook_InvalidDeployer.selector, address(parent)));
+        hook.setDeployer(address(parent));
+        assertEq(hook.DEPLOYER(), address(0));
+    }
+
+    /// @notice Launch failure while unbound rolls back core ownership and creation-fee state.
+    function test_unboundHookLaunchRollsBack() public {
+        IStickyHook hook = StickyTestSingletonDeployment.prepareHook(jbController());
+        StickyDeployer parent =
+            new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal(), hook: hook});
+        uint256 projectCount = jbProjects().count();
+        uint256 balanceBefore = _launcher.balance;
+        vm.prank(_launcher);
+        vm.expectRevert(
+            abi.encodeWithSelector(StickyHook.StickyHook_Unauthorized.selector, address(parent), address(0))
+        );
+        parent.deployStickyFor{value: _FEE}({
+            stakedToken: IERC20Metadata(address(usdcToken())),
+            name: "Unbound",
+            symbol: "stU",
+            projectUri: "",
+            cashOutTaxRate: 0,
+            granters: new address[](0),
+            soulbound: false
+        });
+        assertEq(jbProjects().count(), projectCount);
+        assertEq(_launcher.balance, balanceBefore);
+        assertEq(hook.DEPLOYER(), address(0));
     }
 
     /// @notice The nested-share restriction is local to one factory; another factory can put transferable shares
     /// and their reward weight in terminal custody, even though the nested holder can still recover their shares.
     function test_crossFactoryStickySharesCanAccrueTerminalRewardWeight() public {
-        StickyDeployer otherDeployer = new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal()});
+        StickyDeployer otherDeployer =
+            StickyTestSingletonDeployment.deployDeployer({controller: jbController(), terminal: jbMultiTerminal()});
         vm.deal(_launcher, 2 * _FEE);
         vm.startPrank(_launcher);
         // forge-lint: disable-next-item(arbitrary-send-eth)

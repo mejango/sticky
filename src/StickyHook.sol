@@ -20,6 +20,7 @@ import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
+import {IStickyDeployer} from "./interfaces/IStickyDeployer.sol";
 import {IStickyHook} from "./interfaces/IStickyHook.sol";
 
 import {StickyPricing} from "./libraries/StickyPricing.sol";
@@ -40,6 +41,14 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
     //*********************************************************************//
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
+
+    /// @notice Thrown when a deployer binding is already set, so registration authority cannot be replaced.
+    /// @param deployer The permanently bound deployer.
+    error StickyHook_AlreadyBound(address deployer);
+
+    /// @notice Thrown when an account other than the deployment authority attempts the one-time deployer binding.
+    /// @param caller The account attempting the binding.
+    error StickyHook_BindingUnauthorized(address caller);
 
     /// @notice Thrown when a pay or cash out hook callback comes from an address that isn't a terminal of the project.
     /// @param caller The address that attempted the callback.
@@ -63,6 +72,15 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
     /// @param backing The terminal's current backing for the project.
     /// @param orphanedBalance The backing excluded from Sticky share ownership.
     error StickyHook_InvalidBacking(uint256 projectId, uint256 backing, uint256 orphanedBalance);
+
+    /// @notice Thrown when a deployer is missing or has a different hook, directory or forwarder, so registration
+    /// authority cannot be bound to an incompatible project launcher.
+    /// @param deployer The supplied deployer address.
+    error StickyHook_InvalidDeployer(address deployer);
+
+    /// @notice Thrown when no deployment authority is supplied, so the deployer binding cannot remain inaccessible.
+    /// @param deploymentAuthority The supplied deployment authority.
+    error StickyHook_InvalidDeploymentAuthority(address deploymentAuthority);
 
     /// @notice Thrown when an epoch range ends before it starts, so it selects no buckets.
     /// @param fromEpoch The first epoch in the requested range.
@@ -143,8 +161,9 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
     // --------------- public immutable stored properties ---------------- //
     //*********************************************************************//
 
-    /// @notice The address allowed to set a project's granters, once, at launch.
-    address public immutable override DEPLOYER;
+    /// @notice The only account allowed to bind the deployer once.
+    /// @dev Has no operation authority after the deployer is bound.
+    address public immutable override DEPLOYMENT_AUTHORITY;
 
     /// @notice The directory of terminals and controllers for projects.
     IJBDirectory public immutable override DIRECTORY;
@@ -230,21 +249,40 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
         _tranchesOf;
 
     //*********************************************************************//
+    // -------------------- private stored properties -------------------- //
+    //*********************************************************************//
+
+    /// @notice The address allowed to register project tokens and set granters, once, at launch.
+    /// @dev Zero until the deployment authority completes the permanent one-time binding.
+    address private _deployer;
+
+    //*********************************************************************//
     // -------------------------- constructor ---------------------------- //
     //*********************************************************************//
 
-    /// @notice Binds position accounting to the trusted project directory and sticky deployer.
+    /// @notice Binds position accounting to the trusted project directory and one-time deployment authority.
     /// @param directory The directory of terminals and controllers for projects.
-    /// @param deployer The address allowed to set a project's granters, once, at launch.
+    /// @dev The authority binds a deployed launcher that reciprocally references this hook. Project registration
+    /// remains inaccessible until that binding is complete.
+    /// @param deploymentAuthority The nonzero account allowed to bind the project's deployer exactly once.
     /// @param trustedForwarder A trusted forwarder of transactions to this contract.
-    // The Sticky deployer creates its hook with its own nonzero address as the immutable registrar.
-    // forge-lint: disable-next-line(missing-zero-check)
-    constructor(IJBDirectory directory, address deployer, address trustedForwarder) ERC2771Context(trustedForwarder) {
+    constructor(
+        IJBDirectory directory,
+        address deploymentAuthority,
+        address trustedForwarder
+    )
+        ERC2771Context(trustedForwarder)
+    {
+        // CREATE2 uses the factory as sender, so the intended setup authority must be supplied explicitly.
+        if (deploymentAuthority == address(0)) {
+            revert StickyHook_InvalidDeploymentAuthority(deploymentAuthority);
+        }
+
         // Use the project's directory to authenticate terminal callbacks against its registered terminals.
         DIRECTORY = directory;
 
-        // Keep registration authority fixed so only the launch deployer can bind tokens and granters.
-        DEPLOYER = deployer;
+        // Restrict the one-time reciprocal binding without introducing ongoing configuration authority.
+        DEPLOYMENT_AUTHORITY = deploymentAuthority;
     }
 
     //*********************************************************************//
@@ -467,13 +505,36 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
         });
     }
 
+    /// @notice Permanently binds the deployer authorized to register project tokens and granters.
+    /// @dev Only the explicit deployment authority can bind once. The caller is authenticated directly, without
+    /// forwarding, and the deployed launcher must share this hook's directory and trusted forwarder.
+    /// @param deployer The deployed launcher that permanently references this hook.
+    function setDeployer(address deployer) external override {
+        // Setup authority cannot be impersonated by a constructor factory or forwarded caller.
+        if (msg.sender != DEPLOYMENT_AUTHORITY) revert StickyHook_BindingUnauthorized(msg.sender);
+
+        // A completed binding permanently removes every account's ability to select another launcher.
+        if (_deployer != address(0)) revert StickyHook_AlreadyBound(_deployer);
+
+        // Require deployed reciprocal dependencies before opening project registration.
+        if (
+            deployer.code.length == 0 || address(IStickyDeployer(deployer).HOOK()) != address(this)
+                || address(IStickyDeployer(deployer).CONTROLLER().DIRECTORY()) != address(DIRECTORY)
+                || ERC2771Context(deployer).trustedForwarder() != trustedForwarder()
+        ) revert StickyHook_InvalidDeployer(deployer);
+
+        // Store the sole runtime registration authority only after every reciprocal check succeeds.
+        _deployer = deployer;
+        emit BindDeployer({deployer: deployer, caller: msg.sender});
+    }
+
     /// @notice Allows addresses to airdrop stakes to any holder of a sticky project.
     /// @dev Can only be called by the deployer, which calls it once at launch — a project's granters are permanent.
     /// @param projectId The ID of the sticky project the senders can airdrop to.
     /// @param granters The addresses allowed to airdrop.
     function setGrantersFor(uint256 projectId, address[] calldata granters) external override {
         // Only the launch deployer may grant permission to add stakes without each beneficiary's consent.
-        if (msg.sender != DEPLOYER) revert StickyHook_Unauthorized({caller: msg.sender, deployer: DEPLOYER});
+        if (msg.sender != _deployer) revert StickyHook_Unauthorized({caller: msg.sender, deployer: _deployer});
 
         // Solidity initializes the index to zero, covering every granter supplied at launch.
         // forge-lint: disable-next-line(uninitialized-local)
@@ -494,7 +555,7 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
     /// @param token The Sticky share token.
     function setTokenFor(uint256 projectId, address token) external override {
         // Only the launch deployer may choose the token trusted to report this project's ownership changes.
-        if (msg.sender != DEPLOYER) revert StickyHook_Unauthorized({caller: msg.sender, deployer: DEPLOYER});
+        if (msg.sender != _deployer) revert StickyHook_Unauthorized({caller: msg.sender, deployer: _deployer});
 
         // Bind movement reports to the share token so external callers cannot change position accounting.
         // The SetToken event below records both the project and the token receiving this permission.
@@ -520,6 +581,12 @@ contract StickyHook is ERC165, ERC2771Context, IStickyHook {
     //*********************************************************************//
     // ----------------------- external views ---------------------------- //
     //*********************************************************************//
+
+    /// @notice The permanently bound project launcher, zero until the one-time setup is completed.
+    /// @return deployer The launcher authorized to register project tokens and granters.
+    function DEPLOYER() external view override returns (address deployer) {
+        return _deployer;
+    }
 
     /// @notice Prices a cash out against share-owned backing, excluding funds that existed without any shares.
     /// @param context The cash out context passed to this hook by the terminal.

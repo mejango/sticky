@@ -11,6 +11,11 @@ import {StickyTranche} from "../structs/StickyTranche.sol";
 /// @notice A data hook that tracks staking positions for sticky projects: per-epoch tranches, LIFO unstaking, net
 /// stake buckets by joining epoch, and a holder-level streak clock.
 interface IStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
+    /// @notice Emitted when the deployment authority permanently binds the project's launcher.
+    /// @param deployer The launcher authorized to register project tokens and granters.
+    /// @param caller The deployment authority that completed the binding.
+    event BindDeployer(address indexed deployer, address caller);
+
     /// @notice Emitted when backing present without any shares is excluded from future holders' claims.
     /// @param projectId The ID of the sticky project.
     /// @param amount The total excluded underlying balance, in underlying token atoms.
@@ -77,8 +82,12 @@ interface IStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     );
 
     /// @notice The address allowed to set a project's granters, once, at launch.
-    /// @return deployer The immutable deployer.
+    /// @return deployer The permanently bound deployer, zero until the one-time setup is completed.
     function DEPLOYER() external view returns (address deployer);
+
+    /// @notice The only account allowed to bind the deployer once, with no operation authority after binding.
+    /// @return deploymentAuthority The explicit deployment-time binding authority.
+    function DEPLOYMENT_AUTHORITY() external view returns (address deploymentAuthority);
 
     /// @notice The directory of terminals and controllers for projects.
     /// @return directory The directory used to validate terminal callbacks.
@@ -232,6 +241,12 @@ interface IStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @param to The holder the shares moved to.
     /// @param amount The number of shares moved, as a fixed point number with 18 decimals.
     function recordTransfer(uint256 projectId, address from, address to, uint256 amount) external;
+
+    /// @notice Permanently binds the deployed launcher authorized to register project tokens and granters.
+    /// @dev Only the explicit deployment authority can call once. The launcher must reference this hook, share its
+    /// directory and trusted forwarder, and have deployed code. Forwarded callers cannot complete this binding.
+    /// @param deployer The deployed launcher to bind permanently.
+    function setDeployer(address deployer) external;
 
     /// @notice Allows addresses to airdrop stakes to any holder of a sticky project.
     /// @dev Can only be called by the deployer, which calls it once at launch.

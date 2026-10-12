@@ -11,6 +11,7 @@ import {StickyDeployer} from "../../src/StickyDeployer.sol";
 import {StickyDistributor} from "../../src/StickyDistributor.sol";
 import {StickyRewardReceiver} from "../../src/StickyRewardReceiver.sol";
 import {StickyRewardReceiverFactory} from "../../src/StickyRewardReceiverFactory.sol";
+import {StickyTestSingletonDeployment} from "../helpers/StickyTestSingletonDeployment.sol";
 
 /// @notice A freely mintable ERC-20 standing in for a reward or staked asset.
 // forge-lint: disable-next-line(multi-contract-file)
@@ -70,7 +71,8 @@ contract DaybreakCounterfactualTokenCaptureTest is TestBaseWorkflow {
     function setUp() public override {
         super.setUp();
 
-        _deployer = new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal()});
+        _deployer =
+            StickyTestSingletonDeployment.deployDeployer({controller: jbController(), terminal: jbMultiTerminal()});
         _distributor = new StickyDistributor({
             controller: jbController(),
             directory: jbDirectory(),

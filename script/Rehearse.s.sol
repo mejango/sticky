@@ -10,8 +10,11 @@ contract Rehearse is StickyDeployment {
     /// @notice Exercises fresh/partial deployment or verified reuse for every home, then repeats each one.
     function run() public {
         StickyCoreDeployment memory core = _loadCore();
+        // Reproduce the reviewed Safe's one-time binding calls without broadcasting.
+        vm.startPrank(DEPLOYMENT_AUTHORITY);
         _deployAll(core);
         StickyDeploymentAddresses[4] memory deployed = _deployAll(core);
+        vm.stopPrank();
         for (uint256 i; i < deployed.length; i++) {
             _writeManifest({core: core, deployed: deployed[i], kind: "simulation"});
         }

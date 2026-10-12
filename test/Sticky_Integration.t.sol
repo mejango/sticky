@@ -19,6 +19,7 @@ import {AutoStickStatus} from "../src/enums/AutoStickStatus.sol";
 import {IStickyHook} from "../src/interfaces/IStickyHook.sol";
 
 import {StickyTranche} from "../src/structs/StickyTranche.sol";
+import {StickyTestSingletonDeployment} from "./helpers/StickyTestSingletonDeployment.sol";
 
 /// @notice A 6-decimal token standing in for a project token to be staked (e.g. ART).
 // forge-lint: disable-next-line(multi-contract-file)
@@ -79,7 +80,8 @@ contract StickyIntegrationTest is TestBaseWorkflow {
         super.setUp();
 
         _art = new MockArt();
-        _deployer = new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal()});
+        _deployer =
+            StickyTestSingletonDeployment.deployDeployer({controller: jbController(), terminal: jbMultiTerminal()});
         _hook = _deployer.HOOK();
 
         // Deploy a sticky project for ART, forwarding the project creation fee.

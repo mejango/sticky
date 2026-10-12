@@ -11,6 +11,7 @@ import {StickyAutoStick} from "../src/StickyAutoStick.sol";
 import {StickyDeployer} from "../src/StickyDeployer.sol";
 import {StickyDistributor} from "../src/StickyDistributor.sol";
 import {AutoStickStatus} from "../src/enums/AutoStickStatus.sol";
+import {StickyTestSingletonDeployment} from "./helpers/StickyTestSingletonDeployment.sol";
 
 /// @notice An ERC-20 with configurable decimals that serves as both the staked and the reward token.
 // forge-lint: disable-next-line(multi-contract-file)
@@ -96,7 +97,8 @@ contract StickyRewardsRegressionTest is TestBaseWorkflow {
 
     function setUp() public override {
         super.setUp();
-        _deployer = new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal()});
+        _deployer =
+            StickyTestSingletonDeployment.deployDeployer({controller: jbController(), terminal: jbMultiTerminal()});
     }
 
     function test_compoundKeepsZeroIssuanceRewardsClaimable() public {

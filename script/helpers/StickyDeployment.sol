@@ -22,8 +22,8 @@ import {StickyDeploymentAddresses} from "../structs/StickyDeploymentAddresses.so
 import {StickyImmutableReference} from "../structs/StickyImmutableReference.sol";
 
 /// @notice Shared, restartable Sticky deployment and verification logic.
-/// @dev Only the canonical CREATE2 factory receives transactions. Runtime comparison uses compiler-reported
-/// immutable offsets, followed by explicit checks of every immutable dependency and distributor setting.
+/// @dev The canonical CREATE2 factory deploys singletons; the reviewed Safe binds reciprocal dependencies once.
+/// Runtime comparison uses compiler-reported immutable offsets, followed by explicit dependency and policy checks.
 abstract contract StickyDeployment is Script {
     //*********************************************************************//
     // --------------------------- custom errors ------------------------- //
@@ -65,6 +65,12 @@ abstract contract StickyDeployment is Script {
     /// @notice The canonical deterministic deployment proxy used throughout Juicebox V6.
     address public constant DETERMINISTIC_FACTORY = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
 
+    /// @notice The reviewed V6 Jango Safe authorized to bind singleton dependencies once.
+    address public constant DEPLOYMENT_AUTHORITY = 0xd5136c794ee43BEf1eD4cF1eB6DEe45b7F803437;
+
+    /// @notice The CREATE2 salt domain for explicitly deployed destination fee payers.
+    bytes32 public constant SOURCE_FEE_PAYER_SALT = "StickySourceFeePayerV6Explicit1";
+
     /// @notice The CREATE2 salt used for the shared omnichain reserved-token split hook.
     bytes32 public constant SOURCE_COLLECTOR_SALT = "StickySourceCollectorV6";
 
@@ -101,7 +107,18 @@ abstract contract StickyDeployment is Script {
         _verifyFactory();
         deployed = _predict({core: core, destinationChainId: destinationChainId});
         // Verify each dependency before using its address in another singleton's constructor arguments.
-        _deployIfNeeded({name: "StickyDeployer", salt: STICKY_SALT, args: abi.encode(core.controller, core.terminal)});
+        _deployIfNeeded({
+            name: "StickyHook",
+            salt: STICKY_SALT,
+            args: abi.encode(core.directory, DEPLOYMENT_AUTHORITY, _forwarderOf(core))
+        });
+        _verifyHook({core: core, deployed: deployed, requireBound: false});
+        _deployIfNeeded({
+            name: "StickyDeployer", salt: STICKY_SALT, args: abi.encode(core.controller, core.terminal, deployed.hook)
+        });
+        if (StickyHook(deployed.hook).DEPLOYER() == address(0)) {
+            StickyHook(deployed.hook).setDeployer(deployed.deployer);
+        }
         _verifyDeployer({core: core, deployed: deployed});
         _deployIfNeeded({
             name: "StickyDistributor", salt: STICKY_SALT, args: _distributorArgs({core: core, hook: deployed.hook})
@@ -115,12 +132,25 @@ abstract contract StickyDeployment is Script {
             name: "StickyAutoStick", salt: AUTO_STICK_SALT, args: abi.encode(deployed.deployer, deployed.distributor)
         });
         _deployIfNeeded({
+            name: "StickySourceFeePayer",
+            salt: _sourceFeePayerSalt(destinationChainId),
+            args: abi.encode(DEPLOYMENT_AUTHORITY)
+        });
+        _verifyFeePayer({deployed: deployed, requireBound: false});
+        _deployIfNeeded({
             name: "StickySourceCollector",
             salt: SOURCE_COLLECTOR_SALT,
             args: abi.encode(
-                core.registry, core.controller.TOKENS(), deployed.rewardReceiverFactory, destinationChainId
+                core.registry,
+                core.controller.TOKENS(),
+                deployed.rewardReceiverFactory,
+                destinationChainId,
+                deployed.sourceFeePayer
             )
         });
+        if (StickySourceFeePayer(deployed.sourceFeePayer).COLLECTOR() == address(0)) {
+            StickySourceFeePayer(deployed.sourceFeePayer).setCollector(deployed.sourceCollector);
+        }
         _verify({core: core, deployed: deployed});
     }
 
@@ -224,6 +254,12 @@ abstract contract StickyDeployment is Script {
         _serializeContract({key: key, name: "sourceCollector", target: deployed.sourceCollector});
         _serializeContract({key: key, name: "sourceFeePayer", target: deployed.sourceFeePayer});
         // forge-lint: disable-next-line(unused-return)
+        vm.serializeAddress({objectKey: key, valueKey: "deploymentAuthority", value: DEPLOYMENT_AUTHORITY});
+        // forge-lint: disable-next-line(unused-return)
+        vm.serializeBytes32({
+            objectKey: key, valueKey: "sourceFeePayerSalt", value: _sourceFeePayerSalt(deployed.destinationChainId)
+        });
+        // forge-lint: disable-next-line(unused-return)
         vm.serializeBytes32({objectKey: key, valueKey: "sourceCollectorSalt", value: SOURCE_COLLECTOR_SALT});
         // forge-lint: disable-next-line(unused-return)
         vm.serializeBytes32({objectKey: key, valueKey: "stickySalt", value: STICKY_SALT});
@@ -307,7 +343,8 @@ abstract contract StickyDeployment is Script {
         _verifyCore(core);
     }
 
-    /// @notice Predicts every singleton, including the hook created by the deployer's constructor.
+    /// @notice Predicts every explicitly deployed singleton, binding reciprocal dependencies once through the reviewed
+    /// Safe.
     /// @param core The core dependencies included in constructor arguments.
     /// @param destinationChainId The selected pool home chain for this collector family.
     /// @return deployed The predicted deployment addresses.
@@ -321,10 +358,14 @@ abstract contract StickyDeployment is Script {
     {
         _requireDestinationChainId(destinationChainId);
         deployed.destinationChainId = destinationChainId;
-        deployed.deployer = _predictContract({
-            name: "StickyDeployer", salt: STICKY_SALT, args: abi.encode(core.controller, core.terminal)
+        deployed.hook = _predictContract({
+            name: "StickyHook",
+            salt: STICKY_SALT,
+            args: abi.encode(core.directory, DEPLOYMENT_AUTHORITY, _forwarderOf(core))
         });
-        deployed.hook = vm.computeCreateAddress({deployer: deployed.deployer, nonce: 1});
+        deployed.deployer = _predictContract({
+            name: "StickyDeployer", salt: STICKY_SALT, args: abi.encode(core.controller, core.terminal, deployed.hook)
+        });
         deployed.distributor = _predictContract({
             name: "StickyDistributor", salt: STICKY_SALT, args: _distributorArgs({core: core, hook: deployed.hook})
         });
@@ -336,14 +377,22 @@ abstract contract StickyDeployment is Script {
         deployed.autoStick = _predictContract({
             name: "StickyAutoStick", salt: AUTO_STICK_SALT, args: abi.encode(deployed.deployer, deployed.distributor)
         });
+        deployed.sourceFeePayer = _predictContract({
+            name: "StickySourceFeePayer",
+            salt: _sourceFeePayerSalt(destinationChainId),
+            args: abi.encode(DEPLOYMENT_AUTHORITY)
+        });
         deployed.sourceCollector = _predictContract({
             name: "StickySourceCollector",
             salt: SOURCE_COLLECTOR_SALT,
             args: abi.encode(
-                core.registry, core.controller.TOKENS(), deployed.rewardReceiverFactory, destinationChainId
+                core.registry,
+                core.controller.TOKENS(),
+                deployed.rewardReceiverFactory,
+                destinationChainId,
+                deployed.sourceFeePayer
             )
         });
-        deployed.sourceFeePayer = vm.computeCreateAddress({deployer: deployed.sourceCollector, nonce: 1});
     }
 
     /// @notice Predicts the complete ordered home-family set for the connected environment.
@@ -567,6 +616,51 @@ abstract contract StickyDeployment is Script {
             || nameHash == keccak256("arbitrum");
     }
 
+    /// @notice Derives a separate fee-payer salt for each supported destination.
+    /// @param destinationChainId The selected pool home chain.
+    /// @return salt The domain-separated CREATE2 salt.
+    function _sourceFeePayerSalt(uint256 destinationChainId) internal pure returns (bytes32 salt) {
+        return keccak256(abi.encode(SOURCE_FEE_PAYER_SALT, destinationChainId));
+    }
+
+    /// @notice Checks all accounting-hook immutable bindings before deploying its consumer.
+    /// @param core The expected core dependencies.
+    /// @param deployed The predicted singleton addresses.
+    /// @param requireBound Whether the reciprocal deployer binding must already be finalized.
+    function _verifyHook(
+        StickyCoreDeployment memory core,
+        StickyDeploymentAddresses memory deployed,
+        bool requireBound
+    )
+        private
+        view
+    {
+        _verifyRuntime({name: "StickyHook", target: deployed.hook});
+        StickyHook hook = StickyHook(deployed.hook);
+        if (
+            (hook.DEPLOYER() != deployed.deployer && (requireBound || hook.DEPLOYER() != address(0)))
+                || hook.DEPLOYMENT_AUTHORITY() != DEPLOYMENT_AUTHORITY
+                || address(hook.DIRECTORY()) != address(core.directory) || hook.trustedForwarder() != _forwarderOf(core)
+        ) {
+            revert StickyDeployment_BindingMismatch({target: deployed.hook, binding: "hook dependencies"});
+        }
+    }
+
+    /// @notice Checks fee-payer authorization before deploying its collector consumer.
+    /// @param deployed The predicted destination-family addresses.
+    /// @param requireBound Whether the reciprocal collector binding must already be finalized.
+    function _verifyFeePayer(StickyDeploymentAddresses memory deployed, bool requireBound) private view {
+        _verifyRuntime({name: "StickySourceFeePayer", target: deployed.sourceFeePayer});
+        StickySourceFeePayer feePayer = StickySourceFeePayer(deployed.sourceFeePayer);
+        if (
+            feePayer.DEPLOYMENT_AUTHORITY() != DEPLOYMENT_AUTHORITY
+                || (feePayer.COLLECTOR() != deployed.sourceCollector
+                    && (requireBound || feePayer.COLLECTOR() != address(0)))
+        ) {
+            revert StickyDeployment_BindingMismatch({target: deployed.sourceFeePayer, binding: "fee payer collector"});
+        }
+    }
+
     /// @notice Predicts a contract's canonical CREATE2 address.
     /// @param name The compiled artifact name.
     /// @param salt The salt.
@@ -634,12 +728,12 @@ abstract contract StickyDeployment is Script {
         vm.serializeBytes32({objectKey: key, valueKey: string.concat(name, "Codehash"), value: target.codehash});
     }
 
-    /// @notice Verifies the factory and its constructor-created hook.
+    /// @notice Verifies the factory and its explicitly deployed hook.
     /// @param core The expected core dependencies.
     /// @param deployed The predicted Sticky addresses.
     function _verifyDeployer(StickyCoreDeployment memory core, StickyDeploymentAddresses memory deployed) private view {
         _verifyRuntime({name: "StickyDeployer", target: deployed.deployer});
-        _verifyRuntime({name: "StickyHook", target: deployed.hook});
+        _verifyHook({core: core, deployed: deployed, requireBound: true});
         StickyDeployer factory = StickyDeployer(deployed.deployer);
         StickyHook hook = StickyHook(deployed.hook);
         if (
@@ -695,7 +789,7 @@ abstract contract StickyDeployment is Script {
         }
     }
 
-    /// @notice Verifies the shared source hook and its constructor-created fee custodian.
+    /// @notice Verifies the shared source hook and its explicitly deployed fee custodian.
     /// @param core The expected canonical dependencies.
     /// @param deployed The predicted singleton and child addresses.
     function _verifySourceCollector(
@@ -707,7 +801,7 @@ abstract contract StickyDeployment is Script {
     {
         // Check both code bodies before trusting their getters, including every immutable occurrence.
         _verifyRuntime({name: "StickySourceCollector", target: deployed.sourceCollector});
-        _verifyRuntime({name: "StickySourceFeePayer", target: deployed.sourceFeePayer});
+        _verifyFeePayer({deployed: deployed, requireBound: true});
         StickySourceCollector collector = StickySourceCollector(deployed.sourceCollector);
         if (
             collector.DESTINATION_CHAIN_ID() != deployed.destinationChainId
