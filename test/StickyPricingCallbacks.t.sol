@@ -18,6 +18,7 @@ import {IStickyDistributor} from "../src/interfaces/IStickyDistributor.sol";
 import {IStickyHook} from "../src/interfaces/IStickyHook.sol";
 
 import {StickyCallbackToken} from "./helpers/StickyCallbackToken.sol";
+import {StickyTestSingletonDeployment} from "./helpers/StickyTestSingletonDeployment.sol";
 
 /// @notice Records what the hook reports about a payment in progress at the moment it is called.
 // forge-lint: disable-next-line(multi-contract-file)
@@ -74,7 +75,8 @@ contract StickyPricingCallbacksTest is TestBaseWorkflow {
     function setUp() public override {
         super.setUp();
         _underlying = new StickyCallbackToken();
-        StickyDeployer deployer = new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal()});
+        StickyDeployer deployer =
+            StickyTestSingletonDeployment.deployDeployer({controller: jbController(), terminal: jbMultiTerminal()});
         _hook = deployer.HOOK();
         uint256 fee = jbProjects().creationFee();
         vm.deal(address(this), fee);

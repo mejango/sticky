@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {StickyHook} from "../../src/StickyHook.sol";
+
+import {ERC2771Context} from "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+
 import {StickyDeployment} from "../../script/helpers/StickyDeployment.sol";
 
 import {StickyCoreDeployment} from "../../script/structs/StickyCoreDeployment.sol";
@@ -12,11 +16,63 @@ contract StickyDeploymentHarness is StickyDeployment {
     // ---------------------- external transactions ---------------------- //
     //*********************************************************************//
 
+    /// @notice Deploys or verifies every home-chain family in canonical proposal order.
+    /// @param core The V6 core contracts every family binds to.
+    /// @return deployed The four complete family deployments.
+    function deployAllFor(StickyCoreDeployment memory core)
+        external
+        returns (StickyDeploymentAddresses[4] memory deployed)
+    {
+        vm.startPrank(DEPLOYMENT_AUTHORITY);
+        deployed = _deployAll(core);
+        vm.stopPrank();
+    }
+
     /// @notice Deploys only the factory so a later full deployment resumes from partial state.
     /// @param core The V6 core contracts the factory binds to.
     function deployDeployerOnly(StickyCoreDeployment memory core) external {
         _verifyCore(core);
-        _deployIfNeeded({name: "StickyDeployer", salt: STICKY_SALT, args: abi.encode(core.controller, core.terminal)});
+        StickyDeploymentAddresses memory predicted = _predict({core: core, destinationChainId: 1});
+        vm.startPrank(DEPLOYMENT_AUTHORITY);
+        _deployIfNeeded({
+            name: "StickyHook",
+            salt: STICKY_SALT,
+            args: abi.encode(
+                core.directory, DEPLOYMENT_AUTHORITY, ERC2771Context(address(core.controller)).trustedForwarder()
+            )
+        });
+        _deployIfNeeded({
+            name: "StickyDeployer", salt: STICKY_SALT, args: abi.encode(core.controller, core.terminal, predicted.hook)
+        });
+        StickyHook(predicted.hook).setDeployer(predicted.deployer);
+        vm.stopPrank();
+    }
+
+    /// @notice Creates the unbound children to exercise partial deployment recovery.
+    /// @param core The core dependencies.
+    /// @param destinationChainId The collector's home chain.
+    /// @return deployed The predicted suite with only Hook and FeePayer deployed.
+    function deployUnboundDependenciesOnly(
+        StickyCoreDeployment memory core,
+        uint256 destinationChainId
+    )
+        external
+        returns (StickyDeploymentAddresses memory deployed)
+    {
+        _verifyCore(core);
+        deployed = _predict({core: core, destinationChainId: destinationChainId});
+        _deployIfNeeded({
+            name: "StickyHook",
+            salt: STICKY_SALT,
+            args: abi.encode(
+                core.directory, DEPLOYMENT_AUTHORITY, ERC2771Context(address(core.controller)).trustedForwarder()
+            )
+        });
+        _deployIfNeeded({
+            name: "StickySourceFeePayer",
+            salt: _sourceFeePayerSalt(destinationChainId),
+            args: abi.encode(DEPLOYMENT_AUTHORITY)
+        });
     }
 
     /// @notice Deploys, or resumes deploying, the full Sticky suite bound to the given core contracts.
@@ -30,7 +86,9 @@ contract StickyDeploymentHarness is StickyDeployment {
         external
         returns (StickyDeploymentAddresses memory deployed)
     {
-        return _deploy({core: core, destinationChainId: destinationChainId});
+        vm.startPrank(DEPLOYMENT_AUTHORITY);
+        deployed = _deploy({core: core, destinationChainId: destinationChainId});
+        vm.stopPrank();
     }
 
     /// @notice Writes the test manifest for a deployed suite.
@@ -43,6 +101,12 @@ contract StickyDeploymentHarness is StickyDeployment {
     //*********************************************************************//
     // ----------------------- external views ---------------------------- //
     //*********************************************************************//
+
+    /// @notice Lists every supported collector home in the connected source chain's environment.
+    /// @return chainIds The four mainnet or testnet home chain IDs in proposal order.
+    function destinationChainIds() external view returns (uint256[4] memory chainIds) {
+        return _destinationChainIds();
+    }
 
     /// @notice Loads the V6 core contracts from deployment artifacts under a root directory.
     /// @param root The directory holding the per-network artifact folders.
@@ -70,12 +134,6 @@ contract StickyDeploymentHarness is StickyDeployment {
         returns (StickyCoreDeployment memory core)
     {
         return _loadCoreFrom({root: root, suckerRoot: suckerRoot});
-    }
-
-    /// @notice Loads and validates the operator's explicit destination-family environment selection.
-    /// @return destinationChainId The selected home chain in the connected source's network environment.
-    function loadDestinationChainId() external view returns (uint256 destinationChainId) {
-        return _loadDestinationChainId();
     }
 
     /// @notice Resolves the deployment folder name for a chain.

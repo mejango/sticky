@@ -3,12 +3,14 @@ pragma solidity 0.8.28;
 
 import {IJBController} from "@bananapus/core-v6/src/interfaces/IJBController.sol";
 import {IJBTerminal} from "@bananapus/core-v6/src/interfaces/IJBTerminal.sol";
+import {ERC2771Context} from "@openzeppelin/contracts/metatx/ERC2771Context.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {console2} from "forge-std/console2.sol";
 
 import {StickyAutoStick} from "../src/StickyAutoStick.sol";
 import {StickyDeployer} from "../src/StickyDeployer.sol";
 import {StickyDistributor} from "../src/StickyDistributor.sol";
+import {StickyHook} from "../src/StickyHook.sol";
 import {StickyRewardReceiver} from "../src/StickyRewardReceiver.sol";
 import {StickyRewardReceiverFactory} from "../src/StickyRewardReceiverFactory.sol";
 
@@ -49,7 +51,13 @@ contract DeployLocal is StickyDeployment {
 
         MockArt art = new MockArt();
         MockBan ban = new MockBan();
-        StickyDeployer deployer = new StickyDeployer({controller: controller, terminal: terminal});
+        StickyHook hook = new StickyHook({
+            directory: core.directory,
+            deploymentAuthority: msg.sender,
+            trustedForwarder: ERC2771Context(address(controller)).trustedForwarder()
+        });
+        StickyDeployer deployer = new StickyDeployer({controller: controller, terminal: terminal, hook: hook});
+        hook.setDeployer(address(deployer));
 
         // A demo rewards distributor with fast rounds: 10-minute rounds, vested after 2 rounds, 7-day claims.
         StickyDistributor distributor = new StickyDistributor({
@@ -62,8 +70,8 @@ contract DeployLocal is StickyDeployment {
         });
 
         StickyAutoStick autoStick = new StickyAutoStick({deployer: deployer, distributor: distributor});
-        StickyRewardReceiverFactory rewardReceiverFactory =
-            new StickyRewardReceiverFactory(new StickyRewardReceiver(distributor));
+        StickyRewardReceiver rewardReceiver = new StickyRewardReceiver(distributor);
+        StickyRewardReceiverFactory rewardReceiverFactory = new StickyRewardReceiverFactory(rewardReceiver);
 
         // The immutable adapter is available to every holder from launch. This does not enable auto-stick or grant a
         // token allowance for anyone; each holder still opts in and approves their own underlying token.

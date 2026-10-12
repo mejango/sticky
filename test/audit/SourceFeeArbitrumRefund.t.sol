@@ -59,7 +59,9 @@ contract SourceFeeArbitrumRefundTest is Test {
             tokens: IJBTokens(tokens),
             registry: IJBSuckerRegistry(registry)
         });
-        _child = new StickySourceFeePayer();
+        _child = new StickySourceFeePayer({deploymentAuthority: address(this)});
+        vm.mockCall(address(this), abi.encodeWithSignature("FEE_PAYER()"), abi.encode(address(_child)));
+        _child.setCollector(address(this));
         vm.fee(1 gwei);
         vm.deal(address(_child), 1 ether);
     }

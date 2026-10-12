@@ -14,7 +14,6 @@ gas_limit = 9223372036854775807
 libs = ["node_modules", "lib"]
 fs_permissions = [
   { access = "read", path = "./" },
-  { access = "read", path = "../../nana-core-v6/deployments" },
   { access = "read-write", path = "./deployments" },
   { access = "read-write", path = "./cache" }
 ]
@@ -23,6 +22,7 @@ fs_permissions = [
 # CREATE2 factory even when the same call succeeds on its RPC. Use this execution model for production setup.
 [profile.deploy]
 isolate = false
+deny = "notes"
 
 [profile.fork]
 # Real-project setup uses the same production artifact inspection as deployment rehearsals.
@@ -38,6 +38,9 @@ runs = 4096
 runs = 1024
 depth = 100
 fail_on_revert = false
+
+[lint]
+lint_on_build = false
 
 [fmt]
 number_underscore = "thousands"

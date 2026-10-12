@@ -23,9 +23,10 @@ import {StickyJbxDeployedFork} from "./helpers/StickyJbxDeployedFork.sol";
 import {StickyRealProjectContext} from "./helpers/StickyRealProjectFork.sol";
 
 /// @notice Qualifies generic reserved-token credit custody and delayed ERC-20 settlement on real Ethereum V6 core.
-/// @dev The source project and shared collector are deployed only on the pinned local fork. Existing core and Sticky
-/// contracts execute their deployed code, and the JBX stake comes from real holder inventory. No token, credit,
-/// runtime, or accounting storage is fabricated. This does not establish a production collector deployment.
+/// @dev The candidate Sticky suite and source project are deployed only on the pinned local fork through the production
+/// helper. Existing core executes its deployed code, legacy Sticky runtimes remain intact, and the JBX stake comes
+/// from real holder inventory. No token, credit, deployed code or accounting storage is replaced. This does not
+/// establish a production deployment.
 contract StickySourceCreditsForkTest is StickyJbxDeployedFork {
     //*********************************************************************//
     // ----------------------- internal constants ------------------------ //
@@ -68,7 +69,7 @@ contract StickySourceCreditsForkTest is StickyJbxDeployedFork {
     /// @notice The generic source project launched with no ERC-20 and no payment terminal.
     uint256 internal _sourceProjectId;
 
-    /// @notice The locally launched Sticky JBX share token, using the existing deployed suite.
+    /// @notice The locally launched Sticky JBX share token, using the proposed suite on actual deployed core.
     StickyToken internal _sticky;
 
     /// @notice The canonical source credit and ERC-20 registry.
@@ -80,7 +81,7 @@ contract StickySourceCreditsForkTest is StickyJbxDeployedFork {
 
     /// @notice Creates a backed JBX position, adds the shared source hook, and configures a new generic source project.
     function setUp() public {
-        _ethereum = _deployedJbxContext();
+        _ethereum = _proposedJbxContext();
         _holder = makeAddr("generic credit reward holder");
         _keeper = makeAddr("generic credit reward keeper");
         _sourceOwner = makeAddr("generic credit source owner");
@@ -103,14 +104,14 @@ contract StickySourceCreditsForkTest is StickyJbxDeployedFork {
         _ethereum.core.registry = IJBSuckerRegistry(vm.parseJsonAddress(registryArtifact, ".address"));
         StickyDeploymentHarness deployment = new StickyDeploymentHarness();
         StickyDeploymentAddresses memory deployed = deployment.deployFor({core: _ethereum.core, destinationChainId: 1});
-        assertEq(deployed.deployer, _ethereum.suite.deployer, "existing project factory preserved");
-        assertEq(deployed.hook, _ethereum.suite.hook, "existing position accounting preserved");
-        assertEq(deployed.distributor, _ethereum.suite.distributor, "existing reward ledger preserved");
-        assertEq(deployed.rewardReceiver, _ethereum.suite.rewardReceiver, "existing receiver implementation preserved");
+        assertEq(deployed.deployer, _ethereum.suite.deployer, "candidate project factory reused");
+        assertEq(deployed.hook, _ethereum.suite.hook, "candidate position accounting reused");
+        assertEq(deployed.distributor, _ethereum.suite.distributor, "candidate reward ledger reused");
+        assertEq(deployed.rewardReceiver, _ethereum.suite.rewardReceiver, "candidate receiver implementation reused");
         assertEq(
-            deployed.rewardReceiverFactory, _ethereum.suite.rewardReceiverFactory, "existing receiver factory preserved"
+            deployed.rewardReceiverFactory, _ethereum.suite.rewardReceiverFactory, "candidate receiver factory reused"
         );
-        assertEq(deployed.autoStick, _ethereum.suite.autoStick, "existing compounding adapter preserved");
+        assertEq(deployed.autoStick, _ethereum.suite.autoStick, "candidate compounding adapter reused");
         _collector = StickySourceCollector(deployed.sourceCollector);
         _receiver = StickyRewardReceiverFactory(deployed.rewardReceiverFactory).predictReceiverOf({
             stickyToken: address(_sticky), groupId: 0

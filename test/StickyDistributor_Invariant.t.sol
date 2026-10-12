@@ -15,6 +15,7 @@ import {StickyDeployer} from "../src/StickyDeployer.sol";
 import {StickyDistributor} from "../src/StickyDistributor.sol";
 import {IStickyHook} from "../src/interfaces/IStickyHook.sol";
 import {StickyTranche} from "../src/structs/StickyTranche.sol";
+import {StickyTestSingletonDeployment} from "./helpers/StickyTestSingletonDeployment.sol";
 
 /// @notice An 18-decimal ERC-20 standing in for the staked and reward tokens driven by the invariant handler.
 // forge-lint: disable-next-line(multi-contract-file)
@@ -979,7 +980,8 @@ contract StickyDistributorInvariantTest is TestBaseWorkflow {
         _staked = new InvariantErc20("Staked", "STK");
         _reward = new InvariantErc20("Reward", "RWD");
 
-        _deployer = new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal()});
+        _deployer =
+            StickyTestSingletonDeployment.deployDeployer({controller: jbController(), terminal: jbMultiTerminal()});
         _hook = _deployer.HOOK();
 
         uint256 fee = jbProjects().creationFee();

@@ -9,6 +9,7 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 
 import {StickyDeployer} from "../src/StickyDeployer.sol";
 import {StickyDistributor} from "../src/StickyDistributor.sol";
+import {StickyTestSingletonDeployment} from "./helpers/StickyTestSingletonDeployment.sol";
 
 /// @notice An 18-decimal ERC-20 that serves as both the staked and the reward token of the snapshot tests.
 // forge-lint: disable-next-line(multi-contract-file)
@@ -68,7 +69,8 @@ contract StickyRewardSnapshotTest is TestBaseWorkflow {
     function setUp() public override {
         super.setUp();
         _underlying = new StickySnapshotTestToken();
-        _deployer = new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal()});
+        _deployer =
+            StickyTestSingletonDeployment.deployDeployer({controller: jbController(), terminal: jbMultiTerminal()});
         _distributor = new StickyDistributor({
             controller: jbController(),
             directory: jbDirectory(),

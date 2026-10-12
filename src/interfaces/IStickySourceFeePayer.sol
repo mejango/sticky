@@ -6,18 +6,27 @@ import {IJBSucker} from "@bananapus/suckers-v6/src/interfaces/IJBSucker.sol";
 
 /// @notice Separates a collector's reserved principal from delivery callers' fee receipts and source-chain native
 /// refunds.
-/// @dev Only the creating collector can operate this child. It authenticates the source route and fixes the original
+/// @dev Only the configured collector can operate this child. It authenticates the source route and fixes the original
 /// delivery caller as beneficiary. Existing donations and forced native currency are excluded from each submission.
-/// The creating collector can contribute the child's full raw-address native balance to the protocol fee project
+/// The configured collector can contribute the child's full raw-address native balance to the protocol fee project
 /// through a terminal it resolves from the canonical directory. An Arbitrum safe-Inbox alias is a separate account.
 interface IStickySourceFeePayer {
+    /// @notice Emitted when the deployment authority permanently binds reserved-token custody to this fee payer.
+    /// @param collector The collector authorized to operate this fee payer.
+    /// @param caller The deployment authority that completed the binding.
+    event BindCollector(address indexed collector, address caller);
+
     /// @notice The only collector authorized to operate this fee payer.
-    /// @return collector The creating collector, fixed permanently at construction.
+    /// @return collector The permanently bound collector, zero until the one-time setup is completed.
     function COLLECTOR() external view returns (address collector);
+
+    /// @notice The only account allowed to bind the collector once, with no operation authority after binding.
+    /// @return deploymentAuthority The explicit deployment-time binding authority.
+    function DEPLOYMENT_AUTHORITY() external view returns (address deploymentAuthority);
 
     /// @notice Contributes this child's full raw-address native balance through the fee project's current primary
     /// native terminal.
-    /// @dev Only the creating collector can call. The project, token and held-fee behavior are fixed; the collector
+    /// @dev Only the configured collector can call. The project, token and held-fee behavior are fixed; the collector
     /// resolves the current terminal through its canonical directory. A zero balance is a no-op. An Arbitrum
     /// safe-Inbox alias is outside this balance.
     /// @param terminal The protocol fee project's current primary native terminal.
@@ -25,7 +34,7 @@ interface IStickySourceFeePayer {
     function addFeeRefundToBalance(IJBTerminal terminal) external returns (uint256 amount);
 
     /// @notice Submits the parent's prepared outbox and returns its fee tokens and source-chain native refunds.
-    /// @dev Only the creating collector can call and must authenticate the route first. Native value covers the
+    /// @dev Only the configured collector can call and must authenticate the route first. Native value covers the
     /// registry fee, with any excess supplied to the transport. A positive registry fee requires its project's ERC-20;
     /// a zero fee skips payment and can use a project without an ERC-20. LINK payment is not provided. This child
     /// rejects direct native refunds, causing supported suckers to retain them as source-chain credit; it claims that
@@ -49,4 +58,10 @@ interface IStickySourceFeePayer {
         external
         payable
         returns (uint256 feeTokenCount, uint256 refundedFee, uint256 refundedTransportPayment);
+
+    /// @notice Permanently binds the deployed collector authorized to operate this fee payer.
+    /// @dev Only the explicit deployment authority can call once. The collector must have deployed code and
+    /// reciprocally reference this fee payer. Forwarded callers cannot complete this binding.
+    /// @param collector The deployed collector to bind permanently.
+    function setCollector(address collector) external;
 }

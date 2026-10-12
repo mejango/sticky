@@ -3,25 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-// Match the reviewed source checkouts used by CI; local file dependencies have no npm integrity hash.
-export const dependencies = {
-  '@bananapus/core-v6': 'feff600654aee6fb1747dded692f18068b2230a6',
-  '@bananapus/distributor-v6': '44d6d5d2e7cca77422ee0ac4909cf42ccf7839b5',
-};
-
-export function verifyDependencies(spawn = spawnSync) {
-  for (const [name, expected] of Object.entries(dependencies)) {
-    const args = ['-C', `node_modules/${name}`];
-    const revision = spawn('git', [...args, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
-    const status = spawn('git', [...args, 'status', '--porcelain', '--untracked-files=normal'], { encoding: 'utf8' });
-    // Only a linked package's `src/` compiles into the contracts; tests, scratch files and Finder droppings do not.
-    const sourceChanges = status.stdout?.split('\n')
-      .filter(line => /^.{3}(.* -> )?src\//.test(line) && !/\/\.DS_Store$/.test(line)) ?? [];
-    if (revision.status !== 0 || revision.stdout.trim() !== expected || status.status !== 0 || sourceChanges.length) {
-      throw new Error(`${name} must be clean under src/ at the reviewed revision ${expected}.`);
-    }
-  }
-}
+import { canonicalJson, verifyReviewedInputs } from './reviewed-inputs.mjs';
 
 export const networks = {
   mainnets: [
@@ -38,19 +20,10 @@ export const networks = {
   ],
 };
 
-// One explicit home selects an immutable collector family; never infer it from a source RPC or old manifest.
-export function destinationChainId(group, env = process.env) {
+// Every supported source environment deploys the same complete ordered set of home-chain families.
+export function destinationChainIds(group) {
   if (!networks[group]) throw new Error('Network group must be testnets or mainnets.');
-  const value = env.STICKY_DESTINATION_CHAIN_ID;
-  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)
-    || !Number.isSafeInteger(Number(value)) || String(Number(value)) !== value) {
-    throw new Error('STICKY_DESTINATION_CHAIN_ID must be an explicit positive canonical decimal safe integer.');
-  }
-  const id = Number(value);
-  if (!networks[group].some(([, chainId]) => chainId === id)) {
-    throw new Error(`STICKY_DESTINATION_CHAIN_ID must belong to ${group}.`);
-  }
-  return id;
+  return networks[group].map(([, chainId]) => chainId);
 }
 
 export function familyDirectory(folder, id) {
@@ -59,7 +32,7 @@ export function familyDirectory(folder, id) {
 }
 
 export function preflight(group, env = process.env, read = readFileSync) {
-  const destination = destinationChainId(group, env);
+  const destinations = destinationChainIds(group);
   const errors = [];
   const root = env.NANA_CORE_DEPLOYMENT_PATH || 'node_modules/@bananapus/core-v6/deployments';
   const suckerRoot = env.NANA_SUCKERS_DEPLOYMENT_PATH || 'node_modules/@bananapus/suckers-v6/deployments';
@@ -82,57 +55,93 @@ export function preflight(group, env = process.env, read = readFileSync) {
     }
   }
   if (errors.length) throw new Error(errors.join('\n'));
-  return destination;
+  return destinations;
 }
 
-// The manifest fields every chain of a group must predict identically; the core binds the same addresses everywhere.
+// Shared fields agree across every source and home; family fields agree across sources and differ by home.
 export const suite = ['deployer', 'hook', 'distributor', 'rewardReceiver', 'rewardReceiverFactory', 'autoStick', 'sourceCollector', 'sourceFeePayer'];
+export const sharedSuite = suite.filter(field => !field.startsWith('source'));
+export const familySuite = suite.filter(field => field.startsWith('source'));
 
-// Every chain of a group must predict one suite.
-export function requireOneAddressPerGroup(group, kind, selectedDestinationChainId, read = readFileSync) {
-  const destination = destinationChainId(group, { STICKY_DESTINATION_CHAIN_ID: String(selectedDestinationChainId) });
+// Every source must record every home, with one distinct collector family per home.
+export function requireAllAddressFamilies(group, kind, read = readFileSync, {
+  expectedRevision,
+  expectedRpcBlocks = {},
+} = {}) {
+  const destinations = destinationChainIds(group);
   if (!['simulation', 'verified'].includes(kind)) throw new Error('Manifest kind must be simulation or verified.');
-  let expected;
-  const manifests = [];
-  for (const [alias, chainId, , folder] of networks[group]) {
-    const manifest = JSON.parse(read(`${familyDirectory(folder, destination)}/${kind}.json`, 'utf8'));
-    if (manifest.destinationChainId !== destination || manifest.chainId !== chainId || manifest.kind !== kind) {
-      throw new Error(`${alias}: manifest destination, source chain or kind does not match the selected ${destination} ${kind} family.`);
-    }
-    for (const field of suite) {
-      if (typeof manifest[field] !== 'string' || manifest[field].length !== 42
-        || !/^0x[\da-fA-F]{40}$/.test(manifest[field]) || /^0x0{40}$/i.test(manifest[field])) {
-        throw new Error(`${alias}: missing or invalid ${field} deployment address.`);
+  let expectedShared;
+  const seenFamilyAddresses = Object.fromEntries(familySuite.map(field => [field, new Set()]));
+  const families = [];
+  for (const destination of destinations) {
+    let expectedFamily;
+    const manifests = [];
+    for (const [alias, chainId, , folder] of networks[group]) {
+      const manifest = JSON.parse(read(`${familyDirectory(folder, destination)}/${kind}.json`, 'utf8'));
+      if (manifest.destinationChainId !== destination || manifest.chainId !== chainId || manifest.kind !== kind) {
+        throw new Error(`${alias}: manifest destination, source chain or kind does not match the ${destination} ${kind} family.`);
       }
+      if (expectedRevision !== undefined && manifest.revision !== expectedRevision) {
+        throw new Error(`${alias}: home ${destination} manifest revision does not match the current deployment revision.`);
+      }
+      const expectedBlock = expectedRpcBlocks[alias];
+      if (expectedBlock !== undefined && (
+        !Number.isSafeInteger(manifest.rpcBlockNumber) || manifest.rpcBlockNumber <= 0
+        || BigInt(manifest.rpcBlockNumber).toString() !== expectedBlock.number
+        || typeof manifest.rpcBlockHash !== 'string'
+        || manifest.rpcBlockHash.toLowerCase() !== expectedBlock.hash.toLowerCase()
+      )) {
+        throw new Error(`${alias}: home ${destination} manifest does not match the freshly pinned RPC block.`);
+      }
+      for (const field of suite) {
+        if (typeof manifest[field] !== 'string' || manifest[field].length !== 42
+          || !/^0x[\da-fA-F]{40}$/.test(manifest[field]) || /^0x0{40}$/i.test(manifest[field])) {
+          throw new Error(`${alias}: missing or invalid ${field} deployment address for home ${destination}.`);
+        }
+      }
+      const sharedIdentity = sharedSuite.map(field => `${field}=${manifest[field].toLowerCase()}`).join(' ');
+      expectedShared ??= sharedIdentity;
+      if (sharedIdentity !== expectedShared) {
+        throw new Error(`${alias}: shared deployment differs for home ${destination}: ${sharedIdentity}`);
+      }
+      const familyIdentity = familySuite.map(field => `${field}=${manifest[field].toLowerCase()}`).join(' ');
+      expectedFamily ??= familyIdentity;
+      if (familyIdentity !== expectedFamily) {
+        throw new Error(`${alias}: home ${destination} predicts a different collector family: ${familyIdentity}`);
+      }
+      manifests.push({ alias, chainId, folder, manifest });
     }
-    const identity = suite.map(field => `${field}=${String(manifest[field]).toLowerCase()}`).join(' ');
-    expected ??= identity;
-    if (identity !== expected) throw new Error(`${alias} predicts a different deployment than the rest of ${group}: ${identity}`);
-    manifests.push({ alias, chainId, folder, manifest });
+    for (const field of familySuite) {
+      const address = manifests[0].manifest[field].toLowerCase();
+      if (seenFamilyAddresses[field].has(address)) {
+        throw new Error(`Home ${destination} reuses another family's ${field} address ${address}.`);
+      }
+      seenFamilyAddresses[field].add(address);
+    }
+    families.push({ destinationChainId: destination, manifests });
   }
-  return manifests;
+  return families;
 }
 
 // Whether the working sphinx.lock holds exactly the committed content, ignoring key order.
-export function sameLock(spawn = spawnSync, read = readFileSync) {
-  const sorted = value => Array.isArray(value) ? value.map(sorted)
-    : value && typeof value === 'object'
-      ? Object.fromEntries(Object.keys(value).sort().map(key => [key, sorted(value[key])])) : value;
-  const committed = spawn('git', ['show', 'HEAD:sphinx.lock'], { encoding: 'utf8' });
+export function sameLock(spawn = spawnSync, read = readFileSync, revision = 'HEAD') {
+  const committed = spawn('git', ['show', `${revision}:sphinx.lock`], { encoding: 'utf8' });
   try {
     return committed.status === 0
-      && JSON.stringify(sorted(JSON.parse(committed.stdout))) === JSON.stringify(sorted(JSON.parse(read('sphinx.lock', 'utf8'))));
+      && canonicalJson(JSON.parse(committed.stdout)) === canonicalJson(JSON.parse(read('sphinx.lock', 'utf8')));
   } catch {
     return false;
   }
 }
 
-export function run(action, group, { env = process.env, spawn = spawnSync, read = readFileSync } = {}) {
-  if (!['preflight', 'rehearse', 'propose', 'verify', 'artifacts'].includes(action)) {
-    throw new Error('Usage: deploy.sh <preflight|rehearse|propose|verify|artifacts> <testnets|mainnets>');
+export function run(action, group, {
+  env = process.env, spawn = spawnSync, read = readFileSync, verifyInputs = verifyReviewedInputs,
+} = {}) {
+  if (!['preflight', 'rehearse', 'dry-run', 'propose', 'verify', 'artifacts'].includes(action)) {
+    throw new Error('Usage: deploy.sh <preflight|rehearse|dry-run|propose|verify|artifacts> <testnets|mainnets>');
   }
-  const destination = preflight(group, env, read);
-  if (action === 'propose') {
+  preflight(group, env, read);
+  if (action === 'dry-run' || action === 'propose') {
     for (const key of ['SPHINX_MANAGED_BASE_URL', 'SPHINX_ORG_ID', 'SPHINX_API_KEY']) {
       if (!env[key]?.trim()) throw new Error(`Missing ${key}`);
     }
@@ -150,22 +159,33 @@ export function run(action, group, { env = process.env, spawn = spawnSync, read 
       throw new Error('SPHINX_ORG_ID does not match the committed sphinx.lock organization.');
     }
   }
-  if (action !== 'rehearse') verifyDependencies(spawn);
   if (action === 'preflight') return;
-  const revision = spawn('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' });
-  if (revision.status !== 0) throw new Error('Cannot record the source revision.');
-  const status = spawn('git', ['status', '--porcelain', '--untracked-files=normal'], { encoding: 'utf8' });
-  if (status.status !== 0) throw new Error('Cannot inspect the source checkout.');
-  // The runner's own outputs under deployments/ do not make the reviewed source dirty, and neither does Sphinx
-  // re-serializing sphinx.lock in a different key order during a proposal.
-  const dirty = status.stdout.split('\n').some(line => line.trim() && !/^.{3}deployments\//.test(line)
-    && !(line.slice(3) === 'sphinx.lock' && sameLock(spawn, read)));
-  // Only a committed checkout may reach the Safe or certify a live deployment; rehearsals may carry development changes.
-  if (dirty && action !== 'rehearse') throw new Error(`Commit the reviewed checkout before ${action}; it has uncommitted changes.`);
+  const inspectCheckout = expectedRevision => {
+    const before = spawn('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' });
+    if (before.status !== 0) throw new Error('Cannot record the source revision.');
+    const currentRevision = before.stdout.trim();
+    const status = spawn('git', ['status', '--porcelain', '--untracked-files=normal'], { encoding: 'utf8' });
+    if (status.status !== 0) throw new Error('Cannot inspect the source checkout.');
+    const lockIsCurrent = sameLock(spawn, read, currentRevision);
+    const after = spawn('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' });
+    if (after.status !== 0) throw new Error('Cannot record the source revision.');
+    if (after.stdout.trim() !== currentRevision || (expectedRevision !== undefined && currentRevision !== expectedRevision)) {
+      throw new Error(`The source revision changed during ${action}; stopping.`);
+    }
+    // The runner's own outputs under deployments/ do not make the reviewed source dirty, and neither does Sphinx
+    // re-serializing sphinx.lock in a different key order during a proposal.
+    const dirty = status.stdout.split('\n').some(line => line.trim() && !/^.{3}deployments\//.test(line)
+      && !(line === ' M sphinx.lock' && lockIsCurrent));
+    // Only a committed checkout may reach the Safe or certify a live deployment; rehearsals may carry development changes.
+    if ((!lockIsCurrent || dirty) && action !== 'rehearse') {
+      throw new Error(`Commit the reviewed checkout before ${action}; it has uncommitted changes.`);
+    }
+    return { dirty, revision: currentRevision };
+  };
+  const checkout = inspectCheckout();
   const childEnv = {
-    ...env, FOUNDRY_PROFILE: 'deploy',
-    STICKY_DESTINATION_CHAIN_ID: String(destination),
-    STICKY_REVISION: revision.stdout.trim() + (dirty ? '-dirty' : ''),
+    ...env, FOUNDRY_OUT: 'out', FOUNDRY_PROFILE: 'deploy',
+    STICKY_REVISION: checkout.revision + (checkout.dirty ? '-dirty' : ''),
   };
   const execute = (command, args, chainId = 0, block = { number: '0', hash: '0x' + '00'.repeat(32) }) => {
     const result = spawn(command, args, { env: {
@@ -174,40 +194,68 @@ export function run(action, group, { env = process.env, spawn = spawnSync, read 
     }, stdio: 'inherit' });
     if (result.error || result.status !== 0) throw new Error(`${command} failed; stopping ${group} ${action}.`);
   };
+  // Release paths rebuild the exact proposal entrypoint before authenticating its external inputs and bytecode.
+  // Direct rehearsals deliberately remain available for dirty local development; dry-run and propose rehearse again.
+  const verifyReleaseInputs = () => {
+    execute('forge', ['build', '--force', 'script/Deploy.s.sol']);
+    verifyInputs(networks, group, { env: childEnv, read });
+  };
+  if (['dry-run', 'propose', 'verify', 'artifacts'].includes(action)) verifyReleaseInputs();
   // Explorer verification and per-contract artifacts read the verified manifests, so they follow a verify.
   if (action === 'artifacts') {
+    inspectCheckout(checkout.revision);
     execute('node', ['script/artifacts.mjs', group]);
     return;
   }
-  // Rehearse every destination successfully before creating a Sphinx proposal.
+  // Rehearse every source and all four of its destination families before creating a Sphinx proposal.
   const script = action === 'verify' ? 'Verify' : 'Rehearse';
-  for (const [alias, chainId] of networks[group]) {
-    console.log(`${action}: ${alias}`);
-    // RPC block heights identify fork state even on chains where EVM block.number means an L1 height.
-    const header = spawn('cast', ['block', 'latest', '--json', '--rpc-url', alias], { env: childEnv, encoding: 'utf8' });
-    let block;
+  const expectedRpcBlocks = {};
+  const readRpcBlock = (alias, tag, description) => {
+    const header = spawn('cast', ['block', tag, '--json', '--rpc-url', alias], { env: childEnv, encoding: 'utf8' });
     try {
       if (header.status !== 0) throw new Error();
       const payload = JSON.parse(header.stdout);
       if (payload.success === false) throw new Error();
-      block = payload.data ?? payload;
-      block.number = BigInt(block.number).toString();
-      if (BigInt(block.number) <= 0n || !/^0x[\da-fA-F]{64}$/.test(block.hash)) throw new Error();
+      const rpcBlock = payload.data ?? payload;
+      rpcBlock.number = BigInt(rpcBlock.number).toString();
+      if (BigInt(rpcBlock.number) <= 0n || !/^0x[\da-fA-F]{64}$/.test(rpcBlock.hash)) throw new Error();
+      return rpcBlock;
     } catch {
-      throw new Error(`${alias}: cannot read a canonical RPC block; stopping ${action}.`);
+      throw new Error(`${alias}: cannot read ${description} RPC block; stopping ${action}.`);
     }
+  };
+  for (const [alias, chainId] of networks[group]) {
+    console.log(`${action}: ${alias}`);
+    // Finalized RPC block heights identify fork state even on chains where EVM block.number means an L1 height.
+    const block = readRpcBlock(alias, 'finalized', 'a finalized');
     execute('forge', ['script', `script/${script}.s.sol:${script}`, '--rpc-url', alias,
       '--fork-block-number', block.number, '-vv'], chainId, block);
+    const pinnedBlock = readRpcBlock(alias, block.number, 'the pinned finalized');
+    if (pinnedBlock.number !== block.number || pinnedBlock.hash.toLowerCase() !== block.hash.toLowerCase()) {
+      throw new Error(`${alias}: finalized RPC block identity changed during ${action}.`);
+    }
+    expectedRpcBlocks[alias] = block;
   }
-  requireOneAddressPerGroup(group, script === 'Verify' ? 'verified' : 'simulation', destination, read);
-  if (action === 'propose') {
-    execute('node_modules/.bin/sphinx', ['propose', 'script/Deploy.s.sol', '--target-contract', 'Deploy', '--networks', group]);
+  requireAllAddressFamilies(group, script === 'Verify' ? 'verified' : 'simulation', read, {
+    expectedRevision: childEnv.STICKY_REVISION,
+    expectedRpcBlocks,
+  });
+  if (action === 'verify' || action === 'dry-run' || action === 'propose') {
+    inspectCheckout(checkout.revision);
+    verifyReleaseInputs();
+    inspectCheckout(checkout.revision);
+  }
+  if (action === 'dry-run' || action === 'propose') {
+    execute('node_modules/.bin/sphinx', [
+      'propose', 'script/Deploy.s.sol', '--target-contract', 'Deploy', '--networks', group,
+      ...(action === 'dry-run' ? ['--dry-run'] : []),
+    ]);
   }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
-    if (process.argv.length !== 4) throw new Error('Usage: deploy.sh <preflight|rehearse|propose|verify|artifacts> <testnets|mainnets>');
+    if (process.argv.length !== 4) throw new Error('Usage: deploy.sh <preflight|rehearse|dry-run|propose|verify|artifacts> <testnets|mainnets>');
     run(process.argv[2], process.argv[3]);
     console.log(`Sticky ${process.argv[2]} completed for ${process.argv[3]}.`);
   } catch (error) {

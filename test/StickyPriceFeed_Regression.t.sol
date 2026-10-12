@@ -16,6 +16,7 @@ import {IStickyHook} from "../src/interfaces/IStickyHook.sol";
 
 import {StickyPricingToken} from "./helpers/StickyPricingToken.sol";
 import {StickyTestPriceFeed} from "./helpers/StickyTestPriceFeed.sol";
+import {StickyTestSingletonDeployment} from "./helpers/StickyTestSingletonDeployment.sol";
 
 /// @notice Real core pricing registers and preserves Sticky's exact, immutable share-issuance denominator.
 contract StickyPriceFeedRegressionTest is TestBaseWorkflow {
@@ -58,7 +59,8 @@ contract StickyPriceFeedRegressionTest is TestBaseWorkflow {
         _creationFee = jbProjects().creationFee();
         // forge-lint: disable-next-line(literal-instead-of-constant)
         _underlying = new StickyPricingToken(6);
-        _deployer = new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal()});
+        _deployer =
+            StickyTestSingletonDeployment.deployDeployer({controller: jbController(), terminal: jbMultiTerminal()});
         _projectId = _launch(IERC20Metadata(address(_underlying)));
         _feed = StickyPriceFeed(address(_deployer.priceFeedOf(_projectId)));
         _hook = _deployer.HOOK();
@@ -98,12 +100,13 @@ contract StickyPriceFeedRegressionTest is TestBaseWorkflow {
     function test_constructorRejectsPriceRegistryMismatch() public {
         address otherPrices = makeAddr("wrong terminal prices");
         vm.mockCall(address(jbTerminalStore()), abi.encodeCall(IJBTerminalStore.PRICES, ()), abi.encode(otherPrices));
+        IStickyHook preparedHook = StickyTestSingletonDeployment.prepareHook(jbController());
         vm.expectRevert(
             abi.encodeWithSelector(
                 StickyDeployer.StickyDeployer_PriceRegistryMismatch.selector, address(jbPrices()), otherPrices
             )
         );
-        new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal()});
+        new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal(), hook: preparedHook});
     }
 
     /// @notice A wrong default used after the project feed fails cannot overmint or change any holder position.

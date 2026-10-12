@@ -21,7 +21,6 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import {Create2} from "@openzeppelin/contracts/utils/Create2.sol";
 
-import {StickyHook} from "./StickyHook.sol";
 import {StickyPriceFeed} from "./StickyPriceFeed.sol";
 import {StickyToken} from "./StickyToken.sol";
 
@@ -46,6 +45,11 @@ contract StickyDeployer is ERC2771Context, IERC721Receiver, IStickyDeployer {
     /// @notice Thrown when the underlying token maps to currency zero, which the core price registry rejects.
     /// @param token The underlying token whose address maps to currency zero.
     error StickyDeployer_InvalidCurrency(address token);
+
+    /// @notice Thrown when the supplied hook is missing or bound to another deployer, directory or forwarder, so
+    /// every launched project's accounting remains authenticated by this deployer and its canonical dependencies.
+    /// @param hook The supplied position-accounting hook.
+    error StickyDeployer_InvalidHook(address hook);
 
     /// @notice Thrown when feed registration and payment pricing would use different core price registries, so the
     /// terminal could not read the registered issuance denominator.
@@ -115,13 +119,27 @@ contract StickyDeployer is ERC2771Context, IERC721Receiver, IStickyDeployer {
     /// @notice Binds every launched project to the same controller, terminal and position-accounting hook.
     /// @param controller The controller used to launch and manage sticky projects.
     /// @param terminal The terminal sticky projects accept their staked token through.
+    /// @dev The hook's one-time deployer binding must be completed before a project can be launched.
+    /// @param hook The deployed position-accounting hook, unbound or permanently bound to this deployer.
     constructor(
         IJBController controller,
-        IJBTerminal terminal
+        IJBTerminal terminal,
+        IStickyHook hook
     )
         // Accept the same meta-transaction forwarder as core, so a sponsor can relay launches for their signer.
         ERC2771Context(ERC2771Context(address(controller)).trustedForwarder())
     {
+        // Reject missing accounting code before reading its reciprocal binding.
+        if (address(hook).code.length == 0) revert StickyDeployer_InvalidHook(address(hook));
+        address hookDeployer = hook.DEPLOYER();
+
+        // Permit one-time setup ordering, but never accept a hook bound to another project launcher.
+        if (
+            (hookDeployer != address(0) && hookDeployer != address(this))
+                || address(hook.DIRECTORY()) != address(controller.DIRECTORY())
+                || ERC2771Context(address(hook)).trustedForwarder() != trustedForwarder()
+        ) revert StickyDeployer_InvalidHook(address(hook));
+
         // Locate the registry where the controller will register each project's issuance feed.
         address controllerPrices = address(controller.PRICES());
 
@@ -145,9 +163,7 @@ contract StickyDeployer is ERC2771Context, IERC721Receiver, IStickyDeployer {
         TOKENS = controller.TOKENS();
 
         // Share one accounting hook across projects, with this deployer authorized to bind tokens and granters.
-        HOOK = new StickyHook({
-            directory: controller.DIRECTORY(), deployer: address(this), trustedForwarder: trustedForwarder()
-        });
+        HOOK = hook;
     }
 
     //*********************************************************************//

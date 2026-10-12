@@ -21,8 +21,6 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-import {StickySourceFeePayer} from "./StickySourceFeePayer.sol";
-
 import {IStickyRewardReceiverFactory} from "./interfaces/IStickyRewardReceiverFactory.sol";
 import {IStickySourceCollector} from "./interfaces/IStickySourceCollector.sol";
 import {IStickySourceFeePayer} from "./interfaces/IStickySourceFeePayer.sol";
@@ -84,6 +82,12 @@ contract StickySourceCollector is IStickySourceCollector, ReentrancyGuard {
     /// @notice Thrown when no destination chain is configured, so queued rewards cannot have an undefined home.
     /// @param destinationChainId The invalid destination chain ID.
     error StickySourceCollector_InvalidDestinationChainId(uint256 destinationChainId);
+
+    /// @notice Thrown when the supplied fee payer authorizes another collector, so reserved custody cannot be paired
+    /// with a fee account this collector does not exclusively control.
+    /// @param feePayer The supplied fee payer.
+    /// @param collector The collector permanently authorized by the fee payer.
+    error StickySourceCollector_InvalidFeePayer(address feePayer, address collector);
 
     /// @notice Thrown when the chosen backing asset cannot be sent through the sucker's current mapping.
     /// @param sucker The selected source sucker.
@@ -234,11 +238,14 @@ contract StickySourceCollector is IStickySourceCollector, ReentrancyGuard {
     /// @param tokens The canonical project-token registry used by those controllers and suckers.
     /// @param receiverFactory The existing receiver factory with the home-chain factory's address and implementation.
     /// @param destinationChainId The nonzero home-chain ID shared by every destination bucket in this collector.
+    /// @dev The fee payer's one-time collector binding must be completed before remote delivery can be submitted.
+    /// @param feePayer The deployed fee payer, unbound or permanently bound to this collector.
     constructor(
         IJBSuckerRegistry registry,
         IJBTokens tokens,
         IStickyRewardReceiverFactory receiverFactory,
-        uint256 destinationChainId
+        uint256 destinationChainId,
+        IStickySourceFeePayer feePayer
     ) {
         // Every accepted allocation needs one immutable destination before custody can be attributed.
         if (destinationChainId == 0) revert StickySourceCollector_InvalidDestinationChainId(destinationChainId);
@@ -252,6 +259,14 @@ contract StickySourceCollector is IStickySourceCollector, ReentrancyGuard {
         IJBDirectory directory = registry.DIRECTORY();
         if (address(directory).code.length == 0) revert StickySourceCollector_InvalidDependency(address(directory));
 
+        // Require the separate fee account to exist before reading its permanent collector binding.
+        if (address(feePayer).code.length == 0) revert StickySourceCollector_InvalidDependency(address(feePayer));
+        address collector = feePayer.COLLECTOR();
+        // Permit the authenticated one-time setup, but never reuse a fee account bound to another collector.
+        if (collector != address(0) && collector != address(this)) {
+            revert StickySourceCollector_InvalidFeePayer({feePayer: address(feePayer), collector: collector});
+        }
+
         // The bindings authenticate live project configuration without installing an owner or route-change permission.
         DESTINATION_CHAIN_ID = destinationChainId;
         DIRECTORY = directory;
@@ -260,7 +275,7 @@ contract StickySourceCollector is IStickySourceCollector, ReentrancyGuard {
         TOKENS = tokens;
 
         // Give fee payments their own address so newly distributed reserves remain attributed parent custody.
-        FEE_PAYER = new StickySourceFeePayer();
+        FEE_PAYER = feePayer;
     }
 
     //*********************************************************************//

@@ -17,6 +17,7 @@ import {Test} from "forge-std/Test.sol";
 import {StickyHook} from "../src/StickyHook.sol";
 
 import {StickyTranche} from "../src/structs/StickyTranche.sol";
+import {StickyTestSingletonDeployment} from "./helpers/StickyTestSingletonDeployment.sol";
 
 /// @notice The sticky hook's pay and cash-out callbacks against mocked directory, terminal, and token dependencies.
 contract StickyHookUnitTest is Test {
@@ -66,7 +67,9 @@ contract StickyHookUnitTest is Test {
     //*********************************************************************//
 
     function setUp() public {
-        _hook = new StickyHook({directory: _directory, deployer: _deployer, trustedForwarder: address(0)});
+        _hook =
+            new StickyHook({directory: _directory, deploymentAuthority: address(this), trustedForwarder: address(0)});
+        StickyTestSingletonDeployment.bindMockHookParent({hook: _hook, parent: _deployer});
         vm.prank(_deployer);
         _hook.setTokenFor({projectId: _PROJECT_ID, token: _token});
         vm.mockCall({

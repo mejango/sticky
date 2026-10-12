@@ -1,32 +1,59 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { constructorArgs, contracts, emit, trustedForwarder } from '../../script/artifacts.mjs';
-import { familyDirectory, networks, suite } from '../../script/deploy.mjs';
+import { spawnSync } from 'node:child_process';
+import { constructorArgs, contracts, create2Address, emit, trustedForwarder } from '../../script/artifacts.mjs';
+import { destinationChainIds, familyDirectory, networks, suite } from '../../script/deploy.mjs';
 
 const code = '0x6080604052';
 const addresses = {
+  deploymentAuthority: '0xd5136c794ee43BEf1eD4cF1eB6DEe45b7F803437',
   controller: '0x' + '11'.repeat(20), directory: '0x' + '22'.repeat(20), terminal: '0x' + '33'.repeat(20),
   registry: '0x' + '44'.repeat(20), tokens: '0x' + '55'.repeat(20),
   sourceCollector: '0x' + 'a7'.repeat(20), sourceFeePayer: '0x' + 'a8'.repeat(20),
-  deployer: '0x' + 'a1'.repeat(20), hook: '0x' + 'a2'.repeat(20), distributor: '0x' + 'a3'.repeat(20),
+  deployer: '0x' + 'a1'.repeat(20), hook: '0xa2663a34Fbf3188186eBf3807eAB2d0a4B94dd68', distributor: '0x' + 'a3'.repeat(20),
   rewardReceiver: '0x' + 'a6'.repeat(20), rewardReceiverFactory: '0x' + 'a4'.repeat(20), autoStick: '0x' + 'a5'.repeat(20),
 };
 const word = value => BigInt(value).toString(16).padStart(64, '0');
 const expectedArgs = {
-  StickyDeployer: [addresses.controller, addresses.terminal],
-  StickyHook: [addresses.directory, addresses.deployer, trustedForwarder],
+  StickyDeployer: [addresses.controller, addresses.terminal, addresses.hook],
+  StickyHook: [addresses.directory, addresses.deploymentAuthority, trustedForwarder],
   StickyDistributor: [addresses.controller, addresses.directory, addresses.hook, '604800', '4', '63072000'],
   StickyRewardReceiver: [addresses.distributor],
   StickyRewardReceiverFactory: [addresses.rewardReceiver],
   StickyAutoStick: [addresses.deployer, addresses.distributor],
-  StickySourceCollector: [addresses.registry, addresses.tokens, addresses.rewardReceiverFactory, '1'],
-  StickySourceFeePayer: [],
+  StickySourceCollector: [addresses.registry, addresses.tokens, addresses.rewardReceiverFactory, '1', addresses.sourceFeePayer],
+  StickySourceFeePayer: [addresses.deploymentAuthority],
 };
 
-const argsFor = (name, destination) => name === 'StickySourceCollector'
-  ? [...expectedArgs[name].slice(0, 3), String(destination)] : expectedArgs[name];
+// Cache only pure local cast computations, preserving real CREATE2 derivation in mocked explorer tests.
+const castResults = new Map();
+function castSpawn(command, args) {
+  const key = JSON.stringify(args);
+  if (!castResults.has(key)) castResults.set(key, spawnSync(command, args, { encoding: 'utf8' }));
+  return castResults.get(key);
+}
+const explicitAddress = (field, destination) => {
+  const contract = contracts.find(contract => contract.field === field);
+  return create2Address(contract, { bytecode: { object: code } }, expectedArgs[contract.name].map(word).join(''), destination, castSpawn);
+};
+addresses.hook = explicitAddress('hook');
+expectedArgs.StickyDeployer[2] = addresses.hook;
+expectedArgs.StickyDistributor[2] = addresses.hook;
 const outputPath = (folder, contract, destination) => `${contract.family ? familyDirectory(folder, destination) : `deployments/${folder}`}/${contract.name}.json`;
+const familyAddresses = (group, destination) => {
+  const index = destinationChainIds(group).indexOf(destination);
+  return {
+    sourceCollector: `0x${(0xa7 + index * 2).toString(16).repeat(20)}`,
+    sourceFeePayer: explicitAddress('sourceFeePayer', destination),
+  };
+};
+const argsFor = (name, destination, group = destinationChainIds('mainnets').includes(destination) ? 'mainnets' : 'testnets') => {
+  const family = familyAddresses(group, destination);
+  if (name === 'StickySourceCollector') return [...expectedArgs[name].slice(0, 3), String(destination), family.sourceFeePayer];
+  if (name === 'StickySourceFeePayer') return expectedArgs[name];
+  return expectedArgs[name];
+};
 
 function artifact(name) {
   return JSON.stringify({
@@ -35,34 +62,42 @@ function artifact(name) {
   });
 }
 
-function fixture(group, { revision = 'abc123', destination = networks[group][0][1] } = {}) {
-  const files = {};
+function fixture(group, { revision = 'abc123' } = {}) {
+  const files = { 'script/helpers/StickyDeployment.sol': readFileSync('script/helpers/StickyDeployment.sol', 'utf8') };
   for (const [, chainId, , folder] of networks[group]) {
-    files[`${familyDirectory(folder, destination)}/verified.json`] = JSON.stringify({
-      ...addresses, revision, chainId, destinationChainId: destination, kind: 'verified',
-    });
+    for (const destination of destinationChainIds(group)) {
+      files[`${familyDirectory(folder, destination)}/verified.json`] = JSON.stringify({
+        ...addresses, ...familyAddresses(group, destination), revision, chainId,
+        destinationChainId: destination, kind: 'verified',
+      });
+    }
   }
   for (const { name } of contracts) files[`out/${name}.sol/${name}.json`] = artifact(name);
   const written = {};
   const verified = [];
   const fetched = [];
   return {
-    written, verified, fetched, files, destination,
+    written, verified, fetched, files,
     options: {
-      env: { ETHERSCAN_API_KEY: 'key', STICKY_DESTINATION_CHAIN_ID: String(destination) },
+      env: { ETHERSCAN_API_KEY: 'key', STICKY_REVISION: revision },
       read: file => { if (!files[file]) throw new Error(`missing ${file}`); return files[file]; },
       write: (file, content) => { written[file] = JSON.parse(content); },
-      spawn: (command, args) => { verified.push({ command, args }); return { status: 0, stdout: '' }; },
+      spawn: (command, args) => {
+        if (command === 'cast') return castSpawn(command, args);
+        verified.push({ command, args });
+        return { status: 0, stdout: '' };
+      },
       async fetchJson(url) {
         fetched.push(url);
         const { searchParams } = new URL(url);
         if (searchParams.get('action') === 'getcontractcreation') {
-          const address = searchParams.get('contractaddresses');
-          const name = contracts.find(contract => addresses[contract.field] === address).name;
-          const parent = name === 'StickyHook' ? 'StickyDeployer' : name === 'StickySourceFeePayer' ? 'StickySourceCollector' : undefined;
-          const child = Boolean(parent);
-          return { result: [{ txHash: `0xtx-${parent ?? name}`,
-            creationBytecode: child ? undefined : `${code}${argsFor(name, destination).map(word).join('')}` }] };
+          const target = searchParams.get('contractaddresses');
+          const destination = destinationChainIds(group).find(destination =>
+            Object.values(familyAddresses(group, destination)).includes(target));
+          const bindings = destination === undefined ? addresses : { ...addresses, ...familyAddresses(group, destination) };
+          const name = contracts.find(contract => bindings[contract.field] === target).name;
+          return { result: [{ txHash: `0xtx-${name}`,
+            creationBytecode: `${code}${argsFor(name, destination ?? destinationChainIds(group)[0]).map(word).join('')}` }] };
         }
         return { result: { blockHash: '0x' + 'bb'.repeat(32), transactionHash: searchParams.get('txhash') } };
       },
@@ -75,39 +110,50 @@ test('the artifact contracts cover the whole suite the runner compares across ch
 });
 
 for (const group of Object.keys(networks)) {
-  test(`${group}: every contract is verified on the explorer and written in the shared artifact layout`, async () => {
-    const { written, verified, options, destination } = fixture(group);
+  test(`${group}: shared contracts and every family are verified and written in their canonical layouts`, async () => {
+    const { written, verified, options } = fixture(group);
     await emit(group, options);
     for (const [alias, chainId, , folder] of networks[group]) {
-      for (const contract of contracts) {
-        const record = written[outputPath(folder, contract, destination)];
+      for (const contract of contracts.filter(contract => !contract.family)) {
+        const record = written[outputPath(folder, contract, destinationChainIds(group)[0])];
         assert.ok(record, `${alias} must write ${contract.name}.json`);
         assert.equal(record.format, 'sphinx-sol-ct-artifact-1');
         assert.equal(record.address, addresses[contract.field].toLowerCase());
         assert.equal(record.sourceName, `src/${contract.name}.sol`);
         assert.equal(record.contractName, contract.name);
         assert.equal(record.chainId, `0x${chainId.toString(16)}`);
-        assert.deepEqual(record.args, argsFor(contract.name, destination));
-        assert.equal(record.destinationChainId, contract.family ? destination : undefined);
+        assert.deepEqual(record.args, argsFor(contract.name, destinationChainIds(group)[0]));
+        assert.equal(record.destinationChainId, undefined);
         assert.equal(record.bytecode, code);
         assert.equal(record.gitCommit, 'abc123');
         assert.equal(record.gitDirty, false);
         assert.equal(record.receipt.blockHash, '0x' + 'bb'.repeat(32));
         assert.deepEqual(record.history, []);
       }
-      // The hook is created by the deployer's constructor, so its receipt is the deployer's creation transaction.
-      assert.equal(written[`deployments/${folder}/StickyHook.json`].receipt.transactionHash, '0xtx-StickyDeployer');
-      assert.equal(written[`${familyDirectory(folder, destination)}/StickySourceFeePayer.json`].receipt.transactionHash, '0xtx-StickySourceCollector');
+      for (const destination of destinationChainIds(group)) {
+        const bindings = familyAddresses(group, destination);
+        for (const contract of contracts.filter(contract => contract.family)) {
+          const record = written[outputPath(folder, contract, destination)];
+          assert.ok(record, `${alias} must write home ${destination} ${contract.name}.json`);
+          assert.equal(record.address, bindings[contract.field].toLowerCase());
+          assert.equal(record.chainId, `0x${chainId.toString(16)}`);
+          assert.equal(record.destinationChainId, destination);
+          assert.deepEqual(record.args, argsFor(contract.name, destination));
+          assert.equal(record.gitCommit, 'abc123');
+        }
+        assert.equal(written[`${familyDirectory(folder, destination)}/StickySourceFeePayer.json`].receipt.transactionHash,
+          '0xtx-StickySourceFeePayer');
+      }
+      // Explicit singleton deployments retain their own creation receipts.
+      assert.equal(written[`deployments/${folder}/StickyHook.json`].receipt.transactionHash, '0xtx-StickyHook');
       assert.ok(!written[`deployments/${folder}/verified.json`], 'canonical singleton manifest is not rewritten');
       assert.ok(!written[`deployments/${folder}/StickySourceCollector.json`], 'no flat source-collector artifact');
     }
-    assert.equal(verified.length, networks[group].length * contracts.length);
+    assert.equal(verified.length, networks[group].length * (6 + 2 * destinationChainIds(group).length));
     for (const { command, args } of verified) {
       assert.equal(command, 'forge');
       assert.equal(args[0], 'verify-contract');
-      const name = args[2].split(':')[1];
-      if (expectedArgs[name].length) assert.deepEqual(args.slice(-2), ['--constructor-args', `0x${argsFor(name, destination).map(word).join('')}`]);
-      else assert.ok(!args.includes('--constructor-args'), 'the child constructor takes no arguments');
+      assert.equal(args.at(-2), '--constructor-args');
       assert.ok(args.includes('--via-ir') && args.includes('--skip-is-verified-check'));
       assert.ok(!args.includes('--broadcast'));
     }
@@ -142,12 +188,17 @@ test('creation bytecode that disagrees with the recorded bindings stops the grou
 
 test('explorer verification failure stops the group, but an already verified source does not', async () => {
   const failing = fixture('testnets');
-  failing.options.spawn = () => ({ status: 1, stdout: 'Compiler error' });
+  const failingSpawn = failing.options.spawn;
+  failing.options.spawn = (command, args, options) => command === 'cast'
+    ? failingSpawn(command, args, options) : { status: 1, stdout: 'Compiler error' };
   await assert.rejects(emit('testnets', failing.options), /explorer verification of StickyDeployer failed/);
   const verified = fixture('testnets');
-  verified.options.spawn = () => ({ status: 1, stderr: 'Contract source code already verified' });
+  const verifiedSpawn = verified.options.spawn;
+  verified.options.spawn = (command, args, options) => command === 'cast'
+    ? verifiedSpawn(command, args, options) : { status: 1, stderr: 'Contract source code already verified' };
   await emit('testnets', verified.options);
-  assert.equal(Object.keys(verified.written).length, networks.testnets.length * contracts.length);
+  assert.equal(Object.keys(verified.written).length,
+    networks.testnets.length * (6 + 2 * destinationChainIds('testnets').length));
 });
 
 test('constructor bindings are encoded from the manifest and rejected when the compiled constructor changes', () => {
@@ -167,14 +218,12 @@ test('constructor bindings are encoded from the manifest and rejected when the c
 });
 
 
-test('six deployed singleton creation bytes and constructor bindings stay unchanged', () => {
-  const manifest = JSON.parse(readFileSync('deployments/ethereum/verified.json', 'utf8'));
-  for (const contract of contracts.filter(contract => !contract.name.startsWith('StickySource'))) {
+test('compiled explicit singleton constructors match the release artifact bindings', () => {
+  const destination = 1;
+  const manifest = { ...addresses, ...familyAddresses('mainnets', destination), destinationChainId: destination };
+  for (const contract of contracts) {
     const compiled = JSON.parse(readFileSync(`out/${contract.name}.sol/${contract.name}.json`, 'utf8'));
-    const deployed = JSON.parse(readFileSync(`deployments/ethereum/${contract.name}.json`, 'utf8'));
-    assert.equal(compiled.bytecode.object.toLowerCase(), deployed.bytecode.toLowerCase(), contract.name);
-    assert.deepEqual(constructorArgs(contract, manifest, compiled).args.map(String).map(value => value.toLowerCase()),
-      deployed.args.map(String).map(value => value.toLowerCase()), contract.name);
+    assert.deepEqual(constructorArgs(contract, manifest, compiled).args, argsFor(contract.name, destination), contract.name);
   }
 });
 
@@ -196,11 +245,12 @@ test('an old live manifest cannot emit undeployed source singleton artifacts', a
 test('all four family manifests and constructor bindings are validated before any explorer request or write', async () => {
   for (const mismatch of [
     { destinationChainId: 8453 }, { destinationChainId: undefined }, { chainId: 1 }, { kind: 'simulation' },
+    { revision: 'stale' }, { revision: undefined },
     { sourceCollector: undefined }, { sourceFeePayer: '0x' + '00'.repeat(20) }, { tokens: undefined },
     { sourceFeePayer: [addresses.sourceFeePayer] }, { sourceFeePayer: `${addresses.sourceFeePayer}\n` },
   ]) {
     const setup = fixture('mainnets');
-    const file = `${familyDirectory('optimism', 1)}/verified.json`;
+    const file = `${familyDirectory('arbitrum', 42161)}/verified.json`;
     setup.files[file] = JSON.stringify({ ...JSON.parse(setup.files[file]), ...mismatch });
     await assert.rejects(emit('mainnets', setup.options));
     assert.equal(setup.fetched.length, 0, 'a second-chain mismatch must fail before querying the first chain');
@@ -209,34 +259,62 @@ test('all four family manifests and constructor bindings are validated before an
   }
 });
 
-test('an explicit non-Ethereum family emits only its parent and child into its namespace', async () => {
-  const setup = fixture('mainnets', { destination: 8453 });
+test('a fee payer assigned to the wrong collector family stops before any explorer request or write', async () => {
+  const setup = fixture('mainnets');
+  const [first, second] = destinationChainIds('mainnets');
   for (const [, , , folder] of networks.mainnets) {
-    setup.files[`deployments/${folder}/verified.json`] = '{"obsolete":true}';
-    setup.files[`${familyDirectory(folder, 1)}/verified.json`] = '{"unselected":true}';
+    const firstFile = `${familyDirectory(folder, first)}/verified.json`;
+    const secondFile = `${familyDirectory(folder, second)}/verified.json`;
+    const firstManifest = JSON.parse(setup.files[firstFile]);
+    const secondManifest = JSON.parse(setup.files[secondFile]);
+    [firstManifest.sourceFeePayer, secondManifest.sourceFeePayer] =
+      [secondManifest.sourceFeePayer, firstManifest.sourceFeePayer];
+    setup.files[firstFile] = JSON.stringify(firstManifest);
+    setup.files[secondFile] = JSON.stringify(secondManifest);
   }
-  await emit('mainnets', setup.options);
-  for (const [, , , folder] of networks.mainnets) {
-    for (const contract of contracts) {
-      const record = setup.written[outputPath(folder, contract, 8453)];
-      assert.ok(record);
-      if (contract.family) assert.equal(record.destinationChainId, 8453);
-    }
-    assert.deepEqual(setup.written[`${familyDirectory(folder, 8453)}/StickySourceCollector.json`].args,
-      [addresses.registry, addresses.tokens, addresses.rewardReceiverFactory, '8453']);
-  }
-  assert.ok(Object.keys(setup.written).every(file => !file.includes('/source-collectors/1/')));
+  await assert.rejects(emit('mainnets', setup.options), /StickySourceFeePayer.*canonical CREATE2 deployment identity/);
+  assert.equal(setup.fetched.length, 0);
+  assert.equal(setup.verified.length, 0);
+  assert.deepEqual(setup.written, {});
 });
 
-test('missing destination selection or family manifests never uses legacy flat evidence', async () => {
+test('an explicit singleton assigned to the wrong release identity stops before any explorer request or write', async () => {
   const setup = fixture('mainnets');
-  delete setup.options.env.STICKY_DESTINATION_CHAIN_ID;
-  await assert.rejects(emit('mainnets', setup.options), /STICKY_DESTINATION_CHAIN_ID/);
-  setup.options.env.STICKY_DESTINATION_CHAIN_ID = '1';
-  const selected = `${familyDirectory('ethereum', 1)}/verified.json`;
+  for (const file of Object.keys(setup.files).filter(file => file.endsWith('/verified.json'))) {
+    const manifest = JSON.parse(setup.files[file]);
+    manifest.hook = addresses.autoStick;
+    setup.files[file] = JSON.stringify(manifest);
+  }
+  await assert.rejects(emit('mainnets', setup.options), /StickyHook.*canonical CREATE2 deployment identity/);
+  assert.equal(setup.fetched.length, 0);
+  assert.equal(setup.verified.length, 0);
+  assert.deepEqual(setup.written, {});
+});
+
+test('shared contracts are emitted once per source while every family keeps its own namespace', async () => {
+  const setup = fixture('mainnets');
+  await emit('mainnets', setup.options);
+  for (const [, , , folder] of networks.mainnets) {
+    for (const contract of contracts.filter(contract => !contract.family)) {
+      assert.ok(setup.written[`deployments/${folder}/${contract.name}.json`]);
+      for (const destination of destinationChainIds('mainnets')) {
+        assert.ok(!setup.written[`${familyDirectory(folder, destination)}/${contract.name}.json`]);
+      }
+    }
+    for (const destination of destinationChainIds('mainnets')) {
+      assert.deepEqual(setup.written[`${familyDirectory(folder, destination)}/StickySourceCollector.json`].args,
+        argsFor('StickySourceCollector', destination));
+      assert.ok(setup.written[`${familyDirectory(folder, destination)}/StickySourceFeePayer.json`]);
+    }
+  }
+});
+
+test('a missing family manifest never falls back to legacy flat evidence', async () => {
+  const setup = fixture('mainnets');
+  const selected = `${familyDirectory('ethereum', 8453)}/verified.json`;
   setup.files['deployments/ethereum/verified.json'] = setup.files[selected];
   delete setup.files[selected];
-  await assert.rejects(emit('mainnets', setup.options), /missing .*source-collectors\/1\/verified.json/);
+  await assert.rejects(emit('mainnets', setup.options), /missing .*source-collectors\/8453\/verified.json/);
   assert.equal(setup.fetched.length, 0);
   assert.deepEqual(setup.written, {});
 });
@@ -244,10 +322,10 @@ test('missing destination selection or family manifests never uses legacy flat e
 test('constructor integer encoding follows the compiled ABI and rejects coerced or overflowing values', () => {
   const collector = contracts.find(contract => contract.name === 'StickySourceCollector');
   const compiled = JSON.parse(artifact(collector.name));
-  const manifest = { ...addresses, destinationChainId: 8453 };
+  const manifest = { ...addresses, ...familyAddresses('mainnets', 8453), destinationChainId: 8453 };
   const encoded = constructorArgs(collector, manifest, compiled);
   assert.deepEqual(encoded.args, argsFor(collector.name, 8453));
-  assert.equal(encoded.argsHex.slice(-64), word(8453));
+  assert.equal(encoded.argsHex.slice(3 * 64, 4 * 64), word(8453));
   for (const value of [undefined, null, true, '', '01', '-1', '+1', '0x1', '1.0', '1e0', '1\n', 1.5,
     Number.MAX_SAFE_INTEGER + 1, (1n << 256n).toString()]) {
     assert.throws(() => constructorArgs(collector, { ...manifest, destinationChainId: value }, compiled), /invalid destinationChainId uint256/);
@@ -265,4 +343,86 @@ test('constructor integer encoding follows the compiled ABI and rejects coerced 
   const integerRegistry = structuredClone(compiled);
   integerRegistry.abi[0].inputs[0].type = 'uint256';
   assert.throws(() => constructorArgs(collector, manifest, integerRegistry), /invalid registry uint256/);
+});
+
+
+test('explicit CREATE2 identities are bound to creation bytes, setup authority and destination', () => {
+  const hook = contracts.find(contract => contract.field === 'hook');
+  const fee = contracts.find(contract => contract.field === 'sourceFeePayer');
+  const argsHex = expectedArgs.StickyHook.map(word).join('');
+  const artifact = { bytecode: { object: code } };
+  // Independently calculated with the pinned cast CREATE2 command and the literal fixture constructor words.
+  const expected = '0xfeB1d99994ce2907c82d4Ff9123cf2EBd5E48C61';
+  assert.equal(create2Address(hook, artifact, argsHex, undefined, castSpawn), expected);
+  assert.notEqual(create2Address(hook, { bytecode: { object: '0x6080604053' } }, argsHex, undefined, castSpawn), expected);
+  assert.notEqual(create2Address(hook, artifact, expectedArgs.StickyHook.map((arg, index) => word(index === 1 ? addresses.controller : arg)).join(''), undefined, castSpawn), expected);
+  const families = destinationChainIds('mainnets').map(destination => explicitAddress('sourceFeePayer', destination));
+  assert.equal(new Set(families).size, 4);
+  const helper = readFileSync('script/helpers/StickyDeployment.sol', 'utf8');
+  assert.ok(helper.includes(`STICKY_SALT = "${hook.create2}"`));
+  assert.ok(helper.includes(`SOURCE_FEE_PAYER_SALT = "${fee.create2}"`));
+});
+
+test('CREATE2 computation failures stop all explorer requests and writes', async () => {
+  for (const badResult of [{ status: 1, stdout: '' }, { status: 0, stdout: 'not an address' }, { error: new Error('missing cast') }]) {
+    const setup = fixture('mainnets');
+    const spawn = setup.options.spawn;
+    setup.options.spawn = (command, args) => command === 'cast' ? badResult : spawn(command, args);
+    await assert.rejects(emit('mainnets', setup.options), /cannot derive.*CREATE2/);
+    assert.equal(setup.fetched.length, 0);
+    assert.equal(setup.verified.length, 0);
+    assert.deepEqual(setup.written, {});
+  }
+});
+
+for (const field of ['hook', 'sourceFeePayer']) {
+  test(`the explicit ${field} creation payload is checked instead of exempted as a constructor child`, async () => {
+    const setup = fixture('mainnets');
+    const fetchJson = setup.options.fetchJson;
+    const target = field === 'hook' ? addresses.hook : familyAddresses('mainnets', 1).sourceFeePayer;
+    setup.options.fetchJson = async url => {
+      const body = await fetchJson(url);
+      if (url.includes(target) && body.result?.[0]) delete body.result[0].creationBytecode;
+      return body;
+    };
+    await assert.rejects(emit('mainnets', setup.options), /creation bytecode.*does not match/);
+    assert.ok(!Object.keys(setup.written).some(path => path.endsWith(`/${contracts.find(contract => contract.field === field).name}.json`)));
+  });
+}
+
+
+test('a substituted setup authority cannot emit artifacts even after recomputing every CREATE2 child address', async () => {
+  const setup = fixture('mainnets');
+  const malicious = addresses.controller;
+  for (const file of Object.keys(setup.files).filter(file => file.endsWith('/verified.json'))) {
+    const manifest = JSON.parse(setup.files[file]);
+    manifest.deploymentAuthority = malicious;
+    for (const contract of contracts.filter(contract => contract.create2)) {
+      const compiled = JSON.parse(setup.files[`out/${contract.name}.sol/${contract.name}.json`]);
+      const { argsHex } = constructorArgs(contract, manifest, compiled);
+      manifest[contract.field] = create2Address(contract, compiled, argsHex, manifest.destinationChainId, castSpawn);
+    }
+    setup.files[file] = JSON.stringify(manifest);
+  }
+  await assert.rejects(emit('mainnets', setup.options), /deploymentAuthority does not match the reviewed Solidity/);
+  assert.equal(setup.fetched.length, 0);
+  assert.equal(setup.verified.length, 0);
+  assert.deepEqual(setup.written, {});
+});
+
+test('missing, duplicate or computed Solidity setup authority is rejected before explorer access', async () => {
+  for (const source of ['',
+    'address public constant DEPLOYMENT_AUTHORITY = address(1);',
+    `address public constant DEPLOYMENT_AUTHORITY = ${addresses.deploymentAuthority};\naddress public constant DEPLOYMENT_AUTHORITY = ${addresses.controller};`,
+  ]) {
+    const setup = fixture('mainnets');
+    setup.files['script/helpers/StickyDeployment.sol'] = source;
+    // The read double must permit an empty source to exercise the parser rather than a missing-file error.
+    const read = setup.options.read;
+    setup.options.read = file => file === 'script/helpers/StickyDeployment.sol' ? source : read(file);
+    await assert.rejects(emit('mainnets', setup.options), /Cannot read the reviewed deployment authority/);
+    assert.equal(setup.fetched.length, 0);
+    assert.equal(setup.verified.length, 0);
+    assert.deepEqual(setup.written, {});
+  }
 });

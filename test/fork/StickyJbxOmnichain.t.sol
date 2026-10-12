@@ -57,7 +57,8 @@ import {StickyRealProjectContext} from "./helpers/StickyRealProjectFork.sol";
 /// Finalized messenger context is modeled; test ETH funds real terminal payments and fees. No reward token,
 /// project backing storage, bridge escrow, or deployed code is fabricated. These tests do not establish withdrawal
 /// consensus/finality, a production collector deployment, or a live relayer service. Collector cases deploy the
-/// local implementation on each pinned fork and require no privileged caller after split configuration. The generic
+/// candidate suite through the production helper on each pinned fork, preserve legacy runtime identities and require
+/// no privileged caller after split configuration. The generic
 /// positive ERC-20 case supplies bounded USDC.e input through `deal`, then executes actual payment and bridge burning;
 /// it qualifies source submission only and makes no claim about counterpart setup or ERC-20 withdrawal finalization.
 contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumTransport, StickyJbxOptimismTransport {
@@ -116,12 +117,21 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
     address internal _keeper;
     string internal _inventory;
 
-    /// @notice Launches only a fork-local project through the existing deployed suite, backed by actual donor JBX.
+    /// @notice Pinned source forks established before any same-address candidate deployment or JBX position.
+    /// @custom:param chainId The authenticated source chain ID.
+    mapping(uint256 chainId => uint256 forkId) internal _sourceForkIdOf;
+
+    /// @notice Launches only a fork-local project through the proposed suite on actual deployed core, backed by actual
+    /// donor JBX.
     function setUp() public {
-        _ethereum = _deployedJbxContext();
+        // Establish independent fork databases before creating any candidate accounts at shared CREATE2 addresses.
         // The committed census is read-only qualification input.
         // forge-lint: disable-next-line(unsafe-cheatcode)
         _inventory = vm.readFile("test/fork/fixtures/sticky-jbx-sources.json");
+        _createSourceForks();
+        _ethereum = _proposedJbxContext();
+        _provisionSourceSuites();
+        vm.selectFork(_ethereum.forkId);
         _holder = makeAddr("omnichain JBX holder");
         _payer = makeAddr("omnichain real terminal payer");
         _keeper = makeAddr("omnichain unrelated keeper");
@@ -818,6 +828,43 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         assertNotEq(address(otherFamily).codehash, expectedCollectorHash, "runtime binds the selected home chain");
     }
 
+    /// @notice Creates the authenticated remote fork contexts before any local candidate suite exists.
+    function _createSourceForks() internal {
+        uint256[3] memory chains = [_OPTIMISM, _BASE, _ARBITRUM];
+        for (uint256 i = 0; i < chains.length; ++i) {
+            string memory chainKey = string.concat(".chains.", vm.toString(chains[i]));
+            _sourceForkIdOf[chains[i]] = _selectPinnedFork(
+                vm.parseJsonString(_inventory, string.concat(chainKey, ".rpcAlias")),
+                vm.parseJsonUint(_inventory, string.concat(chainKey, ".blockNumber")),
+                chains[i],
+                vm.parseJsonBytes32(_inventory, string.concat(chainKey, ".blockHash"))
+            );
+        }
+    }
+
+    /// @notice Provisions shared candidate accounts on all source forks before recording Ethereum pool state.
+    /// @dev Later source operations reuse deployed accounts after the Ethereum stake is recorded. Existing singleton
+    /// runtime identities are authenticated before and after candidate deployment.
+    function _provisionSourceSuites() internal {
+        uint256[3] memory chains = [_OPTIMISM, _BASE, _ARBITRUM];
+        for (uint256 i = 0; i < chains.length; ++i) {
+            vm.selectFork(_sourceForkIdOf[chains[i]]);
+            StickyDeploymentHarness deployment = new StickyDeploymentHarness();
+            address[6] memory legacy = _legacySingletons(deployment);
+            bytes32[6] memory previousHashes;
+            for (uint256 j = 0; j < legacy.length; ++j) {
+                previousHashes[j] = legacy[j].codehash;
+            }
+            StickyCoreDeployment memory core = deployment.loadCore("node_modules/@bananapus/core-v6/deployments");
+            StickyDeploymentAddresses memory deployed = deployment.deployFor({core: core, destinationChainId: 1});
+            deployment.verify({core: core, deployed: deployed});
+            assertEq(deployed.hook, _ethereum.suite.hook, "same hook address has independent chain state");
+            for (uint256 j = 0; j < legacy.length; ++j) {
+                assertEq(legacy[j].codehash, previousHashes[j], "source setup preserves legacy singleton runtime");
+            }
+        }
+    }
+
     /// @notice Uses the production deployment helper while proving all six existing singletons remain untouched.
     /// @param source The pinned source contracts supplying canonical deployment dependencies.
     /// @param destinationChainId The immutable home chain of the collector family.
@@ -838,14 +885,7 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         StickyDeploymentHarness harness = new StickyDeploymentHarness();
         StickyDeploymentAddresses memory predicted =
             harness.predict({core: core, destinationChainId: destinationChainId});
-        address[6] memory existing = [
-            predicted.deployer,
-            predicted.hook,
-            predicted.distributor,
-            predicted.rewardReceiver,
-            predicted.rewardReceiverFactory,
-            predicted.autoStick
-        ];
+        address[6] memory existing = _legacySingletons(harness);
         bytes32[6] memory previousHashes;
         for (uint256 i = 0; i < existing.length; ++i) {
             assertGt(existing[i].code.length, 0, "the historical Sticky singleton already exists");
@@ -857,6 +897,10 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
             assertEq(existing[i].codehash, previousHashes[i], "the deployment preserves all existing runtime code");
         }
         assertEq(abi.encode(deployed), abi.encode(predicted), "production deployment agrees with its prediction");
+        StickyDeploymentAddresses memory repeated =
+            harness.deployFor({core: core, destinationChainId: destinationChainId});
+        assertEq(abi.encode(repeated), abi.encode(deployed), "candidate deployment reuses every bound address");
+        harness.verify({core: core, deployed: repeated});
         assertEq(deployed.rewardReceiverFactory, _ethereum.suite.rewardReceiverFactory, "shared receiver factory");
         collector = StickySourceCollector(deployed.sourceCollector);
         assertEq(deployed.destinationChainId, destinationChainId, "manifest identifies the selected family");
@@ -1131,6 +1175,11 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         uint256 value = chainId == _ARBITRUM ? arbMessage.value : opMessage.value;
         _assertEmittedRoot(source, claimData, data, value);
         vm.selectFork(_ethereum.forkId);
+        assertEq(
+            _sticky.HOOK().stakedBalanceOf(_stickyProjectId, _holder),
+            _STAKE,
+            "Ethereum stake accounting survives source-fork deployment"
+        );
         JBSucker destination = _checkedSucker(1, source.projectId, chainId);
         IERC20 rewardToken =
             IERC20(vm.parseJsonAddress(_inventory, string.concat(_projectKey(1, source.projectId), ".token")));
@@ -1148,6 +1197,11 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         else accepted = _deliverOpMessage(opMessage, _keeper);
         assertFalse(accepted, "deployed destination rejects the wrong remote peer");
         assertTrue(vm.revertToState(snapshot), "restore only the negative transport attempt");
+        assertEq(
+            _sticky.HOOK().stakedBalanceOf(_stickyProjectId, _holder),
+            _STAKE,
+            "Ethereum stake accounting survives negative transport rollback"
+        );
         if (chainId == _ARBITRUM) (accepted,) = _deliverArbitrumMessage(arbMessage, arbMessage.sender);
         else accepted = _deliverOpMessage(opMessage, opMessage.sender);
         assertTrue(accepted, "actual deployed bridge/messenger accepted captured call");
@@ -1373,12 +1427,9 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
             vm.selectFork(_ethereum.forkId);
             source.forkId = _ethereum.forkId;
         } else {
-            source.forkId = _selectPinnedFork(
-                vm.parseJsonString(_inventory, string.concat(chainKey, ".rpcAlias")),
-                vm.parseJsonUint(_inventory, string.concat(chainKey, ".blockNumber")),
-                chainId,
-                vm.parseJsonBytes32(_inventory, string.concat(chainKey, ".blockHash"))
-            );
+            source.forkId = _sourceForkIdOf[chainId];
+            vm.selectFork(source.forkId);
+            assertEq(block.chainid, chainId, "cached pinned source fork chain identity");
         }
         if (chainId == _ARBITRUM) {
             assertEq(

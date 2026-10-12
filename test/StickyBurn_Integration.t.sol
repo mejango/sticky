@@ -12,6 +12,7 @@ import {IStickyHook} from "../src/interfaces/IStickyHook.sol";
 import {StickyTranche} from "../src/structs/StickyTranche.sol";
 
 import {MockArt} from "./Sticky_Integration.t.sol";
+import {StickyTestSingletonDeployment} from "./helpers/StickyTestSingletonDeployment.sol";
 
 /// @notice Real Juicebox controller and terminal burns keep sticky accounting synchronized in both token modes.
 contract StickyBurnIntegrationTest is TestBaseWorkflow {
@@ -39,7 +40,8 @@ contract StickyBurnIntegrationTest is TestBaseWorkflow {
     function setUp() public override {
         super.setUp();
         _art = new MockArt();
-        _deployer = new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal()});
+        _deployer =
+            StickyTestSingletonDeployment.deployDeployer({controller: jbController(), terminal: jbMultiTerminal()});
         _hook = _deployer.HOOK();
         _art.mint({to: _holder, amount: 100e6});
         vm.prank(_holder);
