@@ -59,6 +59,33 @@ const RECEIPT_WATCH_TIMEOUT_MS = 120_000
 const RECEIPT_POLL_INTERVAL_MS = 4_000
 /** How often a held write with no returned hash asks the chain whether it went through. */
 const HOLD_CHECK_INTERVAL_MS = 15_000
+/** A hash the chain still knows is the write itself: tracked by that hash, never released by a tap. */
+export const PENDING_IN_WALLET_LINE = 'Still pending in your wallet. Speed it up or cancel it there.'
+/** Said in the review when the hold can live only in this tab. */
+export const STORAGE_REFUSED_LINE = "This browser can't remember pending transactions. Check your wallet before repeating one."
+/** Where holds live when the browser refuses storage: this tab's memory, so the wallet never opens with none. */
+const memoryHolds = new Map<string, string>()
+const memoryStorage = {
+  getItem: (key: string) => memoryHolds.get(key) ?? null,
+  setItem: (key: string, value: string) => { memoryHolds.set(key, value) },
+  removeItem: (key: string) => { memoryHolds.delete(key) },
+}
+function storageRefused(): boolean {
+  try {
+    localStorage.setItem('sticky:probe', '1')
+    localStorage.removeItem('sticky:probe')
+    return false
+  } catch { return true }
+}
+/** True only when the chain answers that it has no such transaction. */
+async function chainDropped(client: FollowClient, hash: Hex): Promise<boolean> {
+  try {
+    await client.getTransaction({ hash })
+    return false
+  } catch (error) {
+    return (error as { name?: string })?.name === 'TransactionNotFoundError'
+  }
+}
 /** How long a proposal the Safe ran is given to name its execution before the line alone is shown. */
 const EXECUTED_HASH_GRACE_MS = 120_000
 /** ~10 minutes of direct lookups, matching the watcher's own retry horizon. */
@@ -690,6 +717,20 @@ export function useSafeTx(chainId: number) {
     return () => { stopped = true; clearTimeout(retry) }
   }, [recovery, shownKey, proposal?.receipt, proposal?.phase, receiptData, publicClient, showRecovery, showProposal])
 
+  // A hash still pending is never released by a tap: only a hash the chain
+  // answers it does not have is offered the exit.
+  const [droppedHash, setDroppedHash] = useState(false)
+  useEffect(() => {
+    setDroppedHash(false)
+    const hash = recovery?.record.hash
+    if (heldAs !== 'unconfirmed' || !hash || !publicClient) return
+    let stopped = false
+    const look = () => { void chainDropped(publicClient, hash).then(gone => { if (!stopped) setDroppedHash(gone) }) }
+    look()
+    const timer = setInterval(look, HOLD_CHECK_INTERVAL_MS)
+    return () => { stopped = true; clearInterval(timer) }
+  }, [heldAs, recovery?.record.hash, publicClient])
+
   // A write whose wallet reply was lost asks the chain again while it is held:
   // once the chain shows it, its hash is followed and the hold ends on proof.
   useEffect(() => {
@@ -765,7 +806,8 @@ export function useSafeTx(chainId: number) {
         /** The exact call simulated and sent, which a Safe execution must run. */
         let sentCall = callOf(request)
         const input = { chainId: request.chainId, account, safe: viaSafe, call: sentCall }
-        journal = options.durableRecovery ? undefined : createBrowserWriteRecovery(input)
+        const memoryOnly = !options.durableRecovery && storageRefused()
+        journal = options.durableRecovery ? undefined : createBrowserWriteRecovery(input, memoryOnly ? { storage: memoryStorage } : undefined)
         /** Show a held write: follow its hash, or hold the action with the user's exit. */
         const hold = (previous: ReviewedWriteRecoveryRecord) => {
           const appliesToRequest = sameReviewedWrite(previous, input)
@@ -846,6 +888,7 @@ export function useSafeTx(chainId: number) {
               if (options.reviewedInParent && !options.reviewNotice) return
               const description = [
                 options.reviewNotice,
+                memoryOnly ? STORAGE_REFUSED_LINE : null,
                 viaSafe ? SAFE_NONCE_GUIDANCE : null,
               ]
                 .filter(Boolean)
@@ -1026,9 +1069,17 @@ export function useSafeTx(chainId: number) {
    * The user checked their wallet: end the hold on this exact call, so the
    * next send goes out. Another tab's newer record is never touched.
    */
-  const exitHold = useCallback(() => {
+  const exitHold = useCallback(async () => {
     const current = recoveryRef.current
     if (!current) return
+    // Checked again as the exit is accepted: a hash that came back is the write.
+    if (heldAs === 'unconfirmed') {
+      if (!current.record.hash || !publicClient || !(await chainDropped(publicClient, current.record.hash))) {
+        setDroppedHash(false)
+        return
+      }
+    }
+    if (recoveryRef.current !== current) return
     try {
       // The record the user saw: a newer write another tab saved is never theirs to release.
       current.journal.abandon(current.record, { checkedWallet: true })
@@ -1042,7 +1093,7 @@ export function useSafeTx(chainId: number) {
       notifyProposals()
     }
     reset()
-  }, [reset])
+  }, [reset, heldAs, publicClient])
 
   /**
    * Close the current confirmation. The durable recovery owner remains held;
@@ -1071,10 +1122,12 @@ export function useSafeTx(chainId: number) {
     /** A write the chain has not placed: its line, what sending again risks, and the user's exit. */
     held: recovery && heldAs
       ? {
-          line: heldAs === 'unconfirmed' ? writeHeldMessage() : (notice ?? writeHeldMessage()),
-          warning: writeExitMessage(recovery.record.call),
+          line: heldAs === 'unconfirmed'
+            ? (droppedHash ? writeHeldMessage() : PENDING_IN_WALLET_LINE)
+            : (notice ?? writeHeldMessage()),
+          warning: heldAs === 'unconfirmed' && !droppedHash ? '' : writeExitMessage(recovery.record.call),
           label: WRITE_EXIT_LABEL,
-          exit: exitHold,
+          exit: heldAs === 'unconfirmed' && !droppedHash ? null : () => { void exitHold() },
         }
       : null,
     /** Whether the connected writer is a Safe connector. */

@@ -9,6 +9,7 @@ import {
   type Address,
   type Hex,
 } from 'viem'
+import { TransactionNotFoundError } from 'viem'
 import { SAFE_EXEC_ABI } from '@bananapus/nana-sdk-core/safe-service'
 import { WRITE_EXIT_LABEL, writeExitMessage, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -78,6 +79,8 @@ vi.mock('@/lib/safe-connector', async importOriginal => ({
 import { useSafeTx } from '@/hooks/useSafeTx'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 
+const STILL_PENDING_LINE = 'Still pending in your wallet. Speed it up or cancel it there.'
+const STORAGE_REFUSED_LINE = "This browser can't remember pending transactions. Check your wallet before repeating one."
 const ALICE = '0x1111111111111111111111111111111111111111' as Address
 const BOB = '0x2222222222222222222222222222222222222222' as Address
 /** Every request below was built for, and reviewed by, Alice. */
@@ -203,7 +206,7 @@ describe('useSafeTx', () => {
     expect(mocks.writeContract).toHaveBeenCalledOnce()
     expect(WRITE_EXIT_LABEL).toBe('I checked my wallet. Send again')
 
-    await act(async () => hook.ref.current!.held!.exit())
+    await act(async () => hook.ref.current!.held!.exit!())
     expect(hook.ref.current).toMatchObject({ phase: 'idle', held: null, notice: null })
     await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
     expect(mocks.writeContract).toHaveBeenCalledTimes(2)
@@ -214,7 +217,7 @@ describe('useSafeTx', () => {
     mocks.writeContract.mockRejectedValueOnce(new Error('The wallet broadcast the transfer but its RPC response was lost.'))
     const hook = await renderHook()
     await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
-    const staleExit = hook.ref.current!.held!.exit
+    const staleExit = hook.ref.current!.held!.exit!
     // Another tab released attempt A and sent attempt B under the same call.
     const key = Object.keys(localStorage).find(each => each.startsWith('nana-sdk:reviewed-write:'))!
     const newer = { ...JSON.parse(localStorage.getItem(key)!), id: 'attempt-b', nonce: '8' }
@@ -563,12 +566,38 @@ describe('useSafeTx', () => {
       confirmationUncertain: true,
     })
     expect(hook.ref.current!.error).toMatch(/confirmation is temporarily unavailable/i)
-    // The hold has the user's exit: a write the chain never confirms does not hold forever.
-    expect(hook.ref.current!.held).toMatchObject({ line: writeHeldMessage(), label: WRITE_EXIT_LABEL })
+    // The chain still knows the hash: it is tracked by that hash and offers no exit.
+    expect(hook.ref.current!.held).toMatchObject({ line: STILL_PENDING_LINE, exit: null })
     await act(async () => {
       await expect(hook.ref.current!.send(request, reviewedByAlice)).resolves.toBeNull()
     })
     expect(mocks.requestReview).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers the exit for a hash only once the chain no longer knows it, and checks again as it is accepted', async () => {
+    vi.useFakeTimers()
+    try {
+    const hook = await renderHook()
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    mocks.receipt = { data: undefined, isError: true }
+    const gone = () => mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => { throw new TransactionNotFoundError({ hash }) })
+    gone()
+    await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
+    expect(hook.ref.current!.held).toMatchObject({ line: writeHeldMessage(), label: WRITE_EXIT_LABEL })
+    expect(hook.ref.current!.held!.exit).toBeTypeOf('function')
+
+    // It reappears before the exit is accepted: the hold stays.
+    mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => ({ hash, from: ALICE, to: BOB, nonce: 7, input: '0x', blockHash: null, blockNumber: null, transactionIndex: null }))
+    await act(async () => hook.ref.current!.held!.exit!())
+    expect(hook.ref.current!.phase).toBe('pending')
+    expect(recoveryRecords()).toHaveLength(1)
+
+    // The next look finds it gone again.
+    gone()
+    await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
+    await act(async () => hook.ref.current!.held!.exit!())
+    expect(hook.ref.current).toMatchObject({ phase: 'idle', held: null })
+    } finally { vi.useRealTimers() }
   })
 
   it.each([
@@ -813,12 +842,24 @@ describe('useSafeTx', () => {
     expect(recoveryRecords()).toHaveLength(1)
   })
 
-  it('refuses a wallet write if the durable marker cannot be retained', async () => {
+  it('holds in the tab\'s memory when the browser refuses storage, and says so in the review', async () => {
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Storage unavailable') })
+    mocks.writeContract.mockRejectedValueOnce(new Error('The wallet broadcast the transfer but its RPC response was lost.'))
     const hook = await renderHook()
     await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
-    expect(mocks.writeContract).not.toHaveBeenCalled()
-    expect(hook.ref.current!.phase).toBe('error')
+    expect(mocks.requestReview).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ description: expect.stringContaining(STORAGE_REFUSED_LINE) }),
+    )
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
+    expect(hook.ref.current).toMatchObject({ phase: 'submitted', held: { line: writeHeldMessage() } })
+    // The wallet is never opened with no hold at all, across a reset and a remount.
+    await act(async () => hook.ref.current!.reset())
+    await act(async () => hook.renderer.unmount())
+    const again = await renderHook()
+    await act(async () => { await again.ref.current!.send(request, reviewedByAlice) })
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
+    expect(again.ref.current!.held).not.toBeNull()
   })
 
   it('still holds and sends where the browser has no Web Locks', async () => {

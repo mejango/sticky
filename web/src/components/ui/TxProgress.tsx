@@ -16,8 +16,8 @@ export function sendingStatus({ phase, safeNonceGuidance, notice, held }: { phas
     // A held write ends only on proof or when the person says they checked their wallet.
     return (
       <>
-        <span className="block">{held.line} {held.warning}</span>
-        <button type="button" className="btn-secondary mt-2 min-h-[44px] px-4 text-sm" onClick={held.exit}>{held.label}</button>
+        <span className="block">{held.warning ? `${held.line} ${held.warning}` : held.line}</span>
+        {held.exit ? <button type="button" className="btn-secondary mt-2 min-h-[44px] px-4 text-sm" onClick={held.exit}>{held.label}</button> : null}
       </>
     )
   }
