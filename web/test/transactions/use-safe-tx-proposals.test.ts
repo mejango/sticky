@@ -612,23 +612,23 @@ describe('a Safe proposal awaiting its signers', () => {
     expect(recoveryRecords()).toHaveLength(0)
   })
 
-  it('says the Safe ran a proposal whose execution it cannot name, and lets the user end the hold', async () => {
+  it('says the Safe ran a proposal whose execution it cannot name, and never offers to propose it again', async () => {
     vi.useFakeTimers()
     try {
       signersDecide()
       let watchEnds!: (end: string) => void
       mocks.watchSafeProposal.mockImplementationOnce(() => new Promise(resolve => (watchEnds = resolve)))
-      mocks.writeContract.mockResolvedValueOnce(PROPOSAL).mockResolvedValueOnce(SECOND_PROPOSAL)
       const flow = await mount()
       await flow.send()
       await act(async () => { await vi.advanceTimersByTimeAsync(10) })
       watchEnds('executed')
       await act(async () => { await vi.advanceTimersByTimeAsync(130_000) })
-      expect(flow.tx).toMatchObject({ phase: 'submitted', confirmationUncertain: true, notice: SAFE_PROPOSAL_EXECUTED_LINE })
-      expect(flow.tx.held).toMatchObject({ line: SAFE_PROPOSAL_EXECUTED_LINE, label: WRITE_EXIT_LABEL })
-      await act(async () => flow.tx.held!.exit())
-      expect(flow.tx).toMatchObject({ phase: 'idle', held: null })
-      await expect(flow.send()).resolves.toBe(SECOND_PROPOSAL)
+      expect(flow.tx).toMatchObject({ phase: 'submitted', confirmationUncertain: true, notice: SAFE_PROPOSAL_EXECUTED_LINE, held: null })
+      // Closing keeps the saved hold: the same call is never proposed a second time.
+      await act(async () => flow.tx.dismiss())
+      await flow.send()
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+      expect(recoveryRecords()).toHaveLength(1)
     } finally { vi.useRealTimers() }
   })
 

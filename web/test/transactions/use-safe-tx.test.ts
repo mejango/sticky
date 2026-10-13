@@ -210,6 +210,42 @@ describe('useSafeTx', () => {
     expect(hook.ref.current).toMatchObject({ phase: 'pending', hash: HASH })
   })
 
+  it('keeps a newer write held when a stale exit is pressed after another tab replaced the record', async () => {
+    mocks.writeContract.mockRejectedValueOnce(new Error('The wallet broadcast the transfer but its RPC response was lost.'))
+    const hook = await renderHook()
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    const staleExit = hook.ref.current!.held!.exit
+    // Another tab released attempt A and sent attempt B under the same call.
+    const key = Object.keys(localStorage).find(each => each.startsWith('nana-sdk:reviewed-write:'))!
+    const newer = { ...JSON.parse(localStorage.getItem(key)!), id: 'attempt-b', nonce: '8' }
+    localStorage.setItem(key, JSON.stringify(newer))
+    await act(async () => staleExit())
+    expect(JSON.parse(localStorage.getItem(key)!).id).toBe('attempt-b')
+    expect(Object.keys(localStorage).filter(each => each.includes('released'))).toHaveLength(0)
+    expect(hook.ref.current!.held).not.toBeNull()
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
+  })
+
+  it('follows a hash whose lookup was pending to its confirmation, clearing the record with one wallet write', async () => {
+    const first = await renderHook()
+    await act(async () => { await first.ref.current!.send(request, reviewedByAlice) })
+    await act(async () => first.renderer.unmount())
+    mocks.publicClient.getTransaction.mockImplementationOnce(async ({ hash }: { hash: Hex }) => ({
+      hash, from: ALICE, to: BOB, nonce: 7, input: '0x', blockHash: null, blockNumber: null, transactionIndex: null,
+    }))
+    const hook = await renderHook()
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    expect(hook.ref.current).toMatchObject({ phase: 'pending', hash: HASH })
+    // The pending look saved the nonce the hash was sent at.
+    expect(recoveryRecords()[0]).toMatchObject({ hash: HASH, sentNonce: '7' })
+    mocks.receipt = { data: canonicalReceipt('success'), isError: false }
+    await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
+    expect(recoveryRecords()).toHaveLength(0)
+    expect(hook.ref.current!.phase).toBe('success')
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
+  })
+
   it('releases a hold on proof: the chain shows the exact call at the nonce the wallet opened at', async () => {
     mocks.writeContract.mockRejectedValueOnce(new Error('The wallet broadcast the transfer but its RPC response was lost.'))
     const hook = await renderHook()

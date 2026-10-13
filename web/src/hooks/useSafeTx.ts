@@ -229,6 +229,8 @@ type SafeProposal = {
   receipt: TransactionReceipt | null
   /** The line for an end other than success: failed, unproven, expired or replaced. */
   message: string | null
+  /** The Safe's own event shows it ran; only its result is unknown, so it is never sent again. */
+  ran?: boolean
   onConfirmed: () => void
 }
 
@@ -295,7 +297,7 @@ function holdsCall(proposal: SafeProposal | undefined): proposal is SafeProposal
 }
 
 /** The execution a proposal awaiting its signers runs in, or how it ends before it runs. */
-type Outcome = { executionHash: Hex } | { phase: ProposalPhase; message: string }
+type Outcome = { executionHash: Hex } | { phase: ProposalPhase; message: string; ran?: true }
 
 /**
  * Waits for the proposal's execution, from Safe's service and the chain, and
@@ -339,7 +341,7 @@ async function awaitExecution(
       executed,
       new Promise<null>(resolve => { grace = setTimeout(() => resolve(null), EXECUTED_HASH_GRACE_MS) }),
     ])
-    return named && 'executionHash' in named ? named : { phase: 'unproven', message: SAFE_PROPOSAL_EXECUTED_LINE }
+    return named && 'executionHash' in named ? named : { phase: 'unproven', message: SAFE_PROPOSAL_EXECUTED_LINE, ran: true }
   } finally {
     clearTimeout(grace)
     stop.abort()
@@ -371,7 +373,7 @@ async function followProposal(key: string, client: FollowClient, reply: boolean)
     ) {
       executionHash = proposalHash
     } else {
-      updateProposal(key, awaited.phase === 'unproven' ? unconfirmedProposal(key, awaited.message) : awaited)
+      updateProposal(key, awaited.phase === 'unproven' ? { ...unconfirmedProposal(key, awaited.message), ...('ran' in awaited ? { ran: true } : {}) } : awaited)
       return
     }
   }
@@ -626,7 +628,7 @@ export function useSafeTx(chainId: number) {
     : !recovery.record.hash && phase === 'submitted'
       ? 'lost'
       : shownKey
-        ? proposal?.phase === 'unproven' ? 'unproven' : null
+        ? proposal?.phase === 'unproven' && !proposal.ran ? 'unproven' : null
         : phase === 'pending' && receipt.isError && !receiptData && recovery.record.hash ? 'unconfirmed' : null
   const awaitingProposal =
     proposal?.phase === 'checking' || proposal?.phase === 'awaiting' ? proposal.proposalHash : null
@@ -678,10 +680,14 @@ export function useSafeTx(chainId: number) {
     let stopped = false
     const timer = setInterval(() => {
       void current.journal.withLock(async () => {
-        const check = await current.journal.resolve(publicClient)
-        if (stopped || check?.status !== 'sent' || !mounted.current || recoveryRef.current !== current) return
+        await current.journal.resolve(publicClient)
+        if (stopped || !mounted.current || recoveryRef.current !== current) return
         const record = current.journal.read()
-        if (!record?.hash) return
+        if (!record) return
+        if (!record.hash) {
+          if (JSON.stringify(record) !== JSON.stringify(current.record)) showRecovery({ ...current, record })
+          return
+        }
         showRecovery({ ...current, record })
         setRecoveryNotice(null)
         setHash(record.hash)
@@ -770,8 +776,9 @@ export function useSafeTx(chainId: number) {
         resume = async (previous, ask = true) => {
           let found = previous
           if (ask && !previous.safe) {
-            const check = await journal!.resolve(publicClient).catch(() => null)
-            if (check?.status === 'sent') found = journal!.read() ?? previous
+            await journal!.resolve(publicClient).catch(() => null)
+            // Even a pending look can save the nonce the hash was sent at.
+            found = journal!.read() ?? previous
           }
           return hold(found)
         }
@@ -1005,7 +1012,8 @@ export function useSafeTx(chainId: number) {
     const current = recoveryRef.current
     if (!current) return
     try {
-      current.journal.abandon(current.journal.read() ?? current.record, { checkedWallet: true })
+      // The record the user saw: a newer write another tab saved is never theirs to release.
+      current.journal.abandon(current.record, { checkedWallet: true })
     } catch {
       setRecoveryNotice('This action changed in another tab. Close this review and open it again.')
       return
