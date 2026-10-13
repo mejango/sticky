@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { WRITE_EXIT_LABEL, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
 import { QueryClient, QueryClientProvider, notifyManager } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -338,7 +339,8 @@ describe('the stick flow on the real engine', () => {
     await act(async () => confirmButton()!.click())
     await until(() => confirmButton()?.textContent === 'Done', 'the unresolved approval to be held')
     expect(stepStates()).toEqual(['active', 'pending'])
-    expect(dialog()!.textContent).toContain('may have been submitted')
+    expect(dialog()!.textContent).toContain(writeHeldMessage())
+    expect(dialog()!.textContent).toContain(WRITE_EXIT_LABEL)
     expect(writes()).toEqual(['approve'])
     await act(async () => confirmButton()!.click())
     await until(() => !dialog(), 'the held review to close')
