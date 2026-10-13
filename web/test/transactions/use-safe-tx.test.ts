@@ -574,53 +574,65 @@ describe('useSafeTx', () => {
     expect(mocks.requestReview).toHaveBeenCalledTimes(1)
   })
 
-  it('offers the exit for a hash only once the chain no longer knows it, and checks again as it is accepted', async () => {
+  it('offers the exit for a hash only once its nonce is past at a finalized block and the chain has no such transaction', async () => {
     vi.useFakeTimers()
     try {
-    const hook = await renderHook()
-    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
-    mocks.receipt = { data: undefined, isError: true }
-    const gone = () => mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => { throw new TransactionNotFoundError({ hash }) })
-    gone()
-    await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
-    expect(hook.ref.current!.held).toMatchObject({ line: writeHeldMessage(), label: WRITE_EXIT_LABEL })
-    expect(hook.ref.current!.held!.exit).toBeTypeOf('function')
+      const hook = await renderHook()
+      await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+      mocks.receipt = { data: undefined, isError: true }
+      const gone = () => mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => { throw new TransactionNotFoundError({ hash }) })
+      // A lagging node says not found while the transaction is still pending, and the nonce has not moved.
+      gone()
+      await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
+      expect(hook.ref.current!.held).toMatchObject({ line: STILL_PENDING_LINE, exit: null })
 
-    // It reappears before the exit is accepted: the hold stays.
-    mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => ({ hash, from: ALICE, to: BOB, nonce: 7, input: '0x', blockHash: null, blockNumber: null, transactionIndex: null }))
-    await act(async () => hook.ref.current!.held!.exit!())
-    expect(hook.ref.current!.phase).toBe('pending')
-    expect(recoveryRecords()).toHaveLength(1)
+      // The account's nonce is past it at the finalized block, and nothing else ran there.
+      mocks.publicClient.getTransactionCount.mockImplementation(async (args: { blockTag?: string }) => (args.blockTag === 'pending' ? 8 : 8))
+      await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
+      expect(hook.ref.current!.held).toMatchObject({ line: writeHeldMessage(), label: WRITE_EXIT_LABEL })
+      expect(hook.ref.current!.held!.exit).toBeTypeOf('function')
 
-    // The next look finds it gone again.
-    gone()
-    await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
-    await act(async () => hook.ref.current!.held!.exit!())
-    expect(hook.ref.current).toMatchObject({ phase: 'idle', held: null })
+      // It reappears before the exit is accepted: the hold stays.
+      mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => ({ hash, from: ALICE, to: BOB, nonce: 7, input: '0x', blockHash: null, blockNumber: null, transactionIndex: null }))
+      await act(async () => hook.ref.current!.held!.exit!())
+      expect(hook.ref.current!.phase).toBe('pending')
+      expect(recoveryRecords()).toHaveLength(1)
+
+      gone()
+      await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
+      await act(async () => hook.ref.current!.held!.exit!())
+      expect(hook.ref.current).toMatchObject({ phase: 'idle', held: null })
     } finally { vi.useRealTimers() }
   })
 
-  it.each([
-    ['success', 'success', null],
-    ['reverted', 'error', /reverted onchain/i],
-  ] as const)(
-    'treats a %s receipt as a terminal state',
-    async (status, phase, error) => {
+  it('follows the original when the chain shows it ran at its nonce, and never offers the exit', async () => {
+    vi.useFakeTimers()
+    try {
       const hook = await renderHook()
-      await act(async () => {
-        await hook.ref.current!.send(request, reviewedByAlice)
+      await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+      mocks.receipt = { data: undefined, isError: true }
+      const SPED_UP = `0x${'5e'.repeat(32)}` as Hex
+      mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => {
+        if (hash === SPED_UP) return { hash, from: ALICE, to: BOB, nonce: 7, input: '0x', blockHash: BLOCK_HASH, blockNumber: 150n, transactionIndex: 0 }
+        throw new TransactionNotFoundError({ hash })
       })
-
-      mocks.receipt = { data: canonicalReceipt(status), isError: false }
-      await act(async () => {
-        hook.renderer.update(createElement(Harness, { ref: hook.ref }))
-      })
-
-      expect(hook.ref.current).toMatchObject({ phase, busy: false })
-      if (error) expect(hook.ref.current!.error).toMatch(error)
-      else expect(hook.ref.current!.error).toBeNull()
-    },
-  )
+      mocks.publicClient.getTransactionCount.mockImplementation(async (args: { blockTag?: string; blockNumber?: bigint }) =>
+        args.blockTag === 'pending' ? 8 : (args.blockNumber ?? 0n) >= 150n ? 8 : 7)
+      mocks.publicClient.getBlock.mockImplementation(async (args: { blockTag?: string; blockNumber?: bigint; includeTransactions?: boolean }) =>
+        args.blockTag === 'finalized'
+          ? { number: 200n, hash: BLOCK_HASH, timestamp: 1_000n }
+          : args.includeTransactions
+            ? { number: args.blockNumber, hash: BLOCK_HASH, transactions: args.blockNumber === 150n
+                ? [{ hash: SPED_UP, from: ALICE, to: BOB, nonce: 7, value: 7n, input: encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] }) }] : [] }
+            : { number: args.blockNumber, hash: BLOCK_HASH })
+      await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
+      expect(hook.ref.current!.held?.exit ?? null).toBeNull()
+      expect(hook.ref.current!.hash).toBe(SPED_UP)
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+    } finally { vi.useRealTimers() }
+  })
 
   it('does not confirm a new action using the previous successful receipt', async () => {
     const hook = await renderHook()

@@ -77,14 +77,36 @@ function storageRefused(): boolean {
     return false
   } catch { return true }
 }
-/** True only when the chain answers that it has no such transaction. */
-async function chainDropped(client: FollowClient, hash: Hex): Promise<boolean> {
+/**
+ * Whether a held hash is proven dropped, by the bar the SDK sets for a release:
+ * the chain has no such transaction, and the account's nonce is past the one it
+ * was sent at, at a finalized block. A node that merely lags says not found
+ * while the transaction is still pending, so one miss proves nothing. Where the
+ * original ran at that nonce, its hash is followed and the hold has no exit.
+ */
+async function hashFate(
+  journal: ReturnType<typeof createBrowserWriteRecovery>,
+  client: FollowClient,
+  record: ReviewedWriteRecoveryRecord,
+): Promise<{ kind: 'pending' | 'dropped' } | { kind: 'ran'; record: ReviewedWriteRecoveryRecord }> {
+  await journal.resolve(client)
+  const saved = journal.read() ?? record
+  if (saved.hash !== record.hash || saved.sentNonce !== record.sentNonce) return { kind: 'ran', record: saved }
+  const hash = saved.hash
+  const nonce = saved.sentNonce ?? saved.nonce
+  if (!hash || nonce === undefined) return { kind: 'pending' }
   try {
     await client.getTransaction({ hash })
-    return false
+    return { kind: 'pending' }
   } catch (error) {
-    return (error as { name?: string })?.name === 'TransactionNotFoundError'
+    if ((error as { name?: string })?.name !== 'TransactionNotFoundError') return { kind: 'pending' }
   }
+  try {
+    const finalized = await client.getBlock({ blockTag: 'finalized' })
+    if (finalized.number === null) return { kind: 'pending' }
+    const count = await client.getTransactionCount({ address: saved.account, blockNumber: finalized.number })
+    return BigInt(count) > BigInt(nonce) ? { kind: 'dropped' } : { kind: 'pending' }
+  } catch { return { kind: 'pending' } }
 }
 /** How long a proposal the Safe ran is given to name its execution before the line alone is shown. */
 const EXECUTED_HASH_GRACE_MS = 120_000
@@ -722,14 +744,25 @@ export function useSafeTx(chainId: number) {
   const [droppedHash, setDroppedHash] = useState(false)
   useEffect(() => {
     setDroppedHash(false)
-    const hash = recovery?.record.hash
-    if (heldAs !== 'unconfirmed' || !hash || !publicClient) return
+    if (heldAs !== 'unconfirmed' || !recovery?.record.hash || recovery.record.safe || !publicClient) return
+    const current = recovery
     let stopped = false
-    const look = () => { void chainDropped(publicClient, hash).then(gone => { if (!stopped) setDroppedHash(gone) }) }
+    const look = () => {
+      void current.journal.withLock(async () => {
+        const fate = await hashFate(current.journal, publicClient, current.record)
+        if (stopped || !mounted.current || recoveryRef.current !== current) return
+        if (fate.kind === 'ran') {
+          showRecovery({ ...current, record: fate.record })
+          setHash(fate.record.hash ?? null)
+          return
+        }
+        setDroppedHash(fate.kind === 'dropped')
+      }).catch(() => { /* A busy lock or unreadable chain keeps it pending. */ })
+    }
     look()
     const timer = setInterval(look, HOLD_CHECK_INTERVAL_MS)
     return () => { stopped = true; clearInterval(timer) }
-  }, [heldAs, recovery?.record.hash, publicClient])
+  }, [heldAs, recovery, publicClient, showRecovery])
 
   // A write whose wallet reply was lost asks the chain again while it is held:
   // once the chain shows it, its hash is followed and the hold ends on proof.
@@ -1072,9 +1105,13 @@ export function useSafeTx(chainId: number) {
   const exitHold = useCallback(async () => {
     const current = recoveryRef.current
     if (!current) return
-    // Checked again as the exit is accepted: a hash that came back is the write.
+    // Checked again as the exit is accepted: a hash that came back, or ran, is the write.
     if (heldAs === 'unconfirmed') {
-      if (!current.record.hash || !publicClient || !(await chainDropped(publicClient, current.record.hash))) {
+      const record = current.record
+      const fate = !record.hash || record.safe || !publicClient
+        ? null
+        : await current.journal.withLock(() => hashFate(current.journal, publicClient, record)).catch(() => null)
+      if (fate?.kind !== 'dropped') {
         setDroppedHash(false)
         return
       }
