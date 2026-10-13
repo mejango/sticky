@@ -263,10 +263,27 @@ function proposalKey(chainId: number, safe: Address, call: SafeAppCall): string 
   return `${chainId}:${safe.toLowerCase()}:${held.to.toLowerCase()}:${held.value ?? 0n}:${held.data.toLowerCase()}`
 }
 
+/** Where the chain's proof that a Safe proposal ran is kept, so Done, a reopened flow and a reload cannot lose it. */
+const ranKey = (proposal: Pick<SafeProposal, 'chainId' | 'safe' | 'proposalHash'>) =>
+  `sticky:safe-ran:${proposal.chainId}:${proposal.safe.toLowerCase()}:${proposal.proposalHash.toLowerCase()}`
+function savedAsRan(proposal: Pick<SafeProposal, 'chainId' | 'safe' | 'proposalHash'>): boolean {
+  try { return localStorage.getItem(ranKey(proposal)) === '1' } catch { return false }
+}
+function saveAsRan(proposal: Pick<SafeProposal, 'chainId' | 'safe' | 'proposalHash'>): void {
+  try { localStorage.setItem(ranKey(proposal), '1') } catch { /* The session's copy still holds it. */ }
+}
+
 function updateProposal(key: string, next: Partial<SafeProposal>): void {
   const current = proposals.get(key)
   if (!current) return
-  proposals.set(key, { ...current, ...next })
+  if (next.ran) saveAsRan(current)
+  // Once the chain has shown it ran, nothing later reads it as uncertain or resendable.
+  const ran = current.ran || next.ran
+  proposals.set(key, {
+    ...current,
+    ...next,
+    ...(ran && next.phase === 'unproven' ? { ran: true, message: SAFE_PROPOSAL_EXECUTED_LINE } : {}),
+  })
   if (next.phase === 'success' && current.phase !== 'success') current.onConfirmed()
   notifyProposals()
 }
@@ -453,6 +470,7 @@ function recordProposal(
     executionHash: null,
     receipt: null,
     message: null,
+    ...(savedAsRan(proposal) ? { ran: true } : {}),
     onConfirmed,
   })
   notifyProposals()

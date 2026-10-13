@@ -629,6 +629,27 @@ describe('a Safe proposal awaiting its signers', () => {
       await flow.send()
       expect(mocks.writeContract).toHaveBeenCalledOnce()
       expect(recoveryRecords()).toHaveLength(1)
+
+      // Reopened, a follower whose hash reply is unreadable and whose watcher has not spoken yet
+      // still knows it ran: the evidence outlives Done, a remount and a reload.
+      mocks.waitForSafeExecutionHash.mockRejectedValue(new Error('unreadable'))
+      for (const reload of [false, true]) {
+        if (reload) {
+          await flow.close()
+          vi.resetModules()
+          ;({ useSafeTx } = await import('@/hooks/useSafeTx'))
+        }
+        const reopened = await mount()
+        await reopened.send()
+        await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+        expect(reopened.tx.held).toBeNull()
+        await act(async () => reopened.tx.dismiss())
+        await reopened.send()
+        await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+        expect(reopened.tx.held).toBeNull()
+        expect(mocks.writeContract).toHaveBeenCalledOnce()
+        await reopened.close()
+      }
     } finally { vi.useRealTimers() }
   })
 
