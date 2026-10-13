@@ -588,7 +588,22 @@ describe('useSafeTx', () => {
       expect(hook.ref.current!.held).toMatchObject({ line: STILL_PENDING_LINE, exit: null })
 
       // The account's nonce is past it at the finalized block, and nothing else ran there.
-      mocks.publicClient.getTransactionCount.mockImplementation(async (args: { blockTag?: string }) => (args.blockTag === 'pending' ? 8 : 8))
+      mocks.publicClient.getTransactionCount.mockImplementation(async (args: { blockTag?: string; blockNumber?: bigint }) =>
+        args.blockTag === 'pending' ? 8 : (args.blockNumber ?? 0n) >= 150n ? 8 : 7)
+      const blocks = (history: boolean) => mocks.publicClient.getBlock.mockImplementation(async (args: { blockTag?: string; blockNumber?: bigint; includeTransactions?: boolean }) => {
+        if (args.blockTag === 'finalized') return { number: 200n, hash: BLOCK_HASH, timestamp: 1_000n }
+        if (!args.includeTransactions) return { number: args.blockNumber, hash: BLOCK_HASH }
+        if (!history) throw new Error('This node has no history for that block.')
+        return { number: args.blockNumber, hash: BLOCK_HASH, transactions: args.blockNumber === 150n
+          ? [{ hash: EXECUTION_HASH, from: ALICE, to: ALICE, nonce: 7, value: 0n, input: '0x' }] : [] }
+      })
+      // The nonce moved, but the node cannot show what used it: that is not proof the hash was dropped.
+      blocks(false)
+      await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
+      expect(hook.ref.current!.held).toMatchObject({ line: STILL_PENDING_LINE, exit: null })
+
+      // Another transaction (a cancel) is shown at that nonce at a finalized block.
+      blocks(true)
       await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
       expect(hook.ref.current!.held).toMatchObject({ line: writeHeldMessage(), label: WRITE_EXIT_LABEL })
       expect(hook.ref.current!.held!.exit).toBeTypeOf('function')

@@ -101,13 +101,30 @@ async function hashFate(
   } catch (error) {
     if ((error as { name?: string })?.name !== 'TransactionNotFoundError') return { kind: 'pending' }
   }
+  // Only canonical replacement evidence drops it: the block where the nonce
+  // moved holds another transaction of this account at that nonce. A node that
+  // cannot show that history, or shows nothing there, leaves it pending.
   try {
     const finalized = await client.getBlock({ blockTag: 'finalized' })
-    if (finalized.number === null) return { kind: 'pending' }
-    const count = await client.getTransactionCount({ address: saved.account, blockNumber: finalized.number })
-    return BigInt(count) > BigInt(nonce) ? { kind: 'dropped' } : { kind: 'pending' }
+    if (finalized.number === null || saved.fromBlock === undefined) return { kind: 'pending' }
+    const wanted = BigInt(nonce)
+    const count = (blockNumber: bigint) => client.getTransactionCount({ address: saved.account, blockNumber }).then(BigInt)
+    let low = BigInt(saved.fromBlock)
+    let high = finalized.number
+    if (high <= low || (await count(high)) <= wanted || (await count(low)) > wanted) return { kind: 'pending' }
+    while (high - low > 1n) {
+      const middle = (low + high) / 2n
+      if ((await count(middle)) > wanted) high = middle
+      else low = middle
+    }
+    const block = await client.getBlock({ blockNumber: high, includeTransactions: true })
+    const usedBy = block.number === high
+      ? block.transactions.find(tx => tx.from?.toLowerCase() === saved.account && BigInt(tx.nonce) === wanted)
+      : undefined
+    return usedBy && usedBy.hash.toLowerCase() !== hash.toLowerCase() ? { kind: 'dropped' } : { kind: 'pending' }
   } catch { return { kind: 'pending' } }
 }
+
 /** How long a proposal the Safe ran is given to name its execution before the line alone is shown. */
 const EXECUTED_HASH_GRACE_MS = 120_000
 /** ~10 minutes of direct lookups, matching the watcher's own retry horizon. */
