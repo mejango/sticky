@@ -365,6 +365,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
             exit={() => run(async () => {
               const out = await tx.exitStored({ chainId: pending.request.chainId, owner: pending.owner, to: pending.request.address, data: pending.request.data, value: pending.request.value, intent: pending.intent, hash: pending.hash, safeProposal: pending.safeProposal })
               if (out.outcome === 'settled') return settleStored(pending, out.hash, out.result)
+              if (out.outcome === 'unreadable') throw new Error("Couldn't check this transaction. Try again.")
               if (out.outcome !== 'released' || pending.settled === 'success') return
               // Abandoned: the reservation and the submission marker go; the transfer's metadata and steps stay.
               await endPendingBridgeAttempt(pending.owner, pending.id); setPending(readPendingBridgeWrite(pending.owner)); await refresh()

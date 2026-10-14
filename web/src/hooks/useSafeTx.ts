@@ -87,7 +87,7 @@ export type TxPhase =
 /** `checkRequired`: the hold could not be read or adopted, so the one action left is the user's explicit check. */
 export type StoredHold = { exit: boolean; line: string; warning?: string; checked?: boolean; checkRequired?: boolean } | { settled: { hash: Hex; result: 'success' | 'failed' } } | null
 /** How a user's exit on a stored write ended. Only `released` abandons; `settled` carries the authenticated hash. */
-export type StoredExit = { outcome: 'released' } | { outcome: 'settled'; hash: Hex; result: 'success' | 'failed' } | { outcome: 'held' }
+export type StoredExit = { outcome: 'released' } | { outcome: 'settled'; hash: Hex; result: 'success' | 'failed' } | { outcome: 'held' } | { outcome: 'unreadable' }
 
 type FollowClient = NonNullable<ReturnType<typeof usePublicClient>>
 
@@ -1174,7 +1174,7 @@ export function useSafeTx(chainId: number) {
   const exitStored = useCallback(async (write: StoredWrite): Promise<StoredExit> => {
     try {
       const client = getPublicClient(wagmiConfig, { chainId: write.chainId as never }) as unknown as Parameters<WriteHoldHandle['state']>[0] | undefined
-      if (!client) return { outcome: 'released' }
+      if (!client) return { outcome: 'unreadable' }
       const stored = openStored(write)
       const settledOf = (state: WriteHoldState): StoredExit =>
         state.status === 'clear' && state.settled && 'hash' in state.settled
@@ -1186,7 +1186,7 @@ export function useSafeTx(chainId: number) {
       if (!state.exit) return { outcome: 'held' }
       const { released, state: after } = await stored.exit(state, { checkedWallet: true }, client)
       return released ? { outcome: 'released' } : settledOf(after)
-    } catch { return { outcome: 'released' } /* Unreadable: this is only reached by the user's explicit check. */ }
+    } catch { return { outcome: 'unreadable' } /* An unreadable hold could hold a success: never counted as released. */ }
   }, [])
 
   /**

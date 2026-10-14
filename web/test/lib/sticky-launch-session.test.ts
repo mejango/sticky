@@ -362,6 +362,9 @@ describe('durable Sticky launch controller', () => {
     vi.mocked(f.ports.hold.look).mockRejectedValue(new Error('rpc down'))
     await expect(f.controller.hold()).resolves.toMatchObject({ exit: true, checkRequired: true })
     vi.mocked(f.ports.hold.exit).mockRejectedValueOnce(new Error('rpc down'))
+    // An unreadable hold could hold a success: nothing is retired, and the exit stays for another try.
+    await expect(f.controller.exitHold()).rejects.toThrow("Couldn't check this transaction. Try again.")
+    expect(f.store.load()?.direct).toEqual({ started: true, hash: H1 })
     await f.controller.exitHold()
     expect(f.store.load()?.direct).toBeUndefined()
     expect(f.store.load()?.directAttempts).toEqual([{ started: true, hash: H1, exited: true }])

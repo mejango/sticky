@@ -26,6 +26,7 @@ vi.mock('@tanstack/react-query', async importOriginal => ({
 }))
 
 const mocks = vi.hoisted(() => ({
+  noClient: false,
   account: undefined as Address | undefined,
   centerWallet: false,
   chainId: 1,
@@ -51,7 +52,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@wagmi/core', () => ({
   getAccount: mocks.getAccount,
-  getPublicClient: () => mocks.publicClient,
+  getPublicClient: () => (mocks.noClient ? undefined : mocks.publicClient),
 }))
 vi.mock('wagmi', () => ({
   usePublicClient: () => mocks.publicClient,
@@ -1290,6 +1291,12 @@ describe('useSafeTx', () => {
         const hook = await renderHook()
         await expect(hook.ref.current!.adoptStored({ ...writeOf(), hash: HASH })).resolves.toBe('refused')
         await expect(hook.ref.current!.exitStored({ ...writeOf(), hash: HASH })).resolves.toEqual({ outcome: 'released' })
+      })
+
+      it('never counts an unreadable hold as released, so the exit can be tried again', async () => {
+        const hook = await renderHook()
+        mocks.noClient = true
+        try { await expect(hook.ref.current!.exitStored(writeOf())).resolves.toEqual({ outcome: 'unreadable' }) } finally { mocks.noClient = false }
       })
 
       it('reports an adopted write as adopted, and a settlement as the outcome of the exit', async () => {

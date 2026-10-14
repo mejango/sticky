@@ -237,6 +237,7 @@ const sponsorUnknown = (session: StickyLaunchSession) => {
   return elapsed || (!!session.error && !known)
 }
 /** The SDK's allowed window: a request that discovery still cannot find after this long earns the explicit check. */
+const UNREADABLE = "Couldn't check this transaction. Try again."
 const SPONSOR_WINDOW_MS = 30 * 60_000
 const SPONSOR_CHECK_VIEW: LaunchHoldView = { line: CHECK_REQUIRED_LINE, warning: CHECK_REQUIRED_WARNING, label: CHECK_REQUIRED_CREATE_LABEL, exit: true, checkRequired: true }
 
@@ -382,8 +383,8 @@ const SPONSOR_CHECK_VIEW: LaunchHoldView = { line: CHECK_REQUIRED_LINE, warning:
         return sponsorUnknown(session) ? save({ ...session, listing: { ...session.listing, requested: false, requestExited: true } }) : session
       }
       if (submitted.settled === 'success') return session
-      // Unreadable: this runs only on the user's explicit check, which retires the submission.
-      const outcome = await ports.hold.exit(session, kind).catch(() => ({ released: true }) as { released: boolean } & Partial<LaunchSettlement>)
+      // An unreadable hold could hold a success: nothing is retired, and the exit stays for another try.
+      const outcome = await ports.hold.exit(session, kind).catch(() => { throw new Error(UNREADABLE) })
       if (outcome.settled) return saveSettlement(session, kind, outcome.settled)
       if (!outcome.released) return session
       // Re-read right before retiring: a success saved meanwhile is never retired.
