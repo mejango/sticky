@@ -95,7 +95,15 @@ const SUCCESS = toEventSelector('ExecutionSuccess(bytes32,uint256)')
 const FAILURE = toEventSelector('ExecutionFailure(bytes32,uint256)')
 const BLOCK_HASH = `0x${'ed'.repeat(32)}` as Hex
 // The SDK also keeps a settlement and a latest-attempt marker per call; only the reservation records count here.
-const recoveryRecords = () => Object.keys(localStorage).filter(key => key.startsWith('nana-sdk:reviewed-write:')).map(key => JSON.parse(localStorage.getItem(key)!)).filter(value => value && typeof value === 'object' && 'call' in value && !('result' in value))
+const recoveryRecords = () => {
+  // A namespaced hold also leaves a mirror under its exact-call key, with the same record id: one reservation.
+  const seen = new Map<string, Record<string, unknown>>()
+  for (const key of Object.keys(localStorage).filter(each => each.startsWith('nana-sdk:reviewed-write:'))) {
+    const value = JSON.parse(localStorage.getItem(key)!)
+    if (value && typeof value === 'object' && 'call' in value && !('result' in value) && typeof value.id === 'string' && !seen.has(value.id)) seen.set(value.id, value)
+  }
+  return [...seen.values()]
+}
 const WORD = `0x${'00'.repeat(32)}` as Hex
 const AWAITING = 'Proposed to your Safe. Its other signers can approve it there.'
 const reviewedBySafe = { reviewedAccount: SAFE }

@@ -17,6 +17,7 @@ export function sendingStatus({ phase, safeNonceGuidance, notice, held }: { phas
     return (
       <>
         <span className="block">{held.warning ? `${held.line} ${held.warning}` : held.line}</span>
+        {held.notice ? <span className="mt-1 block">{held.notice}</span> : null}
         {held.exit ? <button type="button" className="btn-secondary mt-2 min-h-[44px] px-4 text-sm" onClick={held.exit}>{held.label}</button> : null}
       </>
     )

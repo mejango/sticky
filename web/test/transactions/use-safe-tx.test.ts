@@ -12,7 +12,7 @@ import {
 import { TransactionNotFoundError, TransactionReceiptNotFoundError } from 'viem'
 import { SAFE_EXEC_ABI } from '@bananapus/nana-sdk-core/safe-service'
 import { buildBridgeClaimTx, buildBridgePrepareTx, buildCashOutTx, buildPayTx, buildToRemoteTx, stickySourceCollectorAbi } from '@bananapus/nana-sdk-core/v6'
-import { createWriteHold, WRITE_HOLD_IN_TAB_LINE, WRITE_EXIT_LABEL, writeExitMessage, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
+import { createBrowserWriteRecovery, createWriteHold, WRITE_HOLD_STALE_REVIEW_LINE, WRITE_HOLD_IN_TAB_LINE, WRITE_EXIT_LABEL, writeExitMessage, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 
@@ -96,7 +96,15 @@ const canonicalReceipt = (status: 'success' | 'reverted', transactionHash: Hex =
   from: ALICE, to: BOB, logs: [],
 })
 // The SDK also keeps a settlement and a latest-attempt marker per call; only the reservation records count here.
-const recoveryRecords = () => Object.keys(localStorage).filter(key => key.startsWith('nana-sdk:reviewed-write:')).map(key => JSON.parse(localStorage.getItem(key)!)).filter(value => value && typeof value === 'object' && 'call' in value && !('result' in value))
+const recoveryRecords = () => {
+  // A namespaced hold also leaves a mirror under its exact-call key, with the same record id: one reservation.
+  const seen = new Map<string, Record<string, unknown>>()
+  for (const key of Object.keys(localStorage).filter(each => each.startsWith('nana-sdk:reviewed-write:'))) {
+    const value = JSON.parse(localStorage.getItem(key)!)
+    if (value && typeof value === 'object' && 'call' in value && !('result' in value) && typeof value.id === 'string' && !seen.has(value.id)) seen.set(value.id, value)
+  }
+  return [...seen.values()]
+}
 const ABI = parseAbi(['function transfer(address to, uint256 amount)'])
 const request = {
   chainId: 10,
@@ -1101,6 +1109,74 @@ describe('useSafeTx', () => {
     })
   })
 
+  describe('SDK 2.35 holds', () => {
+    const X = '0x3333333333333333333333333333333333333333' as Address
+    const stick = (min: bigint) => buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 5n, beneficiary: ALICE, minReturnedTokens: min, memo: '', metadata: '0x' })
+
+    it('refuses a retry under the intent key while a main-era exact-calldata hold stands, until the exit', async () => {
+      const first = stick(9n)
+      // What shipped: a hold on the exact call, with no namespace.
+      const mainEra = createBrowserWriteRecovery({ chainId: 10, account: ALICE, safe: false, call: { to: first.address, data: encodeFunctionData({ abi: first.abi, functionName: first.functionName, args: first.args } as never), value: first.value } })
+      await mainEra.withLock(async () => { mainEra.reserve(undefined, { nonce: 7, blockNumber: 100n }) })
+      const hook = await renderHook()
+      await act(async () => { await hook.ref.current!.send(first as never, reviewedByAlice) })
+      expect(mocks.writeContract).not.toHaveBeenCalled()
+      expect(hook.ref.current).toMatchObject({ phase: 'submitted', held: { label: WRITE_EXIT_LABEL } })
+
+      await act(async () => hook.ref.current!.held!.exit!())
+      expect(hook.ref.current).toMatchObject({ phase: 'idle', held: null })
+      await act(async () => { await hook.ref.current!.send(first as never, reviewedByAlice) })
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+    })
+
+    it('shows the SDK message when a review went stale because another window sent the same intent and it already settled', async () => {
+      const call = stick(9n)
+      const other = createWriteHold().open({ chainId: 10, account: ALICE, safe: false, call: { to: call.address, data: encodeFunctionData({ abi: call.abi, functionName: call.functionName, args: call.args } as never), value: call.value } })
+      mocks.receipt = { data: canonicalReceipt('success'), isError: false }
+      mocks.requestReview.mockImplementationOnce(async () => {
+        await other.send(mocks.publicClient as never, async gate => { await gate.beforeSend(); gate.afterSubmit(HASH); return HASH })
+        await other.onReceipt(canonicalReceipt('success') as never, mocks.publicClient as never)
+        return true
+      })
+      const hook = await renderHook()
+      await act(async () => { await hook.ref.current!.send(call as never, reviewedByAlice) })
+      expect(mocks.writeContract).not.toHaveBeenCalled()
+      expect(hook.ref.current).toMatchObject({ phase: 'error', error: WRITE_HOLD_STALE_REVIEW_LINE })
+    })
+
+    it('shows the in-tab notice the SDK puts on a state', async () => {
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Storage unavailable') })
+      mocks.writeContract.mockRejectedValueOnce(new Error('The wallet broadcast it but its RPC response was lost.'))
+      const hook = await renderHook()
+      await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+      expect(hook.ref.current!.held).toMatchObject({ notice: WRITE_HOLD_IN_TAB_LINE })
+    })
+
+    it('ignores a newer reservation it did not start', async () => {
+      vi.useFakeTimers()
+      try {
+        mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
+        const hook = await renderHook()
+        await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+        const exit = hook.ref.current!.held!.exit!
+        // Another window abandons this attempt and reserves a new one.
+        const data = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
+        const other = createWriteHold().open({ chainId: 10, account: ALICE, safe: false, call: { to: BOB, data, value: 7n } })
+        const seen = await other.state(mocks.publicClient as never)
+        await other.exit(seen, { checkedWallet: true }, mocks.publicClient as never)
+        await other.send(mocks.publicClient as never, async gate => { await gate.beforeSend(); throw new Error('lost') }).catch(() => undefined)
+        await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
+        await act(async () => exit())
+        // This tab never saw the newer attempt, so its exit cannot release it.
+        const stillHeld = Object.keys(localStorage).filter(key => key.startsWith('nana-sdk:reviewed-write:') && !key.endsWith(':settled') && !key.endsWith(':latest')).length
+        expect(stillHeld).toBeGreaterThan(0)
+        expect(mocks.writeContract).toHaveBeenCalledOnce()
+        await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+        expect(mocks.writeContract).toHaveBeenCalledOnce()
+      } finally { vi.useRealTimers() }
+    })
+  })
+
   describe('an exit and where it comes from', () => {
     it('renders no exit from a cross-tab emission, and renders it once a state(client) read allows one', async () => {
       vi.useFakeTimers()
@@ -1296,7 +1372,7 @@ describe('useSafeTx', () => {
     await act(async () => { await hook.ref.current!.send(request, { reviewedAccount: BOB }) })
     expect(mocks.writeContract).toHaveBeenCalledTimes(2)
     expect(recoveryRecords()).toHaveLength(2)
-    expect(recoveryRecords().find(record => record.account === ALICE).hash).toBeUndefined()
+    expect(recoveryRecords().find(record => record.account === ALICE)?.hash).toBeUndefined()
   })
 
   it('releases only an explicitly rejected reservation before a new review', async () => {

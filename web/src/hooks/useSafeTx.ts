@@ -24,7 +24,7 @@ import { submitReviewedContractWrite } from '@/lib/contract-write'
 import {
   createWriteHold, gasWithHeadroom, transactionMessage, writeExitMessage, WRITE_EXIT_LABEL,
   SAFE_PROPOSAL_EXECUTED_LINE, SAFE_PROPOSAL_REPLACED_LINE, WRITE_HOLD_REVERTED_LINE,
-  SubmittedContractWriteError, WriteHeldError, WriteHoldBusyError, WriteHoldNonceError,
+  SubmittedContractWriteError, WriteHeldError, WriteHoldBusyError, WriteHoldNonceError, WriteHoldStaleReviewError,
   waitForTrackedReceipt, type WriteHoldGate, type WriteHoldHandle, type WriteHoldState,
 } from '@bananapus/nana-sdk-core/review'
 import { hasSafeService } from '@bananapus/nana-sdk-core/safe-service'
@@ -564,6 +564,8 @@ export function useSafeTx(chainId: number) {
   const holdRef = useRef<WriteHoldHandle | null>(null)
   const [held, setHeld] = useState<WriteHoldState | null>(null)
   const heldRef = useRef<WriteHoldState | null>(null)
+  /** The reservation of the attempt this flow shows: states of any other reservation belong to someone else. */
+  const reservationRef = useRef<string | null>(null)
   /** How a hold the user was looking at ended without a send: its settlement, kept. */
   const [settledNote, setSettledNote] = useState<string | null>(null)
   /**
@@ -571,8 +573,13 @@ export function useSafeTx(chainId: number) {
    * Otherwise a hold on screen that clears with an SDK-authenticated settlement (this tab or another's) ends the
    * attempt whatever it offered before: the settlement is handed off and the pending phase finishes.
    */
-  const showHeld = useCallback((value: WriteHoldState | null, local = false) => {
+  const showHeld = useCallback((value: WriteHoldState | null, local = false): boolean => {
     const shown = value && value.status !== 'clear' ? value : null
+    // A newer reservation this flow did not start (another window's attempt after this one ended) is not this flow's to show.
+    if (value?.reservation) {
+      if (reservationRef.current && reservationRef.current !== value.reservation) return false
+      if (shown) reservationRef.current = value.reservation
+    }
     if (!shown && value?.status === 'clear' && heldRef.current && !local) {
       const settled = value.settled
       const offered = 'exit' in heldRef.current && heldRef.current.exit
@@ -599,9 +606,11 @@ export function useSafeTx(chainId: number) {
     }
     heldRef.current = shown
     setHeld(shown)
+    return true
   }, [])
   const watchHold = useCallback((next: WriteHoldHandle | null) => {
     holdRef.current = next
+    reservationRef.current = null
     setHold(next)
     if (!next) setHeld(null)
   }, [])
@@ -725,7 +734,7 @@ export function useSafeTx(chainId: number) {
    * Returns the hash a held call is already tracked by.
    */
   const apply = useCallback((state: WriteHoldState, restart = true): Hex | null => {
-    showHeld(state)
+    if (!showHeld(state)) return null
     inFlightRef.current = false
     if (state.status === 'clear') return null
     const record = state.record
@@ -994,7 +1003,20 @@ export function useSafeTx(chainId: number) {
         if (!isCurrent()) return null
         inFlightRef.current = false
         // The call is held: its state says why, and a hash it already has is followed.
-        if (e instanceof WriteHeldError) return apply(e.state)
+        if (e instanceof WriteHeldError) {
+          const tracked = apply(e.state)
+          // The refusal's state carries no exit; the chain-checked read decides whether this hold has one now.
+          if (handle) void handle.state(publicClient).then(next => apply(next, false)).catch(() => undefined)
+          return tracked
+        }
+        if (e instanceof WriteHoldStaleReviewError) {
+          // Another window sent this intent while the review was open: its message, or its result if it already settled.
+          if (e.settled && 'hash' in e.settled) {
+            setSettledNote(e.settled.result === 'failed' ? WRITE_HOLD_REVERTED_LINE : 'Your earlier transaction went through.')
+            setPhase('submitted')
+          } else { setError(e.message); setPhase('error') }
+          return null
+        }
         if (e instanceof WriteHoldBusyError || e instanceof WriteHoldNonceError) {
           setError(e.message)
           setPhase('error')
@@ -1125,13 +1147,14 @@ export function useSafeTx(chainId: number) {
     ? null
     : held.status === 'pending-known-hash'
       ? !shownKey && phase === 'pending' && receipt.isError && !receiptData
-        ? { line: held.line, warning: '', label: WRITE_EXIT_LABEL, exit: null }
+        ? { line: held.line, warning: '', label: WRITE_EXIT_LABEL, exit: null, notice: held.notice }
         : null
       : held.exit
         ? {
             line: held.line,
             warning: 'warning' in held && held.warning ? held.warning : writeExitMessage(held.record.call),
             label: WRITE_EXIT_LABEL,
+            notice: held.notice,
             exit: () => { void exitHold(held) },
           }
         : null

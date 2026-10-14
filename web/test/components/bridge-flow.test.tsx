@@ -230,7 +230,7 @@ describe('reviewed durable bridge workflow', () => {
     await press(WRITE_EXIT_LABEL)
     expect(mocks.tx.exitStored).toHaveBeenCalledOnce()
     // The stored write is looked up by the same intent key the hold was opened under.
-    expect(mocks.tx.exitStored).toHaveBeenCalledWith(expect.objectContaining({ intent: expect.stringMatching(/^approve:/) }))
+    expect(mocks.tx.exitStored).toHaveBeenCalledWith(expect.objectContaining({ intent: expect.stringMatching(/^intent:approve:/) }))
     expect(readPendingBridgeWrite(OWNER)).toBeNull()
     expect(readBridgeRecords(KEY)).toHaveLength(1)
     expect(readBridgeRecords(KEY)[0].metadata).toBe(metadata)

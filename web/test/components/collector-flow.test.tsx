@@ -264,7 +264,7 @@ describe('permissionless collector delivery', () => {
     mocks.tx.exitStored = vi.fn(async () => ({ outcome: 'released' as const }))
     await press(WRITE_EXIT_LABEL)
     expect(mocks.tx.exitStored).toHaveBeenCalledOnce()
-    expect(mocks.tx.exitStored).toHaveBeenCalledWith(expect.objectContaining({ intent: expect.stringMatching(/^send:/) }))
+    expect(mocks.tx.exitStored).toHaveBeenCalledWith(expect.objectContaining({ intent: expect.stringMatching(/^intent:collector-delivery:/) }))
     expect(readPendingBridgeWrite(OWNER)).toBeNull()
     expect(readWatchedBridgeRoutes(10, INFO.stToken, 4000n)).toEqual(route)
 
