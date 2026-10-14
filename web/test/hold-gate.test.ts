@@ -28,8 +28,11 @@ describe('the hold and recovery gate', () => {
     expect(offenders(pattern)).toEqual([])
   })
 
-  it('binds the SDK view and recovery in one swappable file only (until SDK 2.40 ships the hooks in core)', () => {
-    expect(offenders(/\b(?:createHeldWriteView|followHeldWrite)\b/, ['lib/held-write-react.ts'])).toEqual([])
+  it('takes the held-write hooks from the SDK, never a local copy or binding of its view', () => {
+    expect(offenders(/\b(?:function|const|let)\s+(?:useHeldWrite|useHeldWrites|useHeldIntents|useSavedAttempt|HeldWritesNotice)\b/)).toEqual([])
+    expect(offenders(/\bcreateHeldWriteView\b|nana-sdk-react|held-write-react/)).toEqual([])
+    // The SDK's follower is used in one place: a closed Safe flow's proposal keeps being followed.
+    expect(offenders(/\bfollowHeldWrite\b/, ['lib/write-holds.ts'])).toEqual([])
   })
 
   it('hands a receipt to the hold in one place only: the engine, which then reads its settlement', () => {
@@ -49,6 +52,7 @@ describe('the hold and recovery gate', () => {
 
   it('catches what it looks for', () => {
     expect(/\b(?:function|const|let)\s+settledLine\b/.test('const settledLine = () => 1')).toBe(true)
+    expect(/\b(?:function|const|let)\s+(?:useHeldWrite|useSavedAttempt)\b/.test('export function useHeldWrite(options) {')).toBe(true)
     expect(/\.(?:adopt|onUnproven|onExecuted|attachHash|attachSafeNonce|acknowledge)\(/.test('handle.adopt(state, evidence)')).toBe(true)
   })
 })

@@ -16,7 +16,7 @@ import {
   type TransactionReceipt,
 } from 'viem'
 import { usePublicClient, useSwitchChain, useWaitForTransactionReceipt, useWriteContract } from 'wagmi'
-import { followDetached, useHeldWrite } from '@/lib/held-write-react'
+import { useHeldWrite } from '@bananapus/nana-sdk-core/review/react'
 import {
   gasWithHeadroom, settledLine, transactionMessage, HELD_AWAY_SUCCESS_LINE, HELD_CONFIRMING_LINE, WRITE_HOLD_UNCHECKED_LINE,
   SubmittedContractWriteError, WriteHeldError, WriteHoldBusyError, WriteHoldNonceError, WriteHoldStaleReviewError,
@@ -27,7 +27,7 @@ import {
 import { hasSafeService } from '@bananapus/nana-sdk-core/safe-service'
 import { useWallet } from '@/hooks/useWallet'
 import { submitReviewedContractWrite } from '@/lib/contract-write'
-import { exitWarning, holds } from '@/lib/write-holds'
+import { exitWarning, followDetached, holds } from '@/lib/write-holds'
 import { holdIntent } from '@/lib/sticky-hold-intent'
 import { legacyNamespaces } from '@/lib/legacy-intents'
 import { getViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'

@@ -79,7 +79,7 @@ Hosted verification passed at `f6ed26bc8a41d748ef1caa1831dee1efc7eebd05`: all se
 - [x] useSafeTx on useHeldWrite; delete registry, watchers, stored-hold APIs; closed Safe proposals still followed.
 - [x] Bridge/Collector: SavedWriteRecovery (useSavedAttempt + useHeldWrite); delete PendingWriteExit and journal settlement glue.
 - [x] Launch: launchAttempt + useSavedAttempt (LaunchRecovery; direct, payment, sponsor with the 30-minute window); delete launch hold views; reserve before journaling.
-- [ ] HeldWritesNotice: skipped (needs useHeldWrites, outside the thin binding); add with SDK 2.40's core hooks.
+- [x] SDK 2.40.0: hooks from `@bananapus/nana-sdk-core/review/react`, local copy deleted; app-wide HeldWritesNotice (held phase only) per chain for the connected account; gate forbids local hook copies.
 - [x] Copy from SDK constants; delete check-required.ts and app duplicates.
 - [x] Tests: race (red with the old order), ported scenarios, grep gate, happy-path parity.
 - [x] Full gate, push, PR (no merge).

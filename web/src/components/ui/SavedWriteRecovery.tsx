@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Hex } from 'viem'
 import { getPublicClient } from '@wagmi/core'
-import { useHeldWrite, useSavedAttempt } from '@/lib/held-write-react'
+import { useHeldWrite, useSavedAttempt } from '@bananapus/nana-sdk-core/review/react'
 import { HELD_SUCCESS_LINE, intent, writeIntentKey, type SavedAttempt, type WriteHoldClient } from '@bananapus/nana-sdk-core/review'
 import { readPendingBridgeWrite, type PendingBridgeWrite } from '@/lib/sticky-bridge-journal'
 import { attempts, exitWarning, holds } from '@/lib/write-holds'
