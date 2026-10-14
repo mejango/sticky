@@ -121,7 +121,7 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
       const now = await heldBy(info, account)
       if (attempt.current !== mine) return
       if (count > now) return refuse(MORE_THAN_HELD)
-      setReview({ account, plan: all && count === now ? { ...transferTx(info, to, count), max: true } : transferTx(info, to, count), whole: count === now, preparing: false, error: null })
+      setReview({ account, plan: all && count === now ? Object.freeze({ ...transferTx(info, to, count), max: true }) : transferTx(info, to, count), whole: count === now, preparing: false, error: null })
     } catch (reason) {
       if (attempt.current === mine) refuse(reason instanceof Error ? reason.message : BALANCE_UNREADABLE)
     }

@@ -343,6 +343,22 @@ describe('permissionless collector delivery', () => {
   })
   // Switch on with SDK 2.36's hold.adopt, as in the bridge flow: a hashed legacy delivery with no SDK record gets the warned exit.
   it.todo('adopts a hashed legacy delivery reservation, and offers the warned exit after 30 minutes when its transaction dropped')
+  it('sends a delivery chosen with Max as "all", and a typed amount as itself', async () => {
+    await render()
+    await press('Max')
+    await press('Review delivery')
+    await press('Confirm & deliver')
+    const sent = (mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls[0] as [{ max?: boolean }]
+    expect(sent[0].max).toBe(true)
+
+    ;(mocks.tx.send as ReturnType<typeof vi.fn>).mockClear()
+    await act(async () => root.unmount()); root = createRoot(host)
+    localStorage.clear()
+    await review()
+    await press('Confirm & deliver')
+    const typed = (mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls[0] as [{ max?: boolean }]
+    expect(typed[0].max).toBeUndefined()
+  })
   it('keeps the delivery reservation when the SDK refuses the exit', async () => {
     mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => { await options.durableRecovery?.reserve(); return null })
     await review(); await press('Confirm & deliver')

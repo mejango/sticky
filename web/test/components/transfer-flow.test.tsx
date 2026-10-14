@@ -464,6 +464,42 @@ describe('the review', () => {
   })
 })
 
+describe('the choice of "all"', () => {
+  const sentRequest = () => (tx().send.mock.calls[0] as [{ max?: boolean; args: unknown[] }])[0]
+
+  it('sends a transfer chosen with max as "all", so its hold survives a balance that moved', async () => {
+    await render()
+    await type('Recipient', BOB)
+    await press(modal(), 'max')
+    await press(modal(), 'Review transfer')
+    await press(confirm(), 'Confirm & transfer')
+    expect(sentRequest()).toMatchObject({ max: true, args: [BOB, 2n * E18] })
+    expect(Object.isFrozen(sentRequest())).toBe(true)
+  })
+
+  it('does not send "all" for the same number typed by hand, or when the amount is edited after max', async () => {
+    await render()
+    await type('Recipient', BOB)
+    await type('Amount', '2')
+    await press(modal(), 'Review transfer')
+    await press(confirm(), 'Confirm & transfer')
+    expect(sentRequest().max).toBeUndefined()
+
+    tx().send.mockClear()
+    await act(async () => root.unmount())
+    root = createRoot(host)
+    client.clear()
+    await render()
+    await type('Recipient', BOB)
+    await press(modal(), 'max')
+    await type('Amount', '1')
+    await press(modal(), 'Review transfer')
+    await press(confirm(), 'Confirm & transfer')
+    expect(sentRequest()).toMatchObject({ args: [BOB, E18] })
+    expect(sentRequest().max).toBeUndefined()
+  })
+})
+
 describe('the send', () => {
   it('wallet-action:transfer-sticky-tokens sends exactly the reviewed transfer of Sticky tokens: the token, the recipient and 18 decimals, in a request that cannot change', async () => {
     await render()
