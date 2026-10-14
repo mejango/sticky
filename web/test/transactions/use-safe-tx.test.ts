@@ -1097,6 +1097,18 @@ describe('useSafeTx', () => {
       expect(hook.ref.current).toMatchObject({ phase: 'submitted' })
       expect(hook.ref.current!.held).not.toBeNull()
     })
+    it.each([
+      ['a collector delivery whose bridge lane the app resolved differently', { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'send', args: [12n, X, 0n, 5n, X, X], value: 77n }, { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'send', args: [12n, X, 0n, 5n, ALICE, ALICE], value: 77n }],
+      ['a bridge queue whose backing token the route resolved differently', buildBridgePrepareTx({ chainId: 10, sucker: X, projectTokenCount: 5n, beneficiary: `0x${'00'.repeat(32)}`, minTokensReclaimed: 9n, token: X, metadata: `0x${'00'.repeat(32)}` }), buildBridgePrepareTx({ chainId: 10, sucker: X, projectTokenCount: 5n, beneficiary: `0x${'00'.repeat(32)}`, minTokensReclaimed: 9n, token: ALICE, metadata: `0x${'00'.repeat(32)}` })],
+    ] as [string, TxRequestOf, TxRequestOf][])('keys %s by the user choice alone, not by what the app picked', async (_name, first, retry) => {
+      mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
+      const hook = await renderHook()
+      await act(async () => { await hook.ref.current!.send(first as never, reviewedByAlice) })
+      await act(async () => hook.ref.current!.reset())
+      await act(async () => { await hook.ref.current!.send(retry as never, reviewedByAlice) })
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+    })
+
     it('does not let a pending approval that covers a moving amount block a revocation or a cap', async () => {
       const abiApprove = parseAbi(['function approve(address spender, uint256 amount)'])
       mocks.writeContract.mockRejectedValueOnce(new Error('lost'))

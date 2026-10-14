@@ -7,7 +7,8 @@ import type { TxRequest } from '@/hooks/useSafeTx'
  * moving claim), the exact call changes while the user's intent does not, so a retry would send again with no exit.
  * Those writes are held by their intent, built by the SDK's `writeIntentKey` from the action, the identity of what is
  * acted on and the parameters the user chose, with every volatile field left out. Any other write is held by its
- * exact call (undefined). Writes pending from before this key existed are held by their exact call, which the SDK
+ * exact call (undefined). What the app picks on its own (the bridge lane's sucker and backing token for a collector
+ * delivery, the route's backing token for a queue, every quote, fee and proof) never goes in a key. Writes pending from before this key existed are held by their exact call, which the SDK
  * always includes beside the intent.
  */
 export function holdIntent(request: Pick<TxRequest, 'chainId' | 'address' | 'functionName' | 'args' | 'moving'>): string | undefined {
@@ -30,7 +31,7 @@ export function holdIntent(request: Pick<TxRequest, 'chainId' | 'address' | 'fun
         : writeIntentKey('approve', { chain, token: address(request.address), spender: address(args[0]), kind: 'exact', amount: amount(args[1]) })
     // Sucker.prepare (a bridge queue): minTokensReclaimed (2) is a quote.
     case 'prepare':
-      return writeIntentKey('bridge-queue', { chain, sucker: address(request.address), projectTokenCount: amount(args[0]), beneficiary: hex(args[1]), token: address(args[3]), metadata: hex(args[4]) })
+      return writeIntentKey('bridge-queue', { chain, sucker: address(request.address), projectTokenCount: amount(args[0]), beneficiary: hex(args[1]), metadata: hex(args[4]) })
     // Sucker.toRemote (a bridge send): the transport budget is the call's value, a quote.
     case 'toRemote':
       return writeIntentKey('bridge-send', { chain, sucker: address(request.address), token: address(args[0]) })
@@ -41,7 +42,7 @@ export function holdIntent(request: Pick<TxRequest, 'chainId' | 'address' | 'fun
     }
     // Source collector send: the bridge fee is the call's value, a quote.
     case 'send':
-      return writeIntentKey('collector-delivery', { chain, collector: address(request.address), sourceProjectId: amount(args[0]), stickyToken: address(args[1]), groupId: amount(args[2]), amount: amount(args[3]), sucker: address(args[4]), backingToken: address(args[5]) })
+      return writeIntentKey('collector-delivery', { chain, collector: address(request.address), sourceProjectId: amount(args[0]), stickyToken: address(args[1]), groupId: amount(args[2]), amount: amount(args[3]) })
     default:
       return undefined
   }
