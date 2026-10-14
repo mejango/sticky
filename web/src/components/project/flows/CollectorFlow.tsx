@@ -234,7 +234,7 @@ export function CollectorFlow({ source, info, onSettled }: {
         <p className="text-sm">A transaction may still execute. Recover it before delivering another allocation.</p>
         {ours ? <>
           {!pending.hash ? <p className="text-sm text-muted">The wallet returned no submission reference. This attempt remains locked; a matching earlier transaction cannot prove it finished.</p> : null}
-          <PendingWriteExit pending={pending} disabled={busy} look={tx.storedHold} adopt={write => withBridgeLock(() => tx.adoptStored(write), true).catch(() => undefined)}
+          <PendingWriteExit pending={pending} disabled={busy} look={tx.storedHold} adopt={write => withBridgeLock(() => tx.adoptStored(write), true).catch(() => 'refused' as const)}
             settle={settlement => settleFromPanel(pending, settlement.hash)}
             exit={() => run(async () => {
               const out = await tx.exitStored({ chainId: pending.request.chainId, owner: pending.owner, to: pending.request.address, data: pending.request.data, value: pending.request.value, intent: pending.intent, hash: pending.hash, safeProposal: pending.safeProposal })

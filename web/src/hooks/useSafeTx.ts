@@ -28,6 +28,7 @@ import {
   waitForTrackedReceipt, type WriteHoldGate, type WriteHoldHandle, type WriteHoldState,
 } from '@bananapus/nana-sdk-core/review'
 import { hasSafeService } from '@bananapus/nana-sdk-core/safe-service'
+import { CHECK_REQUIRED_LINE, CHECK_REQUIRED_WARNING } from '@/lib/check-required'
 import { holds } from '@/lib/write-holds'
 import { holdIntent } from '@/lib/sticky-hold-intent'
 import { legacyNamespaces } from '@/lib/legacy-intents'
@@ -83,7 +84,8 @@ export type TxPhase =
   | 'error'
 
 /** What a panel learns of a stored write: the SDK's line and exit, or an authenticated settlement. */
-export type StoredHold = { exit: boolean; line: string; warning?: string; checked?: boolean } | { settled: { hash: Hex; result: 'success' | 'failed' } } | null
+/** `checkRequired`: the hold could not be read or adopted, so the one action left is the user's explicit check. */
+export type StoredHold = { exit: boolean; line: string; warning?: string; checked?: boolean; checkRequired?: boolean } | { settled: { hash: Hex; result: 'success' | 'failed' } } | null
 /** How a user's exit on a stored write ended. Only `released` abandons; `settled` carries the authenticated hash. */
 export type StoredExit = { outcome: 'released' } | { outcome: 'settled'; hash: Hex; result: 'success' | 'failed' } | { outcome: 'held' }
 
@@ -219,6 +221,7 @@ const SHOWN_AS: Record<ProposalPhase, TxPhase> = {
 
 /** A hold cleared elsewhere with no settlement: neutral, since the result is unknown. */
 const HELD_ELSEWHERE_NOTE = 'This transaction is no longer held here. Check your wallet before sending it again.'
+const CHECK_REQUIRED_VIEW: StoredHold = { exit: true, checkRequired: true, line: CHECK_REQUIRED_LINE, warning: CHECK_REQUIRED_WARNING }
 const SAFE_EXECUTION_CONFIRMING = 'Executed by your Safe. Confirming it onchain.'
 /** What a Safe app replied in place of a proposal or execution hash. */
 const SAFE_REPLY_UNREADABLE = 'Check this proposal in your Safe before sending it again.'
@@ -1137,11 +1140,11 @@ export function useSafeTx(chainId: number) {
   const storedHold = useCallback(async (write: StoredWrite): Promise<StoredHold> => {
     try {
       const client = getPublicClient(wagmiConfig, { chainId: write.chainId as never }) as unknown as Parameters<WriteHoldHandle['state']>[0] | undefined
-      if (!client) return null
+      if (!client) return CHECK_REQUIRED_VIEW
       const state = await openStored(write).state(client)
       if (state.status === 'clear') return state.settled && 'hash' in state.settled ? { settled: { hash: state.settled.hash, result: state.settled.result } } : null
       return { exit: state.exit, line: state.line, checked: state.checked, ...('warning' in state && state.warning ? { warning: state.warning } : {}) }
-    } catch { return null }
+    } catch { return CHECK_REQUIRED_VIEW }
   }, [])
 
   /**
@@ -1149,17 +1152,19 @@ export function useSafeTx(chainId: number) {
    * hold, keeping its hash or proposal hash and the time it was saved, and keep the uncertainty, so the SDK offers its warned, explicit exit. Nothing is ever released here. A call that
    * already has a hold, or a settlement, is left as it is.
    */
-  const adoptStored = useCallback(async (write: StoredWrite): Promise<void> => {
+  const adoptStored = useCallback(async (write: StoredWrite): Promise<'adopted' | 'refused'> => {
     try {
       const client = getPublicClient(wagmiConfig, { chainId: write.chainId as never }) as unknown as Parameters<WriteHoldHandle['state']>[0] | undefined
-      if (!client) return
+      if (!client) return 'refused'
       const stored = openStored(write)
       const state = await stored.state(client)
-      if (state.status !== 'clear' || state.settled) return
+      if (state.status !== 'clear' || state.settled) return 'adopted'
       // Atomic: reserved only when the key still has no hold and no settlement, under the lock; otherwise the current
       // state comes back and nothing is taken. A saved hash (or a Safe proposal's hash) is verified and kept.
-      await stored.adopt(state, write.safeProposal && write.hash ? { safe: { safeTxHash: write.hash }, submittedAt: write.submittedAt } : write.hash ? { hash: write.hash, submittedAt: write.submittedAt } : undefined, client)
-    } catch { /* The reservation stays in its journal, and the panel's own recovery still applies. */ }
+      const after = await stored.adopt(state, write.safeProposal && write.hash ? { safe: { safeTxHash: write.hash }, submittedAt: write.submittedAt } : write.hash ? { hash: write.hash, submittedAt: write.submittedAt } : undefined, client)
+      // Still no hold and no settlement: authentication was refused, so the saved write is check-required.
+      return after.status === 'clear' && !after.settled ? 'refused' : 'adopted'
+    } catch { return 'refused' /* The reservation stays in its journal; the panel offers the explicit check. */ }
   }, [])
 
   /**
@@ -1169,19 +1174,19 @@ export function useSafeTx(chainId: number) {
   const exitStored = useCallback(async (write: StoredWrite): Promise<StoredExit> => {
     try {
       const client = getPublicClient(wagmiConfig, { chainId: write.chainId as never }) as unknown as Parameters<WriteHoldHandle['state']>[0] | undefined
-      if (!client) return { outcome: 'held' }
+      if (!client) return { outcome: 'released' }
       const stored = openStored(write)
       const settledOf = (state: WriteHoldState): StoredExit =>
         state.status === 'clear' && state.settled && 'hash' in state.settled
           ? { outcome: 'settled', hash: state.settled.hash, result: state.settled.result }
-          // Cleared with no evidence handed back: not an abandon, so the caller's reservation stays.
-          : { outcome: 'held' }
+          // No hold and no settlement remains (refused adoption, another tab's exit): the user's explicit check retires it.
+          : state.status === 'clear' ? { outcome: 'released' } : { outcome: 'held' }
       const state = await stored.state(client)
       if (state.status === 'clear') return settledOf(state)
       if (!state.exit) return { outcome: 'held' }
       const { released, state: after } = await stored.exit(state, { checkedWallet: true }, client)
       return released ? { outcome: 'released' } : settledOf(after)
-    } catch { return { outcome: 'held' } }
+    } catch { return { outcome: 'released' } /* Unreadable: this is only reached by the user's explicit check. */ }
   }, [])
 
   /**

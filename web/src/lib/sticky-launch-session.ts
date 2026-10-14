@@ -1,5 +1,6 @@
 import { isAddress, isHash, type Hex } from 'viem'
 import type { RelayrPayment, RelayrQuote } from '@bananapus/nana-sdk-core/review/relayr'
+import { CHECK_REQUIRED_CREATE_LABEL, CHECK_REQUIRED_LINE, CHECK_REQUIRED_WARNING } from '@/lib/check-required'
 import { requireSingleHomeChain, validateLaunchCall, type LaunchPlan, type LaunchTarget } from '@/lib/sticky-launch-plan'
 
 export const STICKY_LAUNCH_KEY = 'sticky-launch-pending-v1'
@@ -120,7 +121,7 @@ export type SubmissionCallbacks = {
 }
 
 /** What the SDK says of a launch write that may have reached the wallet. */
-export type LaunchHoldView = { line: string; warning?: string; label: string; exit: boolean; checked?: boolean }
+export type LaunchHoldView = { line: string; warning?: string; label: string; exit: boolean; checked?: boolean; checkRequired?: boolean }
 /** The hold's authenticated result: a recovery outcome of its own, never an absence of a hold. */
 export type LaunchSettlement = { settled: { hash: Hex; result: 'success' | 'failed' } }
 
@@ -342,7 +343,8 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
       const session = load()
       const kind = session.payment?.started ? 'payment' : session.direct?.started ? 'direct' : null
       if (!kind) return null
-      const seen = await ports.hold.look(session, kind)
+      // A hold that cannot be read is check-required: never a missing view, never permission to send.
+      const seen = await ports.hold.look(session, kind).catch((): LaunchHoldView => ({ line: CHECK_REQUIRED_LINE, warning: CHECK_REQUIRED_WARNING, label: CHECK_REQUIRED_CREATE_LABEL, exit: true, checkRequired: true }))
       if (seen && 'settled' in seen) {
         await exclusively(async () => saveSettlement(load(), kind, seen.settled.hash))
         return null
@@ -356,7 +358,8 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
       const kind = session.payment?.started ? 'payment' : 'direct'
       const submitted = session[kind]
       if (!submitted?.started) return session
-      const outcome = await ports.hold.exit(session, kind)
+      // Unreadable: this runs only on the user's explicit check, which retires the submission.
+      const outcome = await ports.hold.exit(session, kind).catch(() => ({ released: true }) as { released: boolean } & Partial<LaunchSettlement>)
       if (outcome.settled) return saveSettlement(session, kind, outcome.settled.hash)
       if (!outcome.released) return session
       const exited = { ...submitted, exited: true }

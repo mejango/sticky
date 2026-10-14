@@ -367,6 +367,13 @@ describe('Sticky launch browser boundaries', () => {
       expect(fake.callFailure).not.toHaveBeenCalled()
     })
 
+    it('is check-required, not absent, when the saved transaction does not match the call (adoption refused)', async () => {
+      const started = { ...saved(), [kind]: { ...saved()[kind], started: true, hash: HASH } } as StickyLaunchSession
+      fake.transaction.mockResolvedValue({ hash: HASH, from: OWNER, to: OWNER, input: '0xdeadbeef', value: 0n, nonce: 7, blockHash: `0x${'ed'.repeat(32)}`, blockNumber: 10n, transactionIndex: 0 })
+      await expect(fake.ports.hold.look(started, kind)).resolves.toMatchObject({ exit: true, checkRequired: true })
+      await expect(fake.ports.hold.exit(started, kind)).resolves.toEqual({ released: true })
+    })
+
     it('holds nothing once the wallet explicitly rejected', async () => {
       wallet().mockRejectedValueOnce({ code: 4001 })
       await expect(send(callbacks())).rejects.toMatchObject({ code: 4001 })

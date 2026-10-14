@@ -39,6 +39,7 @@ import {
 import { buildStickyEnvelope, createStickyCenterClient, publishStickyListing } from '@/lib/sticky-listing'
 import { fundingChainLabel, requireFundingChainSelection, requireTransactionReview } from '@/lib/transaction-review'
 import { chainName } from '@/lib/urn'
+import { CHECK_REQUIRED_CREATE_LABEL, CHECK_REQUIRED_LINE, CHECK_REQUIRED_WARNING } from '@/lib/check-required'
 import { holds } from '@/lib/write-holds'
 import { assertNoViewAs } from '@/lib/viewAs'
 import { assertReviewedWallet, connectedWallet, publicClient } from '@/lib/wallet-core'
@@ -221,13 +222,14 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       async look(session, kind) {
         if (!session[kind]) return null
         const { state } = await launchHoldState(session, kind)
-        if (state.status === 'clear') return state.settled && 'hash' in state.settled ? { settled: state.settled } : null
+        // No hold and no settlement for a started submission: adoption was refused, so only the explicit check is left.
+        if (state.status === 'clear') return state.settled && 'hash' in state.settled ? { settled: state.settled } : { line: CHECK_REQUIRED_LINE, warning: CHECK_REQUIRED_WARNING, label: CHECK_REQUIRED_CREATE_LABEL, exit: true, checkRequired: true }
         return { line: state.line, ...('warning' in state && state.warning ? { warning: state.warning } : {}), label: WRITE_EXIT_LABEL, exit: !!state.exit, checked: state.checked }
       },
       async exit(session, kind) {
         if (!session[kind]) return { released: false }
         const { handle, client, state } = await launchHoldState(session, kind)
-        if (state.status === 'clear') return { released: false, ...(state.settled && 'hash' in state.settled ? { settled: state.settled } : {}) }
+        if (state.status === 'clear') return state.settled && 'hash' in state.settled ? { released: false, settled: state.settled } : { released: true }
         if (!state.exit) return { released: false }
         const { released, state: after } = await handle.exit(state, { checkedWallet: true }, client)
         return released ? { released } : { released, ...(after.status === 'clear' && after.settled && 'hash' in after.settled ? { settled: after.settled } : {}) }

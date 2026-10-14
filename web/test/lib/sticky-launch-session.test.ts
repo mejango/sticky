@@ -356,6 +356,26 @@ describe('durable Sticky launch controller', () => {
     expect(f.store.load()?.directAttempts).toBeUndefined()
   })
 
+  it('shows a check-required view when the hold cannot be read, and the explicit action retires the submission', async () => {
+    const f = fixture()
+    await f.controller.run()
+    vi.mocked(f.ports.hold.look).mockRejectedValue(new Error('rpc down'))
+    await expect(f.controller.hold()).resolves.toMatchObject({ exit: true, checkRequired: true })
+    vi.mocked(f.ports.hold.exit).mockRejectedValueOnce(new Error('rpc down'))
+    await f.controller.exitHold()
+    expect(f.store.load()?.direct).toBeUndefined()
+    expect(f.store.load()?.directAttempts).toEqual([{ started: true, hash: H1, exited: true }])
+  })
+
+  it('never sends while a started submission has no readable hold', async () => {
+    const f = fixture()
+    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); throw new Error('lost') })
+    await expect(f.controller.run()).rejects.toThrow()
+    vi.mocked(f.ports.hold.look).mockRejectedValue(new Error('rpc down'))
+    await f.controller.run()
+    expect(f.ports.sendDirect).toHaveBeenCalledOnce()
+  })
+
   it('keeps the original hash locked when finalized failure proof is unavailable or reorged', async () => {
     const f = fixture()
     await f.controller.run()

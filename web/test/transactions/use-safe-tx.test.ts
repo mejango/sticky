@@ -1273,6 +1273,31 @@ describe('useSafeTx', () => {
       } finally { vi.useRealTimers() }
     })
 
+    describe('a saved write whose adoption is refused or unreadable is check-required, never a dead end', () => {
+      const dataOf = () => encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
+      const writeOf = () => ({ chainId: 10, owner: ALICE, to: BOB, data: dataOf(), value: 7n, intent: holdIntent(request, ALICE) })
+
+      it('reports a refused adoption (the chain id cannot be read), and the explicit action retires it', async () => {
+        mocks.publicClient.getChainId.mockRejectedValue(new Error('rpc down'))
+        const hook = await renderHook()
+        await expect(hook.ref.current!.adoptStored({ ...writeOf(), hash: HASH })).resolves.toBe('refused')
+        expect(recoveryRecords()).toHaveLength(0)
+        await expect(hook.ref.current!.exitStored({ ...writeOf(), hash: HASH })).resolves.toEqual({ outcome: 'released' })
+      })
+
+      it('reports a refused adoption when the saved transaction is not this call', async () => {
+        mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => ({ hash, from: ALICE, to: BOB, input: '0xdeadbeef', value: 7n, nonce: 7, blockHash: BLOCK_HASH, blockNumber: 77n, transactionIndex: 0 }))
+        const hook = await renderHook()
+        await expect(hook.ref.current!.adoptStored({ ...writeOf(), hash: HASH })).resolves.toBe('refused')
+        await expect(hook.ref.current!.exitStored({ ...writeOf(), hash: HASH })).resolves.toEqual({ outcome: 'released' })
+      })
+
+      it('reports an adopted write as adopted, and a settlement as the outcome of the exit', async () => {
+        const hook = await renderHook()
+        await expect(hook.ref.current!.adoptStored(writeOf())).resolves.toBe('adopted')
+      })
+    })
+
     it('adopts a hashed legacy reservation the node never knew, and offers the warned exit after 30 minutes', async () => {
       vi.useFakeTimers()
       try {
