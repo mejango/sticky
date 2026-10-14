@@ -397,7 +397,6 @@ async function followProposal(key: string, client: FollowClient, reply: boolean)
     }
   }
   updateProposal(key, { phase: 'executing', executionHash })
-  void proposal.hold?.onExecuted(client, executionHash).catch(() => undefined)
   const failed = `Safe executed the proposal, but the onchain transaction failed (${executionHash}).`
   // The execution was first seen now: its receipt has an hour from here.
   const seenAt = Date.now()
@@ -410,6 +409,8 @@ async function followProposal(key: string, client: FollowClient, reply: boolean)
       receipt = await chainAnswer(() => client.getTransactionReceipt({ hash }))
       if (!receipt) {
         updateProposal(key, unconfirmedProposal(key))
+        // No receipt ever proved this execution: the hold offers the exit.
+        void proposal.hold?.onUnproven(client, proposalHash).catch(() => undefined)
         return
       }
       break
@@ -423,6 +424,9 @@ async function followProposal(key: string, client: FollowClient, reply: boolean)
         : unconfirmedProposal(key)),
       receipt,
     })
+    if (executionHash.toLowerCase() !== proposalHash.toLowerCase()) {
+      void proposal.hold?.onUnproven(client, proposalHash).catch(() => undefined)
+    }
     return
   }
   // Only the Safe's own event for this proposal decides it, and an execution
@@ -449,6 +453,9 @@ async function followProposal(key: string, client: FollowClient, reply: boolean)
     proposalHash,
     calls: [call],
   }).catch(() => ({ status: 'unproven' as const }))
+  // Only the receipt's own log for this exact proposal is proof it ran; any other end is unproven.
+  if (status === 'success' || status === 'failed') void proposal.hold?.onExecuted(client, executionHash).catch(() => undefined)
+  else void proposal.hold?.onUnproven(client, proposalHash).catch(() => undefined)
   updateProposal(
     key,
     status === 'success'
@@ -675,7 +682,7 @@ export function useSafeTx(chainId: number) {
     inFlightRef.current = false
     if (state.status === 'clear') return null
     const record = state.record
-    if (state.status === 'pending-known-hash' || state.status === 'ran-executed' || (state.status === 'looks-done' && state.hash)) {
+    if (state.status === 'pending-known-hash' || state.status === 'ran-executed' || state.status === 'safe-unproven' || (state.status === 'looks-done' && state.hash)) {
       const known = 'hash' in state ? state.hash : undefined
       if (record.safe) {
         const call = { ...record.call, value: BigInt(record.call.value) }
@@ -994,7 +1001,8 @@ export function useSafeTx(chainId: number) {
       const { released, state } = await current.exit(shown, { checkedWallet: true }, publicClient)
       if (released) {
         const key = shownKeyRef.current
-        if (key && proposals.get(key)?.phase === 'unproven') {
+        // The hold is released: the registry's entry for this call no longer stands in the way of a fresh proposal.
+        if (key && holdsCall(proposals.get(key))) {
           proposals.delete(key)
           notifyProposals()
         }
@@ -1056,9 +1064,9 @@ export function useSafeTx(chainId: number) {
     safeNonceGuidance: awaitingProposal ? SAFE_NONCE_GUIDANCE : null,
     receipt: shownKey ? (proposal?.receipt ?? null) : (receiptData ?? null),
     /** The transaction has a hash, but its result could not be confirmed here. */
-    confirmationUncertain: shownKey
+    confirmationUncertain: !!exitOffered || (shownKey
       ? proposal?.phase === 'unproven' || (proposal?.phase === 'awaiting' && !!proposal.message)
-      : held?.status === 'held-no-hash' || held?.status === 'safe-unproven' || (phase === 'pending' && receipt.isError && !receiptData),
+      : phase === 'pending' && receipt.isError && !receiptData),
     send,
     reset,
     dismiss,

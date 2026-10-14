@@ -18,7 +18,7 @@ import {
 } from '@bananapus/nana-sdk-core/safe-service'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildPermit2ApproveTx } from '@bananapus/nana-sdk-core/v6'
-import { WRITE_HOLD_SAFE_UNPROVEN_LINE, SAFE_PROPOSAL_EXECUTED_LINE, SAFE_PROPOSAL_REPLACED_LINE, WRITE_EXIT_LABEL } from '@bananapus/nana-sdk-core/review'
+import { WRITE_HOLD_SAFE_UNPROVEN_LINE, SAFE_PROPOSAL_EXECUTED_LINE, WRITE_EXIT_LABEL } from '@bananapus/nana-sdk-core/review'
 
 // Safe proposals through useSafeTx. One registry holds every proposal made
 // this session, shared by every flow, and follows each to its result: a flow
@@ -513,7 +513,7 @@ describe('a Safe proposal', () => {
       settled: true,
       confirmationUncertain: true,
       error: null,
-      notice: UNCONFIRMED,
+      notice: WRITE_HOLD_SAFE_UNPROVEN_LINE,
     })
 
     // A new review opens on its own state.
@@ -522,7 +522,7 @@ describe('a Safe proposal', () => {
     // The user never saw the line here, so the same call is refused, with it.
     await flow.send()
     expect(mocks.writeContract).toHaveBeenCalledOnce()
-    expect(flow.tx).toMatchObject({ phase: 'submitted', notice: UNCONFIRMED })
+    expect(flow.tx).toMatchObject({ phase: 'submitted', notice: WRITE_HOLD_SAFE_UNPROVEN_LINE })
 
     await act(async () => flow.tx.dismiss())
     expect(flow.tx).toMatchObject({ phase: 'idle', notice: null })
@@ -766,19 +766,36 @@ describe('an executed Safe proposal', () => {
     expect(mocks.writeContract).toHaveBeenCalledOnce()
     expect(flow.tx).toMatchObject({ phase: 'submitted', notice: PENDING_RECEIPT })
 
+    // Past 30 minutes with nothing authenticating the service's word, the hold offers its exit.
     await pass(50 * 60_000)
-    expect(flow.tx.notice).toBe(PENDING_RECEIPT)
-    await pass(10 * 60_000)
-    expect(flow.tx).toMatchObject({ phase: 'submitted', confirmationUncertain: true, notice: UNCONFIRMED })
+    expect(flow.tx.held).toMatchObject({ label: WRITE_EXIT_LABEL })
     await act(async () => flow.tx.dismiss())
     await flow.send()
     expect(mocks.writeContract).toHaveBeenCalledOnce()
   })
 
+  it('does not save an execution hash the service returned as proof, and offers the exit when no receipt ever proves it', async () => {
+    mocks.writeContract.mockResolvedValueOnce(PROPOSAL).mockResolvedValueOnce(SECOND_PROPOSAL)
+    const flow = await mount()
+    await flow.send()
+    await pass(4 * 60_000)
+    // The service named an execution, but nothing authenticated it for this proposal.
+    expect(recoveryRecords()[0].executed).not.toBe(true)
+    expect(flow.tx.held).toBeNull()
+
+    await pass(70 * 60_000)
+    expect(flow.tx.held).toMatchObject({ label: WRITE_EXIT_LABEL })
+    expect(recoveryRecords()[0].executed).not.toBe(true)
+    await act(async () => { flow.tx.held!.exit!() })
+    await pass(0)
+    await expect(flow.send()).resolves.toBe(SECOND_PROPOSAL)
+    expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+  })
+
   it('settles once its receipt arrives within the hour', async () => {
     const flow = await mount()
     await flow.send()
-    await pass(30 * 60_000)
+    await pass(20 * 60_000)
     expect(flow.tx.notice).toBe(PENDING_RECEIPT)
     mocks.publicClient.getTransactionReceipt.mockImplementation(async ({ hash }: { hash: Hex }) =>
       receiptOf(hash, PROPOSAL),
@@ -896,14 +913,17 @@ describe("a Safe proposal's last look at the chain", () => {
     })
     const flow = await mount()
     await flow.send()
-    await pass(57 * 60_000)
+    await pass(20 * 60_000)
     expect(flow.tx.notice).toBe('Executed by your Safe. Confirming it onchain.')
     nodeUp = false
-    await pass(10 * 60_000)
-    expect(flow.tx).toMatchObject({ phase: 'submitted', confirmationUncertain: false })
+    await pass(40 * 60_000)
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
     nodeUp = true
     await pass(60_000)
-    expect(flow.tx).toMatchObject({ phase: 'submitted', confirmationUncertain: true, notice: UNCONFIRMED })
+    // Nothing authenticated it: the hold offers its exit, and sends nothing itself.
+    expect(flow.tx).toMatchObject({ phase: 'submitted', confirmationUncertain: true })
+    expect(flow.tx.held).toMatchObject({ label: WRITE_EXIT_LABEL })
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
   })
 
   it('retains an execution returned at once until an independent canonical read confirms it', async () => {
@@ -962,7 +982,7 @@ describe("a Safe proposal's last look at the chain", () => {
     await flow.send()
     await settle()
     expect(flow.tx).toMatchObject({
-      phase: 'submitted', safeProposalHash: PROPOSAL, notice: UNCONFIRMED, hash: EXECUTION,
+      phase: 'submitted', safeProposalHash: PROPOSAL, notice: WRITE_HOLD_SAFE_UNPROVEN_LINE, hash: EXECUTION,
     })
     await act(async () => flow.tx.dismiss())
     await flow.close()
@@ -997,7 +1017,7 @@ describe("a Safe proposal's last look at the chain", () => {
     await flow.send()
     await settle()
     expect(flow.tx).toMatchObject({ phase: 'submitted', safeProposalHash: PROPOSAL })
-    expect(flow.tx.notice).toContain(UNCONFIRMED)
+    expect(flow.tx.notice).toBe(WRITE_HOLD_SAFE_UNPROVEN_LINE)
     expect(mocks.writeContract).toHaveBeenCalledOnce()
     await act(async () => flow.tx.dismiss())
     await flow.close()
@@ -1007,7 +1027,7 @@ describe("a Safe proposal's last look at the chain", () => {
     await resumed.send()
     await settle()
     // Another transaction at the nonce may have run the call too: nothing is released on the registry's word.
-    expect(resumed.tx).toMatchObject({ phase: 'submitted', error: SAFE_PROPOSAL_REPLACED_LINE })
+    expect(resumed.tx).toMatchObject({ phase: 'submitted', notice: WRITE_HOLD_SAFE_UNPROVEN_LINE })
     expect(recoveryRecords()).toHaveLength(1)
     expect(mocks.writeContract).toHaveBeenCalledOnce()
   })
