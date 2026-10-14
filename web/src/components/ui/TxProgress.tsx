@@ -11,7 +11,12 @@ export function confirmAction(phase: TxPhase, idle: string): string {
 /** The line a flow's confirm shows while the engine sends a step, from the engine's phase: the check before the wallet
  * is asked, the wallet's own prompt, then the wait for the chain, or a Safe's guidance while it waits on a proposal.
  * Null while nothing is being sent. */
-export function sendingStatus({ phase, safeNonceGuidance, notice, held }: { phase: TxPhase; safeNonceGuidance?: string | null; notice?: string | null; held?: ReturnType<typeof useSafeTx>['held'] }): ReactNode {
+export function sendingStatus({ phase, safeNonceGuidance, notice, held, holdNotice }: { phase: TxPhase; safeNonceGuidance?: string | null; notice?: string | null; held?: ReturnType<typeof useSafeTx>['held']; holdNotice?: string | null }): ReactNode {
+  const withNotice = (line: ReactNode): ReactNode => (holdNotice && !held?.notice && line ? <>{line}<span className="mt-1 block">{holdNotice}</span></> : line)
+  return withNotice(sendingLine({ phase, safeNonceGuidance, notice, held }))
+}
+
+function sendingLine({ phase, safeNonceGuidance, notice, held }: { phase: TxPhase; safeNonceGuidance?: string | null; notice?: string | null; held?: ReturnType<typeof useSafeTx>['held'] }): ReactNode {
   if (held) {
     // A held write ends only on proof or when the person says they checked their wallet.
     return (

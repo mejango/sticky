@@ -18,7 +18,7 @@ import {
 } from '@bananapus/nana-sdk-core/safe-service'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildPermit2ApproveTx } from '@bananapus/nana-sdk-core/v6'
-import { WRITE_HOLD_SAFE_UNPROVEN_LINE, SAFE_PROPOSAL_EXECUTED_LINE, WRITE_EXIT_LABEL } from '@bananapus/nana-sdk-core/review'
+import { createWriteHold, WRITE_HOLD_SAFE_UNPROVEN_LINE, SAFE_PROPOSAL_EXECUTED_LINE, WRITE_EXIT_LABEL } from '@bananapus/nana-sdk-core/review'
 
 // Safe proposals through useSafeTx. One registry holds every proposal made
 // this session, shared by every flow, and follows each to its result: a flow
@@ -749,6 +749,39 @@ describe('a Safe proposal awaiting its signers', () => {
     vi.resetModules()
     ;({ useSafeTx } = await import('@/hooks/useSafeTx'))
     expect(Object.keys(localStorage).some(key => key.endsWith(':settled'))).toBe(true)
+  })
+
+  it('settles the registry entry when another tab authenticates the execution, so a retry makes a fresh proposal', async () => {
+    vi.useFakeTimers()
+    try {
+      signersDecide()
+      mocks.writeContract.mockResolvedValueOnce(PROPOSAL).mockResolvedValueOnce(SECOND_PROPOSAL)
+      const flow = await mount()
+      await flow.send()
+      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      expect(flow.tx).toMatchObject({ phase: 'submitted', safeProposalHash: PROPOSAL })
+
+      // Another tab's controller verifies the execution's own receipt and log, and settles the hold.
+      const placement = { transactionHash: EXECUTION, blockHash: BLOCK_HASH, blockNumber: 9n, transactionIndex: 0 }
+      const receipt = { ...receiptOf(EXECUTION, PROPOSAL), ...placement, from: BOB, to: SAFE, logs: [{ address: SAFE, topics: [SUCCESS, PROPOSAL], data: WORD, ...placement, removed: false }] }
+      const client = {
+        ...mocks.publicClient,
+        getChainId: async () => 10,
+        getBlock: async ({ blockNumber }: { blockNumber?: bigint }) => ({ hash: BLOCK_HASH, number: blockNumber ?? 10n, timestamp: 1_900_000_000n }),
+        getTransaction: async ({ hash }: { hash: Hex }) => { if (hash !== EXECUTION) throw new TransactionNotFoundError({ hash }); return { hash, from: BOB, to: SAFE, input: execTransaction(), ...placement } },
+        getTransactionReceipt: async () => receipt,
+      }
+      const callData = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
+      const other = createWriteHold().open({ chainId: 10, account: SAFE, safe: true, call: { to: BOB, data: callData, value: 7n } })
+      await other.onExecuted(client as never, EXECUTION)
+      await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
+      expect(flow.tx).toMatchObject({ phase: 'success', hash: EXECUTION })
+
+      // The completed proposal does not outlive its hold: a retry is a fresh proposal.
+      await act(async () => flow.tx.reset())
+      await act(async () => { await flow.tx.send(request, reviewedBySafe) })
+      expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+    } finally { vi.useRealTimers() }
   })
 
   it('stops being watched once its execution is known', async () => {

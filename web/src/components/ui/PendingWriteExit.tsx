@@ -10,10 +10,12 @@ type Look = StoredHold
  * hashed or not. The exit shows only when the SDK offers one (a hash the chain still knows has none); `exit`
  * asks the SDK to release the call and clears the reservation only after it does.
  */
-export function PendingWriteExit({ pending, disabled, look, settle, exit }: {
+export function PendingWriteExit({ pending, disabled, look, adopt, settle, exit }: {
   pending: PendingBridgeWrite
   disabled: boolean
   look?: (write: { chainId: number; owner: PendingBridgeWrite['owner']; to: PendingBridgeWrite['request']['address']; data: PendingBridgeWrite['request']['data']; value: string; intent?: string }) => Promise<Look>
+  /** Moves a hashless reservation main's journal left with no SDK record into a hold, once, before the first look. */
+  adopt?: (write: { chainId: number; owner: PendingBridgeWrite['owner']; to: PendingBridgeWrite['request']['address']; data: PendingBridgeWrite['request']['data']; value: string; intent?: string }) => Promise<void>
   /** The SDK settled the write on authenticated evidence: record it, never abandon. */
   settle?: (settlement: { hash: `0x${string}`; result: 'success' | 'failed' }) => Promise<boolean>
   exit: () => Promise<void>
@@ -24,8 +26,11 @@ export function PendingWriteExit({ pending, disabled, look, settle, exit }: {
   const settledOnce = useRef<string | null>(null)
   const settling = useRef(false)
   const settleRef = useRef(settle)
+  const adoptRef = useRef(adopt)
+  adoptRef.current = adopt
   settleRef.current = settle
   const { chainId, address, data, value } = pending.request
+  const canAdopt = !!adopt && !pending.hash && !pending.safeProposal
   useEffect(() => {
     if (!look) return
     let stopped = false
@@ -43,10 +48,12 @@ export function PendingWriteExit({ pending, disabled, look, settle, exit }: {
       }
       setShown(next)
     }).catch(() => undefined) }
-    ask()
+    // A hashless reservation with no SDK record is moved into a hold first, so the SDK can offer its exit.
+    if (canAdopt) void adoptRef.current?.({ chainId, owner: pending.owner, to: address, data, value, intent: pending.intent }).finally(ask)
+    else ask()
     const timer = setInterval(ask, 15_000)
     return () => { stopped = true; clearInterval(timer) }
-  }, [look, chainId, pending.owner, pending.id, pending.intent, address, data, value])
+  }, [look, canAdopt, chainId, pending.owner, pending.id, pending.intent, address, data, value])
   // Without the SDK's look, only a write that never returned a hash has an exit.
   const line = look ? (shown && 'line' in shown ? shown.line : undefined) : (!pending.hash && !pending.safeProposal ? writeHeldMessage() : undefined)
   const exitOffered = look && shown && 'exit' in shown && shown.exit

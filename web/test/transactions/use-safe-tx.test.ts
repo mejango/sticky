@@ -1080,7 +1080,7 @@ describe('useSafeTx', () => {
     const pairs: [string, TxRequestOf, TxRequestOf][] = [
       ['a stick, whose minimum is a quote', buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 5n, beneficiary: ALICE, minReturnedTokens: 9n, memo: '', metadata: '0x' }), buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 5n, beneficiary: ALICE, minReturnedTokens: 8n, memo: '', metadata: '0x' })],
       ['an unstick, whose minimum is a quote', buildCashOutTx({ chainId: 10, terminal: X, holder: ALICE, projectId: 12n, cashOutCount: 5n, tokenToReclaim: X, minTokensReclaimed: 9n, beneficiary: ALICE, metadata: '0x' }), buildCashOutTx({ chainId: 10, terminal: X, holder: ALICE, projectId: 12n, cashOutCount: 5n, tokenToReclaim: X, minTokensReclaimed: 8n, beneficiary: ALICE, metadata: '0x' })],
-      ['an approval, whose amount covers a moving claim', { chainId: 10, address: X, abi: parseAbi(['function approve(address spender, uint256 amount)']), functionName: 'approve', args: [BOB, 5n] }, { chainId: 10, address: X, abi: parseAbi(['function approve(address spender, uint256 amount)']), functionName: 'approve', args: [BOB, 6n] }],
+      ['an approval, whose amount covers a moving claim', { chainId: 10, address: X, abi: parseAbi(['function approve(address spender, uint256 amount)']), functionName: 'approve', args: [BOB, 5n], moving: true }, { chainId: 10, address: X, abi: parseAbi(['function approve(address spender, uint256 amount)']), functionName: 'approve', args: [BOB, 6n], moving: true }],
       ['a bridge queue, whose minimum is a quote', buildBridgePrepareTx({ chainId: 10, sucker: X, projectTokenCount: 5n, beneficiary: word, minTokensReclaimed: 9n, token: X, metadata: word }), buildBridgePrepareTx({ chainId: 10, sucker: X, projectTokenCount: 5n, beneficiary: word, minTokensReclaimed: 8n, token: X, metadata: word })],
       ['a bridge send, whose transport budget is a quote', buildToRemoteTx({ chainId: 10, sucker: X, token: X, value: 3n }), buildToRemoteTx({ chainId: 10, sucker: X, token: X, value: 4n })],
       ['a bridge claim, whose proof moves with the tree', buildBridgeClaimTx({ chainId: 10, sucker: X, claim: { token: X, leaf: leaf(word), proof: Array(32).fill(word) as never } }), buildBridgeClaimTx({ chainId: 10, sucker: X, claim: { token: X, leaf: leaf(`0x${'11'.repeat(32)}`), proof: Array(32).fill(`0x${'11'.repeat(32)}`) as never } })],
@@ -1096,6 +1096,19 @@ describe('useSafeTx', () => {
       expect(mocks.writeContract).toHaveBeenCalledOnce()
       expect(hook.ref.current).toMatchObject({ phase: 'submitted' })
       expect(hook.ref.current!.held).not.toBeNull()
+    })
+    it('does not let a pending approval that covers a moving amount block a revocation or a cap', async () => {
+      const abiApprove = parseAbi(['function approve(address spender, uint256 amount)'])
+      mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
+      const hook = await renderHook()
+      await act(async () => { await hook.ref.current!.send({ chainId: 10, address: X, abi: abiApprove, functionName: 'approve', args: [BOB, 5n], moving: true } as never, reviewedByAlice) })
+      await act(async () => hook.ref.current!.reset())
+      // A revocation and a user-chosen cap are their own intents.
+      await act(async () => { await hook.ref.current!.send({ chainId: 10, address: X, abi: abiApprove, functionName: 'approve', args: [BOB, 0n] } as never, reviewedByAlice) })
+      expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+      await act(async () => hook.ref.current!.reset())
+      await act(async () => { await hook.ref.current!.send({ chainId: 10, address: X, abi: abiApprove, functionName: 'approve', args: [BOB, 1000n] } as never, reviewedByAlice) })
+      expect(mocks.writeContract).toHaveBeenCalledTimes(3)
     })
     it('still treats a different intent as a different write', async () => {
       mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
@@ -1150,6 +1163,40 @@ describe('useSafeTx', () => {
       const hook = await renderHook()
       await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
       expect(hook.ref.current!.held).toMatchObject({ notice: WRITE_HOLD_IN_TAB_LINE })
+    })
+
+    it('shows the in-tab notice on a normal pending write too, not only on an exit', async () => {
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Storage unavailable') })
+      const hook = await renderHook()
+      await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+      expect(hook.ref.current).toMatchObject({ phase: 'pending', holdNotice: WRITE_HOLD_IN_TAB_LINE })
+    })
+
+    it('still opens the review line in a parent review when holds last only in this tab', async () => {
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Storage unavailable') })
+      const hook = await renderHook()
+      await act(async () => { await hook.ref.current!.send(request, { ...reviewedByAlice, reviewedInParent: true }) })
+      expect(mocks.requestReview).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ description: expect.stringContaining(WRITE_HOLD_IN_TAB_LINE) }))
+    })
+
+    it('moves a main-era domain reservation with no SDK record into a hold with a warned, explicit exit, and never releases it itself', async () => {
+      vi.useFakeTimers()
+      try {
+        const data = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
+        const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n }
+        const hook = await renderHook()
+        // Nothing is held for it yet: main's journal never made an SDK record.
+        await expect(hook.ref.current!.storedHold(write)).resolves.toBeNull()
+        await act(async () => { await hook.ref.current!.adoptStored(write) })
+        // Held, with the uncertainty kept; time alone never releases it.
+        await act(async () => { await vi.advanceTimersByTimeAsync(60 * 60_000) })
+        await expect(hook.ref.current!.storedHold(write)).resolves.toMatchObject({ exit: true })
+        // Adopting twice keeps the one hold.
+        await act(async () => { await hook.ref.current!.adoptStored(write) })
+        expect(recoveryRecords()).toHaveLength(1)
+        await expect(hook.ref.current!.exitStored(write)).resolves.toEqual({ outcome: 'released' })
+        await expect(hook.ref.current!.storedHold(write)).resolves.toBeNull()
+      } finally { vi.useRealTimers() }
     })
 
     it('ignores a newer reservation it did not start', async () => {

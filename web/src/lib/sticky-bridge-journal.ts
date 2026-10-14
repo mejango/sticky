@@ -4,7 +4,7 @@ import type { TxRequest } from '@/hooks/useSafeTx'
 import { environmentForChainIds, SUPPORTED_CHAINS } from '@/lib/chains'
 import { bridgeCalldata, bridgeRouteId, type BridgeMovement, type BridgeRoute, type createStickyBridge } from '@/lib/sticky-bridge'
 
-export type StoredBridgeWrite = { chainId: number; address: Address; data: Hex; value: string; label: string }
+export type StoredBridgeWrite = { chainId: number; address: Address; data: Hex; value: string; label: string; moving?: boolean }
 export type BridgeRecord = {
   metadata: Hex
   owner: Address
@@ -102,12 +102,12 @@ export function saveWatchedBridgeRoute(homeChainId: number, stickyToken: Address
 }
 
 export function storeBridgeWrite(request: TxRequest): StoredBridgeWrite {
-  return { chainId: request.chainId, address: request.address, data: bridgeCalldata(request), value: String(request.value ?? 0n), label: request.label ?? request.functionName }
+  return { chainId: request.chainId, address: request.address, data: bridgeCalldata(request), value: String(request.value ?? 0n), label: request.label ?? request.functionName, ...(request.moving ? { moving: true } : {}) }
 }
 export function restoreBridgeWrite(request: StoredBridgeWrite): TxRequest {
   const abi = [...jbSuckerV6Abi, ...parseAbi(['function approve(address spender, uint256 amount)'])]
   const decoded = decodeFunctionData({ abi, data: request.data })
-  return { chainId: request.chainId, address: request.address, abi, functionName: decoded.functionName, args: decoded.args ?? [], value: BigInt(request.value), label: request.label }
+  return { chainId: request.chainId, address: request.address, abi, functionName: decoded.functionName, args: decoded.args ?? [], value: BigInt(request.value), label: request.label, ...(request.moving ? { moving: true } : {}) }
 }
 function validWrite(write: StoredBridgeWrite): boolean {
   return !!write && Number.isSafeInteger(write.chainId) && isAddress(write.address, { strict: false }) && /^0x(?:[0-9a-f]{2})+$/i.test(write.data) && /^\d+$/.test(write.value) && typeof write.label === 'string'

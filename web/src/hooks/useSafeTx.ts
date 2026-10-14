@@ -98,6 +98,8 @@ export type TxRequest = {
   args: readonly unknown[]
   value?: bigint
   label?: string
+  /** An approval that covers an amount that can still move (a claim, a stick): held by token and spender, not by amount. */
+  moving?: boolean
 }
 
 export type TxSendOptions = {
@@ -566,6 +568,8 @@ export function useSafeTx(chainId: number) {
   const heldRef = useRef<WriteHoldState | null>(null)
   /** The reservation of the attempt this flow shows: states of any other reservation belong to someone else. */
   const reservationRef = useRef<string | null>(null)
+  /** The registry key of the Safe proposal this flow's hold stands for, shown or not. */
+  const proposalKeyRef = useRef<string | null>(null)
   /** How a hold the user was looking at ended without a send: its settlement, kept. */
   const [settledNote, setSettledNote] = useState<string | null>(null)
   /**
@@ -586,6 +590,13 @@ export function useSafeTx(chainId: number) {
       if (settled && 'hash' in settled) {
         const domain = settledRef.current
         settledRef.current = null
+        // A Safe proposal never outlives its settled hold: the registry entry takes the authenticated result.
+        const registryKey = shownKeyRef.current ?? proposalKeyRef.current
+        if (registryKey && proposals.has(registryKey)) {
+          updateProposal(registryKey, settled.result === 'success'
+            ? { phase: 'success', executionHash: settled.hash }
+            : { phase: 'failed', executionHash: settled.hash, message: `Safe executed the proposal, but the onchain transaction failed (${settled.hash}).` })
+        }
         if (domain) {
           void Promise.resolve(domain({ hash: settled.hash, result: settled.result })).catch(() => undefined)
           setSettledNote(settled.result === 'failed' ? WRITE_HOLD_REVERTED_LINE : 'Your earlier transaction went through.')
@@ -833,6 +844,7 @@ export function useSafeTx(chainId: number) {
       try {
         /** The exact call simulated and sent, which a Safe execution must run. */
         let sentCall = callOf(request)
+        proposalKeyRef.current = viaSafe ? proposalKey(request.chainId, account, sentCall) : null
         // A domain journal (bridge, collector) holds its own writes; every other write is held here.
         // The SDK hold covers every write; a domain journal keeps its own reservation beside it.
         handle = holds.open({ chainId: request.chainId, account, safe: viaSafe, namespace: holdIntent(request), call: sentCall })
@@ -879,7 +891,7 @@ export function useSafeTx(chainId: number) {
               // A review notice always opens the review, even where the caller
               // already rendered the payload — the notice exists precisely
               // because what was rendered is no longer what will be signed.
-              if (options.reviewedInParent && !options.reviewNotice) return
+              if (options.reviewedInParent && !options.reviewNotice && !holds.reviewLine()) return
               const description = [
                 options.reviewNotice,
                 holds.reviewLine(),
@@ -1108,6 +1120,22 @@ export function useSafeTx(chainId: number) {
   }, [])
 
   /**
+   * A domain reservation main's journal left with no SDK record (a hashless write): reserve it in a hold and keep
+   * the uncertainty, so the SDK offers its warned, explicit exit. Nothing is ever released here. A call that
+   * already has a hold, or a settlement, is left as it is.
+   */
+  const adoptStored = useCallback(async (write: { chainId: number; owner: Address; to: Address; data: Hex; value: bigint | string; intent?: string }): Promise<void> => {
+    try {
+      const client = getPublicClient(wagmiConfig, { chainId: write.chainId as never }) as unknown as Parameters<WriteHoldHandle['state']>[0] | undefined
+      if (!client) return
+      const stored = holds.open({ chainId: write.chainId, account: write.owner, safe: false, namespace: write.intent, call: { to: write.to, data: write.data, value: write.value } })
+      const state = await stored.state(client)
+      if (state.status !== 'clear' || state.settled) return
+      await stored.send(client, async gate => { await gate.beforeSend(); throw new Error('Reserved from a saved reservation that has no reference.') }).catch(() => undefined)
+    } catch { /* The reservation stays in its journal, and the panel's own recovery still applies. */ }
+  }, [])
+
+  /**
    * A write saved by a domain journal that a reload left held, with no flow open: the SDK's exit for
    * its exact call. True when the call is no longer held, so the caller may clear its own reservation.
    */
@@ -1172,6 +1200,8 @@ export function useSafeTx(chainId: number) {
     notice,
     /** A write the chain has not placed: its line, what sending again risks, and the user's exit. */
     held: heldView,
+    /** The SDK's in-tab notice, whenever the hold carries one, whether or not an exit is offered. */
+    holdNotice: held && held.status !== 'clear' ? (held.notice ?? null) : null,
     /** Whether the connected writer is a Safe connector. */
     isSafe,
     error: effectiveError,
@@ -1189,6 +1219,7 @@ export function useSafeTx(chainId: number) {
     send,
     exitStored,
     storedHold,
+    adoptStored,
     reset,
     dismiss,
   }

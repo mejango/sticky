@@ -411,6 +411,17 @@ describe('reviewed durable bridge workflow', () => {
     expect(readPendingBridgeWrite(OWNER)?.hash).toBe(HASH)
     expect((mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1)
   })
+  it('moves a main-era hashless reservation with no SDK record into a hold before the panel looks at it', async () => {
+    savePendingBridgeWrite(OWNER, createPendingBridgeWrite({ owner: OWNER, request: storeBridgeWrite(queuedRequest()), intent: 'intent:bridge-queue:abc' }))
+    mocks.tx.adoptStored = vi.fn(async () => undefined)
+    mocks.tx.storedHold = vi.fn(async () => ({ exit: true, line: 'Held.', warning: 'Careful.' }))
+    await render()
+    await vi.waitFor(() => expect(mocks.tx.adoptStored).toHaveBeenCalledOnce())
+    expect(mocks.tx.adoptStored).toHaveBeenCalledWith(expect.objectContaining({ owner: OWNER, intent: 'intent:bridge-queue:abc' }))
+    // The adoption comes first; the look follows it, and nothing is released.
+    await vi.waitFor(() => expect(mocks.tx.storedHold).toHaveBeenCalled())
+    expect(readPendingBridgeWrite(OWNER)).not.toBeNull()
+  })
   it('keeps the reservation when the SDK refuses the exit', async () => {
     mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => { await options.durableRecovery?.reserve(); return null })
     await review(); await press('Confirm & approve'); await press('Cancel')

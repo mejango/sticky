@@ -10,7 +10,7 @@ import type { TxRequest } from '@/hooks/useSafeTx'
  * exact call (undefined). Writes pending from before this key existed are held by their exact call, which the SDK
  * always includes beside the intent.
  */
-export function holdIntent(request: Pick<TxRequest, 'chainId' | 'address' | 'functionName' | 'args'>): string | undefined {
+export function holdIntent(request: Pick<TxRequest, 'chainId' | 'address' | 'functionName' | 'args' | 'moving'>): string | undefined {
   const args = request.args
   const chain = request.chainId
   const address = (value: unknown) => intent.address(String(value))
@@ -25,7 +25,9 @@ export function holdIntent(request: Pick<TxRequest, 'chainId' | 'address' | 'fun
       return writeIntentKey('unstick', { chain, terminal: address(request.address), holder: address(args[0]), projectId: amount(args[1]), count: amount(args[2]), token: address(args[3]), beneficiary: address(args[5]) })
     // An approval covers a claim or a stick that can move: the token and the spender are the intent.
     case 'approve':
-      return writeIntentKey('approve', { chain, token: address(request.address), spender: address(args[0]) })
+      return request.moving
+        ? writeIntentKey('approve', { chain, token: address(request.address), spender: address(args[0]), kind: 'moving' })
+        : writeIntentKey('approve', { chain, token: address(request.address), spender: address(args[0]), kind: 'exact', amount: amount(args[1]) })
     // Sucker.prepare (a bridge queue): minTokensReclaimed (2) is a quote.
     case 'prepare':
       return writeIntentKey('bridge-queue', { chain, sucker: address(request.address), projectTokenCount: amount(args[0]), beneficiary: hex(args[1]), token: address(args[3]), metadata: hex(args[4]) })
