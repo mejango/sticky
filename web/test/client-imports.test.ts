@@ -115,8 +115,7 @@ describe('shared client rules have one SDK owner', () => {
     ['review', 'submitReviewedContractWrite'],
     ['review', 'transactionMessage'],
     ['safe-service', 'readSafeAppExecution'],
-    ['safe-service', 'heldCall'],
-    ['safe-service', 'watchSafeProposal'],
+    ['safe-service', 'findPendingSafeAppProposal'],
   ])('consumes %s/%s from its shared owner', (owner, symbol) => {
     expect(imports).toContain(`@bananapus/nana-sdk-core/${owner}:${symbol}`)
   })

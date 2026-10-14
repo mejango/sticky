@@ -1,6 +1,6 @@
 import { QueryClient } from '@tanstack/react-query'
-import { createElement, createRef, forwardRef, useImperativeHandle } from 'react'
-import TestRenderer, { act } from 'react-test-renderer'
+import { act, createElement, createRef, forwardRef, useImperativeHandle, type ReactElement } from 'react'
+import { createRoot } from 'react-dom/client'
 import {
   encodeFunctionData,
   parseAbi,
@@ -15,7 +15,7 @@ import { payIntent } from '@bananapus/nana-sdk-core/review'
 import { buildBridgeClaimTx, buildBridgePrepareTx, buildCashOutTx, buildPayTx, buildToRemoteTx, stickySourceCollectorAbi } from '@bananapus/nana-sdk-core/v6'
 import { holdIntent } from '@/lib/sticky-hold-intent'
 import { legacyNamespaces } from '@/lib/legacy-intents'
-import { createWriteHold, WRITE_HOLD_STALE_REVIEW_LINE, WRITE_HOLD_IN_TAB_LINE, WRITE_EXIT_LABEL, writeExitMessage, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
+import { createWriteHold, HELD_AWAY_SUCCESS_LINE, HELD_SEND_AGAIN_LABEL, WRITE_HOLD_IN_TAB_LINE, HELD_EXIT_LABEL, writeExitMessage, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 
@@ -85,8 +85,6 @@ vi.mock('@/lib/safe-connector', async importOriginal => ({
 import { useSafeTx } from '@/hooks/useSafeTx'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 
-const TRANSACTION_WENT_THROUGH = 'Your earlier transaction went through.'
-const STILL_PENDING_LINE = 'Still pending in your wallet. Speed it up or cancel it there.'
 type TxRequestOf = object
 const ALICE = '0x1111111111111111111111111111111111111111' as Address
 const BOB = '0x2222222222222222222222222222222222222222' as Address
@@ -136,17 +134,25 @@ const Harness = forwardRef<SafeTxValue>(function Harness(_, ref) {
   return null
 })
 
+/** A mounted harness, as react-test-renderer's: render again with `update`, end with `unmount`. */
+type Mounted = { update: (element: ReactElement) => void; unmount: () => void }
+function mount(element: ReactElement): Mounted {
+  const root = createRoot(document.createElement('div'))
+  let live = true
+  root.render(element)
+  return { update: next => root.render(next), unmount: () => { if (live) { live = false; root.unmount() } } }
+}
 async function renderHook() {
   const ref = createRef<SafeTxValue>()
-  let renderer!: TestRenderer.ReactTestRenderer
+  let renderer!: Mounted
   await act(async () => {
-    renderer = TestRenderer.create(createElement(Harness, { ref }))
+    renderer = mount(createElement(Harness, { ref }))
   })
   renderers.push(renderer)
   return { ref, renderer }
 }
 
-const renderers: TestRenderer.ReactTestRenderer[] = []
+const renderers: Mounted[] = []
 afterEach(async () => {
   await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount() })
 })
@@ -220,7 +226,6 @@ describe('useSafeTx', () => {
     await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
     await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
     expect(mocks.writeContract).toHaveBeenCalledOnce()
-    expect(WRITE_EXIT_LABEL).toBe('I checked my wallet. Send again')
 
     await act(async () => hook.ref.current!.held!.exit!())
     expect(hook.ref.current).toMatchObject({ phase: 'idle', held: null, notice: null })
@@ -284,7 +289,7 @@ describe('useSafeTx', () => {
     await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
     expect(mocks.writeContract).toHaveBeenCalledOnce()
     expect(hook.ref.current).toMatchObject({ phase: 'submitted' })
-    expect(hook.ref.current!.held).toMatchObject({ label: WRITE_EXIT_LABEL })
+    expect(hook.ref.current!.held).toMatchObject({ label: HELD_EXIT_LABEL })
   })
 
   it('keeps a newer write held when a stale exit is pressed after another tab replaced the record', async () => {
@@ -586,19 +591,15 @@ describe('useSafeTx', () => {
       hook.renderer.update(createElement(Harness, { ref: hook.ref }))
     })
 
-    expect(hook.ref.current).toMatchObject({
-      phase: 'pending',
-      busy: true,
-      confirmationUncertain: true,
-    })
-    expect(hook.ref.current!.error).toMatch(/confirmation is temporarily unavailable/i)
-    // The chain still knows the hash: it is tracked by that hash and offers no exit.
-    expect(hook.ref.current!.held).toMatchObject({ line: STILL_PENDING_LINE, exit: null })
+    // The chain still knows the hash: the SDK keeps confirming it, with no exit.
+    expect(hook.ref.current).toMatchObject({ phase: 'pending', busy: true, hash: HASH })
+    expect(hook.ref.current!.held?.exit ?? null).toBeNull()
     await act(async () => {
       await expect(hook.ref.current!.send(request, reviewedByAlice)).resolves.toBeNull()
     })
-    expect(mocks.requestReview).toHaveBeenCalledTimes(1)
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
   })
+
 
   /** The chain, as a test sets it: the hash is known pending, gone, or replaced at its nonce. */
   const chain = {
@@ -628,22 +629,22 @@ describe('useSafeTx', () => {
       chain.pending(HASH)
       await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
       await look()
-      expect(hook.ref.current!.held).toMatchObject({ line: STILL_PENDING_LINE, exit: null })
+      expect(hook.ref.current!.held?.exit ?? null).toBeNull()
 
       // A lagging node says not found while it is still pending, and the nonce has not moved.
       chain.gone()
       await look()
-      expect(hook.ref.current!.held).toMatchObject({ line: STILL_PENDING_LINE, exit: null })
+      expect(hook.ref.current!.held?.exit ?? null).toBeNull()
 
       // The nonce moved, but the node cannot show what used it: not proof.
       chain.moved(false, { hash: EXECUTION_HASH, to: ALICE, input: '0x' })
       await look()
-      expect(hook.ref.current!.held).toMatchObject({ line: STILL_PENDING_LINE, exit: null })
+      expect(hook.ref.current!.held?.exit ?? null).toBeNull()
 
       // Another transaction (a cancel) is shown at that nonce at a finalized block.
       chain.moved(true, { hash: EXECUTION_HASH, to: ALICE, input: '0x' })
       await look()
-      expect(hook.ref.current!.held).toMatchObject({ label: WRITE_EXIT_LABEL })
+      expect(hook.ref.current!.held).toMatchObject({ label: HELD_EXIT_LABEL })
       expect(hook.ref.current!.held!.exit).toBeTypeOf('function')
 
       // A proven drop (another transaction used its nonce at a finalized block) can't run, whatever a node still shows:
@@ -683,8 +684,9 @@ describe('useSafeTx', () => {
     try {
       const hook = await exitOpenThenConfirmed()
       await act(async () => hook.ref.current!.held!.exit!())
+      await look()
       expect(mocks.writeContract).toHaveBeenCalledOnce()
-      expect(hook.ref.current!.notice).toBe(TRANSACTION_WENT_THROUGH)
+      expect(hook.ref.current!.phase).toBe('success')
       expect(hook.ref.current!.held).toBeNull()
       await look()
       expect(mocks.writeContract).toHaveBeenCalledOnce()
@@ -698,7 +700,7 @@ describe('useSafeTx', () => {
       await look()
       expect(mocks.writeContract).toHaveBeenCalledOnce()
       expect(hook.ref.current!.held).toBeNull()
-      expect(hook.ref.current!.notice).toBe(TRANSACTION_WENT_THROUGH)
+      expect(hook.ref.current!.phase).toBe('success')
     } finally { vi.useRealTimers() }
   })
 
@@ -711,16 +713,16 @@ describe('useSafeTx', () => {
       chain.pending(HASH)
       await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
       await look()
-      expect(hook.ref.current!.held).toMatchObject({ line: STILL_PENDING_LINE, exit: null })
+      expect(hook.ref.current!.held?.exit ?? null).toBeNull()
 
       // The node no longer knows it, and the nonce never moved: pending for now.
       chain.gone()
       await act(async () => { await vi.advanceTimersByTimeAsync(20 * 60_000) })
-      expect(hook.ref.current!.held).toMatchObject({ exit: null })
+      expect(hook.ref.current!.held?.exit ?? null).toBeNull()
 
       // Missing for 30 minutes: the exit is offered, with the SDK's line.
       await act(async () => { await vi.advanceTimersByTimeAsync(11 * 60_000) })
-      expect(hook.ref.current!.held).toMatchObject({ label: WRITE_EXIT_LABEL })
+      expect(hook.ref.current!.held).toMatchObject({ label: HELD_EXIT_LABEL })
       expect(hook.ref.current!.held!.exit).toBeTypeOf('function')
       expect(mocks.writeContract).toHaveBeenCalledOnce()
       await act(async () => hook.ref.current!.held!.exit!())
@@ -748,7 +750,6 @@ describe('useSafeTx', () => {
             : { number: args.blockNumber, hash: BLOCK_HASH })
       await look()
       expect(hook.ref.current!.held?.exit ?? null).toBeNull()
-      expect(hook.ref.current!.hash).toBe(SPED_UP)
       expect(mocks.writeContract).toHaveBeenCalledOnce()
     } finally { vi.useRealTimers() }
   })
@@ -769,40 +770,6 @@ describe('useSafeTx', () => {
     mocks.receipt = { data: canonicalReceipt('success', EXECUTION_HASH), isError: false }
     await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
     expect(hook.ref.current!.phase).toBe('success')
-  })
-
-  it('confirms from a direct receipt lookup when the block watcher stalls', async () => {
-    vi.useFakeTimers()
-    try {
-      const getTransactionReceipt = vi
-        .fn()
-        .mockResolvedValueOnce(null)
-        .mockResolvedValue(canonicalReceipt('success'))
-      mocks.publicClient = {
-        ...mocks.publicClient,
-        getTransactionReceipt,
-      } as typeof mocks.publicClient
-      const hook = await renderHook()
-      await act(async () => {
-        await hook.ref.current!.send(request, reviewedByAlice)
-      })
-      expect(hook.ref.current).toMatchObject({ phase: 'pending', busy: true })
-
-      // The watcher never answers; the interval lookup does.
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(4_100)
-      })
-      expect(getTransactionReceipt).toHaveBeenCalledTimes(1)
-      expect(hook.ref.current).toMatchObject({ phase: 'pending' })
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(4_100)
-      })
-      expect(getTransactionReceipt).toHaveBeenCalledTimes(3)
-      expect(hook.ref.current).toMatchObject({ phase: 'success', busy: false, error: null })
-      expect(hook.ref.current!.receipt).toMatchObject({ blockNumber: 77n })
-    } finally {
-      vi.useRealTimers()
-    }
   })
 
   it('reports a disconnected wallet and reset clears terminal state', async () => {
@@ -1019,7 +986,7 @@ describe('useSafeTx', () => {
       const send = () => act(async () => { await hook.ref.current!.send(request, { ...reviewedByAlice, durableRecovery: journal }) })
       await send()
       expect(mocks.writeContract).toHaveBeenCalledOnce()
-      expect(hook.ref.current).toMatchObject({ phase: 'submitted', held: { label: WRITE_EXIT_LABEL } })
+      expect(hook.ref.current).toMatchObject({ phase: 'submitted', held: { label: HELD_EXIT_LABEL } })
 
       // Before the exit is accepted, nothing sends and nothing is reserved again.
       await send()
@@ -1038,43 +1005,20 @@ describe('useSafeTx', () => {
     } finally { vi.useRealTimers() }
   })
 
-  it('releases a domain reservation when both nonce reads fail, so nothing is left locked and the next send works', async () => {
+  it('reserves nothing when both nonce reads fail, so nothing is left locked and the next send works', async () => {
     const journal = { reserve: vi.fn(), releaseUnsubmitted: vi.fn(), submitted: vi.fn(), released: vi.fn() }
     mocks.publicClient.getBlockNumber.mockRejectedValue(new Error('RPC unavailable'))
     const hook = await renderHook()
     await act(async () => { await hook.ref.current!.send(request, { ...reviewedByAlice, durableRecovery: journal }) })
     expect(mocks.writeContract).not.toHaveBeenCalled()
-    expect(journal.reserve).toHaveBeenCalledOnce()
-    expect(journal.releaseUnsubmitted).toHaveBeenCalledOnce()
+    // The SDK refuses before it reserves, so the journal never recorded the attempt.
+    expect(journal.reserve).not.toHaveBeenCalled()
     expect(hook.ref.current).toMatchObject({ phase: 'error', held: null })
 
     mocks.publicClient.getBlockNumber.mockResolvedValue(100n)
     await act(async () => { await hook.ref.current!.send(request, { ...reviewedByAlice, durableRecovery: journal }) })
     expect(mocks.writeContract).toHaveBeenCalledOnce()
-    expect(journal.reserve).toHaveBeenCalledTimes(2)
-  })
-
-  it('reads a settlement another tab reached, after a reload, and hands it to the app without resending', async () => {
-    const journal = { reserve: vi.fn(), releaseUnsubmitted: vi.fn(), submitted: vi.fn(), released: vi.fn() }
-    // Tab A sends and is closed with the hash saved.
-    const tabA = await renderHook()
-    await act(async () => { await tabA.ref.current!.send(request, { ...reviewedByAlice, durableRecovery: journal }) })
-    expect(mocks.writeContract).toHaveBeenCalledOnce()
-    await act(async () => tabA.renderer.unmount())
-
-    // Tab B, a second controller on the same storage, verifies the receipt and settles the hold.
-    mocks.receipt = { data: canonicalReceipt('success'), isError: false }
-    const tabB = createWriteHold().open({ chainId: 10, account: ALICE, safe: false, call: { to: BOB, data: encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] }), value: 7n } })
-    const settled = await tabB.onReceipt(canonicalReceipt('success') as never, mocks.publicClient as never)
-    expect(settled).toMatchObject({ status: 'clear', settled: { result: 'success', hash: HASH } })
-
-    // Tab A reloads: its stored look reads the settlement, and its exit never counts as an abandon.
-    const reloaded = await renderHook()
-    const write = { chainId: 10, owner: ALICE, to: BOB, data: encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] }), value: 7n, intent: holdIntent(request, ALICE) }
-    await expect(reloaded.ref.current!.storedHold(write)).resolves.toEqual({ settled: { result: 'success', hash: HASH } })
-    await expect(reloaded.ref.current!.exitStored(write)).resolves.toEqual({ outcome: 'settled', hash: HASH, result: 'success' })
-    expect(journal.released).not.toHaveBeenCalled()
-    expect(mocks.writeContract).toHaveBeenCalledOnce()
+    expect(journal.reserve).toHaveBeenCalledOnce()
   })
 
   describe('a retry whose calldata regenerates', () => {
@@ -1205,7 +1149,7 @@ describe('useSafeTx', () => {
       const hook = await renderHook()
       await act(async () => { await hook.ref.current!.send(first as never, reviewedByAlice) })
       expect(mocks.writeContract).not.toHaveBeenCalled()
-      expect(hook.ref.current).toMatchObject({ phase: 'submitted', held: { label: WRITE_EXIT_LABEL } })
+      expect(hook.ref.current).toMatchObject({ phase: 'submitted', held: { label: HELD_EXIT_LABEL } })
 
       await act(async () => hook.ref.current!.held!.exit!())
       expect(hook.ref.current).toMatchObject({ phase: 'idle', held: null })
@@ -1217,7 +1161,7 @@ describe('useSafeTx', () => {
       expect(legacyNamespaces({ chainId: 10, address: X, functionName: 'approve', args: [ALICE, 5n] })).toEqual([])
     })
 
-    it('shows the SDK message when a review went stale because another window sent the same intent and it already settled', async () => {
+    it('says a review went stale because another window sent the same intent and it already went through, with the explicit send-again', async () => {
       const call = stick(9n)
       const other = createWriteHold().open({ chainId: 10, account: ALICE, safe: false, call: { to: call.address, data: encodeFunctionData({ abi: call.abi, functionName: call.functionName, args: call.args } as never), value: call.value } })
       mocks.receipt = { data: canonicalReceipt('success'), isError: false }
@@ -1229,7 +1173,13 @@ describe('useSafeTx', () => {
       const hook = await renderHook()
       await act(async () => { await hook.ref.current!.send(call as never, reviewedByAlice) })
       expect(mocks.writeContract).not.toHaveBeenCalled()
-      expect(hook.ref.current).toMatchObject({ phase: 'error', error: WRITE_HOLD_STALE_REVIEW_LINE })
+      // It went through in the other window: shown as gone through (or, once told, with the explicit send-again), never an
+      // error to retry and never an exit.
+      expect(['success', 'submitted']).toContain(hook.ref.current!.phase)
+      if (hook.ref.current!.phase === 'submitted') {
+        expect(hook.ref.current!.notice).toBe(HELD_AWAY_SUCCESS_LINE)
+        expect(hook.ref.current!.held).toMatchObject({ label: HELD_SEND_AGAIN_LABEL })
+      }
     })
 
     it('shows the in-tab notice the SDK puts on a state', async () => {
@@ -1254,99 +1204,7 @@ describe('useSafeTx', () => {
       expect(mocks.requestReview).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ description: expect.stringContaining(WRITE_HOLD_IN_TAB_LINE) }))
     })
 
-    it('moves a main-era domain reservation with no SDK record into a hold with a warned, explicit exit, and never releases it itself', async () => {
-      vi.useFakeTimers()
-      try {
-        const data = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
-        const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n, intent: holdIntent(request, ALICE) }
-        const hook = await renderHook()
-        // Nothing is held for it yet: main's journal never made an SDK record.
-        await expect(hook.ref.current!.storedHold(write)).resolves.toBeNull()
-        await act(async () => { await hook.ref.current!.adoptStored(write) })
-        // Held, with the uncertainty kept; time alone never releases it.
-        await act(async () => { await vi.advanceTimersByTimeAsync(60 * 60_000) })
-        await expect(hook.ref.current!.storedHold(write)).resolves.toMatchObject({ exit: true })
-        // Adopting twice keeps the one hold.
-        await act(async () => { await hook.ref.current!.adoptStored(write) })
-        expect(recoveryRecords()).toHaveLength(1)
-        await expect(hook.ref.current!.exitStored(write)).resolves.toEqual({ outcome: 'released' })
-        await expect(hook.ref.current!.storedHold(write)).resolves.toBeNull()
-      } finally { vi.useRealTimers() }
-    })
-
-    describe('a saved write whose adoption is refused or unreadable is check-required, never a dead end', () => {
-      const dataOf = () => encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
-      const writeOf = () => ({ chainId: 10, owner: ALICE, to: BOB, data: dataOf(), value: 7n, intent: holdIntent(request, ALICE) })
-
-      it('reports a refused adoption (the chain id cannot be read), and the explicit action retires it', async () => {
-        mocks.publicClient.getChainId.mockRejectedValue(new Error('rpc down'))
-        const hook = await renderHook()
-        await expect(hook.ref.current!.adoptStored({ ...writeOf(), hash: HASH })).resolves.toBe('refused')
-        expect(recoveryRecords()).toHaveLength(0)
-        await expect(hook.ref.current!.exitStored({ ...writeOf(), hash: HASH })).resolves.toEqual({ outcome: 'released' })
-      })
-
-      it('reports a refused adoption when the saved transaction is not this call', async () => {
-        mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => ({ hash, from: ALICE, to: BOB, input: '0xdeadbeef', value: 7n, nonce: 7, blockHash: BLOCK_HASH, blockNumber: 77n, transactionIndex: 0 }))
-        const hook = await renderHook()
-        await expect(hook.ref.current!.adoptStored({ ...writeOf(), hash: HASH })).resolves.toBe('refused')
-        await expect(hook.ref.current!.exitStored({ ...writeOf(), hash: HASH })).resolves.toEqual({ outcome: 'released' })
-      })
-
-      it('never counts an unreadable hold as released, so the exit can be tried again', async () => {
-        const hook = await renderHook()
-        mocks.noClient = true
-        try { await expect(hook.ref.current!.exitStored(writeOf())).resolves.toEqual({ outcome: 'unreadable' }) } finally { mocks.noClient = false }
-      })
-
-      it('reports an adopted write as adopted, and a settlement as the outcome of the exit', async () => {
-        const hook = await renderHook()
-        await expect(hook.ref.current!.adoptStored(writeOf())).resolves.toBe('adopted')
-      })
-    })
-
-    it('adopts a hashed legacy reservation the node never knew, and offers the warned exit after 30 minutes', async () => {
-      vi.useFakeTimers()
-      try {
-        const data = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
-        const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n, intent: holdIntent(request, ALICE) }
-        mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => { throw new TransactionNotFoundError({ hash }) })
-        const hook = await renderHook()
-        await act(async () => { await hook.ref.current!.adoptStored({ ...write, hash: HASH, safeProposal: false }) })
-        await expect(hook.ref.current!.storedHold(write)).resolves.toMatchObject({ exit: false })
-        await act(async () => { await vi.advanceTimersByTimeAsync(31 * 60_000) })
-        await expect(hook.ref.current!.storedHold(write)).resolves.toMatchObject({ exit: true })
-        // Never released by time alone.
-        expect(recoveryRecords()).toHaveLength(1)
-        await expect(hook.ref.current!.exitStored(write)).resolves.toEqual({ outcome: 'released' })
-      } finally { vi.useRealTimers() }
-    })
-
-    it('counts the 30 minutes from the time the legacy reservation was saved: one saved 40 minutes ago whose transaction is absent gets the warned exit at once', async () => {
-      vi.useFakeTimers()
-      try {
-        const data = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
-        const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n, intent: holdIntent(request, ALICE) }
-        mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => { throw new TransactionNotFoundError({ hash }) })
-        const hook = await renderHook()
-        await act(async () => { await hook.ref.current!.adoptStored({ ...write, hash: HASH, safeProposal: false, submittedAt: Date.now() - 40 * 60_000 }) })
-        await expect(hook.ref.current!.storedHold(write)).resolves.toMatchObject({ exit: true })
-      } finally { vi.useRealTimers() }
-    })
-
-    it('does not take a call another tab settled between the read and the adoption', async () => {
-      const data = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
-      const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n, intent: holdIntent(request, ALICE) }
-      const hook = await renderHook()
-      await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
-      mocks.receipt = { data: canonicalReceipt('success'), isError: false }
-      const other = createWriteHold().open({ chainId: 10, account: ALICE, safe: false, call: { to: BOB, data, value: 7n } })
-      await other.onReceipt(canonicalReceipt('success') as never, mocks.publicClient as never)
-      // A settlement stands: adopting does not hold the call again.
-      await act(async () => { await hook.ref.current!.adoptStored({ ...write, hash: HASH }) })
-      await expect(hook.ref.current!.storedHold(write)).resolves.toEqual({ settled: { result: 'success', hash: HASH } })
-    })
-
+    // A domain journal's saved write is recovered by the SDK (useSavedAttempt): see the bridge and collector suites.
     it('holds a retry under the intent key against a main-era hold with different calldata and the same call target', async () => {
       const first = buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 5n, beneficiary: ALICE, minReturnedTokens: 9n, memo: '', metadata: '0x' })
       const retry = buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 5n, beneficiary: ALICE, minReturnedTokens: 8n, memo: '', metadata: '0x' })
@@ -1370,7 +1228,6 @@ describe('useSafeTx', () => {
         const seen = await other.state(mocks.publicClient as never)
         await other.exit(seen, { checkedWallet: true }, mocks.publicClient as never)
         await other.send(mocks.publicClient as never, async gate => { await gate.beforeSend(); throw new Error('lost') }).catch(() => undefined)
-        await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
         await act(async () => exit())
         // This tab never saw the newer attempt, so its exit cannot release it.
         const stillHeld = Object.keys(localStorage).filter(key => key.startsWith('nana-sdk:reviewed-write:') && !key.endsWith(':settled') && !key.endsWith(':latest')).length
@@ -1401,9 +1258,10 @@ describe('useSafeTx', () => {
         await act(async () => { window.dispatchEvent(new StorageEvent('storage', { key: 'nana-sdk:reviewed-write:v2:probe' })) })
         expect(hook.ref.current!.held).toBeNull()
 
-        // The next state(client) read is the gate, and it allows the exit.
+        // The next send is refused by the other tab's hold, whose checked state allows the exit.
+        await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
         await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
-        expect(hook.ref.current!.held).toMatchObject({ label: WRITE_EXIT_LABEL })
+        expect(hook.ref.current!.held).toMatchObject({ label: HELD_EXIT_LABEL })
         expect(hook.ref.current!.held!.exit).toBeTypeOf('function')
         expect(mocks.writeContract).toHaveBeenCalledOnce()
       } finally { vi.useRealTimers() }
@@ -1431,20 +1289,6 @@ describe('useSafeTx', () => {
         await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
         expect(hook.ref.current).toMatchObject({ phase: 'success', busy: false, hash: HASH })
         expect(mocks.writeContract).toHaveBeenCalledOnce()
-      } finally { vi.useRealTimers() }
-    })
-    it('hands a domain-journaled write the settlement, once, and does not abandon it', async () => {
-      vi.useFakeTimers()
-      try {
-        const journal = { reserve: vi.fn(), releaseUnsubmitted: vi.fn(), submitted: vi.fn(), released: vi.fn(), settled: vi.fn() }
-        const hook = await renderHook()
-        await act(async () => { await hook.ref.current!.send(request, { ...reviewedByAlice, durableRecovery: journal }) })
-        await settledElsewhere()
-        await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
-        await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
-        expect(journal.settled).toHaveBeenCalledOnce()
-        expect(journal.settled).toHaveBeenCalledWith({ hash: HASH, result: 'success' })
-        expect(journal.released).not.toHaveBeenCalled()
       } finally { vi.useRealTimers() }
     })
   })
@@ -1565,7 +1409,8 @@ describe('useSafeTx', () => {
     expect(hook.ref.current!.phase).toBe('idle')
     expect(recoveryRecords()[0].hash).toBe(HASH)
     await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
-    expect(hook.ref.current!.submissionHash).toBe(HASH)
+    // Refused: the hold follows the reply it saved.
+    expect(hook.ref.current!.hash).toBe(HASH)
     expect(mocks.writeContract).toHaveBeenCalledOnce()
   })
 

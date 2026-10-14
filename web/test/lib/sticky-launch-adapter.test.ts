@@ -1,5 +1,4 @@
 import { stickyDeployerAbi } from '@bananapus/nana-sdk-core'
-import { WRITE_EXIT_LABEL } from '@bananapus/nana-sdk-core/review'
 import { JBCenterRequestError } from '@bananapus/nana-sdk-core/jbcenter'
 import {
   RELAYR_NATIVE_TOKEN, RELAYR_PAYMENT_ADDRESS, RELAYR_PAYMENT_GAS,
@@ -70,6 +69,9 @@ vi.mock('@bananapus/nana-sdk-core/review/relayr', async original => ({
 }))
 
 import { createBrowserStickyLaunchController } from '@/lib/sticky-launch-adapter'
+import { attempts } from '@/lib/write-holds'
+import { createSavedAttemptRecovery, createWriteHold } from '@bananapus/nana-sdk-core/review'
+import { browserWriteRecoveryModel } from '../support/write-recovery'
 import { buildStickyEnvelope } from '@/lib/sticky-listing'
 
 const OWNER = '0x1111111111111111111111111111111111111111' as Address
@@ -127,6 +129,8 @@ function deferred() {
 const walletResult = () => ({ account: fake.account.address,
   wallet: { writeContract: fake.write, sendTransaction: fake.send, signMessage: fake.sign } })
 
+let launch: ReturnType<typeof createBrowserStickyLaunchController>
+
 beforeEach(() => {
   vi.resetAllMocks()
   vi.stubGlobal('localStorage', memoryStorage())
@@ -158,7 +162,7 @@ beforeEach(() => {
   vi.mocked(fetch).mockImplementation(async () => json({ bundle_uuid: BUNDLE, payment_received: false, transactions: [
     { status: { state: 'Pending' } }, { status: { state: 'Pending' } },
   ] }))
-  createBrowserStickyLaunchController()
+  launch = createBrowserStickyLaunchController()
 })
 
 describe('Sticky launch browser boundaries', () => {
@@ -319,41 +323,49 @@ describe('Sticky launch browser boundaries', () => {
     expect(unknown.rejected).not.toHaveBeenCalled()
   })
 
-  describe.each(['direct', 'payment'] as const)('the SDK hold on a %s launch write', kind => {
+  describe.each(['direct', 'payment'] as const)('the SDK recovery of a %s launch write', kind => {
     const send = (noted: ReturnType<typeof callbacks>) => kind === 'direct' ? fake.ports.sendDirect(session(), noted) : fake.ports.sendPayment(paymentSession(), noted)
-    const saved = () => { const base = kind === 'direct' ? session() : paymentSession(); return { ...base, [kind]: { ...base[kind], started: true } } as StickyLaunchSession }
+    const saved = (fields: Partial<NonNullable<StickyLaunchSession['direct']>> = {}) => {
+      const base = kind === 'direct' ? session() : paymentSession()
+      return { ...base, [kind]: { ...base[kind], started: true, ...fields } } as StickyLaunchSession
+    }
     const wallet = () => kind === 'direct' ? fake.write : fake.send
+    const recover = (journal: StickyLaunchSession) => {
+      const found = launch.attempt(journal)!
+      return attempts.recover(found.attempt, found.client)
+    }
 
-    it('refuses a second send while a lost-reply submission stands, and sends exactly once more after its warned exit', async () => {
+    it('refuses a second send while a lost-reply submission stands, and sends exactly once more after its exit', async () => {
       wallet().mockRejectedValueOnce(new Error('wallet transport timeout'))
       await expect(send(callbacks())).rejects.toThrow('timeout')
       const again = callbacks()
       await expect(send(again)).rejects.toMatchObject({ name: 'WriteHeldError' })
       expect(wallet()).toHaveBeenCalledOnce()
+      // The SDK reserves before the journal records anything: a refused send records nothing.
       expect(again.beforeWrite).not.toHaveBeenCalled()
 
-      const view = await fake.ports.hold.look(saved(), kind)
-      expect(view).toMatchObject({ exit: true, label: WRITE_EXIT_LABEL })
-      await expect(fake.ports.hold.exit(saved(), kind)).resolves.toMatchObject({ released: true })
+      const outcome = await recover(saved())
+      if (outcome.status !== 'held') throw new Error(`expected held, got ${outcome.status}`)
+      expect(outcome.state.exit).toBe(true)
+      const found = launch.attempt(saved())!
+      await expect(outcome.handle.exit(outcome.state, { checkedWallet: true }, found.client)).resolves.toMatchObject({ released: true })
+      await expect(attempts.retire(found.attempt, { by: 'exit' })).resolves.toMatchObject({ retired: true })
       await send(callbacks())
       expect(wallet()).toHaveBeenCalledTimes(2)
     })
 
-    it('holds a started submission with no SDK record (saved by the last deploy) with an exit, and never releases it unasked', async () => {
-      const view = await fake.ports.hold.look(saved(), kind)
-      expect(view).toMatchObject({ exit: true })
-      await expect(send(callbacks())).rejects.toMatchObject({ name: 'WriteHeldError' })
-      expect(wallet()).not.toHaveBeenCalled()
+    it('brings a started submission with no SDK record (saved by the last deploy) to the one explicit check', async () => {
+      await expect(recover(saved())).resolves.toMatchObject({ status: 'check' })
     })
 
-    it('reports the settlement of a confirmed launch write as its own outcome', async () => {
+    it('reports the settlement of a confirmed launch write as done, authenticated by the launch', async () => {
       const call = kind === 'direct' ? { to: DEPLOYER, data: session().plan.targets[0].call.data, value: 2n }
         : { to: paymentSession().payment.option.target as Address, data: paymentSession().payment.option.calldata as Hex, value: BigInt(paymentSession().payment.option.amount) }
       const placed = { blockHash: `0x${'ed'.repeat(32)}` as Hex, blockNumber: 10n, transactionIndex: 0 }
       fake.receipt.mockResolvedValue({ status: 'success', transactionHash: HASH, from: OWNER, to: call.to, logs: [], ...placed })
       fake.transaction.mockResolvedValue({ hash: HASH, from: OWNER, to: call.to, input: call.data, value: call.value, nonce: 7, ...placed })
       await send(callbacks())
-      await expect(fake.ports.hold.look(saved(), kind)).resolves.toMatchObject({ settled: { hash: HASH, result: 'success' } })
+      await expect(recover(saved({ hash: HASH }))).resolves.toMatchObject({ status: 'done', result: 'success', authenticated: true, hash: HASH })
     })
 
     it('needs no mined-failure proof for an attempt the user exited', async () => {
@@ -367,20 +379,93 @@ describe('Sticky launch browser boundaries', () => {
       expect(fake.callFailure).not.toHaveBeenCalled()
     })
 
-    it('is check-required, not absent, when the saved transaction does not match the call (adoption refused)', async () => {
-      const started = { ...saved(), [kind]: { ...saved()[kind], started: true, hash: HASH } } as StickyLaunchSession
+    it('is the explicit check, never absent, when the saved transaction does not match the call (adoption refused)', async () => {
       fake.transaction.mockResolvedValue({ hash: HASH, from: OWNER, to: OWNER, input: '0xdeadbeef', value: 0n, nonce: 7, blockHash: `0x${'ed'.repeat(32)}`, blockNumber: 10n, transactionIndex: 0 })
-      await expect(fake.ports.hold.look(started, kind)).resolves.toMatchObject({ exit: true, checkRequired: true })
-      await expect(fake.ports.hold.exit(started, kind)).resolves.toEqual({ released: true })
+      fake.verifyDeployment.mockResolvedValue(null)
+      fake.verifyPayment.mockRejectedValue(new Error('not this payment'))
+      const outcome = await recover(saved({ hash: HASH }))
+      expect(outcome).toMatchObject({ status: 'check' })
+      if (outcome.status !== 'check') return
+      // The user's explicit check retires it for every tab and reload.
+      await expect(attempts.retire(launch.attempt(saved({ hash: HASH }))!.attempt, { by: 'check', outcome })).resolves.toMatchObject({ retired: true })
+      await expect(recover(saved({ hash: HASH }))).resolves.toMatchObject({ status: 'none', retired: 'check' })
     })
 
-    it('holds nothing once the wallet explicitly rejected', async () => {
+    it('retires an attempt the wallet explicitly rejected, and sends again', async () => {
       wallet().mockRejectedValueOnce({ code: 4001 })
       await expect(send(callbacks())).rejects.toMatchObject({ code: 4001 })
-      await expect(fake.ports.hold.look({ ...saved(), [kind]: undefined } as StickyLaunchSession, kind)).resolves.toBeNull()
+      await expect(recover(saved())).resolves.toMatchObject({ status: 'none', retired: 'rejected' })
       await send(callbacks())
       expect(wallet()).toHaveBeenCalledTimes(2)
     })
+  })
+
+  describe('two tabs on one saved launch', () => {
+    /** Another tab: its own SDK controller and recovery, over the same storage and the same cross-tab locks. */
+    function otherTab() {
+      const hold = createWriteHold()
+      return { hold, recovery: createSavedAttemptRecovery({ hold }) }
+    }
+    const started = (fields: Partial<NonNullable<StickyLaunchSession['direct']>> = {}) => ({ ...session(), direct: { started: true, ...fields } }) as StickyLaunchSession
+
+    beforeEach(() => { vi.stubGlobal('navigator', { locks: browserWriteRecoveryModel().locks }) })
+
+    it('closes the launch-send race: while one tab is in the wallet, the other recovers it as held and can send nothing', async () => {
+      const wallet = Promise.withResolvers<Hex>()
+      fake.write.mockReturnValueOnce(wallet.promise)
+      const first = send(callbacks())
+      await vi.waitFor(() => expect(fake.write).toHaveBeenCalledOnce())
+
+      const tab = otherTab()
+      const found = launch.attempt(started())!
+      const outcome = await tab.recovery.recover(found.attempt, found.client)
+      expect(outcome.status).toBe('held')
+      // Its own send of the same launch is refused before any wallet opens.
+      const again = tab.hold.open({ chainId: found.attempt.chainId, account: found.attempt.account, safe: false, namespace: found.attempt.namespaces[0], call: found.attempt.call! })
+      await expect(again.send(found.client, async () => { await fake.write(); return HASH })).rejects.toMatchObject({ name: expect.stringMatching(/^WriteHold(Busy)?Error$|^WriteHeldError$/) })
+
+      wallet.resolve(HASH)
+      await first
+      await expect(tab.recovery.recover(found.attempt, found.client)).resolves.toMatchObject({ status: 'held' })
+      expect(fake.write).toHaveBeenCalledOnce()
+    })
+
+    it('reserves before the journal records the start: a tab that reads the started journal finds it held, and its check can never be offered', async () => {
+      // The journal write is where the other tab looks; while it runs, the SDK already holds the launch.
+      const journaled = Promise.withResolvers<void>()
+      const recording = Promise.withResolvers<void>()
+      const noted = callbacks()
+      noted.beforeWrite.mockImplementation(async () => { recording.resolve(); await journaled.promise })
+      const first = send(noted)
+      await recording.promise
+
+      const tab = otherTab()
+      const found = launch.attempt(started())!
+      await expect(tab.recovery.recover(found.attempt, found.client)).resolves.toMatchObject({ status: 'held' })
+      journaled.resolve()
+      await first
+      expect(fake.write).toHaveBeenCalledOnce()
+    })
+
+    it('refuses a check another tab showed before this tab reserved: the stale check retires nothing', async () => {
+      const tab = otherTab()
+      const found = launch.attempt(started())!
+      // A journal from the last deploy: started, nothing held. The other tab shows its explicit check.
+      const shown = await tab.recovery.recover(found.attempt, found.client)
+      if (shown.status !== 'check') throw new Error(`expected check, got ${shown.status}`)
+
+      const wallet = Promise.withResolvers<Hex>()
+      fake.write.mockReturnValueOnce(wallet.promise)
+      const first = send(callbacks())
+      await vi.waitFor(() => expect(fake.write).toHaveBeenCalledOnce())
+      await expect(tab.recovery.retire(found.attempt, { by: 'check', outcome: shown })).resolves.toMatchObject({ retired: false })
+      wallet.resolve(HASH)
+      await first
+      await expect(tab.recovery.recover(found.attempt, found.client)).resolves.toMatchObject({ status: 'held' })
+      expect(fake.write).toHaveBeenCalledOnce()
+    })
+
+    const send = (noted: ReturnType<typeof callbacks>) => fake.ports.sendDirect(session(), noted)
   })
 
   it('saves a Safe proposal separately and abort-bounds resolution before checking its execution receipt', async () => {

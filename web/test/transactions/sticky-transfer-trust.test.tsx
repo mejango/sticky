@@ -6,7 +6,6 @@
  * wallet is what the confirm showed, and the flow's second read of the chain comes before either.
  */
 
-import { WRITE_HOLD_SAFE_UNPROVEN_LINE } from '@bananapus/nana-sdk-core/review'
 import { QueryClient, QueryClientProvider, notifyManager } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -176,11 +175,10 @@ describe('a Safe review dismissed from its enclosing modal', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
   })
 
-  it.each(['transfer', 'trust'] as const)('retains an unproven %s after its notice is dismissed', async kind => {
+  it.each(['transfer', 'trust'] as const)('retains a Safe proposal for a %s after its notice is dismissed', async kind => {
     mocks.safe = true
     // A Safe proposal hash is no transaction: the node has none for it.
     mocks.publicClient.getTransaction.mockImplementation(async () => { throw Object.assign(new Error('not found'), { name: 'TransactionNotFoundError' }) })
-    mocks.waitForSafeExecutionHash.mockRejectedValue(new Error('Confirmation unavailable.'))
     const onClose = vi.fn()
     const flow = kind === 'transfer'
       ? <TransferFlow info={info} onClose={onClose} />
@@ -193,7 +191,7 @@ describe('a Safe review dismissed from its enclosing modal', () => {
     const invalidate = vi.spyOn(client, 'invalidateQueries')
     await press(confirm(), `Confirm & ${kind}`)
 
-    expect(statusLine()).toContain(WRITE_HOLD_SAFE_UNPROVEN_LINE)
+    expect(statusLine()).toContain('Proposed to your Safe. Its other signers can approve it there.')
     expect(primary().textContent).toBe('Done')
     expect(confirm().querySelector('li')?.getAttribute('data-state')).toBe('active')
     expect(invalidate).not.toHaveBeenCalled()
@@ -212,6 +210,7 @@ describe('a Safe review dismissed from its enclosing modal', () => {
 
   it('keeps a pending transfer held after Escape and reopening', async () => {
     mocks.safe = true
+    mocks.publicClient.getTransaction.mockImplementation(async () => { throw Object.assign(new Error('not found'), { name: 'TransactionNotFoundError' }) })
     await render(transfer())
     await type('Recipient', BOB)
     await type('Amount', '1.987654321')

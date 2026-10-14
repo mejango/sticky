@@ -1,6 +1,5 @@
 'use client'
 
-import { UNREADABLE_ERROR } from '@/lib/check-required'
 import { useEffect, useId, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { formatUnits, isAddressEqual, isHash, type Address, type Hex } from 'viem'
@@ -9,7 +8,7 @@ import { reviewGate } from '@/components/project/flows/review-gate'
 import { FIELD_INPUT, FIELD_LABEL } from '@/components/project/StakeAgeFields'
 import { TxConfirmDialog, type TxConfirmRow } from '@/components/ui/TxConfirmDialog'
 import { holdIntent } from '@/lib/sticky-hold-intent'
-import { PendingWriteExit } from '@/components/ui/PendingWriteExit'
+import { SavedWriteRecovery } from '@/components/ui/SavedWriteRecovery'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { useSafeTx } from '@/hooks/useSafeTx'
@@ -143,7 +142,6 @@ export function CollectorFlow({ source, info, onSettled }: {
           releaseUnsubmitted: undo,
           // The user's exit released the SDK hold: the reservation goes, the saved transfer stays.
           released: async () => { await endPendingBridgeAttempt(current.owner, held.id); setPending(null) },
-          settled: settlement => run(async () => { await settleStored(held, settlement.hash, settlement.result); setReview(null); tx.reset() }),
           submitted: (hash, safeProposal) => {
             if (!reserved && !readPendingBridgeWrite(current.owner)) { savePendingBridgeWrite(current.owner, held); reserved = true }
             savePendingBridgeSubmission(held, hash, safeProposal)
@@ -235,20 +233,10 @@ export function CollectorFlow({ source, info, onSettled }: {
         <p className="text-sm">A transaction may still execute. Recover it before delivering another allocation.</p>
         {ours ? <>
           {!pending.hash ? <p className="text-sm text-muted">The wallet returned no submission reference. This attempt remains locked; a matching earlier transaction cannot prove it finished.</p> : null}
-          <PendingWriteExit pending={pending} disabled={busy} confirming="Your delivery went through. Its result is still confirming." look={tx.storedHold} adopt={write => withBridgeLock(() => tx.adoptStored(write), true).catch(() => 'refused' as const)}
-            settle={settlement => settleFromPanel(pending, settlement.hash, settlement.result)}
-            exit={async () => {
-              let unreadable = false
-              await run(async () => {
-              const out = await tx.exitStored({ chainId: pending.request.chainId, owner: pending.owner, to: pending.request.address, data: pending.request.data, value: pending.request.value, intent: pending.intent, hash: pending.hash, safeProposal: pending.safeProposal })
-              if (out.outcome === 'settled') return settleStored(pending, out.hash, out.result)
-              if (out.outcome === 'unreadable') { unreadable = true; throw new Error(UNREADABLE_ERROR) }
-              if (out.outcome !== 'released' || pending.settled === 'success') return
-              await endPendingBridgeAttempt(pending.owner, pending.id); setPending(readPendingBridgeWrite(pending.owner)); await refresh()
-              })
-              return unreadable ? 'unreadable' as const : undefined
-            }}
-            force={() => run(async () => { await endPendingBridgeAttempt(pending.owner, pending.id); setPending(readPendingBridgeWrite(pending.owner)); await refresh() })} />
+          <SavedWriteRecovery pending={pending} disabled={busy}
+            authenticate={async hash => (await bridge.verifyWrite({ chainId: deployment.sourceChainId }, pending.owner, hash, { ...pending.request, value: BigInt(pending.request.value) }, pending.hash ? { hash: pending.hash, safeProposal: pending.safeProposal } : undefined)).success}
+            record={(hash, result) => settleFromPanel(pending, hash, result)}
+            end={() => withBridgeLock(async () => { await endPendingBridgeAttempt(pending.owner, pending.id); setPending(readPendingBridgeWrite(pending.owner)); await refresh() }, true)} />
           {pending.safeProposal ? <p className="text-sm text-muted">Complete the Safe proposal, then check its executed transaction hash.</p> : null}
           {pending.hash && !pending.safeProposal ? <ViewTransactionLink chainId={pending.request.chainId} hash={pending.hash} /> : null}
           <label htmlFor={`${id}-hash`} className={FIELD_LABEL}>Executed transaction hash</label>

@@ -68,17 +68,6 @@ module.exports = phase => {
       process.env.NEXT_PUBLIC_DETERMINISTIC_BROWSER === 'true'
         ? ['tsx', 'ts', 'jsx', 'js', 'browsertest.tsx']
         : ['tsx', 'ts', 'jsx', 'js'],
-    // ponytail: @bananapus/nana-sdk-react 53.0.0 is one bundle whose unused
-    // project-token hooks import wagmi 2's `useToken`, gone in wagmi 3. Only
-    // that package's missing imports are tolerated; remove once the SDK
-    // supports wagmi 3.
-    webpack: config => {
-      config.module.rules.push({
-        test: /[\\/]node_modules[\\/]@bananapus[\\/]nana-sdk-react[\\/]/,
-        parser: { exportsPresence: false },
-      })
-      return config
-    },
     images: {
       // Project media is content-addressed (IPFS), so optimized variants can be
       // cached aggressively. Bundled artwork uses hashed static imports and is

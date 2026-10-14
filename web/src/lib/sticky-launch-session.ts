@@ -1,6 +1,6 @@
 import { isAddress, isHash, type Hex } from 'viem'
 import type { RelayrPayment, RelayrQuote } from '@bananapus/nana-sdk-core/review/relayr'
-import { UNREADABLE_ERROR, CHECK_REQUIRED_CREATE_LABEL, CHECK_REQUIRED_LINE, CHECK_REQUIRED_WARNING } from '@/lib/check-required'
+import { writeIntentKey, type SavedAttempt } from '@bananapus/nana-sdk-core/review'
 import { requireSingleHomeChain, validateLaunchCall, type LaunchPlan, type LaunchTarget } from '@/lib/sticky-launch-plan'
 
 export const STICKY_LAUNCH_KEY = 'sticky-launch-pending-v1'
@@ -121,16 +121,80 @@ export const launchComplete = (session: StickyLaunchSession) =>
 export const launchCanClear = (session: StickyLaunchSession) => launchComplete(session) ||
   (!session.published && !session.direct?.started && !session.payment?.started && !session.listing.requested)
 
+/** An authenticated deployment is saved: the launch went through, whatever a later read says. */
+export const launchEstablished = (session: StickyLaunchSession) => Object.keys(session.proven ?? {}).length > 0
+/** How long a sponsor request that discovery cannot find keeps waiting before it earns the explicit check. */
+export const SPONSOR_WINDOW_MS = 30 * 60_000
+/**
+ * A sponsored deployment was requested and discovery cannot say what happened: past its 30 minutes, or when discovery
+ * failed with no candidate, it is a saved attempt whose recovery is the SDK's. Within the window it keeps waiting.
+ */
+export function sponsorUnresolved(session: StickyLaunchSession, now = Date.now()): boolean {
+  if (!session.listing.requested || session.listing.selfPaid || launchComplete(session) || launchEstablished(session) || session.direct?.started || session.payment?.started) return false
+  const known = session.plan.targets.some(target => session.candidates[target.chainId]?.length)
+  return now - (session.listing.requestedAt ?? now) >= SPONSOR_WINDOW_MS || (!!session.error && !known)
+}
+
+/** A launch's saved attempt, for the SDK's recovery: which submission it is and what the journal saved of it. */
+export type SavedLaunch = { kind: 'direct' | 'payment' | 'sponsor'; attempt: SavedAttempt<true> }
+type LaunchCall = { chainId: number; call: { to: `0x${string}`; data: Hex; value: bigint }; namespace: string }
+
+/**
+ * The saved attempt of a launch, from what its journal saved and nothing fresh: the started direct or payment
+ * submission, or a sponsor request discovery could not find in its window. Older multi-pool records are read-only
+ * recovery and have none. Recovery decides; the journal only says what was saved.
+ */
+export function launchAttempt(session: StickyLaunchSession, deps: {
+  /** Where the submission is held: its chain, call and intent. */
+  key: (session: StickyLaunchSession, kind: 'direct' | 'payment') => LaunchCall
+  /** The journal now, read fresh. */
+  load: () => StickyLaunchSession | null
+  /** Whether the connected wallet is a Safe, for a submission saved before its proposal hash. */
+  safe: () => boolean
+  /** The domain check of one transaction: this launch's deployment, or its funding. */
+  verify: (kind: 'direct' | 'payment', hash: Hex) => Promise<boolean>
+}): SavedLaunch | null {
+  const { plan } = session
+  if (plan.targets.length !== 1) return null
+  const proven = () => launchEstablished(session) || launchComplete(session)
+  // Rule E's journal re-read: a success the journal saved is never retired by a check or an exit.
+  const confirmRetirable = async () => {
+    const latest = deps.load()
+    return !latest || !(launchEstablished(latest) || launchComplete(latest) || latest.direct?.settled === 'success' || latest.payment?.settled === 'success')
+  }
+  const kind = session.payment?.started ? 'payment' : session.direct?.started ? 'direct' : null
+  if (kind) {
+    const submitted = session[kind]!
+    const { chainId, call, namespace } = deps.key(session, kind)
+    const history = (kind === 'direct' ? session.directAttempts : session.paymentAttempts) ?? []
+    const before = history.flatMap(attempt => [attempt.hash, attempt.proposalHash]).filter((hash): hash is Hex => !!hash)
+    const hash = submitted.hash && submitted.hash !== submitted.proposalHash ? submitted.hash : undefined
+    return { kind, attempt: {
+      chainId, account: plan.owner, safe: !!submitted.proposalHash || deps.safe(), namespaces: [namespace], call,
+      saved: { started: true, ...(submitted.proposalHash ? { safeTxHash: submitted.proposalHash } : {}), ...(hash ? { hash } : {}), ...(before.length ? { before } : {}) },
+      confirmRetirable,
+      authenticate: async found => ((found ? await deps.verify(kind, found) : proven()) ? { result: 'proven', value: true } : { result: 'unknown' }),
+    } }
+  }
+  if (!sponsorUnresolved(session)) return null
+  // A sponsor request sends nothing from this wallet: its hold is never reserved, so only discovery can prove it.
+  return { kind: 'sponsor', attempt: {
+    chainId: plan.targets[0].chainId, account: plan.owner,
+    namespaces: [writeIntentKey('sticky-sponsor', { plan: plan.id, requestedAt: session.listing.requestedAt ?? 0 })],
+    saved: { started: true, ...(session.listing.requestedAt ? { submittedAt: session.listing.requestedAt } : {}) },
+    confirmRetirable,
+    authenticate: async () => (proven() ? { result: 'proven', value: true } : { result: 'unknown' }),
+  } }
+}
+
 export type SubmissionCallbacks = {
   beforeWrite: () => Promise<void>
   rejected: () => void
   submitted: (hash: Hex, proposalHash?: Hex) => void
 }
 
-/** What the SDK says of a launch write that may have reached the wallet. */
-export type LaunchHoldView = { line: string; warning?: string; label: string; exit: boolean; checked?: boolean; checkRequired?: boolean }
-/** The hold's authenticated result: a recovery outcome of its own, never an absence of a hold. */
-export type LaunchSettlement = { settled: { hash: Hex; result: 'success' | 'failed' } }
+/** The hold's authenticated result for a launch submission. */
+export type LaunchSettlement = { hash: Hex; result: 'success' | 'failed' }
 
 export type StickyLaunchPorts = {
   store: ReturnType<typeof createStickyLaunchStore>
@@ -143,15 +207,12 @@ export type StickyLaunchPorts = {
   sendPayment: (session: StickyLaunchSession, callbacks: SubmissionCallbacks) => Promise<void>
   verifyPayment: (session: StickyLaunchSession) => Promise<boolean>
   requireRetry: (session: StickyLaunchSession, kind: 'direct' | 'payment', purpose: 'retry' | 'retire') => Promise<void>
-  /** The SDK hold of the submission a launch started: its line and exit, and the exit itself (true once released). */
-  hold: {
-    look: (session: StickyLaunchSession, kind: 'direct' | 'payment') => Promise<LaunchHoldView | LaunchSettlement | null>
-    exit: (session: StickyLaunchSession, kind: 'direct' | 'payment') => Promise<{ released: boolean } & Partial<LaunchSettlement>>
-  }
   verifyDeployment: (session: StickyLaunchSession, target: LaunchTarget, hash: Hex) => Promise<LaunchResult | null>
   publishListing: (plan: LaunchPlan) => Promise<string>
   sponsor: (session: StickyLaunchSession, beforeRequest: () => void) => Promise<void>
   record: (session: StickyLaunchSession, chainId: number, result: LaunchResult) => Promise<boolean>
+  /** Whether the SDK lets the saved attempt of this launch be discarded (its followed success retired first). */
+  canDiscard: (session: StickyLaunchSession) => Promise<boolean>
   changed?: (session: StickyLaunchSession | null) => void
 }
 
@@ -235,21 +296,6 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     }
     return current
   }
-  /** A sponsored deployment was requested and discovery cannot say what happened: no transaction is known, so only the user's check remains. */
-const established = (session: StickyLaunchSession) => Object.keys(session.proven ?? {}).length > 0
-const sponsorUnknown = (session: StickyLaunchSession) => {
-  if (!session.listing.requested || session.listing.selfPaid || launchComplete(session) || established(session) || session.direct?.started || session.payment?.started) return false
-  // A candidate hash is not an authenticated execution (that would be a verified result, which completes the launch):
-  // within the window it keeps waiting, past it the check is offered like for an empty discovery.
-  const known = session.plan.targets.some(target => session.candidates[target.chainId]?.length)
-  const elapsed = Date.now() - (session.listing.requestedAt ?? Date.now()) >= SPONSOR_WINDOW_MS
-  return elapsed || (!!session.error && !known)
-}
-/** The SDK's allowed window: a request that discovery still cannot find after this long earns the explicit check. */
-const UNREADABLE = UNREADABLE_ERROR
-const SPONSOR_WINDOW_MS = 30 * 60_000
-const SPONSOR_CHECK_VIEW: LaunchHoldView = { line: CHECK_REQUIRED_LINE, warning: CHECK_REQUIRED_WARNING, label: CHECK_REQUIRED_CREATE_LABEL, exit: true, checkRequired: true }
-
 /** The hold's authenticated hash is the submission's hash from here: the journal's own checks run on that transaction. */
   function saveSettlement(session: StickyLaunchSession, kind: 'direct' | 'payment', { hash, result }: { hash: Hex; result: 'success' | 'failed' }) {
     const chainId = session.plan.targets[0].chainId
@@ -366,54 +412,26 @@ const SPONSOR_CHECK_VIEW: LaunchHoldView = { line: CHECK_REQUIRED_LINE, warning:
         ? save({ ...session, directAttempts: [...(session.directAttempts ?? []), submitted], direct: undefined })
         : save({ ...session, paymentAttempts: [...(session.paymentAttempts ?? []), session.payment!], payment: undefined })
     }),
-    /** The SDK's line and exit for the submission this launch started, if any. A settlement it reached is saved into the journal. */
-    hold: async (lock: <T>(run: () => Promise<T>) => Promise<T> = run => run()) => {
+    /** A settlement the SDK followed for the submission this launch started: its hash and result join the journal. */
+    record: (kind: 'direct' | 'payment', settled: LaunchSettlement) => exclusively(async () => {
       const session = load()
-      const kind = session.payment?.started ? 'payment' : session.direct?.started ? 'direct' : null
-      if (!kind) return sponsorUnknown(session) ? SPONSOR_CHECK_VIEW : null
-      // A success the hold authenticated is followed, never retired as unknown, however recovery fares afterwards.
-      if (session[kind]?.settled === 'success') return null
-      // A hold that cannot be read is check-required: never a missing view, never permission to send.
-      const seen = await ports.hold.look(session, kind).catch((): LaunchHoldView => ({ line: CHECK_REQUIRED_LINE, warning: CHECK_REQUIRED_WARNING, label: CHECK_REQUIRED_CREATE_LABEL, exit: true, checkRequired: true }))
-      if (seen && 'settled' in seen) {
-        await lock(() => exclusively(async () => saveSettlement(load(), kind, seen.settled)))
-        return null
-      }
-      return seen
-    },
-    /** The user checked their wallet: when the SDK releases the call, the exit is recorded on the attempt, so no later step asks for its failure proof. */
-    exitHold: () => exclusively(async () => {
-      const session = load()
-      requireSingleHomeChain(session.plan.targets)
-      const kind = session.payment?.started ? 'payment' : 'direct'
-      const submitted = session[kind]
-      if (!submitted?.started) {
-        // An uncertain sponsor request: the user's check retires it, so the flow reopens (a deliberate new request or self-payment).
-        return sponsorUnknown(session) ? save({ ...session, listing: { ...session.listing, requested: false, requestExited: true } }) : session
-      }
-      if (submitted.settled === 'success') return session
-      // An unreadable hold could hold a success: nothing is retired, and the exit stays for another try.
-      const outcome = await ports.hold.exit(session, kind).catch(() => { throw new Error(UNREADABLE) })
-      if (outcome.settled) return saveSettlement(session, kind, outcome.settled)
-      if (!outcome.released) return session
-      // Re-read right before retiring: a success saved meanwhile is never retired.
-      const latest = load()
-      if (latest[kind]?.settled === 'success') return latest
-      const exited = { ...submitted, exited: true }
-      return kind === 'direct'
-        ? save({ ...session, directAttempts: submitted.hash ? [...(session.directAttempts ?? []), exited] : session.directAttempts, direct: undefined })
-        : save({ ...session, paymentAttempts: submitted.hash ? [...(session.paymentAttempts ?? []), { ...session.payment!, exited: true }] : session.paymentAttempts, payment: undefined })
+      return session[kind]?.started ? saveSettlement(session, kind, settled) : session
     }),
-    /** After a strict read failed inside the user's own exit: they checked their wallet, so the unreadable submission is discarded (recorded as an exit). A saved success is never discarded. */
-    forceExit: () => exclusively(async () => {
+    /**
+     * The SDK retired the saved attempt on the user's exit or check: the journal records it as exited, so no later step
+     * asks for its failure proof, and the flow reopens. A sponsor request reopens for a deliberate new request. A success
+     * saved meanwhile is never retired.
+     */
+    exited: (kind: 'direct' | 'payment' | 'sponsor') => exclusively(async () => {
       const session = load()
-      requireSingleHomeChain(session.plan.targets)
-      const kind = session.payment?.started ? 'payment' : 'direct'
+      if (launchEstablished(session) || session.direct?.settled === 'success' || session.payment?.settled === 'success') return session
+      if (kind === 'sponsor') {
+        return session.listing.requested && !session.listing.selfPaid ? save({ ...session, listing: { ...session.listing, requested: false, requestExited: true } }) : session
+      }
       const submitted = session[kind]
-      if (!submitted?.started || submitted.settled === 'success' || established(session)) return session
-      const exited = { ...submitted, exited: true }
+      if (!submitted?.started) return session
       return kind === 'direct'
-        ? save({ ...session, directAttempts: submitted.hash ? [...(session.directAttempts ?? []), exited] : session.directAttempts, direct: undefined })
+        ? save({ ...session, directAttempts: submitted.hash ? [...(session.directAttempts ?? []), { ...submitted, exited: true }] : session.directAttempts, direct: undefined })
         : save({ ...session, paymentAttempts: submitted.hash ? [...(session.paymentAttempts ?? []), { ...session.payment!, exited: true }] : session.paymentAttempts, payment: undefined })
     }),
     selfPay: () => exclusively(async () => {
@@ -435,6 +453,8 @@ const SPONSOR_CHECK_VIEW: LaunchHoldView = { line: CHECK_REQUIRED_LINE, warning:
     clear: () => exclusively(async () => {
       const session = await refreshSession(load())
       if (!launchCanClear(session)) throw new Error('This launch has published or submitted calls. Recover it before starting another.')
+      // The SDK decides whether its saved attempt may go: never while held, or with a success not yet followed.
+      if (!(await ports.canDiscard(session))) throw new Error('This launch is still being confirmed. Check again before finishing.')
       // A later success does not let a stale failed-attempt proof be forgotten.
       const history = { ...session, direct: undefined, payment: undefined }
       if (session.directAttempts?.length) await ports.requireRetry(history, 'direct', 'retire')

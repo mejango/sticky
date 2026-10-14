@@ -129,7 +129,6 @@ async function until(check: () => unknown, what: string) {
   }
   throw new Error(`timed out waiting for ${what}`)
 }
-const dialog = () => document.querySelector('dialog')
 const confirmButton = () => [...document.querySelectorAll<HTMLButtonElement>('dialog footer button.btn-primary')].at(-1) ?? null
 const button = (label: string) => [...host.querySelectorAll('button')].find(item => item.textContent === label && !item.closest('dialog'))!
 const title = () => [...document.querySelectorAll('dialog h2')].map(item => item.textContent).at(-1)

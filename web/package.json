@@ -26,7 +26,6 @@
   "dependencies": {
     "@bananapus/nana-sdk-connect": "^0.5.6",
     "@bananapus/nana-sdk-core": "2.39.0",
-    "@bananapus/nana-sdk-react": "53.0.0",
     "@coinbase/wallet-sdk": "4.3.7",
     "@safe-global/safe-apps-provider": "0.18.6",
     "@safe-global/safe-apps-sdk": "9.1.0",
@@ -65,9 +64,6 @@
     "vitest": "^4.1.9"
   },
   "overrides": {
-    "@bananapus/nana-sdk-react": {
-      "wagmi": "$wagmi"
-    },
     "@walletconnect/jsonrpc-ws-connection": {
       "ws": "7.5.13"
     },

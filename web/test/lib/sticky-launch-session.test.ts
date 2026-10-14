@@ -3,7 +3,7 @@ import type { RelayrQuote } from '@bananapus/nana-sdk-core/review/relayr'
 import { encodeFunctionData, type Address, type Hex } from 'viem'
 import { describe, expect, it, vi } from 'vitest'
 import type { LaunchPlan } from '@/lib/sticky-launch-plan'
-import { STICKY_LAUNCH_KEY, createStickyLaunchController, createStickyLaunchStore, launchCanClear, launchComplete, validateStickyLaunch,
+import { STICKY_LAUNCH_KEY, createStickyLaunchController, createStickyLaunchStore, launchCanClear, launchComplete, sponsorUnresolved, validateStickyLaunch,
   type StickyLaunchPorts } from '@/lib/sticky-launch-session'
 import { memoryStorage } from '../memory-storage'
 
@@ -34,7 +34,7 @@ function fixture(chainIds = [84532], capability: 'sponsored' | 'self-paid' | 'un
     sendPayment: vi.fn(async (_session, callbacks) => { await callbacks.beforeWrite(); callbacks.submitted(H2) }),
     verifyPayment: vi.fn(async () => true), verifyDeployment: vi.fn(async () => null),
     requireRetry: vi.fn(async () => {}),
-    hold: { look: vi.fn(async () => ({ line: 'Held.', label: 'I checked my wallet, allow another send', exit: true }) as Awaited<ReturnType<StickyLaunchPorts['hold']['look']>>), exit: vi.fn(async () => ({ released: true }) as Awaited<ReturnType<StickyLaunchPorts['hold']['exit']>>) },
+    canDiscard: vi.fn(async () => true),
     publishListing: vi.fn(async () => 'listing-identity'), sponsor: vi.fn(async (_session, beforeRequest) => { await beforeRequest() }),
     record: vi.fn(async () => true), changed: vi.fn(),
   }
@@ -298,100 +298,60 @@ describe('durable Sticky launch controller', () => {
     await expect(f.controller.run()).rejects.toThrow('Unknown submission')
     await f.controller.addHash(84532, H1)
     await expect(f.controller.retry()).rejects.toThrow('no recorded transaction hash')
-    expect(f.ports.hold.exit).not.toHaveBeenCalled()
     expect(f.ports.requireRetry).not.toHaveBeenCalled()
     expect(f.store.load()?.direct).toEqual({ started: true })
     expect(f.store.load()?.directAttempts).toBeUndefined()
   })
 
-  it('shows the SDK hold of a started submission, and nothing before one', async () => {
+  it('saves a settlement the SDK followed into the journal, so the launch is never sent again', async () => {
     const f = fixture()
-    await expect(f.controller.hold()).resolves.toBeNull()
-    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); throw new Error('Unknown submission') })
-    await expect(f.controller.run()).rejects.toThrow('Unknown submission')
-    await expect(f.controller.hold()).resolves.toMatchObject({ exit: true })
-    expect(f.ports.hold.look).toHaveBeenCalledWith(expect.objectContaining({ direct: { started: true } }), 'direct')
+    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); throw new Error('reload before the hash was saved') })
+    await expect(f.controller.run()).rejects.toThrow()
+    // Another writer changes the journal first: the settlement is saved over that, never over a stale copy.
+    f.store.save({ ...f.store.load()!, error: 'newer snapshot' })
+    await f.controller.record('direct', { hash: H1, result: 'success' })
+    expect(f.store.load()).toMatchObject({ error: 'newer snapshot', direct: { started: true, hash: H1, settled: 'success' }, candidates: { 84532: [H1] } })
+    await f.controller.run()
+    expect(f.ports.sendDirect).toHaveBeenCalledOnce()
   })
 
-  it('lets the SDK exit release a hashless submission, and sends again afterwards; a refused exit changes nothing', async () => {
+  it('records the SDK retiring a hashless submission as its exit, and sends again afterwards', async () => {
     const f = fixture()
     vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); throw new Error('Unknown submission') })
     await expect(f.controller.run()).rejects.toThrow('Unknown submission')
-    vi.mocked(f.ports.hold.exit).mockResolvedValueOnce({ released: false })
-    await f.controller.exitHold()
-    expect(f.store.load()?.direct).toEqual({ started: true })
-    await f.controller.exitHold()
+    await f.controller.exited('direct')
     expect(f.store.load()?.direct).toBeUndefined()
     expect(f.store.load()?.directAttempts).toBeUndefined()
     await f.controller.run()
     expect(f.ports.sendDirect).toHaveBeenCalledTimes(2)
   })
 
-  it('keeps a hashed submission as an attempt when the SDK exit releases it, so its proof is still required', async () => {
+  it('keeps a retired hashed submission as an exited attempt, so no later step asks for its failure proof', async () => {
     const f = fixture()
     await f.controller.run()
-    await f.controller.exitHold()
+    await f.controller.exited('direct')
     expect(f.store.load()?.direct).toBeUndefined()
     expect(f.store.load()?.directAttempts).toEqual([{ started: true, hash: H1, exited: true }])
   })
 
-  it('saves a settlement the hold reached while the page was closed into the journal, and offers no send for it', async () => {
+  it('never records an exit over a success the journal saved', async () => {
     const f = fixture()
-    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); throw new Error('reload before the hash was saved') })
-    await expect(f.controller.run()).rejects.toThrow()
-    vi.mocked(f.ports.hold.look).mockResolvedValueOnce({ settled: { hash: H1, result: 'success' } })
-    await expect(f.controller.hold()).resolves.toBeNull()
-    expect(f.store.load()).toMatchObject({ direct: { started: true, hash: H1 }, candidates: { 84532: [H1] } })
     await f.controller.run()
-    expect(f.ports.sendDirect).toHaveBeenCalledOnce()
-  })
-
-  it('saves a settlement that lands during the exit instead of releasing', async () => {
-    const f = fixture()
-    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); throw new Error('lost') })
-    await expect(f.controller.run()).rejects.toThrow()
-    vi.mocked(f.ports.hold.exit).mockResolvedValueOnce({ released: false, settled: { hash: H2, result: 'success' } })
-    await f.controller.exitHold()
-    expect(f.store.load()).toMatchObject({ direct: { started: true, hash: H2 }, candidates: { 84532: [H2] } })
+    f.store.save({ ...f.store.load()!, direct: { started: true, hash: H1, settled: 'success' } })
+    await f.controller.exited('direct')
+    expect(f.store.load()?.direct).toMatchObject({ settled: 'success' })
     expect(f.store.load()?.directAttempts).toBeUndefined()
   })
 
-  it('shows a check-required view when the hold cannot be read, and the explicit action retires the submission', async () => {
+  it('asks the SDK before discarding: a launch it still holds is kept', async () => {
     const f = fixture()
+    vi.mocked(f.ports.verifyDeployment).mockResolvedValue({ hash: H1, token: address('8'), projectId: '10' })
     await f.controller.run()
-    vi.mocked(f.ports.hold.look).mockRejectedValue(new Error('rpc down'))
-    await expect(f.controller.hold()).resolves.toMatchObject({ exit: true, checkRequired: true })
-    vi.mocked(f.ports.hold.exit).mockRejectedValueOnce(new Error('rpc down'))
-    // An unreadable hold could hold a success: nothing is retired, and the exit stays for another try.
-    await expect(f.controller.exitHold()).rejects.toThrow("Couldn't check this transaction. Try again.")
-    expect(f.store.load()?.direct).toEqual({ started: true, hash: H1 })
-    await f.controller.exitHold()
-    expect(f.store.load()?.direct).toBeUndefined()
-    expect(f.store.load()?.directAttempts).toEqual([{ started: true, hash: H1, exited: true }])
-  })
-
-  it('never sends while a started submission has no readable hold', async () => {
-    const f = fixture()
-    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); throw new Error('lost') })
-    await expect(f.controller.run()).rejects.toThrow()
-    vi.mocked(f.ports.hold.look).mockRejectedValue(new Error('rpc down'))
-    await f.controller.run()
-    expect(f.ports.sendDirect).toHaveBeenCalledOnce()
-  })
-
-  it('keeps following a settled success: later recovery failures never retire it', async () => {
-    const f = fixture()
-    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); throw new Error('lost') })
-    await expect(f.controller.run()).rejects.toThrow()
-    vi.mocked(f.ports.hold.look).mockResolvedValueOnce({ settled: { hash: H1, result: 'success' } })
-    await f.controller.hold()
-    expect(f.store.load()?.direct).toEqual({ started: true, hash: H1, settled: 'success' })
-    vi.mocked(f.ports.hold.look).mockRejectedValue(new Error('rpc down'))
-    vi.mocked(f.ports.hold.exit).mockRejectedValue(new Error('rpc down'))
-    await expect(f.controller.hold()).resolves.toBeNull()
-    await f.controller.exitHold()
-    expect(f.store.load()?.direct).toEqual({ started: true, hash: H1, settled: 'success' })
-    expect(f.store.load()?.directAttempts).toBeUndefined()
+    vi.mocked(f.ports.canDiscard).mockResolvedValueOnce(false)
+    await expect(f.controller.clear()).rejects.toThrow('still being confirmed')
+    expect(f.store.load()).not.toBeNull()
+    await f.controller.clear()
+    expect(f.store.load()).toBeNull()
   })
 
   describe('an uncertain sponsor request', () => {
@@ -404,16 +364,16 @@ describe('durable Sticky launch controller', () => {
       return f
     }
 
-    it('reaches the persisted check when discovery cannot tell, and the check reopens the flow', async () => {
+    it('is unresolved when discovery cannot tell, and the recorded exit reopens the flow', async () => {
       const f = await uncertain()
       expect(f.store.load()?.listing.requested).toBe(true)
-      await expect(f.controller.hold()).resolves.toMatchObject({ exit: true, checkRequired: true })
-      await f.controller.exitHold()
+      expect(sponsorUnresolved(f.store.load()!)).toBe(true)
+      await f.controller.exited('sponsor')
       expect(f.store.load()?.listing).toMatchObject({ requested: false, requestExited: true })
-      await expect(f.controller.hold()).resolves.toBeNull()
+      expect(sponsorUnresolved(f.store.load()!)).toBe(false)
     })
 
-    it('offers the check once discovery has been empty for 30 minutes since the request, and not before', async () => {
+    it('is unresolved once discovery has been empty for 30 minutes since the request, and not before', async () => {
       vi.useFakeTimers()
       try {
         vi.setSystemTime(new Date('2026-10-14T10:00:00Z'))
@@ -422,15 +382,13 @@ describe('durable Sticky launch controller', () => {
         await expect(f.controller.run()).rejects.toThrow('timeout')
         await f.controller.refresh()
         expect(f.store.load()?.listing.requestedAt).toBe(Date.now())
-        await expect(f.controller.hold()).resolves.toBeNull()
+        expect(sponsorUnresolved(f.store.load()!)).toBe(false)
         vi.setSystemTime(Date.now() + 29 * 60_000)
         await f.controller.refresh()
-        await expect(f.controller.hold()).resolves.toBeNull()
+        expect(sponsorUnresolved(f.store.load()!)).toBe(false)
         vi.setSystemTime(Date.now() + 2 * 60_000)
         await f.controller.refresh()
-        await expect(f.controller.hold()).resolves.toMatchObject({ exit: true, checkRequired: true })
-        await f.controller.exitHold()
-        expect(f.store.load()?.listing.requested).toBe(false)
+        expect(sponsorUnresolved(f.store.load()!)).toBe(true)
       } finally { vi.useRealTimers() }
     })
 
@@ -442,7 +400,7 @@ describe('durable Sticky launch controller', () => {
       expect(f.store.load()?.listing.requestedAt).toBeTypeOf('number')
     })
 
-    it('offers the check past the window even with a candidate that cannot be authenticated, and not before', async () => {
+    it('is unresolved past the window even with a candidate that cannot be authenticated, and not before', async () => {
       vi.useFakeTimers()
       try {
         vi.setSystemTime(new Date('2026-10-14T10:00:00Z'))
@@ -452,16 +410,14 @@ describe('durable Sticky launch controller', () => {
         vi.mocked(f.ports.verifyDeployment).mockRejectedValue(new Error('cannot authenticate'))
         await expect(f.controller.run()).rejects.toThrow('timeout')
         await f.controller.refresh()
-        await expect(f.controller.hold()).resolves.toBeNull()
+        expect(sponsorUnresolved(f.store.load()!)).toBe(false)
         vi.setSystemTime(Date.now() + 31 * 60_000)
         await f.controller.refresh()
-        await expect(f.controller.hold()).resolves.toMatchObject({ checkRequired: true })
-        await f.controller.exitHold()
-        expect(f.store.load()?.listing.requested).toBe(false)
+        expect(sponsorUnresolved(f.store.load()!)).toBe(true)
       } finally { vi.useRealTimers() }
     })
 
-    it('keeps an authenticated sponsored success: later failed verification never reaches the check or retires the request', async () => {
+    it('keeps an authenticated sponsored success: a later failed verification never makes it unresolved or retires it', async () => {
       vi.useFakeTimers()
       try {
         vi.setSystemTime(new Date('2026-10-14T10:00:00Z'))
@@ -476,34 +432,19 @@ describe('durable Sticky launch controller', () => {
         vi.setSystemTime(Date.now() + 31 * 60_000)
         const after = await f.controller.refresh()
         expect(after.results).toEqual({})
-        await expect(f.controller.hold()).resolves.toBeNull()
-        await f.controller.exitHold()
+        expect(sponsorUnresolved(f.store.load()!)).toBe(false)
+        await f.controller.exited('sponsor')
         expect(f.store.load()?.listing.requested).toBe(true)
         await expect(f.controller.selfPay()).rejects.toThrow()
       } finally { vi.useRealTimers() }
     })
 
-    it('offers no check while an execution was found or discovery works', async () => {
+    it('is not unresolved while an execution was found and discovery works', async () => {
       const f = await uncertain()
       vi.mocked(f.ports.status).mockResolvedValue({ 84532: [H1] })
       await f.controller.refresh()
-      await expect(f.controller.hold()).resolves.toBeNull()
-      await f.controller.exitHold()
-      expect(f.store.load()?.listing.requested).toBe(true)
+      expect(sponsorUnresolved(f.store.load()!)).toBe(false)
     })
-  })
-
-  it('discards an unreadable submission only on the forced action, recording the exit, and never a saved success', async () => {
-    const f = fixture()
-    await f.controller.run()
-    await f.controller.forceExit()
-    expect(f.store.load()?.direct).toBeUndefined()
-    expect(f.store.load()?.directAttempts).toEqual([{ started: true, hash: H1, exited: true }])
-    const g = fixture()
-    await g.controller.run()
-    g.store.save({ ...g.store.load()!, direct: { started: true, hash: H1, settled: 'success' } })
-    await g.controller.forceExit()
-    expect(g.store.load()?.direct).toMatchObject({ settled: 'success' })
   })
 
   it('migrates authenticated results of an older journal into proven before a refresh clears them', async () => {
@@ -519,27 +460,8 @@ describe('durable Sticky launch controller', () => {
       expect(f.store.load()?.proven).toEqual({ 84532: result })
       vi.setSystemTime(Date.now() + 31 * 60_000)
       await f.controller.refresh()
-      await expect(f.controller.hold()).resolves.toBeNull()
-      await f.controller.exitHold()
-      expect(f.store.load()?.listing.requested).toBe(true)
+      expect(sponsorUnresolved(f.store.load()!)).toBe(false)
     } finally { vi.useRealTimers() }
-  })
-
-  it('saves a hold settlement under the shared lock, reloading the journal inside it', async () => {
-    const f = fixture()
-    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); throw new Error('lost') })
-    await expect(f.controller.run()).rejects.toThrow()
-    vi.mocked(f.ports.hold.look).mockResolvedValueOnce({ settled: { hash: H1, result: 'success' } })
-    const locked = vi.fn()
-    const lock = async <T,>(run: () => Promise<T>): Promise<T> => {
-      locked()
-      // Another writer changes the journal while the lock is awaited: the settlement is saved over that, not over a stale copy.
-      f.store.save({ ...f.store.load()!, error: 'newer snapshot' })
-      return run()
-    }
-    await f.controller.hold(lock)
-    expect(locked).toHaveBeenCalledOnce()
-    expect(f.store.load()).toMatchObject({ error: 'newer snapshot', direct: { hash: H1, settled: 'success' } })
   })
 
   it('keeps the original hash locked when finalized failure proof is unavailable or reorged', async () => {
