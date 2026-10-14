@@ -2,22 +2,29 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LaunchPlan } from '@/lib/sticky-launch-plan'
-import { STICKY_LAUNCH_KEY, type StickyLaunchSession } from '@/lib/sticky-launch-session'
+import { STICKY_LAUNCH_KEY, launchAttempt, type StickyLaunchSession } from '@/lib/sticky-launch-session'
+import { checkedItLabel, HELD_EXIT_LABEL, SAVED_ATTEMPT_CHECK_LINE, SAVED_ATTEMPT_CONTINUE_ANYWAY_LABEL, SAVED_ATTEMPT_UNREADABLE_LINE, writeIntentKey } from '@bananapus/nana-sdk-core/review'
+import type { Hex } from 'viem'
+import { holds } from '@/lib/write-holds'
 import { openStickyLaunch } from '@/lib/sticky-launch-events'
 
 type FormProps = { environment: string; prepare: (plan: LaunchPlan, capability: 'sponsored' | 'self-paid' | 'unavailable') => Promise<void> }
 const mocks = vi.hoisted(() => ({
   queryClient: {}, refreshHome: vi.fn(), make: vi.fn(), load: vi.fn(), prepare: vi.fn(), run: vi.fn(), refresh: vi.fn(),
-  selfPay: vi.fn(), list: vi.fn(), clear: vi.fn(), addHash: vi.fn(), retry: vi.fn(), hold: vi.fn(), exitHold: vi.fn(), forceExit: vi.fn(),
+  selfPay: vi.fn(), list: vi.fn(), clear: vi.fn(), addHash: vi.fn(), retry: vi.fn(), attempt: vi.fn(), record: vi.fn(), exited: vi.fn(),
   changed: null as null | ((session: StickyLaunchSession | null) => void),
   plan: null as LaunchPlan | null, capability: 'self-paid' as 'sponsored' | 'self-paid' | 'unavailable',
 }))
 vi.mock('@tanstack/react-query', () => ({ useQueryClient: () => mocks.queryClient }))
 vi.mock('@/hooks/useStickyHome', () => ({ refreshStickyHome: mocks.refreshHome }))
 vi.mock('@/lib/sticky-launch-adapter', () => ({ createBrowserStickyLaunchController: mocks.make }))
-vi.mock('next/dynamic', () => ({ default: () => function FakeCreateForm(props: FormProps) {
-  return <div data-create-form={props.environment}><button type="button" onClick={() => void props.prepare(mocks.plan!, mocks.capability)}>Prepare fixture</button></div>
-} }))
+vi.mock('next/dynamic', async () => {
+  // The SDK's recovery is the real one; the create form is a fixture.
+  const { LaunchRecovery } = await import('@/components/create/LaunchRecovery')
+  return { default: (loader: () => unknown) => String(loader).includes('LaunchRecovery') ? LaunchRecovery : function FakeCreateForm(props: FormProps) {
+    return <div data-create-form={props.environment}><button type="button" onClick={() => void props.prepare(mocks.plan!, mocks.capability)}>Prepare fixture</button></div>
+  } }
+})
 vi.mock('next/link', () => ({ default: ({ children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => <a {...props}>{children}</a> }))
 
 import { StickyLaunchHost } from '@/components/create/StickyLaunchHost'
@@ -25,7 +32,7 @@ import { StickyLaunchHost } from '@/components/create/StickyLaunchHost'
 const ADDRESS = `0x${'1'.repeat(40)}` as const
 const HASH = `0x${'a'.repeat(64)}` as const
 const controller = { load: mocks.load, prepare: mocks.prepare, run: mocks.run, refresh: mocks.refresh,
-  selfPay: mocks.selfPay, list: mocks.list, clear: mocks.clear, addHash: mocks.addHash, retry: mocks.retry, hold: mocks.hold, exitHold: mocks.exitHold, forceExit: mocks.forceExit }
+  selfPay: mocks.selfPay, list: mocks.list, clear: mocks.clear, addHash: mocks.addHash, retry: mocks.retry, attempt: mocks.attempt, record: mocks.record, exited: mocks.exited }
 function saved(overrides: Partial<StickyLaunchSession> = {}): StickyLaunchSession {
   return { version: 1, plan: mocks.plan!, mode: 'direct', published: false, candidates: { 84532: [] }, results: {},
     listing: { state: 'pending', recorded: {} }, ...overrides }
@@ -45,8 +52,8 @@ beforeEach(() => {
   mocks.prepare.mockImplementation(async (_plan: LaunchPlan, capability: 'sponsored' | 'self-paid' | 'unavailable') => {
     mocks.changed?.(saved({ mode: capability === 'sponsored' ? 'center' : 'direct' }))
   })
-  for (const fn of [mocks.run, mocks.refresh, mocks.selfPay, mocks.list, mocks.clear, mocks.addHash, mocks.retry, mocks.exitHold, mocks.forceExit]) fn.mockResolvedValue(undefined)
-  mocks.hold.mockResolvedValue(null)
+  for (const fn of [mocks.run, mocks.refresh, mocks.selfPay, mocks.list, mocks.clear, mocks.addHash, mocks.retry, mocks.record, mocks.exited]) fn.mockResolvedValue(undefined)
+  mocks.attempt.mockReturnValue(null)
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
@@ -105,67 +112,90 @@ describe('global Sticky launch host', () => {
     await click('Continue launch')
     expect(mocks.run).toHaveBeenCalledOnce()
   })
-  it('shows the SDK hold of a hashless submission with its warned exit, and sends only after the exit releases it', async () => {
-    const pending = saved({ direct: { started: true } })
-    localStorage.setItem(STICKY_LAUNCH_KEY, JSON.stringify(pending))
-    mocks.load.mockReturnValue(pending)
-    mocks.hold.mockResolvedValue({ line: 'This launch may already be in your wallet.', warning: 'Sending again can create it twice.', label: 'I checked my wallet. Send again', exit: true })
-    mocks.exitHold.mockImplementationOnce(async () => { mocks.hold.mockResolvedValue(null); mocks.changed?.(saved()) })
-    await mount()
-    await show()
-    await act(async () => { await vi.dynamicImportSettled() })
-    expect(container.textContent).toContain('This launch may already be in your wallet.')
-    expect(container.textContent).toContain('Sending again can create it twice.')
-    expect(button('Continue launch')).toBeUndefined()
-    await click('I checked my wallet. Send again')
-    expect(mocks.exitHold).toHaveBeenCalledOnce()
-    expect(container.textContent).not.toContain('This launch may already be in your wallet.')
-    expect(button('Continue launch')).toBeDefined()
-    expect(mocks.run).not.toHaveBeenCalled()
-  })
+  describe('the SDK recovery of a saved submission', () => {
+    const CALL = { to: ADDRESS, data: '0x1234' as Hex, value: 0n }
+    // The app's one recovery keeps what this tab proved in memory: each case holds its own launch.
+    let NAMESPACE = ''
+    let cases = 0
+    const BLOCK = `0x${'ed'.repeat(32)}` as Hex
+    const placed = { blockHash: BLOCK, blockNumber: 10n, transactionIndex: 0 }
+    const chain = {
+      mined: false,
+      client: {
+        getChainId: async () => 84532,
+        getBlockNumber: async () => 12n,
+        getTransactionCount: async () => (chain.mined ? 8 : 7),
+        getBlock: async () => ({ hash: BLOCK, number: 10n, timestamp: 1n, transactions: [HASH] }),
+        getTransaction: async () => { if (!chain.mined) throw new Error('not found'); return { hash: HASH, from: ADDRESS, to: CALL.to, input: CALL.data, value: 0n, nonce: 7, ...placed } },
+        getTransactionReceipt: async () => { if (!chain.mined) throw new Error('not found'); return { status: 'success', transactionHash: HASH, from: ADDRESS, to: CALL.to, logs: [], ...placed } },
+      },
+    }
+    const verified = vi.fn(async () => true)
+    beforeEach(() => {
+      cases += 1
+      NAMESPACE = writeIntentKey('test-launch', { plan: 'launch-one', cases })
+      chain.mined = false
+      verified.mockClear()
+      mocks.attempt.mockImplementation((session: StickyLaunchSession) => {
+        const found = launchAttempt(session, { key: () => ({ chainId: 84532, call: CALL, namespace: NAMESPACE }), load: () => session, safe: () => false, verify: verified })
+        return found && { ...found, client: chain.client }
+      })
+    })
+    const hold = () => holds.open({ chainId: 84532, account: ADDRESS, safe: false, namespace: NAMESPACE, call: CALL })
+    async function open(direct: NonNullable<StickyLaunchSession['direct']>) {
+      const pending = saved({ direct })
+      localStorage.setItem(STICKY_LAUNCH_KEY, JSON.stringify(pending))
+      mocks.load.mockReturnValue(pending)
+      await mount()
+      await show()
+      for (let tries = 0; tries < 20; tries += 1) await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)) })
+    }
 
-  it('keeps the exit already shown when a contended read comes back unchecked', async () => {
-    const pending = saved({ direct: { started: true } })
-    localStorage.setItem(STICKY_LAUNCH_KEY, JSON.stringify(pending))
-    mocks.load.mockReturnValue(pending)
-    const view = { line: 'Held.', label: 'I checked my wallet. Send again', exit: true }
-    mocks.hold.mockResolvedValueOnce(view).mockResolvedValue({ line: 'Held.', label: view.label, exit: false, checked: false })
-    await mount()
-    await show()
-    await act(async () => { await vi.dynamicImportSettled() })
-    expect(button(view.label)).toBeDefined()
-    await click('Check again')
-    expect(button(view.label)).toBeDefined()
-  })
+    it('shows the hold of a hashless submission with the SDK\'s exit, and the exit records the attempt as exited', async () => {
+      await hold().send(chain.client as never, async gate => { await gate.beforeSend(); throw new Error('wallet reply lost') }).catch(() => undefined)
+      await open({ started: true })
+      expect(button('Continue launch')).toBeUndefined()
+      expect(button(HELD_EXIT_LABEL)).toBeDefined()
+      await click(HELD_EXIT_LABEL)
+      for (let tries = 0; tries < 20 && !mocks.exited.mock.calls.length; tries += 1) await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)) })
+      expect(mocks.exited).toHaveBeenCalledWith('direct')
+      expect(mocks.run).not.toHaveBeenCalled()
+    })
 
-  it('shows a confirming notice with only Check again for a launch the hold settled as success', async () => {
-    const pending = saved({ direct: { started: true, hash: HASH, settled: 'success' } })
-    localStorage.setItem(STICKY_LAUNCH_KEY, JSON.stringify(pending))
-    mocks.load.mockReturnValue(pending)
-    await mount()
-    await show()
-    expect(container.textContent).toContain('Your launch went through. Its project is still confirming.')
-    expect(button('Check again')).toBeDefined()
-    expect(button('Check failed transaction for retry')).toBeUndefined()
-    expect(button('Continue launch')).toBeUndefined()
-  })
+    it('records a launch the hold settled while the page was closed, and offers no send or check for it', async () => {
+      await hold().send(chain.client as never, async gate => { await gate.beforeSend(); gate.afterSubmit(HASH); return HASH })
+      chain.mined = true
+      await open({ started: true })
+      expect(mocks.record).toHaveBeenCalledWith('direct', { hash: HASH, result: 'success' })
+      expect(verified).toHaveBeenCalledWith('direct', HASH)
+      expect(button(checkedItLabel('Create again'))).toBeUndefined()
+      expect(button('Continue launch')).toBeUndefined()
+    })
 
-  it('offers the warned continue button only after the exit could not read the hold', async () => {
-    const pending = saved({ direct: { started: true } })
-    localStorage.setItem(STICKY_LAUNCH_KEY, JSON.stringify(pending))
-    mocks.load.mockReturnValue(pending)
-    mocks.hold.mockResolvedValue({ line: 'Held.', label: 'I checked my wallet. Send again', exit: true })
-    mocks.exitHold.mockRejectedValueOnce(new Error("Couldn't check this transaction. Try again."))
-    mocks.forceExit.mockImplementationOnce(async () => { mocks.hold.mockResolvedValue(null); mocks.changed?.(saved()) })
-    await mount()
-    await show()
-    await act(async () => { await vi.dynamicImportSettled() })
-    expect(button('I checked my wallet. Continue anyway')).toBeUndefined()
-    await click('I checked my wallet. Send again')
-    expect(container.textContent).toContain("This browser can't read its saved transactions. Check your wallet before sending again.")
-    await click('I checked my wallet. Continue anyway')
-    expect(mocks.forceExit).toHaveBeenCalledOnce()
-    expect(button('I checked my wallet. Continue anyway')).toBeUndefined()
+    it('offers the one explicit check for a started submission nothing holds, and it records the exit', async () => {
+      await open({ started: true })
+      expect(container.textContent).toContain(SAVED_ATTEMPT_CHECK_LINE)
+      await click(checkedItLabel('Create again'))
+      for (let tries = 0; tries < 20 && !mocks.exited.mock.calls.length; tries += 1) await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)) })
+      expect(mocks.exited).toHaveBeenCalledWith('direct')
+    })
+
+    it('offers the warned continue only after the check found storage unreadable', async () => {
+      await open({ started: true })
+      const read = Storage.prototype.getItem
+      vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, key: string) {
+        if (key.startsWith('nana-sdk')) throw new Error('storage unreadable')
+        return read.call(this, key)
+      })
+      expect(button(SAVED_ATTEMPT_CONTINUE_ANYWAY_LABEL)).toBeUndefined()
+      await click(checkedItLabel('Create again'))
+      for (let tries = 0; tries < 400 && !(button(SAVED_ATTEMPT_CONTINUE_ANYWAY_LABEL) && !button(SAVED_ATTEMPT_CONTINUE_ANYWAY_LABEL)!.disabled); tries += 1) await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)) })
+      expect(container.textContent).toContain(SAVED_ATTEMPT_UNREADABLE_LINE)
+      expect(mocks.exited).not.toHaveBeenCalled()
+      await click(SAVED_ATTEMPT_CONTINUE_ANYWAY_LABEL)
+      for (let tries = 0; tries < 20 && !mocks.exited.mock.calls.length; tries += 1) await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)) })
+      expect(mocks.exited).toHaveBeenCalledWith('direct')
+    })
   })
 
   it('keeps a create click made before the lazy dialog host mounts', async () => {

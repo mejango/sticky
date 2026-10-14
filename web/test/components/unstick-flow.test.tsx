@@ -11,7 +11,7 @@ import { act, Profiler, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { encodeAbiParameters, encodeFunctionData, erc20Abi, getAddress, toEventSelector, toHex, UserRejectedRequestError, zeroAddress, type Abi, type Address, type Hex, type TransactionReceipt } from 'viem'
 import { SAFE_EXEC_ABI } from '@bananapus/nana-sdk-core/safe-service'
-import { WRITE_EXIT_LABEL, writeExitMessage, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
+import { HELD_EXIT_LABEL, WRITE_HOLD_REVERTED_LINE, writeExitMessage, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { REVIEWED_ACCOUNT_CHANGED } from '@/lib/contract-write'
 import { feelessAddressesAbi, stickyAutoStickAbi, stickyHookAbi, terminalAbi } from '@/lib/sticky-abis'
@@ -663,7 +663,7 @@ describe('a send that stops halfway', () => {
 
     expect(confirm()!.textContent).toContain(writeHeldMessage())
     expect(confirm()!.textContent).toContain(writeExitMessage({ value: 0n }))
-    expect(nameOf(confirm()!)).toContain(WRITE_EXIT_LABEL)
+    expect(nameOf(confirm()!)).toContain(HELD_EXIT_LABEL)
     expect(nameOf(confirm()!)).not.toContain('Retry')
     expect(steps().map(step => step.state)).toEqual(['complete', 'active', 'pending', 'pending'])
     expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor'])
@@ -679,7 +679,7 @@ describe('a send that stops halfway', () => {
     expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor'])
 
     // The exit is the person's: they checked their wallet, so the step can go out again.
-    await press(WRITE_EXIT_LABEL, confirm()!)
+    await press(HELD_EXIT_LABEL, confirm()!)
     await until(() => nameOf(confirm()!).includes('Remove auto-stick permission'), 'the step offered again')
     expect(confirm()!.textContent).not.toContain(writeHeldMessage())
     await press('Remove auto-stick permission', confirm()!)
@@ -875,7 +875,7 @@ describe('a send that stops halfway', () => {
     await press('Remove auto-stick permission', confirm()!)
     await until(() => nameOf(confirm()!).includes('Retry'), 'the revert')
 
-    expect(confirm()!.textContent).toContain('Transaction reverted onchain (0x')
+    expect(confirm()!.textContent).toContain(WRITE_HOLD_REVERTED_LINE)
     expect(confirm()!.textContent).toContain(
       "Went through: Turn off auto-stick. Did not go through: Stop the auto-stick contract from sticking ART for you. Not sent yet: Remove the auto-stick contract's ART allowance; Unstick.",
     )
@@ -889,9 +889,16 @@ describe('a send that stops halfway', () => {
     expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor', 'setTrustedSenderFor'])
   })
 
-  it('goes on after a Safe has executed a step, and says so while it waits: no transaction to link yet', async () => {
+  it('waits on a Safe proposal without going on, and the SDK follows it with Safe\'s service: no transaction to link yet', async () => {
     mocks.safe.on = true
     world(on)
+    const asked: string[] = []
+    const center = globalThis.fetch
+    vi.stubGlobal('fetch', vi.fn(async (input: string, init?: RequestInit) => {
+      if (!String(input).includes('/multisig-transactions/')) return center(input, init)
+      asked.push(String(input))
+      return new Promise<Response>(() => {})
+    }))
     await review('1')
     await press('Turn off auto-stick', confirm()!)
     await until(() => nameOf(confirm()!).includes('Done'), 'the proposal')
@@ -902,15 +909,8 @@ describe('a send that stops halfway', () => {
     expect(buttonsOf(confirm()!).find(each => each.textContent === 'Done')!.disabled).toBe(false)
     expect(steps().map(step => step.state)).toEqual(['active', 'pending', 'pending', 'pending'])
     expect(called()).toEqual(['setConfigFor'])
-
-    const [proposalHash, request] = Object.entries(mocks.proposals)[0]
-    const executionHash = `0x${'e'.repeat(64)}` as Hex
-    mine(executionHash, request, proposalHash as Hex)
-    await act(async () => mocks.safe.execution!.resolve(executionHash))
-    await until(() => nameOf(confirm()!).includes('Remove auto-stick permission'), 'the execution')
-    expect(confirm()!.textContent).toContain('Went through: Turn off auto-stick. Not sent yet:')
-    expect(confirm()!.textContent).toContain('3 transactions left.')
-    expect(called()).toEqual(['setConfigFor'])
+    const [proposalHash] = Object.keys(mocks.proposals)
+    await until(() => asked.some(url => url.includes(proposalHash)), 'the follower')
   })
 
   it('does not go on while a send is unconfirmed, and never sends its step again', async () => {
@@ -1219,14 +1219,18 @@ describe('after a confirmed send', () => {
     expect(invalidated()).toEqual(UNSTICK)
     readAgain()
 
+    // The SDK's follower also waits 4 s between its looks: only the reads again count.
     const later = timers.mock.calls.filter(([, delay]) => delay === 4_000 || delay === 12_000)
-    expect(later.map(([, delay]) => delay)).toEqual([4_000, 12_000])
-    for (const [callback] of later) {
+    const reads: unknown[] = []
+    for (const [callback, delay] of later) {
       const again = callback as () => void
       await act(async () => again())
+      if (!invalidated().length) continue
       expect(invalidated()).toEqual(UNSTICK)
+      reads.push(delay)
       readAgain()
     }
+    expect(reads).toEqual([4_000, 12_000])
   })
 
   it("reads only the holder's auto-stick again after a step that takes it apart, and everything the unstick changed after the unstick", async () => {

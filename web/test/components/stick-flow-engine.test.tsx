@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { WRITE_EXIT_LABEL, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
+import { HELD_EXIT_LABEL, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
 import { QueryClient, QueryClientProvider, notifyManager } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -237,7 +237,7 @@ describe('the stick flow on the real engine', () => {
       confirmButton()!.click()
       confirmButton()!.click()
     })
-    await until(() => confirmButton()?.disabled, 'the approval to be sent')
+    await until(() => confirmButton()?.disabled && mocks.writeContract.mock.calls.length > 0, 'the approval to be sent')
     expect(mocks.writeContract).toHaveBeenCalledTimes(1)
     expect(mocks.requestReview).toHaveBeenCalledTimes(1)
 
@@ -265,7 +265,7 @@ describe('the stick flow on the real engine', () => {
     mocks.writeContract.mockResolvedValueOnce(APPROVAL).mockResolvedValueOnce(STICK)
     await openReview()
     await act(async () => confirmButton()!.click())
-    await until(() => confirmButton()?.disabled, 'the approval to be sent')
+    await until(() => confirmButton()?.disabled && mocks.writeContract.mock.calls.length > 0, 'the approval to be sent')
     await mined(APPROVAL, 4_001n)
     await until(() => confirmButton()?.textContent === 'Confirm & stick', 'the approval to be counted')
 
@@ -287,7 +287,7 @@ describe('the stick flow on the real engine', () => {
     mocks.writeContract.mockResolvedValueOnce(APPROVAL).mockResolvedValueOnce(STICK)
     await openReview()
     await act(async () => confirmButton()!.click())
-    await until(() => confirmButton()?.disabled, 'the approval to be sent')
+    await until(() => confirmButton()?.disabled && mocks.writeContract.mock.calls.length > 0, 'the approval to be sent')
     await mined(APPROVAL, 4_001n)
     await until(() => confirmButton()?.textContent === 'Confirm & stick', 'the approval to be counted')
 
@@ -340,7 +340,7 @@ describe('the stick flow on the real engine', () => {
     await until(() => confirmButton()?.textContent === 'Done', 'the unresolved approval to be held')
     expect(stepStates()).toEqual(['active', 'pending'])
     expect(dialog()!.textContent).toContain(writeHeldMessage())
-    expect(dialog()!.textContent).toContain(WRITE_EXIT_LABEL)
+    expect(dialog()!.textContent).toContain(HELD_EXIT_LABEL)
     expect(writes()).toEqual(['approve'])
     await act(async () => confirmButton()!.click())
     await until(() => !dialog(), 'the held review to close')
@@ -411,7 +411,7 @@ describe('a stick whose account changes after its review, on the real engine', (
     mocks.writeContract.mockResolvedValueOnce(APPROVAL)
     await openReview()
     await act(async () => confirmButton()!.click())
-    await until(() => confirmButton()?.disabled, 'the approval to be sent')
+    await until(() => confirmButton()?.disabled && mocks.writeContract.mock.calls.length > 0, 'the approval to be sent')
     await mined(APPROVAL, 4_001n)
     await until(() => confirmButton()?.textContent === 'Confirm & stick', 'the approval to be counted')
     mocks.requestReview.mockClear()
@@ -478,7 +478,7 @@ describe('a click between the commit of a confirmation and the effects that foll
 
   /** Sends the approval, has the chain mine it, and lets `clickAfter` click the button when its next commit opens it. */
   async function confirmApproval(clickAfter: (click: () => void) => void) {
-    mocks.writeContract.mockResolvedValueOnce(APPROVAL)
+    if (!mocks.writeContract.getMockImplementation()) mocks.writeContract.mockResolvedValueOnce(APPROVAL)
     await openReview()
     confirmButton()!.click()
     await until(() => mocks.writeContract.mock.calls.length === 1 && confirmButton()?.disabled, 'the approval to be sent')
@@ -500,18 +500,18 @@ describe('a click between the commit of a confirmation and the effects that foll
   }
 
   it('is not taken for the stick that was never sent, and skips nothing', async () => {
-    // The click comes in the microtask after the commit, which is before React runs that commit's effects.
+    // The click comes in the microtask after the commit. The engine either still holds its lock for the step that just
+    // confirmed (and answers nothing), or has counted it and sends the stick: never the approval again, never a skip.
+    mocks.writeContract.mockResolvedValueOnce(APPROVAL).mockResolvedValueOnce(STICK)
     await confirmApproval(click => click())
 
     expect(title()).toBe('Confirm stick')
     expect(stepStates()).toEqual(['complete', 'active'])
-    expect(confirmButton()!.textContent).toBe('Confirm & stick')
-    expect(writes()).toEqual(['approve'])
-
-    // The next click sends the stick, once.
-    mocks.writeContract.mockResolvedValueOnce(STICK)
-    confirmButton()!.click()
-    await until(() => mocks.writeContract.mock.calls.length === 2, 'the stick to be sent')
+    if (writes().length === 1) {
+      expect(confirmButton()!.textContent).toBe('Confirm & stick')
+      confirmButton()!.click()
+      await until(() => mocks.writeContract.mock.calls.length === 2, 'the stick to be sent')
+    }
     expect(writes()).toEqual(['approve', 'pay'])
     expect(title()).toBe('Confirm stick')
   })

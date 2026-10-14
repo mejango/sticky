@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({ pathname: '/' }))
 
 vi.mock('next/navigation', () => ({ usePathname: () => mocks.pathname }))
 vi.mock('@/components/SiteHeader', () => ({ SiteHeader: () => <header>site header</header> }))
+vi.mock('@/hooks/useWallet', () => ({ useWallet: () => ({ address: undefined }) }))
 
 import { SiteChrome } from '@/components/SiteChrome'
 

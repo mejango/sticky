@@ -124,6 +124,11 @@
     @apply cursor-not-allowed opacity-45;
   }
 
+  /* The SDK's held-write notice is unstyled: its release is a link like every other exit. */
+  .held-notice button {
+    @apply inline-flex min-h-6 items-center bg-transparent p-0 text-accent underline;
+  }
+
   /* A square icon control, like a dialog's close button. */
   .icon-button {
     @apply inline-flex h-11 w-11 items-center justify-center rounded-lg text-ink transition-colors hover:bg-bg hover:text-accent;

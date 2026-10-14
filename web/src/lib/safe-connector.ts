@@ -15,17 +15,11 @@ import {
 } from '@/lib/safe-wallet-peer'
 
 export {
-  atOnceExecution,
-  chainAnswer,
   findPendingSafeAppProposal,
-  heldCall,
   readSafeAppExecution,
-  reportedSafeExecution,
   requireSafeProposalSuccess,
-  SAFE_PROPOSAL_AWAITING,
   SAFE_PROPOSAL_UNCONFIRMED,
   stampedDeadline,
-  watchSafeProposal,
   type SafeAppCall,
   SAFE_NONCE_GUIDANCE,
   SAFE_PREFIX,
