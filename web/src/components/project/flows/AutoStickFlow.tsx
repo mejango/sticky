@@ -1,5 +1,6 @@
 'use client'
 
+import { withApprovalParent } from '@/lib/sticky-hold-intent'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useId, useRef, useState } from 'react'
 import { formatUnits, maxUint256, type Address } from 'viem'
@@ -139,7 +140,7 @@ async function planAutoStick(
       return {
         ...base,
         needs: choice!.cap,
-        steps: autoStickOnTxs(info, state, choice!),
+        steps: withApprovalParent(autoStickOnTxs(info, state, choice!), account),
         rows: [
           ...when(choice!),
           { label: 'Allowance', value: choice!.cap === maxUint256 ? 'Unlimited' : `${formatUnits(choice!.cap, decimals)} ${symbol}` },
@@ -169,7 +170,7 @@ async function planAutoStick(
       if (state.status === AS_STATUS.INSUFFICIENT_ALLOWANCE) return 'renew'
       return {
         ...base,
-        steps: repairTxs(info, state),
+        steps: withApprovalParent(repairTxs(info, state), account),
         rows: [{ label: 'Effect', value: 'The auto-stick contract can stick for you again.' }, on],
         title: `Repair auto-stick for ${label}`,
         doneTitle: 'Auto-stick permission restored',
@@ -194,7 +195,7 @@ async function planAutoStick(
     }
     case 'cleanup': {
       if (state.enabled) throw new Refusal('Auto-stick is on. Turn it off instead.')
-      const steps = autoStickLeftoverTxs(info, state)
+      const steps = withApprovalParent(autoStickLeftoverTxs(info, state), account)
       if (!steps.length) throw new Refusal('Auto-stick has no permissions left to remove.')
       const kept = [state.personallyTrusted ? 'stick for you' : '', state.allowance > 0n ? `move your ${symbol}` : '']
       return {

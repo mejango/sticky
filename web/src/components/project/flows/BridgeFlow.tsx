@@ -231,7 +231,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
     const current = active
     await run(async () => {
       if (readPendingBridgeWrite(current.owner)) throw new Error('Recover the pending bridge transaction before sending it again.')
-      const held = createPendingBridgeWrite({ owner: current.owner, request: storeBridgeWrite(current.request), intent: holdIntent(current.request), ...(current.record ? { metadata: current.record.metadata, recordKey: current.key } : {}) })
+      const held = createPendingBridgeWrite({ owner: current.owner, request: storeBridgeWrite(current.request), intent: holdIntent(current.request, current.owner), ...(current.record ? { metadata: current.record.metadata, recordKey: current.key } : {}) })
       setReview({ ...current, attempt: held })
       let reserved = false
       const undo = () => endPendingBridgeAttempt(current.owner, held.id)

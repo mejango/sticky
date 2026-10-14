@@ -1,5 +1,6 @@
 'use client'
 
+import { withApprovalParent } from '@/lib/sticky-hold-intent'
 import { useQueryClient } from '@tanstack/react-query'
 import type { JBChainId } from '@bananapus/nana-sdk-core'
 import dynamic from 'next/dynamic'
@@ -120,7 +121,7 @@ async function planFund(
     meta,
     amount,
     groupId,
-    steps: fundTxs(chainId, { stToken, token, amount, groupId, allowance, ...meta }),
+    steps: withApprovalParent(fundTxs(chainId, { stToken, token, amount, groupId, allowance, ...meta }), account),
   }
 }
 

@@ -32,8 +32,8 @@ const frozen = (request: TxRequest): TxRequest => Object.freeze({ ...request, ar
  * zero) still simulates: its calldata is the same as erc20Abi's. */
 const approveAbi = parseAbi(['function approve(address spender, uint256 amount)'])
 
-const approval = (chainId: number, token: Address, spender: Address, amount: bigint, label: string, moving = false): TxRequest =>
-  frozen({ chainId, address: token, abi: approveAbi, functionName: 'approve', args: [spender, amount], label, ...(moving ? { moving: true } : {}) })
+const approval = (chainId: number, token: Address, spender: Address, amount: bigint, label: string): TxRequest =>
+  frozen({ chainId, address: token, abi: approveAbi, functionName: 'approve', args: [spender, amount], label })
 
 /** `'exact'` leaves the allowance at the amount, and `'covering'` leaves one that already covers it. */
 export type ApprovalMode = 'exact' | 'covering'
@@ -57,8 +57,7 @@ export function approveSteps(
   const pretty = amount === maxUint256 ? 'unlimited' : `${formatUnits(amount, decimals)} ${symbol}`
   return [
     ...(allowance > 0n && amount > 0n ? [approval(chainId, token, spender, 0n, reset)] : []),
-    // An approval that covers an amount that can still move is held by token and spender; a reset and an exact cap by amount.
-    approval(chainId, token, spender, amount, amount === 0n ? reset : (label ?? `Approve ${pretty}`), mode === 'covering' && amount > 0n),
+    approval(chainId, token, spender, amount, amount === 0n ? reset : (label ?? `Approve ${pretty}`)),
   ]
 }
 

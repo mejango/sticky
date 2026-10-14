@@ -11,6 +11,7 @@ import {
 } from 'viem'
 import { TransactionNotFoundError, TransactionReceiptNotFoundError } from 'viem'
 import { SAFE_EXEC_ABI } from '@bananapus/nana-sdk-core/safe-service'
+import { payIntent } from '@bananapus/nana-sdk-core/review'
 import { buildBridgeClaimTx, buildBridgePrepareTx, buildCashOutTx, buildPayTx, buildToRemoteTx, stickySourceCollectorAbi } from '@bananapus/nana-sdk-core/v6'
 import { createBrowserWriteRecovery, createWriteHold, WRITE_HOLD_STALE_REVIEW_LINE, WRITE_HOLD_IN_TAB_LINE, WRITE_EXIT_LABEL, writeExitMessage, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -1080,7 +1081,7 @@ describe('useSafeTx', () => {
     const pairs: [string, TxRequestOf, TxRequestOf][] = [
       ['a stick, whose minimum is a quote', buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 5n, beneficiary: ALICE, minReturnedTokens: 9n, memo: '', metadata: '0x' }), buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 5n, beneficiary: ALICE, minReturnedTokens: 8n, memo: '', metadata: '0x' })],
       ['an unstick, whose minimum is a quote', buildCashOutTx({ chainId: 10, terminal: X, holder: ALICE, projectId: 12n, cashOutCount: 5n, tokenToReclaim: X, minTokensReclaimed: 9n, beneficiary: ALICE, metadata: '0x' }), buildCashOutTx({ chainId: 10, terminal: X, holder: ALICE, projectId: 12n, cashOutCount: 5n, tokenToReclaim: X, minTokensReclaimed: 8n, beneficiary: ALICE, metadata: '0x' })],
-      ['an approval, whose amount covers a moving claim', { chainId: 10, address: X, abi: parseAbi(['function approve(address spender, uint256 amount)']), functionName: 'approve', args: [BOB, 5n], moving: true }, { chainId: 10, address: X, abi: parseAbi(['function approve(address spender, uint256 amount)']), functionName: 'approve', args: [BOB, 6n], moving: true }],
+      ['an approval, whose amount covers a moving claim', { chainId: 10, address: X, abi: parseAbi(['function approve(address spender, uint256 amount)']), functionName: 'approve', args: [BOB, 5n] }, { chainId: 10, address: X, abi: parseAbi(['function approve(address spender, uint256 amount)']), functionName: 'approve', args: [BOB, 6n] }],
       ['a bridge queue, whose minimum is a quote', buildBridgePrepareTx({ chainId: 10, sucker: X, projectTokenCount: 5n, beneficiary: word, minTokensReclaimed: 9n, token: X, metadata: word }), buildBridgePrepareTx({ chainId: 10, sucker: X, projectTokenCount: 5n, beneficiary: word, minTokensReclaimed: 8n, token: X, metadata: word })],
       ['a bridge send, whose transport budget is a quote', buildToRemoteTx({ chainId: 10, sucker: X, token: X, value: 3n }), buildToRemoteTx({ chainId: 10, sucker: X, token: X, value: 4n })],
       ['a bridge claim, whose proof moves with the tree', buildBridgeClaimTx({ chainId: 10, sucker: X, claim: { token: X, leaf: leaf(word), proof: Array(32).fill(word) as never } }), buildBridgeClaimTx({ chainId: 10, sucker: X, claim: { token: X, leaf: leaf(`0x${'11'.repeat(32)}`), proof: Array(32).fill(`0x${'11'.repeat(32)}`) as never } })],
@@ -1097,33 +1098,6 @@ describe('useSafeTx', () => {
       expect(hook.ref.current).toMatchObject({ phase: 'submitted' })
       expect(hook.ref.current!.held).not.toBeNull()
     })
-    it.each([
-      ['a collector delivery whose bridge lane the app resolved differently', { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'send', args: [12n, X, 0n, 5n, X, X], value: 77n }, { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'send', args: [12n, X, 0n, 5n, ALICE, ALICE], value: 77n }],
-      ['a bridge queue whose backing token the route resolved differently', buildBridgePrepareTx({ chainId: 10, sucker: X, projectTokenCount: 5n, beneficiary: `0x${'00'.repeat(32)}`, minTokensReclaimed: 9n, token: X, metadata: `0x${'00'.repeat(32)}` }), buildBridgePrepareTx({ chainId: 10, sucker: X, projectTokenCount: 5n, beneficiary: `0x${'00'.repeat(32)}`, minTokensReclaimed: 9n, token: ALICE, metadata: `0x${'00'.repeat(32)}` })],
-    ] as [string, TxRequestOf, TxRequestOf][])('keys %s by the user choice alone, not by what the app picked', async (_name, first, retry) => {
-      mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
-      const hook = await renderHook()
-      await act(async () => { await hook.ref.current!.send(first as never, reviewedByAlice) })
-      await act(async () => hook.ref.current!.reset())
-      await act(async () => { await hook.ref.current!.send(retry as never, reviewedByAlice) })
-      expect(mocks.writeContract).toHaveBeenCalledOnce()
-    })
-
-    // The user's choice is "all", not the number that was filled in: a balance that moved is the same choice.
-    it.each([
-      ['an unstick of everything', buildCashOutTx({ chainId: 10, terminal: X, holder: ALICE, projectId: 12n, cashOutCount: 5n, tokenToReclaim: X, minTokensReclaimed: 9n, beneficiary: ALICE, metadata: '0x' }), buildCashOutTx({ chainId: 10, terminal: X, holder: ALICE, projectId: 12n, cashOutCount: 7n, tokenToReclaim: X, minTokensReclaimed: 8n, beneficiary: ALICE, metadata: '0x' })],
-      ['a transfer of everything', { chainId: 10, address: X, abi: parseAbi(['function transfer(address to, uint256 amount)']), functionName: 'transfer', args: [BOB, 5n] }, { chainId: 10, address: X, abi: parseAbi(['function transfer(address to, uint256 amount)']), functionName: 'transfer', args: [BOB, 7n] }],
-      ['a collector delivery of everything queued', { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'send', args: [12n, X, 0n, 5n, X, X], value: 77n }, { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'send', args: [12n, X, 0n, 7n, X, X], value: 77n }],
-      ['a collector settle of everything queued', { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'settle', args: [12n, X, 0n, 5n] }, { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'settle', args: [12n, X, 0n, 7n] }],
-    ] as [string, TxRequestOf, TxRequestOf][])('holds %s by "all", so a retry after the balance moved is refused', async (_name, first, retry) => {
-      mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
-      const hook = await renderHook()
-      await act(async () => { await hook.ref.current!.send({ ...first, max: true } as never, reviewedByAlice) })
-      expect(hook.ref.current!.held).not.toBeNull()
-      await act(async () => hook.ref.current!.reset())
-      await act(async () => { await hook.ref.current!.send({ ...retry, max: true } as never, reviewedByAlice) })
-      expect(mocks.writeContract).toHaveBeenCalledOnce()
-    })
     it('keeps a typed amount as the choice: a different typed amount is a different write', async () => {
       mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
       const abiTransfer = parseAbi(['function transfer(address to, uint256 amount)'])
@@ -1134,26 +1108,37 @@ describe('useSafeTx', () => {
       expect(mocks.writeContract).toHaveBeenCalledTimes(2)
     })
 
-    it('does not let a pending approval that covers a moving amount block a revocation or a cap', async () => {
+    it('keys an approval by its parent action and step, never by its amount: a revocation and another action\'s approval are their own intents', async () => {
       const abiApprove = parseAbi(['function approve(address spender, uint256 amount)'])
+      const parentA = payIntent({ chainId: 10, project: 12n, beneficiary: ALICE })
+      const parentB = payIntent({ chainId: 10, project: 13n, beneficiary: ALICE })
+      const approve = (amount: bigint, parent: string) => ({ chainId: 10, address: X, abi: abiApprove, functionName: 'approve', args: [BOB, amount], parent })
       mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
       const hook = await renderHook()
-      await act(async () => { await hook.ref.current!.send({ chainId: 10, address: X, abi: abiApprove, functionName: 'approve', args: [BOB, 5n], moving: true } as never, reviewedByAlice) })
+      await act(async () => { await hook.ref.current!.send(approve(5n, parentA) as never, reviewedByAlice) })
       await act(async () => hook.ref.current!.reset())
-      // A revocation and a user-chosen cap are their own intents.
-      await act(async () => { await hook.ref.current!.send({ chainId: 10, address: X, abi: abiApprove, functionName: 'approve', args: [BOB, 0n] } as never, reviewedByAlice) })
+      // The same step of the same action, whatever the amount, is a retry.
+      await act(async () => { await hook.ref.current!.send(approve(6n, parentA) as never, reviewedByAlice) })
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+      await act(async () => hook.ref.current!.reset())
+      // A revocation is another step; another action's approval is another parent.
+      await act(async () => { await hook.ref.current!.send(approve(0n, parentA) as never, reviewedByAlice) })
       expect(mocks.writeContract).toHaveBeenCalledTimes(2)
       await act(async () => hook.ref.current!.reset())
-      await act(async () => { await hook.ref.current!.send({ chainId: 10, address: X, abi: abiApprove, functionName: 'approve', args: [BOB, 1000n] } as never, reviewedByAlice) })
+      await act(async () => { await hook.ref.current!.send(approve(7n, parentB) as never, reviewedByAlice) })
       expect(mocks.writeContract).toHaveBeenCalledTimes(3)
     })
-    it('still treats a different intent as a different write', async () => {
+    it('holds a stick by its project and beneficiary, not its amount, and treats another beneficiary as another write', async () => {
       mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
       const [, first] = pairs[0]
       const hook = await renderHook()
       await act(async () => { await hook.ref.current!.send(first as never, reviewedByAlice) })
       await act(async () => hook.ref.current!.reset())
-      const other = buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 6n, beneficiary: ALICE, minReturnedTokens: 9n, memo: '', metadata: '0x' })
+      const bigger = buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 6n, beneficiary: ALICE, minReturnedTokens: 9n, memo: '', metadata: '0x' })
+      await act(async () => { await hook.ref.current!.send(bigger as never, reviewedByAlice) })
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+      await act(async () => hook.ref.current!.reset())
+      const other = buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 5n, beneficiary: BOB, minReturnedTokens: 9n, memo: '', metadata: '0x' })
       await act(async () => { await hook.ref.current!.send(other as never, reviewedByAlice) })
       expect(mocks.writeContract).toHaveBeenCalledTimes(2)
     })

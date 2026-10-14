@@ -1,5 +1,6 @@
 'use client'
 
+import { withApprovalParent } from '@/lib/sticky-hold-intent'
 import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { formatUnits, getAddress, isAddress, isAddressEqual, zeroAddress, type Address } from 'viem'
@@ -215,14 +216,14 @@ export function StickFlow({
       )
       if (balance < value) throw new Error(MORE_THAN_HELD)
       const minted = await quoteStick(chainId, info.projectId, info.stakedToken, value, account, beneficiary, { signal })
-      const steps = [
+      const steps = withApprovalParent([
         ...approveSteps(chainId, info.stakedToken, terminal, allowance, value, {
           symbol: info.symbol,
           decimals: info.decimals,
           mode: 'covering',
         }),
         stickTx(info, beneficiary, value, minted),
-      ]
+      ], account)
       if (signal.aborted) return
       setPlan({ info, terminal, account, beneficiary, amount: value, minted, steps })
     } catch (reason) {

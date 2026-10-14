@@ -43,8 +43,6 @@ export function CollectorFlow({ source, info, onSettled }: {
   const { deployment, sourceProjectId, stickyToken, groupId } = source.allocation
   const [queue, setQueue] = useState<Awaited<ReturnType<typeof delivery.read>>>()
   const [amount, setAmount] = useState('')
-  /** The user pressed Max and has not typed since: the choice is "all" of the queue, not the number filled in. */
-  const [all, setAll] = useState(false)
   const [pending, setPending] = useState<PendingBridgeWrite | null>(null)
   const [recoveryHash, setRecoveryHash] = useState('')
   const [review, setReview] = useState<Review | null>(null)
@@ -102,8 +100,6 @@ export function CollectorFlow({ source, info, onSettled }: {
     if (!queue) throw new Error('Read the queued allocation before choosing an amount.')
     const count = parseAmount(amount, queue.meta.decimals)
     const prepared = await delivery.prepare(source, gate.account, count)
-    // Held by "all" for as long as the user's choice is Max (until they edit the amount), whatever the queue did since.
-    if (all) prepared.request = { ...prepared.request, max: true }
     assertCurrent(identity)
     tx.reset(); handledHash.current = null
     setReview({ identity, owner: gate.account, delivery: prepared, rows: [
@@ -122,7 +118,7 @@ export function CollectorFlow({ source, info, onSettled }: {
     const current = active
     await run(async () => {
       if (readPendingBridgeWrite(current.owner)) throw new Error('Recover the pending transaction before sending again.')
-      const held = createPendingBridgeWrite({ owner: current.owner, request: storeBridgeWrite(current.delivery.request), intent: holdIntent(current.delivery.request) })
+      const held = createPendingBridgeWrite({ owner: current.owner, request: storeBridgeWrite(current.delivery.request), intent: holdIntent(current.delivery.request, current.owner) })
       setReview({ ...current, attempt: held })
       let reserved = false
       const undo = () => endPendingBridgeAttempt(current.owner, held.id)
@@ -225,8 +221,8 @@ export function CollectorFlow({ source, info, onSettled }: {
       <p className="text-sm">Queued on {chainName(deployment.sourceChainId)}: {queue ? `${formatUnits(queue.pending, queue.meta.decimals)} ${queue.meta.symbol}` : 'Reading…'}. Anyone can deliver these rewards.</p>
       <label htmlFor={`${id}-amount`} className={FIELD_LABEL}>Amount to deliver</label>
       <div className="flex items-center gap-2">
-        <input id={`${id}-amount`} className={FIELD_INPUT} value={amount} disabled={busy || !!active} onChange={event => { setAll(false); setAmount(event.target.value) }} inputMode="decimal" />
-        <button className="btn-link" disabled={busy || !!active || !queue} onClick={() => { if (queue) { setAmount(formatUnits(queue.pending, queue.meta.decimals)); setAll(true) } }}>Max</button>
+        <input id={`${id}-amount`} className={FIELD_INPUT} value={amount} disabled={busy || !!active} onChange={event => setAmount(event.target.value)} inputMode="decimal" />
+        <button className="btn-link" disabled={busy || !!active || !queue} onClick={() => queue && setAmount(formatUnits(queue.pending, queue.meta.decimals))}>Max</button>
       </div>
       <div className="flex flex-wrap gap-3">
         <button className="btn-primary" disabled={busy || !!pending || !queue?.pending} onClick={() => void run(start)}>Review delivery</button>

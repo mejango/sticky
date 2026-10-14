@@ -265,7 +265,7 @@ describe('permissionless collector delivery', () => {
     mocks.tx.exitStored = vi.fn(async () => ({ outcome: 'released' as const }))
     await press(WRITE_EXIT_LABEL)
     expect(mocks.tx.exitStored).toHaveBeenCalledOnce()
-    expect(mocks.tx.exitStored).toHaveBeenCalledWith(expect.objectContaining({ intent: expect.stringMatching(/^intent:collector-delivery:/) }))
+    expect(mocks.tx.exitStored).toHaveBeenCalledWith(expect.objectContaining({ intent: expect.stringMatching(/^intent:/) }))
     expect(readPendingBridgeWrite(OWNER)).toBeNull()
     expect(readWatchedBridgeRoutes(10, INFO.stToken, 4000n)).toEqual(route)
 
@@ -350,32 +350,6 @@ describe('permissionless collector delivery', () => {
     await render()
     await vi.waitFor(() => expect(mocks.tx.adoptStored).toHaveBeenCalledOnce())
     expect(mocks.tx.adoptStored).toHaveBeenCalledWith(expect.objectContaining({ owner: OWNER, hash: HASH, safeProposal: false }))
-  })
-  it('keeps "all" when the queue grew after Max was pressed', async () => {
-    await render()
-    await press('Max')
-    mocks.read.mockResolvedValue({ pending: 12n * UNIT, meta: ROUTE.sourceMeta })
-    mocks.prepare.mockImplementation(async (source: CollectorSource, _owner: unknown, amount: bigint) => ({ source, amount, pending: 12n * UNIT, meta: ROUTE.sourceMeta, verified: source.verified, request: requestOf(source, amount) }))
-    await press('Review delivery')
-    await press('Confirm & deliver')
-    const sent = (mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls[0] as [{ max?: boolean }]
-    expect(sent[0].max).toBe(true)
-  })
-  it('sends a delivery chosen with Max as "all", and a typed amount as itself', async () => {
-    await render()
-    await press('Max')
-    await press('Review delivery')
-    await press('Confirm & deliver')
-    const sent = (mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls[0] as [{ max?: boolean }]
-    expect(sent[0].max).toBe(true)
-
-    ;(mocks.tx.send as ReturnType<typeof vi.fn>).mockClear()
-    await act(async () => root.unmount()); root = createRoot(host)
-    localStorage.clear()
-    await review()
-    await press('Confirm & deliver')
-    const typed = (mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls[0] as [{ max?: boolean }]
-    expect(typed[0].max).toBeUndefined()
   })
   it('keeps the delivery reservation when the SDK refuses the exit', async () => {
     mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => { await options.durableRecovery?.reserve(); return null })
