@@ -283,6 +283,52 @@ describe('reviewed durable bridge workflow', () => {
     expect([...document.querySelectorAll('button')].some(node => node.textContent === WRITE_EXIT_LABEL)).toBe(false)
     expect(readPendingBridgeWrite(OWNER)).not.toBeNull()
   })
+  it('clears an attempt whose returned hash could not be saved when the SDK exit releases it, and allows exactly one more send', async () => {
+    const normalSend = mocks.tx.send as (request: TxRequest, options: TxSendOptions) => Promise<Hex | null>
+    let options!: TxSendOptions
+    const save = failReturnedHashSave()
+    const failing = mocks.tx.send as (request: TxRequest, options: TxSendOptions) => Promise<Hex | null>
+    mocks.tx.send = vi.fn(async (request: TxRequest, given: TxSendOptions) => { options = given; await failing(request, given); return null })
+    await review(); await press('Confirm & approve')
+    expect(save.failures()).toBeGreaterThan(0)
+    // The raw storage still holds the hashless reservation; the retained reply is only in memory.
+    expect(storedPending().hash).toBeUndefined()
+    save.mockRestore()
+    await act(async () => { await options.durableRecovery!.released!() })
+    expect(localStorage.getItem(`sticky:bridge:pending:v1:${OWNER.toLowerCase()}`)).toMatch(/^null$/)
+    expect(readPendingBridgeWrite(OWNER)).toBeNull()
+    mocks.tx.send = vi.fn(normalSend)
+    await press('Cancel'); await press('Continue transfer'); await press('Confirm & approve')
+    expect(mocks.tx.send).toHaveBeenCalledOnce()
+  })
+  it('clears the submission marker of a dropped prepare when the SDK exit releases it, keeping the transfer to continue or cancel', async () => {
+    approved = true
+    const normalSend = mocks.tx.send as (request: TxRequest, options: TxSendOptions) => Promise<Hex | null>
+    let options!: TxSendOptions
+    mocks.tx.send = vi.fn(async (_request: TxRequest, given: TxSendOptions) => {
+      options = given
+      await given.durableRecovery?.reserve(); await given.durableRecovery?.submitted(HASH, false)
+      return null
+    })
+    await review(); await press('Confirm & queue')
+    const before = readBridgeRecords(KEY)[0]
+    expect(before.submission?.hash).toBe(HASH)
+    await act(async () => { await options.durableRecovery!.released!() })
+    await press('Cancel')
+    const after = readBridgeRecords(KEY)[0]
+    expect(after.submission).toBeUndefined()
+    expect(after.metadata).toBe(before.metadata)
+    expect(after.steps).toEqual(before.steps)
+    expect(readPendingBridgeWrite(OWNER)).toBeNull()
+    expect(button('Continue transfer')).toBeDefined()
+
+    // The transfer can be cancelled, and a new one reconciles from scratch.
+    await press('Cancel unsubmitted transfer')
+    expect(readBridgeRecords(KEY)).toHaveLength(0)
+    mocks.tx.send = vi.fn(normalSend)
+    await review(); await press('Confirm & queue')
+    expect(readBridgeRecords(KEY)).toHaveLength(1)
+  })
   it('keeps the reservation when the SDK refuses the exit', async () => {
     mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => { await options.durableRecovery?.reserve(); return null })
     await review(); await press('Confirm & approve'); await press('Cancel')

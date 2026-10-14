@@ -863,7 +863,12 @@ export function useSafeTx(chainId: number) {
               await options.beforeWrite?.()
               await options.durableRecovery?.reserve()
               walletOpenRef.current = true
-              await gate?.beforeSend()
+              try { await gate?.beforeSend() } catch (failure) {
+                // The wallet never opens: the domain reservation made just before ends here, not later.
+                walletOpenRef.current = false
+                await options.durableRecovery?.releaseUnsubmitted()
+                throw failure
+              }
             },
             onBeforeWriteAborted: async () => {
               walletOpenRef.current = false

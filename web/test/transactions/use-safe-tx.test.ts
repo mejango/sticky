@@ -1024,6 +1024,22 @@ describe('useSafeTx', () => {
     } finally { vi.useRealTimers() }
   })
 
+  it('releases a domain reservation when both nonce reads fail, so nothing is left locked and the next send works', async () => {
+    const journal = { reserve: vi.fn(), releaseUnsubmitted: vi.fn(), submitted: vi.fn(), released: vi.fn() }
+    mocks.publicClient.getBlockNumber.mockRejectedValue(new Error('RPC unavailable'))
+    const hook = await renderHook()
+    await act(async () => { await hook.ref.current!.send(request, { ...reviewedByAlice, durableRecovery: journal }) })
+    expect(mocks.writeContract).not.toHaveBeenCalled()
+    expect(journal.reserve).toHaveBeenCalledOnce()
+    expect(journal.releaseUnsubmitted).toHaveBeenCalledOnce()
+    expect(hook.ref.current).toMatchObject({ phase: 'error', held: null })
+
+    mocks.publicClient.getBlockNumber.mockResolvedValue(100n)
+    await act(async () => { await hook.ref.current!.send(request, { ...reviewedByAlice, durableRecovery: journal }) })
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
+    expect(journal.reserve).toHaveBeenCalledTimes(2)
+  })
+
   it('still holds and sends where the browser has no Web Locks', async () => {
     vi.stubGlobal('navigator', { locks: undefined })
     vi.spyOn(console, 'warn').mockImplementation(() => {})

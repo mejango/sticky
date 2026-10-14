@@ -16,7 +16,7 @@ import { useWallet } from '@/hooks/useWallet'
 import { parseAmount } from '@/lib/sticky-amount'
 import { bridgeCalldata, bridgeRouteId, bridgeWriteHasUniqueReference, createStickyBridge, type BridgeMovement, type BridgeRoute } from '@/lib/sticky-bridge'
 import {
-  assertPendingBridgeWrite, bridgeStorageKey, clearPendingBridgeAttempt, createPendingBridgeWrite, discardBridgeDraft, readBridgeRecords, readPendingBridgeWrite, readWatchedBridgeRoutes, reconcileBridgeRecord,
+  assertPendingBridgeWrite, bridgeStorageKey, endPendingBridgeAttempt, createPendingBridgeWrite, discardBridgeDraft, readBridgeRecords, readPendingBridgeWrite, readWatchedBridgeRoutes, reconcileBridgeRecord,
   restoreBridgeWrite, retryPendingBridgeSubmission, savePendingBridgeWrite, savePendingBridgeSubmission, storeBridgeWrite, updateBridgeRecord, updateBridgeRecords, withBridgeLock,
   type BridgeRecord, type PendingBridgeWrite,
 } from '@/lib/sticky-bridge-journal'
@@ -233,10 +233,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
       const held = createPendingBridgeWrite({ owner: current.owner, request: storeBridgeWrite(current.request), ...(current.record ? { metadata: current.record.metadata, recordKey: current.key } : {}) })
       setReview({ ...current, attempt: held })
       let reserved = false
-      const undo = async () => {
-        assertPendingBridgeWrite(held)
-        savePendingBridgeWrite(current.owner, null)
-      }
+      const undo = () => endPendingBridgeAttempt(current.owner, held.id)
       await tx.send(current.request, {
         reviewedAccount: current.owner, reviewedInParent: true, simulationBlockNumber: current.confirmedAt,
         reverify: () => verifyReview(current),
@@ -251,7 +248,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
           },
           releaseUnsubmitted: undo,
           // The user's exit released the SDK hold: the reservation goes, the saved transfer stays.
-          released: async () => { clearPendingBridgeAttempt(current.owner, held.id); setPending(null) },
+          released: async () => { await endPendingBridgeAttempt(current.owner, held.id); setPending(null) },
           submitted: async (hash, safeProposal) => {
             // A queued Safe proposal can be adopted without reserving a new write.
             if (!reserved && !readPendingBridgeWrite(current.owner)) { savePendingBridgeWrite(current.owner, held); reserved = true }
@@ -342,7 +339,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
           <PendingWriteExit pending={pending} disabled={busy} look={tx.storedHold} exit={() => run(async () => {
             if (!(await tx.exitStored({ chainId: pending.request.chainId, owner: pending.owner, to: pending.request.address, data: pending.request.data, value: pending.request.value }))) return
             // The reservation goes; the saved transfer and its metadata stay, so its next step can be reviewed again.
-            assertPendingBridgeWrite(pending); savePendingBridgeWrite(pending.owner, null); setPending(null); await refresh()
+            await endPendingBridgeAttempt(pending.owner, pending.id); setPending(null); await refresh()
           })} />
           {pending.safeProposal ? <p className="text-sm text-muted">Open the Safe queue and finish its approvals. Use the executed transaction hash below when it is ready.</p> : null}
           <label htmlFor={`${id}-hash`} className={FIELD_LABEL}>Executed transaction hash</label>

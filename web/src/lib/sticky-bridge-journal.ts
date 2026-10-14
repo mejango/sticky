@@ -238,11 +238,21 @@ export function savePendingBridgeSubmission(expected: PendingBridgeWrite, hash: 
   savePendingBridgeWrite(expected.owner, submitted, storage)
   return submitted
 }
-/** Clear the reservation of exactly this attempt, with or without its saved hash; another attempt's is never touched. */
-export function clearPendingBridgeAttempt(owner: Address, id: string | undefined, storage: BridgeStorage = localStorage): void {
-  const current = readPendingBridgeWrite(owner, storage)
-  if (!current || !id || current.id !== id) throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
-  assertPendingBridgeWrite(current, storage)
+/**
+ * The one place an attempt's domain reservation ends: after the SDK's exit released its call, or after a failure
+ * before the wallet opened. It matches the raw stored reservation by attempt id, hashed or hashless, whatever reply
+ * is retained in memory; clears the matching transfer's submission marker (the metadata and steps stay, so the
+ * transfer can be continued or cancelled); then removes the reservation. Another attempt's is never touched, and
+ * an already ended attempt is a no-op.
+ */
+export async function endPendingBridgeAttempt(owner: Address, id: string | undefined, storage: BridgeStorage = localStorage): Promise<void> {
+  const stored = readStoredPendingBridgeWrite(owner, storage)
+  if (!stored) return
+  if (!id || stored.id !== id) throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
+  if (stored.metadata && stored.recordKey) {
+    const { metadata } = stored
+    await updateBridgeRecords(stored.recordKey, records => records.map(record => record.metadata === metadata ? { ...record, submission: undefined } : record), storage)
+  }
   savePendingBridgeWrite(owner, null, storage)
 }
 /** Under the owner lock, retry only the trusted reply retained for this exact raw reservation. */
