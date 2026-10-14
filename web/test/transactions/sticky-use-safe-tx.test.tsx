@@ -20,7 +20,7 @@ vi.mock('@tanstack/react-query', async importOriginal => ({
 
 const mocks = vi.hoisted(() => ({
   wallet: { isConnected: true, address: undefined as Address | undefined, isCenterWallet: false },
-  publicClient: { simulateContract: vi.fn(), estimateContractGas: vi.fn() },
+  publicClient: { getBlockNumber: vi.fn(async () => 100n), getTransactionCount: vi.fn(async () => 7), simulateContract: vi.fn(), estimateContractGas: vi.fn() },
   getAccount: vi.fn(),
   chainId: 1,
   requestReview: vi.fn(),

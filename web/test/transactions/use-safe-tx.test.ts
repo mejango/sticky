@@ -11,7 +11,7 @@ import {
 } from 'viem'
 import { TransactionNotFoundError } from 'viem'
 import { SAFE_EXEC_ABI } from '@bananapus/nana-sdk-core/safe-service'
-import { WRITE_EXIT_LABEL, writeExitMessage, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
+import { WRITE_HOLD_IN_TAB_LINE, WRITE_EXIT_LABEL, writeExitMessage, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 
@@ -80,7 +80,6 @@ import { useSafeTx } from '@/hooks/useSafeTx'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 
 const STILL_PENDING_LINE = 'Still pending in your wallet. Speed it up or cancel it there.'
-const STORAGE_REFUSED_LINE = "This browser can't remember pending transactions. Check your wallet before repeating one."
 const ALICE = '0x1111111111111111111111111111111111111111' as Address
 const BOB = '0x2222222222222222222222222222222222222222' as Address
 /** Every request below was built for, and reviewed by, Alice. */
@@ -249,53 +248,62 @@ describe('useSafeTx', () => {
     expect(mocks.writeContract).toHaveBeenCalledOnce()
   })
 
-  it('releases a hold on proof: the chain shows the exact call at the nonce the wallet opened at', async () => {
+  it('keeps a hashless write held when the chain shows another transaction at its nonce, until the user says they checked their wallet', async () => {
     mocks.writeContract.mockRejectedValueOnce(new Error('The wallet broadcast the transfer but its RPC response was lost.'))
     const hook = await renderHook()
     await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
     expect(hook.ref.current!.held).not.toBeNull()
     // The record carries the nonce and block the wallet opened at.
     expect(recoveryRecords()[0]).toMatchObject({ nonce: '7', fromBlock: '100' })
-
-    const SENT = `0x${'5e'.repeat(32)}` as Hex
     mocks.publicClient.getTransactionCount.mockImplementation(async (args: { blockNumber?: bigint; blockTag?: string }) =>
-      args.blockTag === 'pending' ? 8 : args.blockNumber! >= 150n ? 8 : 7)
-    mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => {
-      if (hash === SENT) return { hash, from: ALICE, to: BOB, nonce: 7, input: '0x', blockHash: BLOCK_HASH, blockNumber: 150n, transactionIndex: 0 }
-      throw Object.assign(new Error('not found'), { name: 'TransactionNotFoundError' })
-    })
+      args.blockTag === 'pending' ? 8 : (args.blockNumber ?? 0n) >= 150n ? 8 : 7)
     mocks.publicClient.getBlock.mockImplementation(async (args: { blockTag?: string; blockNumber?: bigint; includeTransactions?: boolean }) =>
       args.blockTag === 'finalized'
         ? { number: 200n, hash: BLOCK_HASH, timestamp: 1_000n }
         : args.includeTransactions
-          ? {
-              number: args.blockNumber,
-              hash: BLOCK_HASH,
-              transactions: args.blockNumber === 150n
-                ? [{ hash: SENT, from: ALICE, to: BOB, nonce: 7, value: 7n, input: encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] }) }]
-                : [],
-            }
-          : { number: args.blockNumber, hash: BLOCK_HASH })
-    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
-    expect(mocks.writeContract).toHaveBeenCalledOnce()
-    expect(hook.ref.current).toMatchObject({ phase: 'pending', held: null, hash: SENT })
-  })
-
-  it('does not release a hold when the chain shows another transaction at the nonce', async () => {
-    mocks.writeContract.mockRejectedValueOnce(new Error('The wallet broadcast the transfer but its RPC response was lost.'))
-    const hook = await renderHook()
-    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
-    mocks.publicClient.getTransactionCount.mockImplementation(async (args: { blockNumber?: bigint }) => (args.blockNumber ?? 0n) >= 150n ? 8 : 7)
-    mocks.publicClient.getBlock.mockImplementation(async (args: { blockTag?: string; blockNumber?: bigint; includeTransactions?: boolean }) =>
-      args.blockTag === 'finalized'
-        ? { number: 200n, hash: BLOCK_HASH, timestamp: 1_000n }
-        : args.includeTransactions
-          ? { number: args.blockNumber, hash: BLOCK_HASH, transactions: args.blockNumber === 150n ? [{ hash: EXECUTION_HASH, from: ALICE, to: ALICE, nonce: 7, value: 0n, input: '0x' }] : [] }
+          ? { number: args.blockNumber, hash: BLOCK_HASH, transactions: args.blockNumber === 150n
+              ? [{ hash: EXECUTION_HASH, from: ALICE, to: ALICE, nonce: 7, value: 0n, input: '0x' }] : [] }
           : { number: args.blockNumber, hash: BLOCK_HASH })
     await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
     expect(mocks.writeContract).toHaveBeenCalledOnce()
     expect(hook.ref.current).toMatchObject({ phase: 'submitted' })
+    expect(hook.ref.current!.held).toMatchObject({ label: WRITE_EXIT_LABEL })
+  })
+
+  it('keeps a newer write held when a stale exit is pressed after another tab replaced the record', async () => {
+    mocks.writeContract.mockRejectedValueOnce(new Error('The wallet broadcast the transfer but its RPC response was lost.'))
+    const hook = await renderHook()
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    const staleExit = hook.ref.current!.held!.exit!
+    // Another tab released attempt A and sent attempt B under the same call.
+    const key = Object.keys(localStorage).find(each => each.startsWith('nana-sdk:reviewed-write:'))!
+    const newer = { ...JSON.parse(localStorage.getItem(key)!), id: 'attempt-b', nonce: '8' }
+    localStorage.setItem(key, JSON.stringify(newer))
+    await act(async () => staleExit())
+    expect(JSON.parse(localStorage.getItem(key)!).id).toBe('attempt-b')
+    expect(Object.keys(localStorage).filter(each => each.includes('released'))).toHaveLength(0)
     expect(hook.ref.current!.held).not.toBeNull()
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
+  })
+
+  it('follows a hash whose lookup was pending to its confirmation, clearing the record with one wallet write', async () => {
+    const first = await renderHook()
+    await act(async () => { await first.ref.current!.send(request, reviewedByAlice) })
+    await act(async () => first.renderer.unmount())
+    mocks.publicClient.getTransaction.mockImplementationOnce(async ({ hash }: { hash: Hex }) => ({
+      hash, from: ALICE, to: BOB, nonce: 7, input: '0x', blockHash: null, blockNumber: null, transactionIndex: null,
+    }))
+    const hook = await renderHook()
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    expect(hook.ref.current).toMatchObject({ phase: 'pending', hash: HASH })
+    // The pending look saved the nonce the hash was sent at.
+    expect(recoveryRecords()[0]).toMatchObject({ hash: HASH, sentNonce: '7' })
+    mocks.receipt = { data: canonicalReceipt('success'), isError: false }
+    await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
+    expect(recoveryRecords()).toHaveLength(0)
+    expect(hook.ref.current!.phase).toBe('success')
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
   })
 
   it('refuses to send while view-as is active', async () => {
@@ -574,75 +582,85 @@ describe('useSafeTx', () => {
     expect(mocks.requestReview).toHaveBeenCalledTimes(1)
   })
 
-  it('offers the exit for a hash only once its nonce is past at a finalized block and the chain has no such transaction', async () => {
+  /** The chain, as a test sets it: the hash is known pending, gone, or replaced at its nonce. */
+  const chain = {
+    pending: (hash: Hex) => mocks.publicClient.getTransaction.mockImplementation(async () => ({ hash, from: ALICE, to: BOB, nonce: 7, input: '0x', blockHash: null, blockNumber: null, transactionIndex: null })),
+    gone: () => mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => { throw new TransactionNotFoundError({ hash }) }),
+    moved: (history: boolean, usedBy: { hash: Hex; to: Address; input: Hex }) => {
+      mocks.publicClient.getTransactionCount.mockImplementation(async (args: { blockTag?: string; blockNumber?: bigint }) =>
+        args.blockTag === 'pending' ? 8 : (args.blockNumber ?? 0n) >= 150n ? 8 : 7)
+      mocks.publicClient.getBlock.mockImplementation(async (args: { blockTag?: string; blockNumber?: bigint; includeTransactions?: boolean }) => {
+        if (args.blockTag === 'finalized') return { number: 200n, hash: BLOCK_HASH, timestamp: 1_000n }
+        if (!args.includeTransactions) return { number: args.blockNumber, hash: BLOCK_HASH }
+        if (!history) throw new Error('This node has no history for that block.')
+        return { number: args.blockNumber, hash: BLOCK_HASH, transactions: args.blockNumber === 150n
+          ? [{ hash: usedBy.hash, from: ALICE, to: usedBy.to, nonce: 7, value: 0n, input: usedBy.input }] : [] }
+      })
+    },
+  }
+  const look = () => act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
+
+  it('offers the exit for a hash only once a finalized block shows another transaction at its nonce, and checks again as it is accepted', async () => {
     vi.useFakeTimers()
     try {
       const hook = await renderHook()
       await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
       mocks.receipt = { data: undefined, isError: true }
-      const gone = () => mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => { throw new TransactionNotFoundError({ hash }) })
-      // A lagging node says not found while the transaction is still pending, and the nonce has not moved.
-      gone()
+      // The node knows it pending: the hash is tracked, with no exit.
+      chain.pending(HASH)
       await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
-      await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
+      await look()
       expect(hook.ref.current!.held).toMatchObject({ line: STILL_PENDING_LINE, exit: null })
 
-      // The account's nonce is past it at the finalized block, and nothing else ran there.
-      mocks.publicClient.getTransactionCount.mockImplementation(async (args: { blockTag?: string; blockNumber?: bigint }) =>
-        args.blockTag === 'pending' ? 8 : (args.blockNumber ?? 0n) >= 150n ? 8 : 7)
-      const blocks = (history: boolean) => mocks.publicClient.getBlock.mockImplementation(async (args: { blockTag?: string; blockNumber?: bigint; includeTransactions?: boolean }) => {
-        if (args.blockTag === 'finalized') return { number: 200n, hash: BLOCK_HASH, timestamp: 1_000n }
-        if (!args.includeTransactions) return { number: args.blockNumber, hash: BLOCK_HASH }
-        if (!history) throw new Error('This node has no history for that block.')
-        return { number: args.blockNumber, hash: BLOCK_HASH, transactions: args.blockNumber === 150n
-          ? [{ hash: EXECUTION_HASH, from: ALICE, to: ALICE, nonce: 7, value: 0n, input: '0x' }] : [] }
-      })
-      // The nonce moved, but the node cannot show what used it: that is not proof the hash was dropped.
-      blocks(false)
-      await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
+      // A lagging node says not found while it is still pending, and the nonce has not moved.
+      chain.gone()
+      await look()
+      expect(hook.ref.current!.held).toMatchObject({ line: STILL_PENDING_LINE, exit: null })
+
+      // The nonce moved, but the node cannot show what used it: not proof.
+      chain.moved(false, { hash: EXECUTION_HASH, to: ALICE, input: '0x' })
+      await look()
       expect(hook.ref.current!.held).toMatchObject({ line: STILL_PENDING_LINE, exit: null })
 
       // Another transaction (a cancel) is shown at that nonce at a finalized block.
-      blocks(true)
-      await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
-      expect(hook.ref.current!.held).toMatchObject({ line: writeHeldMessage(), label: WRITE_EXIT_LABEL })
+      chain.moved(true, { hash: EXECUTION_HASH, to: ALICE, input: '0x' })
+      await look()
+      expect(hook.ref.current!.held).toMatchObject({ label: WRITE_EXIT_LABEL })
       expect(hook.ref.current!.held!.exit).toBeTypeOf('function')
 
       // It reappears before the exit is accepted: the hold stays.
-      mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => ({ hash, from: ALICE, to: BOB, nonce: 7, input: '0x', blockHash: null, blockNumber: null, transactionIndex: null }))
+      chain.pending(HASH)
       await act(async () => hook.ref.current!.held!.exit!())
       expect(hook.ref.current!.phase).toBe('pending')
       expect(recoveryRecords()).toHaveLength(1)
 
-      gone()
-      await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
+      chain.gone()
+      chain.moved(true, { hash: EXECUTION_HASH, to: ALICE, input: '0x' })
+      await look()
       await act(async () => hook.ref.current!.held!.exit!())
       expect(hook.ref.current).toMatchObject({ phase: 'idle', held: null })
     } finally { vi.useRealTimers() }
   })
 
-  it('follows the original when the chain shows it ran at its nonce, and never offers the exit', async () => {
+  it('follows the original when the chain shows it ran at its nonce under a speed-up, and never offers the exit', async () => {
     vi.useFakeTimers()
     try {
       const hook = await renderHook()
       await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
       mocks.receipt = { data: undefined, isError: true }
+      chain.pending(HASH)
+      await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
+      await look()
       const SPED_UP = `0x${'5e'.repeat(32)}` as Hex
-      mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => {
-        if (hash === SPED_UP) return { hash, from: ALICE, to: BOB, nonce: 7, input: '0x', blockHash: BLOCK_HASH, blockNumber: 150n, transactionIndex: 0 }
-        throw new TransactionNotFoundError({ hash })
-      })
-      mocks.publicClient.getTransactionCount.mockImplementation(async (args: { blockTag?: string; blockNumber?: bigint }) =>
-        args.blockTag === 'pending' ? 8 : (args.blockNumber ?? 0n) >= 150n ? 8 : 7)
+      chain.gone()
+      chain.moved(true, { hash: SPED_UP, to: BOB, input: encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] }) })
       mocks.publicClient.getBlock.mockImplementation(async (args: { blockTag?: string; blockNumber?: bigint; includeTransactions?: boolean }) =>
-        args.blockTag === 'finalized'
-          ? { number: 200n, hash: BLOCK_HASH, timestamp: 1_000n }
+        args.blockTag === 'finalized' ? { number: 200n, hash: BLOCK_HASH, timestamp: 1_000n }
           : args.includeTransactions
             ? { number: args.blockNumber, hash: BLOCK_HASH, transactions: args.blockNumber === 150n
                 ? [{ hash: SPED_UP, from: ALICE, to: BOB, nonce: 7, value: 7n, input: encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] }) }] : [] }
             : { number: args.blockNumber, hash: BLOCK_HASH })
-      await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
-      await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
+      await look()
       expect(hook.ref.current!.held?.exit ?? null).toBeNull()
       expect(hook.ref.current!.hash).toBe(SPED_UP)
       expect(mocks.writeContract).toHaveBeenCalledOnce()
@@ -876,7 +894,7 @@ describe('useSafeTx', () => {
     await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
     expect(mocks.requestReview).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ description: expect.stringContaining(STORAGE_REFUSED_LINE) }),
+      expect.objectContaining({ description: expect.stringContaining(WRITE_HOLD_IN_TAB_LINE) }),
     )
     expect(mocks.writeContract).toHaveBeenCalledOnce()
     expect(hook.ref.current).toMatchObject({ phase: 'submitted', held: { line: writeHeldMessage() } })

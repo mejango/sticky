@@ -21,7 +21,7 @@ import { E18, stickyInfo } from '../home-fixtures'
 const mocks = vi.hoisted(() => ({
   /** The account the page shows, which `getAccount` (the wallet's own) answers too unless a test says otherwise. */
   account: '' as string,
-  publicClient: { simulateContract: vi.fn(), estimateContractGas: vi.fn(), getChainId: vi.fn(), getTransaction: vi.fn(), getTransactionReceipt: vi.fn(), getBlock: vi.fn() },
+  publicClient: { getBlockNumber: vi.fn(async () => 100n), getTransactionCount: vi.fn(async () => 7), simulateContract: vi.fn(), estimateContractGas: vi.fn(), getChainId: vi.fn(), getTransaction: vi.fn(), getTransactionReceipt: vi.fn(), getBlock: vi.fn() },
   receipt: { data: undefined, isError: false } as {
     data?: { status: 'success' | 'reverted'; transactionHash: string }
     isError: boolean
