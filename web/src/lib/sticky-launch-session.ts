@@ -6,7 +6,7 @@ import { requireSingleHomeChain, validateLaunchCall, type LaunchPlan, type Launc
 export const STICKY_LAUNCH_KEY = 'sticky-launch-pending-v1'
 export type LaunchResult = { hash: Hex; projectId: string; token: `0x${string}` }
 /** `exited`: the user took the SDK's exit for this attempt, so no later step asks for mined-failure proof of it. */
-export type LaunchSubmission = { hash?: Hex; proposalHash?: Hex; started: boolean; exited?: boolean }
+export type LaunchSubmission = { hash?: Hex; proposalHash?: Hex; started: boolean; exited?: boolean; settled?: 'success' | 'failed' }
 export type LaunchPaymentSubmission = LaunchSubmission & { option: RelayrPayment; confirmed?: boolean }
 export type StickyLaunchSession = {
   version: 1
@@ -25,6 +25,8 @@ export type StickyLaunchSession = {
     state: 'pending' | 'published' | 'unlisted' | 'unavailable'
     intentId?: string
     requested?: boolean
+    /** The user checked an uncertain sponsor request and took the exit: it no longer blocks. */
+    requestExited?: boolean
     selfPaid?: boolean
     error?: string
     recorded: Record<number, Hex>
@@ -78,6 +80,7 @@ export function validateStickyLaunch(value: unknown): StickyLaunchSession {
   }
   for (const submitted of [session.direct, session.payment, ...(session.directAttempts ?? []), ...(session.paymentAttempts ?? [])]) {
     if (submitted && (typeof submitted.started !== 'boolean' ||
+        (submitted.settled !== undefined && !['success', 'failed'].includes(submitted.settled)) ||
         (submitted.hash !== undefined && !isHash(submitted.hash)) ||
         (submitted.proposalHash !== undefined && !isHash(submitted.proposalHash)) ||
         (!submitted.started && (!!submitted.hash || !!submitted.proposalHash)))) {
@@ -222,13 +225,19 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     }
     return current
   }
-  /** The hold's authenticated hash is the submission's hash from here: the journal's own checks run on that transaction. */
-  function saveSettlement(session: StickyLaunchSession, kind: 'direct' | 'payment', hash: Hex) {
+  /** A sponsored deployment was requested and discovery cannot say what happened: no transaction is known, so only the user's check remains. */
+const sponsorUnknown = (session: StickyLaunchSession) => !!session.listing.requested && !session.listing.selfPaid && !launchComplete(session) &&
+  !session.direct?.started && !session.payment?.started && !!session.error &&
+  !session.plan.targets.some(target => session.candidates[target.chainId]?.length)
+const SPONSOR_CHECK_VIEW: LaunchHoldView = { line: CHECK_REQUIRED_LINE, warning: CHECK_REQUIRED_WARNING, label: CHECK_REQUIRED_CREATE_LABEL, exit: true, checkRequired: true }
+
+/** The hold's authenticated hash is the submission's hash from here: the journal's own checks run on that transaction. */
+  function saveSettlement(session: StickyLaunchSession, kind: 'direct' | 'payment', { hash, result }: { hash: Hex; result: 'success' | 'failed' }) {
     const chainId = session.plan.targets[0].chainId
     const candidates = { ...session.candidates, [chainId]: [...new Set([...session.candidates[chainId], hash])] }
     return kind === 'direct'
-      ? save({ ...session, direct: { ...session.direct, started: true, hash }, candidates })
-      : save({ ...session, payment: { ...session.payment!, started: true, hash }, candidates })
+      ? save({ ...session, direct: { ...session.direct, started: true, hash, settled: result }, candidates })
+      : save({ ...session, payment: { ...session.payment!, started: true, hash, settled: result }, candidates })
   }
   function callbacks(kind: 'direct' | 'payment'): SubmissionCallbacks {
     return {
@@ -342,11 +351,13 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     hold: async () => {
       const session = load()
       const kind = session.payment?.started ? 'payment' : session.direct?.started ? 'direct' : null
-      if (!kind) return null
+      if (!kind) return sponsorUnknown(session) ? SPONSOR_CHECK_VIEW : null
+      // A success the hold authenticated is followed, never retired as unknown, however recovery fares afterwards.
+      if (session[kind]?.settled === 'success') return null
       // A hold that cannot be read is check-required: never a missing view, never permission to send.
       const seen = await ports.hold.look(session, kind).catch((): LaunchHoldView => ({ line: CHECK_REQUIRED_LINE, warning: CHECK_REQUIRED_WARNING, label: CHECK_REQUIRED_CREATE_LABEL, exit: true, checkRequired: true }))
       if (seen && 'settled' in seen) {
-        await exclusively(async () => saveSettlement(load(), kind, seen.settled.hash))
+        await exclusively(async () => saveSettlement(load(), kind, seen.settled))
         return null
       }
       return seen
@@ -357,10 +368,14 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
       requireSingleHomeChain(session.plan.targets)
       const kind = session.payment?.started ? 'payment' : 'direct'
       const submitted = session[kind]
-      if (!submitted?.started) return session
+      if (!submitted?.started) {
+        // An uncertain sponsor request: the user's check retires it, so the flow reopens (a deliberate new request or self-payment).
+        return sponsorUnknown(session) ? save({ ...session, listing: { ...session.listing, requested: false, requestExited: true } }) : session
+      }
+      if (submitted.settled === 'success') return session
       // Unreadable: this runs only on the user's explicit check, which retires the submission.
       const outcome = await ports.hold.exit(session, kind).catch(() => ({ released: true }) as { released: boolean } & Partial<LaunchSettlement>)
-      if (outcome.settled) return saveSettlement(session, kind, outcome.settled.hash)
+      if (outcome.settled) return saveSettlement(session, kind, outcome.settled)
       if (!outcome.released) return session
       const exited = { ...submitted, exited: true }
       return kind === 'direct'

@@ -34,6 +34,14 @@ describe('PendingWriteExit when adoption is refused or unreadable', () => {
     expect(button('I checked it. Review it again.')).toBeUndefined()
   })
 
+  it('offers no check for a write whose success the journal already holds, even when recovery fails', async () => {
+    const exit = vi.fn(async () => {})
+    await mount({ pending: { ...pending, hash: HASH, settled: 'success' } as unknown as PendingBridgeWrite, look: async () => { throw new Error('rpc down') }, adopt: async () => 'refused' as const, exit, confirming: 'Your transfer went through. Its result is still confirming.' })
+    expect(button('I checked it. Review it again.')).toBeUndefined()
+    expect(container.textContent).not.toContain('cannot be confirmed from here')
+    expect(container.textContent).toContain('Your transfer went through. Its result is still confirming.')
+  })
+
   it('prefers the hold the SDK shows over the refused-adoption view', async () => {
     await mount({ look: async () => ({ exit: true, line: 'Held by the SDK.' }), adopt: async () => 'refused' as const })
     expect(container.textContent).toContain('Held by the SDK.')

@@ -99,6 +99,7 @@ export function StickyLaunchHost() {
     await current.prepare(plan, capability)
   }
   const complete = session ? launchComplete(session) : false
+  const settledSuccess = !!session && (session.direct?.settled === 'success' || session.payment?.settled === 'success')
   const recoveryOnly = !!session && session.plan.targets.length !== 1
   const chainId = hashChain ?? session?.plan.targets[0].chainId
   return <>
@@ -126,6 +127,7 @@ export function StickyLaunchHost() {
                   : <span className="text-muted">{session.direct?.started || session.payment?.started || session.published || session.listing.requested ? 'Waiting for verified deployment' : 'Ready for review'}</span>}
               </li>
             })}</ul>
+            {settledSuccess && !complete ? <p role="status" className="text-sm">Your launch went through. Its project is still confirming.</p> : null}
             {held && !complete ? <div role="status" className="space-y-1 text-sm">
               <p>{held.line}</p>
               {held.warning ? <p className="text-muted">{held.warning}</p> : null}
@@ -133,8 +135,8 @@ export function StickyLaunchHost() {
             {session.error || session.listing.error ? <p className="break-words text-sm text-err">{session.error || session.listing.error}</p> : null}
             <div className="flex flex-wrap gap-3">
               <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(current => current.refresh())}>Check again</button>
-              {!recoveryOnly && !complete && held?.exit ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(async current => { await current.exitHold(); setHeld(await current.hold()) })}>{held.label}</button> : null}
-              {!recoveryOnly && !complete && (session.direct?.started || session.payment?.started) ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(current => current.retry())}>Check failed transaction for retry</button> : null}
+              {!recoveryOnly && !complete && !settledSuccess && held?.exit ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(async current => { await current.exitHold(); setHeld(await current.hold()) })}>{held.label}</button> : null}
+              {!recoveryOnly && !complete && !settledSuccess && (session.direct?.started || session.payment?.started) ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(current => current.retry())}>Check failed transaction for retry</button> : null}
               {!recoveryOnly && !complete && !session.direct?.started && !session.payment?.started && (!session.listing.requested || session.listing.selfPaid) ?
                 <button type="button" className="btn-primary px-3 py-2" disabled={busy} onClick={() => void action(current => current.run())}>{session.mode === 'center' ? 'Request sponsored launch' : 'Continue launch'}</button> : null}
               {!recoveryOnly && !complete && session.mode === 'center' && !session.listing.requested ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(async current => { await current.selfPay(); await current.run() })}>Pay for launch myself</button> : null}

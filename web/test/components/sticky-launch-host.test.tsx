@@ -138,6 +138,18 @@ describe('global Sticky launch host', () => {
     expect(button(view.label)).toBeDefined()
   })
 
+  it('shows a confirming notice with only Check again for a launch the hold settled as success', async () => {
+    const pending = saved({ direct: { started: true, hash: HASH, settled: 'success' } })
+    localStorage.setItem(STICKY_LAUNCH_KEY, JSON.stringify(pending))
+    mocks.load.mockReturnValue(pending)
+    await mount()
+    await show()
+    expect(container.textContent).toContain('Your launch went through. Its project is still confirming.')
+    expect(button('Check again')).toBeDefined()
+    expect(button('Check failed transaction for retry')).toBeUndefined()
+    expect(button('Continue launch')).toBeUndefined()
+  })
+
   it('keeps a create click made before the lazy dialog host mounts', async () => {
     openStickyLaunch('testnet')
     await mount()

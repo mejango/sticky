@@ -142,7 +142,7 @@ export function CollectorFlow({ source, info, onSettled }: {
           releaseUnsubmitted: undo,
           // The user's exit released the SDK hold: the reservation goes, the saved transfer stays.
           released: async () => { await endPendingBridgeAttempt(current.owner, held.id); setPending(null) },
-          settled: settlement => run(async () => { await settleStored(held, settlement.hash); setReview(null); tx.reset() }),
+          settled: settlement => run(async () => { await settleStored(held, settlement.hash, settlement.result); setReview(null); tx.reset() }),
           submitted: (hash, safeProposal) => {
             if (!reserved && !readPendingBridgeWrite(current.owner)) { savePendingBridgeWrite(current.owner, held); reserved = true }
             savePendingBridgeSubmission(held, hash, safeProposal)
@@ -153,17 +153,17 @@ export function CollectorFlow({ source, info, onSettled }: {
     })
   }
   /** True once the settlement is adopted. A busy flow skips it and a failed recovery leaves it, so the panel asks again. */
-  async function settleFromPanel(held: PendingBridgeWrite, hash: Hex): Promise<boolean> {
+  async function settleFromPanel(held: PendingBridgeWrite, hash: Hex, result?: 'success' | 'failed'): Promise<boolean> {
     if (busy) return false
     let adopted = false
-    await run(async () => { await settleStored(held, hash); adopted = true })
+    await run(async () => { await settleStored(held, hash, result); adopted = true })
     return adopted
   }
   /** The SDK settled this write on authenticated evidence: its hash becomes the submission reference, and the normal recovery runs. */
-  async function settleStored(held: PendingBridgeWrite, hash: Hex) {
+  async function settleStored(held: PendingBridgeWrite, hash: Hex, result?: 'success' | 'failed') {
     const stored = readPendingBridgeWrite(held.owner)
     if (!stored || stored.id !== held.id) throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
-    await recover(hash, await adoptSettlementHash(stored.owner, stored.id, hash))
+    await recover(hash, await adoptSettlementHash(stored.owner, stored.id, hash, undefined, result))
     await refresh()
   }
   async function recover(hash: Hex, held: PendingBridgeWrite) {
@@ -234,12 +234,12 @@ export function CollectorFlow({ source, info, onSettled }: {
         <p className="text-sm">A transaction may still execute. Recover it before delivering another allocation.</p>
         {ours ? <>
           {!pending.hash ? <p className="text-sm text-muted">The wallet returned no submission reference. This attempt remains locked; a matching earlier transaction cannot prove it finished.</p> : null}
-          <PendingWriteExit pending={pending} disabled={busy} look={tx.storedHold} adopt={write => withBridgeLock(() => tx.adoptStored(write), true).catch(() => 'refused' as const)}
-            settle={settlement => settleFromPanel(pending, settlement.hash)}
+          <PendingWriteExit pending={pending} disabled={busy} confirming="Your delivery went through. Its result is still confirming." look={tx.storedHold} adopt={write => withBridgeLock(() => tx.adoptStored(write), true).catch(() => 'refused' as const)}
+            settle={settlement => settleFromPanel(pending, settlement.hash, settlement.result)}
             exit={() => run(async () => {
               const out = await tx.exitStored({ chainId: pending.request.chainId, owner: pending.owner, to: pending.request.address, data: pending.request.data, value: pending.request.value, intent: pending.intent, hash: pending.hash, safeProposal: pending.safeProposal })
-              if (out.outcome === 'settled') return settleStored(pending, out.hash)
-              if (out.outcome !== 'released') return
+              if (out.outcome === 'settled') return settleStored(pending, out.hash, out.result)
+              if (out.outcome !== 'released' || pending.settled === 'success') return
               await endPendingBridgeAttempt(pending.owner, pending.id); setPending(null); await refresh()
             })} />
           {pending.safeProposal ? <p className="text-sm text-muted">Complete the Safe proposal, then check its executed transaction hash.</p> : null}

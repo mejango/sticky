@@ -32,6 +32,8 @@ export type PendingBridgeWrite = {
   request: StoredBridgeWrite
   hash?: Hex
   safeProposal?: boolean
+  /** The SDK's authenticated result for this write, kept with its hash: a success is followed to its end, never retired as unknown. */
+  settled?: 'success' | 'failed'
   recordKey?: string
   metadata?: Hex
   /** The hold key of a write whose calldata regenerates on retry (see `holdIntent`); absent for an exact-call hold. */
@@ -248,11 +250,16 @@ export function savePendingBridgeSubmission(expected: PendingBridgeWrite, hash: 
  * normal recovery verifies the settled transaction. Only the SDK's hash is ever passed here; a Safe proposal keeps
  * its proposal hash.
  */
-export async function adoptSettlementHash(owner: Address, id: string | undefined, hash: Hex, storage: BridgeStorage = localStorage): Promise<PendingBridgeWrite> {
+export async function adoptSettlementHash(owner: Address, id: string | undefined, hash: Hex, storage: BridgeStorage = localStorage, result?: 'success' | 'failed'): Promise<PendingBridgeWrite> {
   const stored = readStoredPendingBridgeWrite(owner, storage)
   if (!stored || !id || stored.id !== id || !isHash(hash)) throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
-  if (stored.safeProposal || (stored.hash && stored.hash.toLowerCase() === hash.toLowerCase())) return stored
-  const adopted: PendingBridgeWrite = { ...stored, hash, safeProposal: false }
+  if (stored.safeProposal || (stored.hash && stored.hash.toLowerCase() === hash.toLowerCase())) {
+    if (!result || stored.settled === result || stored.safeProposal) return stored
+    const learned: PendingBridgeWrite = { ...stored, settled: result }
+    savePendingBridgeWrite(owner, learned, storage)
+    return learned
+  }
+  const adopted: PendingBridgeWrite = { ...stored, hash, safeProposal: false, ...(result ? { settled: result } : {}) }
   if (stored.metadata && stored.recordKey) {
     const { metadata } = stored
     await updateBridgeRecords(stored.recordKey, records => records.map(record =>

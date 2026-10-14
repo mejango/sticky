@@ -376,6 +376,50 @@ describe('durable Sticky launch controller', () => {
     expect(f.ports.sendDirect).toHaveBeenCalledOnce()
   })
 
+  it('keeps following a settled success: later recovery failures never retire it', async () => {
+    const f = fixture()
+    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); throw new Error('lost') })
+    await expect(f.controller.run()).rejects.toThrow()
+    vi.mocked(f.ports.hold.look).mockResolvedValueOnce({ settled: { hash: H1, result: 'success' } })
+    await f.controller.hold()
+    expect(f.store.load()?.direct).toEqual({ started: true, hash: H1, settled: 'success' })
+    vi.mocked(f.ports.hold.look).mockRejectedValue(new Error('rpc down'))
+    vi.mocked(f.ports.hold.exit).mockRejectedValue(new Error('rpc down'))
+    await expect(f.controller.hold()).resolves.toBeNull()
+    await f.controller.exitHold()
+    expect(f.store.load()?.direct).toEqual({ started: true, hash: H1, settled: 'success' })
+    expect(f.store.load()?.directAttempts).toBeUndefined()
+  })
+
+  describe('an uncertain sponsor request', () => {
+    const uncertain = async () => {
+      const f = fixture([84532], 'sponsored')
+      vi.mocked(f.ports.sponsor).mockImplementationOnce(async (_session, beforeRequest) => { await beforeRequest(); throw new Error('timeout') })
+      vi.mocked(f.ports.status).mockRejectedValue(new Error('discovery down'))
+      await expect(f.controller.run()).rejects.toThrow('timeout')
+      await f.controller.refresh()
+      return f
+    }
+
+    it('reaches the persisted check when discovery cannot tell, and the check reopens the flow', async () => {
+      const f = await uncertain()
+      expect(f.store.load()?.listing.requested).toBe(true)
+      await expect(f.controller.hold()).resolves.toMatchObject({ exit: true, checkRequired: true })
+      await f.controller.exitHold()
+      expect(f.store.load()?.listing).toMatchObject({ requested: false, requestExited: true })
+      await expect(f.controller.hold()).resolves.toBeNull()
+    })
+
+    it('offers no check while an execution was found or discovery works', async () => {
+      const f = await uncertain()
+      vi.mocked(f.ports.status).mockResolvedValue({ 84532: [H1] })
+      await f.controller.refresh()
+      await expect(f.controller.hold()).resolves.toBeNull()
+      await f.controller.exitHold()
+      expect(f.store.load()?.listing.requested).toBe(true)
+    })
+  })
+
   it('keeps the original hash locked when finalized failure proof is unavailable or reorged', async () => {
     const f = fixture()
     await f.controller.run()

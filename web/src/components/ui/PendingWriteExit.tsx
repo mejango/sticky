@@ -11,7 +11,9 @@ type Look = StoredHold
  * hashed or not. The exit shows only when the SDK offers one (a hash the chain still knows has none); `exit`
  * asks the SDK to release the call and clears the reservation only after it does.
  */
-export function PendingWriteExit({ pending, disabled, look, adopt, settle, exit }: {
+export function PendingWriteExit({ pending, disabled, look, adopt, settle, exit, confirming }: {
+  /** The notice for a write the hold settled as success whose details are still being read. */
+  confirming?: string
   pending: PendingBridgeWrite
   disabled: boolean
   look?: (write: { chainId: number; owner: PendingBridgeWrite['owner']; to: PendingBridgeWrite['request']['address']; data: PendingBridgeWrite['request']['data']; value: string; intent?: string; hash?: `0x${string}`; safeProposal?: boolean; submittedAt?: number }) => Promise<Look>
@@ -64,6 +66,8 @@ export function PendingWriteExit({ pending, disabled, look, adopt, settle, exit 
   const exitOffered = look && shown && 'exit' in shown && shown.exit
   const warning = look ? (shown && 'warning' in shown ? shown.warning : undefined) ?? (exitOffered ? writeExitMessage({ value }) : undefined) : writeExitMessage({ value })
   const offered = look ? !!exitOffered : !pending.hash && !pending.safeProposal
+  // A success the journal already holds is followed by its own recovery: no check, no exit.
+  if (pending.settled === 'success') return confirming ? <p className="text-sm">{confirming}</p> : null
   if (look && refused && !line) {
     return (
       <>
