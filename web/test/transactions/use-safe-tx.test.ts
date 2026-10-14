@@ -1101,6 +1101,34 @@ describe('useSafeTx', () => {
     })
   })
 
+  describe('an exit and where it comes from', () => {
+    it('renders no exit from a cross-tab emission, and renders it once a state(client) read allows one', async () => {
+      vi.useFakeTimers()
+      try {
+        const callData = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
+        // This tab's wallet refuses: nothing is held here.
+        mocks.writeContract.mockRejectedValueOnce(new UserRejectedRequestError(new Error('The wallet did not send it.')))
+        const hook = await renderHook()
+        await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+        expect(hook.ref.current).toMatchObject({ phase: 'error', held: null })
+
+        // Another tab reserves the same call and loses its wallet reply.
+        const otherTab = createWriteHold().open({ chainId: 10, account: ALICE, safe: false, call: { to: BOB, data: callData, value: 7n } })
+        await otherTab.send(mocks.publicClient as never, async gate => { await gate.beforeSend(); throw new Error('lost') }).catch(() => undefined)
+
+        // The storage notification reaches this tab: a replayed state, never an exit.
+        await act(async () => { window.dispatchEvent(new StorageEvent('storage', { key: 'nana-sdk:reviewed-write:v2:probe' })) })
+        expect(hook.ref.current!.held).toBeNull()
+
+        // The next state(client) read is the gate, and it allows the exit.
+        await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
+        expect(hook.ref.current!.held).toMatchObject({ label: WRITE_EXIT_LABEL })
+        expect(hook.ref.current!.held!.exit).toBeTypeOf('function')
+        expect(mocks.writeContract).toHaveBeenCalledOnce()
+      } finally { vi.useRealTimers() }
+    })
+  })
+
   describe('a pending write another tab settled', () => {
     const callData = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
     /** Tab B verifies the receipt with its own client and settles the hold; tab A's local receipt reads stay unavailable. */
