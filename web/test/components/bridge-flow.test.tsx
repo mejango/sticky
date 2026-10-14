@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TxRequest, TxSendOptions } from '@/hooks/useSafeTx'
 import { bridgeCalldata, type BridgeMovement, type BridgeRoute } from '@/lib/sticky-bridge'
 import { bridgeStorageKey, createPendingBridgeWrite, readBridgeRecords, readPendingBridgeWrite, saveBridgeRecords, savePendingBridgeWrite, saveWatchedBridgeRoute, storeBridgeWrite } from '@/lib/sticky-bridge-journal'
+import { WRITE_EXIT_LABEL } from '@bananapus/nana-sdk-core/review'
 import { WalletAuthContext } from '@/providers/WalletAuthContext'
 import { stickyInfo } from '../home-fixtures'
 
@@ -213,6 +214,38 @@ describe('reviewed durable bridge workflow', () => {
     expect(readPendingBridgeWrite(OWNER)?.hash).toBeUndefined()
     expect(button('Review transfer').disabled).toBe(true)
     expect(text()).toContain('may still execute')
+  })
+  it('offers the SDK exit for a hashless reservation after reload, clears the reservation, keeps the transfer, and allows exactly one more send', async () => {
+    const normalSend = mocks.tx.send as (request: TxRequest, options: TxSendOptions) => Promise<Hex | null>
+    mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => { await options.durableRecovery?.reserve(); return null })
+    await review(); await press('Confirm & approve'); await press('Cancel')
+    const metadata = readBridgeRecords(KEY)[0].metadata
+    await act(async () => root.unmount()); root = createRoot(host); await render()
+    expect(readPendingBridgeWrite(OWNER)?.hash).toBeUndefined()
+    expect(button('Review transfer').disabled).toBe(true)
+
+    // Nothing can send while the reservation stands; the exit is the way out.
+    expect(button(WRITE_EXIT_LABEL)).toBeDefined()
+    mocks.tx.exitStored = vi.fn(async () => true)
+    await press(WRITE_EXIT_LABEL)
+    expect(mocks.tx.exitStored).toHaveBeenCalledOnce()
+    expect(readPendingBridgeWrite(OWNER)).toBeNull()
+    expect(readBridgeRecords(KEY)).toHaveLength(1)
+    expect(readBridgeRecords(KEY)[0].metadata).toBe(metadata)
+
+    mocks.tx.send = vi.fn(normalSend)
+    await press('Continue transfer')
+    await press('Confirm & approve')
+    expect(mocks.tx.send).toHaveBeenCalledOnce()
+  })
+  it('keeps the reservation when the SDK refuses the exit', async () => {
+    mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => { await options.durableRecovery?.reserve(); return null })
+    await review(); await press('Confirm & approve'); await press('Cancel')
+    await act(async () => root.unmount()); root = createRoot(host); await render()
+    mocks.tx.exitStored = vi.fn(async () => false)
+    await press(WRITE_EXIT_LABEL)
+    expect(readPendingBridgeWrite(OWNER)).not.toBeNull()
+    expect(button('Review transfer').disabled).toBe(true)
   })
   it('shows pending recovery even when receiver or route evidence is unavailable', async () => {
     savePendingBridgeWrite(OWNER, { owner: OWNER, request: storeBridgeWrite(queuedRequest()), hash: HASH })

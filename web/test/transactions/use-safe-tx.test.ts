@@ -996,6 +996,34 @@ describe('useSafeTx', () => {
     } finally { vi.useRealTimers() }
   })
 
+  it('holds a write a domain journal reserves after a hashless failure, and its exit releases the reservation for exactly one more send', async () => {
+    vi.useFakeTimers()
+    try {
+      const journal = { reserve: vi.fn(), releaseUnsubmitted: vi.fn(), submitted: vi.fn(), released: vi.fn() }
+      mocks.writeContract.mockRejectedValueOnce(new Error('The wallet broadcast the transfer but its RPC response was lost.'))
+      const hook = await renderHook()
+      const send = () => act(async () => { await hook.ref.current!.send(request, { ...reviewedByAlice, durableRecovery: journal }) })
+      await send()
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+      expect(hook.ref.current).toMatchObject({ phase: 'submitted', held: { label: WRITE_EXIT_LABEL } })
+
+      // Before the exit is accepted, nothing sends and nothing is reserved again.
+      await send()
+      await act(async () => { await vi.advanceTimersByTimeAsync(31 * 60_000) })
+      await send()
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+      expect(journal.reserve).toHaveBeenCalledOnce()
+      expect(journal.released).not.toHaveBeenCalled()
+
+      await act(async () => hook.ref.current!.held!.exit!())
+      expect(journal.released).toHaveBeenCalledOnce()
+      expect(hook.ref.current).toMatchObject({ phase: 'idle', held: null })
+      await send()
+      expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+      expect(journal.reserve).toHaveBeenCalledTimes(2)
+    } finally { vi.useRealTimers() }
+  })
+
   it('still holds and sends where the browser has no Web Locks', async () => {
     vi.stubGlobal('navigator', { locks: undefined })
     vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -1061,11 +1089,11 @@ describe('useSafeTx', () => {
     expect(recoveryRecords()).toHaveLength(0)
   })
 
-  it('awaits a typed domain hash handoff and does not open a second generic journal', async () => {
+  it('awaits a typed domain hash handoff while the SDK hold keeps the same write beside the journal', async () => {
     const events: string[] = []
     mocks.writeContract.mockImplementationOnce(async () => {
       events.push('write')
-      expect(recoveryRecords()).toHaveLength(0)
+      expect(recoveryRecords()).toHaveLength(1)
       return HASH
     })
     const hook = await renderHook()

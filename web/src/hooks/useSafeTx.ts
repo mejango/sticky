@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { refreshAfterConfirmedWrite } from '@/lib/sticky-refresh'
-import { getAccount } from '@wagmi/core'
+import { getAccount, getPublicClient } from '@wagmi/core'
 import {
   BaseError,
   encodeFunctionData,
@@ -114,6 +114,8 @@ export type TxSendOptions = {
     reserve: () => unknown | Promise<unknown>
     releaseUnsubmitted: () => unknown | Promise<unknown>
     submitted: (hash: Hex, safe: boolean) => unknown | Promise<unknown>
+    /** The user's exit released the SDK hold on this write: clear the reservation, keep the transfer's metadata. */
+    released?: () => unknown | Promise<unknown>
   }
   /**
    * The exact request was already rendered in a parent confirmation surface.
@@ -537,6 +539,8 @@ export function useSafeTx(chainId: number) {
   const inFlightRef = useRef(false)
   /** True from the moment the call is reserved until the wallet's own promise settles: nothing recovers an attempt still at the prompt. */
   const walletOpenRef = useRef(false)
+  /** Clears a domain journal's reservation when the user's exit releases the hold. */
+  const releasedRef = useRef<(() => unknown | Promise<unknown>) | null>(null)
   const generation = useRef(0)
   const renderedChain = useRef(chainId)
   useEffect(() => {
@@ -778,7 +782,9 @@ export function useSafeTx(chainId: number) {
         /** The exact call simulated and sent, which a Safe execution must run. */
         let sentCall = callOf(request)
         // A domain journal (bridge, collector) holds its own writes; every other write is held here.
-        handle = options.durableRecovery ? null : holds.open({ chainId: request.chainId, account, safe: viaSafe, call: sentCall })
+        // The SDK hold covers every write; a domain journal keeps its own reservation beside it.
+        handle = holds.open({ chainId: request.chainId, account, safe: viaSafe, call: sentCall })
+        releasedRef.current = options.durableRecovery?.released ?? null
         watchHold(handle)
         const execute = async (gate: WriteHoldGate | null) => {
           if (!isCurrent()) return null
@@ -1000,6 +1006,8 @@ export function useSafeTx(chainId: number) {
     try {
       const { released, state } = await current.exit(shown, { checkedWallet: true }, publicClient)
       if (released) {
+        await releasedRef.current?.()
+        releasedRef.current = null
         const key = shownKeyRef.current
         // The hold is released: the registry's entry for this call no longer stands in the way of a fresh proposal.
         if (key && holdsCall(proposals.get(key))) {
@@ -1010,6 +1018,22 @@ export function useSafeTx(chainId: number) {
       } else apply(state)
     } catch { /* The hold stays; the next look shows why. */ }
   }, [publicClient, reset, apply])
+
+  /**
+   * A write saved by a domain journal that a reload left held, with no flow open: the SDK's exit for
+   * its exact call. True when the call is no longer held, so the caller may clear its own reservation.
+   */
+  const exitStored = useCallback(async (write: { chainId: number; owner: Address; to: Address; data: Hex; value: bigint | string }): Promise<boolean> => {
+    try {
+      const client = getPublicClient(wagmiConfig, { chainId: write.chainId as never }) as unknown as Parameters<WriteHoldHandle['state']>[0] | undefined
+      if (!client) return false
+      const stored = holds.open({ chainId: write.chainId, account: write.owner, safe: false, call: { to: write.to, data: write.data, value: write.value } })
+      const state = await stored.state(client)
+      if (state.status === 'clear') return true
+      if (!state.exit) return false
+      return (await stored.exit(state, { checkedWallet: true }, client)).released
+    } catch { return false }
+  }, [])
 
   /**
    * Close the current confirmation. The durable recovery owner remains held;
@@ -1068,6 +1092,7 @@ export function useSafeTx(chainId: number) {
       ? proposal?.phase === 'unproven' || (proposal?.phase === 'awaiting' && !!proposal.message)
       : phase === 'pending' && receipt.isError && !receiptData),
     send,
+    exitStored,
     reset,
     dismiss,
   }

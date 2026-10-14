@@ -7,6 +7,7 @@ import { BridgeFlow } from '@/components/project/flows/BridgeFlow'
 import { reviewGate } from '@/components/project/flows/review-gate'
 import { FIELD_INPUT, FIELD_LABEL } from '@/components/project/StakeAgeFields'
 import { TxConfirmDialog, type TxConfirmRow } from '@/components/ui/TxConfirmDialog'
+import { PendingWriteExit } from '@/components/ui/PendingWriteExit'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { useSafeTx } from '@/hooks/useSafeTx'
@@ -138,6 +139,8 @@ export function CollectorFlow({ source, info, onSettled }: {
             }
           },
           releaseUnsubmitted: undo,
+          // The user's exit released the SDK hold: the reservation goes, the saved transfer stays.
+          released: async () => { await undo(); setPending(null) },
           submitted: (hash, safeProposal) => {
             if (!reserved && !readPendingBridgeWrite(current.owner)) { savePendingBridgeWrite(current.owner, held); reserved = true }
             savePendingBridgeSubmission(held, hash, safeProposal)
@@ -209,6 +212,10 @@ export function CollectorFlow({ source, info, onSettled }: {
         <p className="text-sm">A transaction may still execute. Recover it before delivering another allocation.</p>
         {ours ? <>
           {!pending.hash ? <p className="text-sm text-muted">The wallet returned no submission reference. This attempt remains locked; a matching earlier transaction cannot prove it finished.</p> : null}
+          <PendingWriteExit pending={pending} disabled={busy} exit={() => run(async () => {
+            if (!(await tx.exitStored({ chainId: pending.request.chainId, owner: pending.owner, to: pending.request.address, data: pending.request.data, value: pending.request.value }))) return
+            assertPendingBridgeWrite(pending); savePendingBridgeWrite(pending.owner, null); setPending(null); await refresh()
+          })} />
           {pending.safeProposal ? <p className="text-sm text-muted">Complete the Safe proposal, then check its executed transaction hash.</p> : null}
           {pending.hash && !pending.safeProposal ? <ViewTransactionLink chainId={pending.request.chainId} hash={pending.hash} /> : null}
           <label htmlFor={`${id}-hash`} className={FIELD_LABEL}>Executed transaction hash</label>

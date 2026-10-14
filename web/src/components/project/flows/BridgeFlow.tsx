@@ -8,6 +8,7 @@ import { reviewGate } from '@/components/project/flows/review-gate'
 import { FIELD_INPUT, FIELD_LABEL, StakeAgeFields } from '@/components/project/StakeAgeFields'
 import { ModalShell } from '@/components/ui/ModalShell'
 import { TxConfirmDialog, type TxConfirmRow } from '@/components/ui/TxConfirmDialog'
+import { PendingWriteExit } from '@/components/ui/PendingWriteExit'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
@@ -249,6 +250,8 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
             }
           },
           releaseUnsubmitted: undo,
+          // The user's exit released the SDK hold: the reservation goes, the saved transfer stays.
+          released: async () => { await undo(); setPending(null) },
           submitted: async (hash, safeProposal) => {
             // A queued Safe proposal can be adopted without reserving a new write.
             if (!reserved && !readPendingBridgeWrite(current.owner)) { savePendingBridgeWrite(current.owner, held); reserved = true }
@@ -336,6 +339,11 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
         {pending ? <div role="status" className="space-y-2 border-t border-line pt-3">
           <p className="text-sm">A bridge transaction may still execute. Check its wallet status before continuing.</p>
           {!pending.hash && !bridgeWriteHasUniqueReference(pending.request.data) ? <p className="text-sm text-muted">The wallet did not return a submission reference. A matching historical approval or bridge-send transaction cannot prove this attempt finished; this browser keeps further bridge actions locked.</p> : null}
+          <PendingWriteExit pending={pending} disabled={busy} exit={() => run(async () => {
+            if (!(await tx.exitStored({ chainId: pending.request.chainId, owner: pending.owner, to: pending.request.address, data: pending.request.data, value: pending.request.value }))) return
+            // The reservation goes; the saved transfer and its metadata stay, so its next step can be reviewed again.
+            assertPendingBridgeWrite(pending); savePendingBridgeWrite(pending.owner, null); setPending(null); await refresh()
+          })} />
           {pending.safeProposal ? <p className="text-sm text-muted">Open the Safe queue and finish its approvals. Use the executed transaction hash below when it is ready.</p> : null}
           <label htmlFor={`${id}-hash`} className={FIELD_LABEL}>Executed transaction hash</label>
           <input id={`${id}-hash`} className={`${FIELD_INPUT} font-mono text-xs`} value={recoveryHash} placeholder={pending.safeProposal ? '0x…' : pending.hash ?? '0x…'} onChange={event => setRecoveryHash(event.target.value)} />
