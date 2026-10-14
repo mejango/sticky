@@ -82,6 +82,11 @@ export type TxPhase =
   | 'success'
   | 'error'
 
+/** What a panel learns of a stored write: the SDK's line and exit, or an authenticated settlement. */
+export type StoredHold = { exit: boolean; line: string; warning?: string } | { settled: { hash: Hex; result: 'success' | 'failed' } } | null
+/** How a user's exit on a stored write ended. Only `released` abandons; `settled` carries the authenticated hash. */
+export type StoredExit = { outcome: 'released' } | { outcome: 'settled'; hash: Hex; result: 'success' | 'failed' } | { outcome: 'held' }
+
 type FollowClient = NonNullable<ReturnType<typeof usePublicClient>>
 
 export type TxRequest = {
@@ -116,6 +121,8 @@ export type TxSendOptions = {
     submitted: (hash: Hex, safe: boolean) => unknown | Promise<unknown>
     /** The user's exit released the SDK hold on this write: clear the reservation, keep the transfer's metadata. */
     released?: () => unknown | Promise<unknown>
+    /** The SDK settled the write on authenticated evidence (never an abandon): record this hash and run the normal confirmed recovery. */
+    settled?: (settlement: { hash: Hex; result: 'success' | 'failed' }) => unknown | Promise<unknown>
   }
   /**
    * The exact request was already rendered in a parent confirmation surface.
@@ -541,6 +548,8 @@ export function useSafeTx(chainId: number) {
   const walletOpenRef = useRef(false)
   /** Clears a domain journal's reservation when the user's exit releases the hold. */
   const releasedRef = useRef<(() => unknown | Promise<unknown>) | null>(null)
+  /** Records an authenticated settlement the SDK reached for the write this flow sent. */
+  const settledRef = useRef<((settlement: { hash: Hex; result: 'success' | 'failed' }) => unknown | Promise<unknown>) | null>(null)
   const generation = useRef(0)
   const renderedChain = useRef(chainId)
   useEffect(() => {
@@ -561,6 +570,11 @@ export function useSafeTx(chainId: number) {
     // A hold on screen that clears meanwhile ends the attempt: nothing is sent, and the result stays shown.
     if (!shown && (heldRef.current && 'exit' in heldRef.current && heldRef.current.exit) && value?.status === 'clear') {
       const result = value.settled?.result
+      if (value.settled && 'hash' in value.settled && settledRef.current) {
+        const settle = settledRef.current
+        settledRef.current = null
+        void Promise.resolve(settle({ hash: value.settled.hash, result: value.settled.result })).catch(() => undefined)
+      }
       setSettledNote(result === 'failed' ? WRITE_HOLD_REVERTED_LINE : result === 'expired' ? SAFE_PROPOSAL_EXPIRED : 'Your earlier transaction went through.')
       setPhase('submitted')
     }
@@ -785,6 +799,7 @@ export function useSafeTx(chainId: number) {
         // The SDK hold covers every write; a domain journal keeps its own reservation beside it.
         handle = holds.open({ chainId: request.chainId, account, safe: viaSafe, call: sentCall })
         releasedRef.current = options.durableRecovery?.released ?? null
+        settledRef.current = options.durableRecovery?.settled ?? null
         watchHold(handle)
         const execute = async (gate: WriteHoldGate | null) => {
           if (!isCurrent()) return null
@@ -1020,17 +1035,23 @@ export function useSafeTx(chainId: number) {
           notifyProposals()
         }
         reset()
+      } else if (state.status === 'clear' && state.settled && 'hash' in state.settled) {
+        // A confirmation landed meanwhile: the SDK settled it on authenticated evidence. This is never an abandon.
+        const settle = settledRef.current
+        settledRef.current = null
+        await settle?.({ hash: state.settled.hash, result: state.settled.result })
+        showHeld(state)
       } else apply(state)
     } catch { /* The hold stays; the next look shows why. */ }
-  }, [publicClient, reset, apply])
+  }, [publicClient, reset, apply, showHeld])
 
   /** What the SDK says of a stored write (hashed or not), so a panel shows its line and offers an exit only when the SDK does. */
-  const storedHold = useCallback(async (write: { chainId: number; owner: Address; to: Address; data: Hex; value: bigint | string }): Promise<{ exit: boolean; line: string; warning?: string } | null> => {
+  const storedHold = useCallback(async (write: { chainId: number; owner: Address; to: Address; data: Hex; value: bigint | string }): Promise<StoredHold> => {
     try {
       const client = getPublicClient(wagmiConfig, { chainId: write.chainId as never }) as unknown as Parameters<WriteHoldHandle['state']>[0] | undefined
       if (!client) return null
       const state = await holds.open({ chainId: write.chainId, account: write.owner, safe: false, call: { to: write.to, data: write.data, value: write.value } }).state(client)
-      if (state.status === 'clear') return null
+      if (state.status === 'clear') return state.settled && 'hash' in state.settled ? { settled: { hash: state.settled.hash, result: state.settled.result } } : null
       return { exit: state.exit, line: state.line, ...('warning' in state && state.warning ? { warning: state.warning } : {}) }
     } catch { return null }
   }, [])
@@ -1039,16 +1060,22 @@ export function useSafeTx(chainId: number) {
    * A write saved by a domain journal that a reload left held, with no flow open: the SDK's exit for
    * its exact call. True when the call is no longer held, so the caller may clear its own reservation.
    */
-  const exitStored = useCallback(async (write: { chainId: number; owner: Address; to: Address; data: Hex; value: bigint | string }): Promise<boolean> => {
+  const exitStored = useCallback(async (write: { chainId: number; owner: Address; to: Address; data: Hex; value: bigint | string }): Promise<StoredExit> => {
     try {
       const client = getPublicClient(wagmiConfig, { chainId: write.chainId as never }) as unknown as Parameters<WriteHoldHandle['state']>[0] | undefined
-      if (!client) return false
+      if (!client) return { outcome: 'held' }
       const stored = holds.open({ chainId: write.chainId, account: write.owner, safe: false, call: { to: write.to, data: write.data, value: write.value } })
+      const settledOf = (state: WriteHoldState): StoredExit =>
+        state.status === 'clear' && state.settled && 'hash' in state.settled
+          ? { outcome: 'settled', hash: state.settled.hash, result: state.settled.result }
+          // Cleared with no evidence handed back: not an abandon, so the caller's reservation stays.
+          : { outcome: 'held' }
       const state = await stored.state(client)
-      if (state.status === 'clear') return true
-      if (!state.exit) return false
-      return (await stored.exit(state, { checkedWallet: true }, client)).released
-    } catch { return false }
+      if (state.status === 'clear') return settledOf(state)
+      if (!state.exit) return { outcome: 'held' }
+      const { released, state: after } = await stored.exit(state, { checkedWallet: true }, client)
+      return released ? { outcome: 'released' } : settledOf(after)
+    } catch { return { outcome: 'held' } }
   }, [])
 
   /**
