@@ -21,6 +21,8 @@ export type StickyLaunchSession = {
   paymentAttempts?: LaunchPaymentSubmission[]
   candidates: Record<number, Hex[]>
   results: Record<number, LaunchResult>
+  /** Deployments once authenticated, kept apart from the display results a refresh rebuilds: a later failed read never forgets them. */
+  proven?: Record<number, LaunchResult>
   listing: {
     state: 'pending' | 'published' | 'unlisted' | 'unavailable'
     intentId?: string
@@ -206,7 +208,7 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
         } catch { /* A bad candidate cannot prevent another canonical receipt from proving this chain. */ }
       }
     }
-    current = save({ ...current, results })
+    current = save({ ...current, results, proven: { ...current.proven, ...results } })
     if (current.payment?.hash) {
       let confirmed = false
       try { confirmed = await ports.verifyPayment(current) } catch { /* Unknown funding keeps its exact intent. */ }
@@ -228,8 +230,9 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     return current
   }
   /** A sponsored deployment was requested and discovery cannot say what happened: no transaction is known, so only the user's check remains. */
+const established = (session: StickyLaunchSession) => Object.keys(session.proven ?? {}).length > 0
 const sponsorUnknown = (session: StickyLaunchSession) => {
-  if (!session.listing.requested || session.listing.selfPaid || launchComplete(session) || session.direct?.started || session.payment?.started) return false
+  if (!session.listing.requested || session.listing.selfPaid || launchComplete(session) || established(session) || session.direct?.started || session.payment?.started) return false
   // A candidate hash is not an authenticated execution (that would be a verified result, which completes the launch):
   // within the window it keeps waiting, past it the check is offered like for an empty discovery.
   const known = session.plan.targets.some(target => session.candidates[target.chainId]?.length)

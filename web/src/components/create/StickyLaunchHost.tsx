@@ -99,7 +99,7 @@ export function StickyLaunchHost() {
     await current.prepare(plan, capability)
   }
   const complete = session ? launchComplete(session) : false
-  const settledSuccess = !!session && (session.direct?.settled === 'success' || session.payment?.settled === 'success')
+  const settledSuccess = !!session && (session.direct?.settled === 'success' || session.payment?.settled === 'success' || Object.keys(session.proven ?? {}).length > 0)
   const recoveryOnly = !!session && session.plan.targets.length !== 1
   const chainId = hashChain ?? session?.plan.targets[0].chainId
   return <>

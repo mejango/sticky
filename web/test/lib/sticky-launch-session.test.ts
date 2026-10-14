@@ -461,6 +461,28 @@ describe('durable Sticky launch controller', () => {
       } finally { vi.useRealTimers() }
     })
 
+    it('keeps an authenticated sponsored success: later failed verification never reaches the check or retires the request', async () => {
+      vi.useFakeTimers()
+      try {
+        vi.setSystemTime(new Date('2026-10-14T10:00:00Z'))
+        const f = fixture([84532], 'sponsored')
+        vi.mocked(f.ports.sponsor).mockImplementationOnce(async (_session, beforeRequest) => { await beforeRequest(); throw new Error('timeout') })
+        vi.mocked(f.ports.status).mockResolvedValue({ 84532: [H1] })
+        vi.mocked(f.ports.verifyDeployment).mockResolvedValueOnce({ hash: H1, projectId: '7', token: address('2') })
+        await expect(f.controller.run()).rejects.toThrow('timeout')
+        await f.controller.refresh()
+        expect(f.store.load()?.proven?.[84532]).toMatchObject({ hash: H1, projectId: '7' })
+        vi.mocked(f.ports.verifyDeployment).mockRejectedValue(new Error('rpc down'))
+        vi.setSystemTime(Date.now() + 31 * 60_000)
+        const after = await f.controller.refresh()
+        expect(after.results).toEqual({})
+        await expect(f.controller.hold()).resolves.toBeNull()
+        await f.controller.exitHold()
+        expect(f.store.load()?.listing.requested).toBe(true)
+        await expect(f.controller.selfPay()).rejects.toThrow()
+      } finally { vi.useRealTimers() }
+    })
+
     it('offers no check while an execution was found or discovery works', async () => {
       const f = await uncertain()
       vi.mocked(f.ports.status).mockResolvedValue({ 84532: [H1] })
