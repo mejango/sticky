@@ -84,7 +84,7 @@ export type TxPhase =
   | 'error'
 
 /** What a panel learns of a stored write: the SDK's line and exit, or an authenticated settlement. */
-export type StoredHold = { exit: boolean; line: string; warning?: string } | { settled: { hash: Hex; result: 'success' | 'failed' } } | null
+export type StoredHold = { exit: boolean; line: string; warning?: string; checked?: boolean } | { settled: { hash: Hex; result: 'success' | 'failed' } } | null
 /** How a user's exit on a stored write ended. Only `released` abandons; `settled` carries the authenticated hash. */
 export type StoredExit = { outcome: 'released' } | { outcome: 'settled'; hash: Hex; result: 'success' | 'failed' } | { outcome: 'held' }
 
@@ -524,6 +524,25 @@ function recordProposal(
  *    wallet signature and tracks the receipt.
  * 2. Phases drive the caller's UI; `error` carries a friendly message.
  */
+/**
+ * Where an intent-keyed write's older holds can be: Sticky main held every write by its exact call, so a retry whose
+ * calldata differs (a new quote) is found by the call's target and selector. An exact-call write needs none.
+ */
+function legacyHolds(namespace: string | undefined, to: Address, data: Hex): { match: { to: Address; selector: Hex } }[] {
+  return namespace ? [{ match: { to, selector: data.slice(0, 10) as Hex } }] : []
+}
+
+/** The hold for a write a domain journal saved, opened the way its send opened it. */
+function openStored(write: StoredWrite): WriteHoldHandle {
+  return holds.open(
+    { chainId: write.chainId, account: write.owner, safe: !!write.safeProposal, namespace: write.intent, call: { to: write.to, data: write.data, value: write.value } },
+    { legacy: legacyHolds(write.intent, write.to, write.data) },
+  )
+}
+
+/** A write a domain journal saved: its call, the intent key it was held under, and the reference it was given, if any. */
+type StoredWrite = { chainId: number; owner: Address; to: Address; data: Hex; value: bigint | string; intent?: string; hash?: Hex; safeProposal?: boolean }
+
 export function useSafeTx(chainId: number) {
   const queryClient = useQueryClient()
   const { isConnected, isCenterWallet } = useWallet()
@@ -593,6 +612,8 @@ export function useSafeTx(chainId: number) {
    */
   const showHeld = useCallback((value: WriteHoldState | null, local = false): boolean => {
     const shown = value && value.status !== 'clear' ? value : null
+    // A contended read (the lock was busy) is only the saved record: it never hides an exit already shown.
+    if (shown && shown.checked === false && heldRef.current && heldRef.current.status !== 'clear' && heldRef.current.exit && heldRef.current.reservation === shown.reservation) return false
     // A newer reservation this flow did not start (another window's attempt after this one ended) is not this flow's to show.
     if (value?.reservation) {
       if (reservationRef.current && reservationRef.current !== value.reservation) return false
@@ -857,7 +878,8 @@ export function useSafeTx(chainId: number) {
         proposalKeyRef.current = viaSafe ? proposalKey(request.chainId, account, sentCall) : null
         // A domain journal (bridge, collector) holds its own writes; every other write is held here.
         // The SDK hold covers every write; a domain journal keeps its own reservation beside it.
-        handle = holds.open({ chainId: request.chainId, account, safe: viaSafe, namespace: holdIntent(request), call: sentCall })
+        const namespace = holdIntent(request)
+        handle = holds.open({ chainId: request.chainId, account, safe: viaSafe, namespace, call: sentCall }, { legacy: legacyHolds(namespace, sentCall.to, sentCall.data) })
         releasedRef.current = options.durableRecovery?.released ?? null
         settledRef.current = options.durableRecovery?.settled ?? null
         watchHold(handle)
@@ -1121,13 +1143,13 @@ export function useSafeTx(chainId: number) {
   }, [publicClient, reset, apply, showHeld])
 
   /** What the SDK says of a stored write (hashed or not), so a panel shows its line and offers an exit only when the SDK does. */
-  const storedHold = useCallback(async (write: { chainId: number; owner: Address; to: Address; data: Hex; value: bigint | string; intent?: string }): Promise<StoredHold> => {
+  const storedHold = useCallback(async (write: StoredWrite): Promise<StoredHold> => {
     try {
       const client = getPublicClient(wagmiConfig, { chainId: write.chainId as never }) as unknown as Parameters<WriteHoldHandle['state']>[0] | undefined
       if (!client) return null
-      const state = await holds.open({ chainId: write.chainId, account: write.owner, safe: false, namespace: write.intent, call: { to: write.to, data: write.data, value: write.value } }).state(client)
+      const state = await openStored(write).state(client)
       if (state.status === 'clear') return state.settled && 'hash' in state.settled ? { settled: { hash: state.settled.hash, result: state.settled.result } } : null
-      return { exit: state.exit, line: state.line, ...('warning' in state && state.warning ? { warning: state.warning } : {}) }
+      return { exit: state.exit, line: state.line, checked: state.checked, ...('warning' in state && state.warning ? { warning: state.warning } : {}) }
     } catch { return null }
   }, [])
 
@@ -1136,19 +1158,16 @@ export function useSafeTx(chainId: number) {
    * the uncertainty, so the SDK offers its warned, explicit exit. Nothing is ever released here. A call that
    * already has a hold, or a settlement, is left as it is.
    */
-  const adoptStored = useCallback(async (write: { chainId: number; owner: Address; to: Address; data: Hex; value: bigint | string; intent?: string }): Promise<void> => {
+  const adoptStored = useCallback(async (write: StoredWrite): Promise<void> => {
     try {
       const client = getPublicClient(wagmiConfig, { chainId: write.chainId as never }) as unknown as Parameters<WriteHoldHandle['state']>[0] | undefined
       if (!client) return
-      const stored = holds.open({ chainId: write.chainId, account: write.owner, safe: false, namespace: write.intent, call: { to: write.to, data: write.data, value: write.value } })
+      const stored = openStored(write)
       const state = await stored.state(client)
       if (state.status !== 'clear' || state.settled) return
-      // TODO(SDK 2.36): replace this read and send with the atomic `hold.adopt(evidence)`, which reserves only when the
-      // key has no hold and no settlement, under the lock. Until then the state is read again right before sending,
-      // which only narrows the window in which another tab can settle this call.
-      const again = await stored.state(client)
-      if (again.status !== 'clear' || again.settled) return
-      await stored.send(client, async gate => { await gate.beforeSend(); throw new Error('Reserved from a saved reservation that has no reference.') }).catch(() => undefined)
+      // Atomic: reserved only when the key still has no hold and no settlement, under the lock; otherwise the current
+      // state comes back and nothing is taken. A saved hash (or a Safe proposal's hash) is verified and kept.
+      await stored.adopt(state, write.safeProposal && write.hash ? { safe: { safeTxHash: write.hash } } : write.hash ? { hash: write.hash } : undefined, client)
     } catch { /* The reservation stays in its journal, and the panel's own recovery still applies. */ }
   }, [])
 
@@ -1156,11 +1175,11 @@ export function useSafeTx(chainId: number) {
    * A write saved by a domain journal that a reload left held, with no flow open: the SDK's exit for
    * its exact call. True when the call is no longer held, so the caller may clear its own reservation.
    */
-  const exitStored = useCallback(async (write: { chainId: number; owner: Address; to: Address; data: Hex; value: bigint | string; intent?: string }): Promise<StoredExit> => {
+  const exitStored = useCallback(async (write: StoredWrite): Promise<StoredExit> => {
     try {
       const client = getPublicClient(wagmiConfig, { chainId: write.chainId as never }) as unknown as Parameters<WriteHoldHandle['state']>[0] | undefined
       if (!client) return { outcome: 'held' }
-      const stored = holds.open({ chainId: write.chainId, account: write.owner, safe: false, namespace: write.intent, call: { to: write.to, data: write.data, value: write.value } })
+      const stored = openStored(write)
       const settledOf = (state: WriteHoldState): StoredExit =>
         state.status === 'clear' && state.settled && 'hash' in state.settled
           ? { outcome: 'settled', hash: state.settled.hash, result: state.settled.result }

@@ -437,7 +437,24 @@ describe('reviewed durable bridge workflow', () => {
   })
   // Switch on with SDK 2.36's hold.adopt: a main-era reservation with a saved hash and no SDK record is adopted under the
   // domain lock, keeping the hash and any Safe identity; if its transaction dropped, the gate offers the warned exit.
-  it.todo('adopts a hashed legacy reservation, and offers the warned exit after 30 minutes when its transaction dropped')
+  it('adopts a hashed legacy reservation with its hash, and a Safe one with its proposal hash, under the domain lock', async () => {
+    savePendingBridgeWrite(OWNER, createPendingBridgeWrite({ owner: OWNER, request: storeBridgeWrite(queuedRequest()), intent: 'intent:bridge-queue:abc' }))
+    const hashed = { ...readPendingBridgeWrite(OWNER)!, hash: HASH, safeProposal: false }
+    savePendingBridgeWrite(OWNER, hashed)
+    mocks.tx.adoptStored = vi.fn(async () => undefined)
+    mocks.tx.storedHold = vi.fn(async () => ({ exit: false, line: 'Still pending.' }))
+    await render()
+    await vi.waitFor(() => expect(mocks.tx.adoptStored).toHaveBeenCalledOnce())
+    expect(mocks.tx.adoptStored).toHaveBeenCalledWith(expect.objectContaining({ owner: OWNER, hash: HASH, safeProposal: false }))
+
+    await act(async () => root.unmount()); root = createRoot(host)
+    savePendingBridgeWrite(OWNER, { ...hashed, safeProposal: true })
+    mocks.tx.adoptStored = vi.fn(async () => undefined)
+    await render()
+    await vi.waitFor(() => expect(mocks.tx.adoptStored).toHaveBeenCalledOnce())
+    expect(mocks.tx.adoptStored).toHaveBeenCalledWith(expect.objectContaining({ hash: HASH, safeProposal: true }))
+    expect(readPendingBridgeWrite(OWNER)).not.toBeNull()
+  })
   it('keeps the reservation when the SDK refuses the exit', async () => {
     mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => { await options.durableRecovery?.reserve(); return null })
     await review(); await press('Confirm & approve'); await press('Cancel')

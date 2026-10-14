@@ -1236,6 +1236,48 @@ describe('useSafeTx', () => {
       } finally { vi.useRealTimers() }
     })
 
+    it('adopts a hashed legacy reservation the node never knew, and offers the warned exit after 30 minutes', async () => {
+      vi.useFakeTimers()
+      try {
+        const data = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
+        const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n }
+        mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => { throw new TransactionNotFoundError({ hash }) })
+        const hook = await renderHook()
+        await act(async () => { await hook.ref.current!.adoptStored({ ...write, hash: HASH, safeProposal: false }) })
+        await expect(hook.ref.current!.storedHold(write)).resolves.toMatchObject({ exit: false })
+        await act(async () => { await vi.advanceTimersByTimeAsync(31 * 60_000) })
+        await expect(hook.ref.current!.storedHold(write)).resolves.toMatchObject({ exit: true })
+        // Never released by time alone.
+        expect(recoveryRecords()).toHaveLength(1)
+        await expect(hook.ref.current!.exitStored(write)).resolves.toEqual({ outcome: 'released' })
+      } finally { vi.useRealTimers() }
+    })
+
+    it('does not take a call another tab settled between the read and the adoption', async () => {
+      const data = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
+      const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n }
+      const hook = await renderHook()
+      await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+      mocks.receipt = { data: canonicalReceipt('success'), isError: false }
+      const other = createWriteHold().open({ chainId: 10, account: ALICE, safe: false, call: { to: BOB, data, value: 7n } })
+      await other.onReceipt(canonicalReceipt('success') as never, mocks.publicClient as never)
+      // A settlement stands: adopting does not hold the call again.
+      await act(async () => { await hook.ref.current!.adoptStored({ ...write, hash: HASH }) })
+      await expect(hook.ref.current!.storedHold(write)).resolves.toEqual({ settled: { result: 'success', hash: HASH } })
+    })
+
+    it('holds a retry under the intent key against a main-era hold with different calldata and the same call target', async () => {
+      const first = buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 5n, beneficiary: ALICE, minReturnedTokens: 9n, memo: '', metadata: '0x' })
+      const retry = buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 5n, beneficiary: ALICE, minReturnedTokens: 8n, memo: '', metadata: '0x' })
+      // What shipped on main: an exact-call hold with the first quote's calldata, no namespace.
+      const mainEra = createBrowserWriteRecovery({ chainId: 10, account: ALICE, safe: false, call: { to: first.address, data: encodeFunctionData({ abi: first.abi, functionName: first.functionName, args: first.args } as never), value: first.value } })
+      await mainEra.withLock(async () => { mainEra.reserve(undefined, { nonce: 7, blockNumber: 100n }) })
+      const hook = await renderHook()
+      await act(async () => { await hook.ref.current!.send(retry as never, reviewedByAlice) })
+      expect(mocks.writeContract).not.toHaveBeenCalled()
+      expect(hook.ref.current!.held).not.toBeNull()
+    })
+
     it('ignores a newer reservation it did not start', async () => {
       vi.useFakeTimers()
       try {

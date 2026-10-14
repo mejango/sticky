@@ -360,10 +360,10 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
         {pending ? <div role="status" className="space-y-2 border-t border-line pt-3">
           <p className="text-sm">A bridge transaction may still execute. Check its wallet status before continuing.</p>
           {!pending.hash && !bridgeWriteHasUniqueReference(pending.request.data) ? <p className="text-sm text-muted">The wallet did not return a submission reference. A matching historical approval or bridge-send transaction cannot prove this attempt finished; this browser keeps further bridge actions locked.</p> : null}
-          <PendingWriteExit pending={pending} disabled={busy} look={tx.storedHold} adopt={tx.adoptStored}
+          <PendingWriteExit pending={pending} disabled={busy} look={tx.storedHold} adopt={write => withBridgeLock(() => tx.adoptStored(write), true).catch(() => undefined)}
             settle={settlement => settleFromPanel(pending, settlement.hash)}
             exit={() => run(async () => {
-              const out = await tx.exitStored({ chainId: pending.request.chainId, owner: pending.owner, to: pending.request.address, data: pending.request.data, value: pending.request.value, intent: pending.intent })
+              const out = await tx.exitStored({ chainId: pending.request.chainId, owner: pending.owner, to: pending.request.address, data: pending.request.data, value: pending.request.value, intent: pending.intent, hash: pending.hash, safeProposal: pending.safeProposal })
               if (out.outcome === 'settled') return settleStored(pending, out.hash)
               if (out.outcome !== 'released') return
               // Abandoned: the reservation and the submission marker go; the transfer's metadata and steps stay.

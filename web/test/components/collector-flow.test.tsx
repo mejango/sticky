@@ -342,7 +342,15 @@ describe('permissionless collector delivery', () => {
     expect((mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls.length).toBe(sent)
   })
   // Switch on with SDK 2.36's hold.adopt, as in the bridge flow: a hashed legacy delivery with no SDK record gets the warned exit.
-  it.todo('adopts a hashed legacy delivery reservation, and offers the warned exit after 30 minutes when its transaction dropped')
+  it('adopts a hashed legacy delivery reservation with its hash', async () => {
+    const hashed = { ...createPendingBridgeWrite({ owner: OWNER, request: storeBridgeWrite(requestOf()), intent: 'intent:collector-delivery:abc' }), hash: HASH, safeProposal: false }
+    savePendingBridgeWrite(OWNER, hashed)
+    mocks.tx.adoptStored = vi.fn(async () => undefined)
+    mocks.tx.storedHold = vi.fn(async () => ({ exit: false, line: 'Still pending.' }))
+    await render()
+    await vi.waitFor(() => expect(mocks.tx.adoptStored).toHaveBeenCalledOnce())
+    expect(mocks.tx.adoptStored).toHaveBeenCalledWith(expect.objectContaining({ owner: OWNER, hash: HASH, safeProposal: false }))
+  })
   it('sends a delivery chosen with Max as "all", and a typed amount as itself', async () => {
     await render()
     await press('Max')

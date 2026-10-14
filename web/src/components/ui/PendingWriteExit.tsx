@@ -13,9 +13,9 @@ type Look = StoredHold
 export function PendingWriteExit({ pending, disabled, look, adopt, settle, exit }: {
   pending: PendingBridgeWrite
   disabled: boolean
-  look?: (write: { chainId: number; owner: PendingBridgeWrite['owner']; to: PendingBridgeWrite['request']['address']; data: PendingBridgeWrite['request']['data']; value: string; intent?: string }) => Promise<Look>
+  look?: (write: { chainId: number; owner: PendingBridgeWrite['owner']; to: PendingBridgeWrite['request']['address']; data: PendingBridgeWrite['request']['data']; value: string; intent?: string; hash?: `0x${string}`; safeProposal?: boolean }) => Promise<Look>
   /** Moves a hashless reservation main's journal left with no SDK record into a hold, once, before the first look. */
-  adopt?: (write: { chainId: number; owner: PendingBridgeWrite['owner']; to: PendingBridgeWrite['request']['address']; data: PendingBridgeWrite['request']['data']; value: string; intent?: string }) => Promise<void>
+  adopt?: (write: { chainId: number; owner: PendingBridgeWrite['owner']; to: PendingBridgeWrite['request']['address']; data: PendingBridgeWrite['request']['data']; value: string; intent?: string; hash?: `0x${string}`; safeProposal?: boolean }) => Promise<void>
   /** The SDK settled the write on authenticated evidence: record it, never abandon. */
   settle?: (settlement: { hash: `0x${string}`; result: 'success' | 'failed' }) => Promise<boolean>
   exit: () => Promise<void>
@@ -30,11 +30,11 @@ export function PendingWriteExit({ pending, disabled, look, adopt, settle, exit 
   adoptRef.current = adopt
   settleRef.current = settle
   const { chainId, address, data, value } = pending.request
-  const canAdopt = !!adopt && !pending.hash && !pending.safeProposal
+  const canAdopt = !!adopt
   useEffect(() => {
     if (!look) return
     let stopped = false
-    const ask = () => { void look({ chainId, owner: pending.owner, to: address, data, value, intent: pending.intent }).then(next => {
+    const ask = () => { void look({ chainId, owner: pending.owner, to: address, data, value, intent: pending.intent, hash: pending.hash, safeProposal: pending.safeProposal }).then(next => {
       if (stopped) return
       if (next && 'settled' in next) {
         const mark = `${pending.id}:${next.settled.hash}`
@@ -46,14 +46,15 @@ export function PendingWriteExit({ pending, disabled, look, adopt, settle, exit 
         setShown(null)
         return
       }
-      setShown(next)
+      // A contended read (the lock was busy) is only the saved record: it never hides an exit already shown.
+      setShown(previous => (next && 'checked' in next && next.checked === false && previous && 'exit' in previous && previous.exit ? previous : next))
     }).catch(() => undefined) }
-    // A hashless reservation with no SDK record is moved into a hold first, so the SDK can offer its exit.
-    if (canAdopt) void adoptRef.current?.({ chainId, owner: pending.owner, to: address, data, value, intent: pending.intent }).finally(ask)
+    // A reservation with no SDK record (hashless, hashed or a Safe proposal) is moved into a hold first, so the SDK can offer its exit.
+    if (canAdopt) void adoptRef.current?.({ chainId, owner: pending.owner, to: address, data, value, intent: pending.intent, hash: pending.hash, safeProposal: pending.safeProposal }).finally(ask)
     else ask()
     const timer = setInterval(ask, 15_000)
     return () => { stopped = true; clearInterval(timer) }
-  }, [look, canAdopt, chainId, pending.owner, pending.id, pending.intent, address, data, value])
+  }, [look, canAdopt, chainId, pending.owner, pending.id, pending.intent, pending.hash, pending.safeProposal, address, data, value])
   // Without the SDK's look, only a write that never returned a hash has an exit.
   const line = look ? (shown && 'line' in shown ? shown.line : undefined) : (!pending.hash && !pending.safeProposal ? writeHeldMessage() : undefined)
   const exitOffered = look && shown && 'exit' in shown && shown.exit
