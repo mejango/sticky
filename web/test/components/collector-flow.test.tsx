@@ -328,6 +328,17 @@ describe('permissionless collector delivery', () => {
     expect(mocks.verifyWrite).toHaveBeenCalledWith({ chainId: 1 }, OWNER, HASH, expect.anything(), { hash: HASH, safeProposal: false })
     expect((mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls.length).toBe(sent)
   })
+  it('adopts the sped-up delivery the SDK authenticated in place of the saved hash, and sends nothing again', async () => {
+    const SPED_UP = H(91)
+    await hashedThenDropped(); await press('Cancel')
+    const sent = (mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls.length
+    await act(async () => root.unmount()); root = createRoot(host)
+    mocks.tx.storedHold = vi.fn(async () => ({ settled: { result: 'success' as const, hash: SPED_UP } }))
+    await render()
+    await vi.waitFor(() => expect(readPendingBridgeWrite(OWNER)).toBeNull())
+    expect(mocks.verifyWrite).toHaveBeenCalledWith({ chainId: 1 }, OWNER, SPED_UP, expect.anything(), { hash: SPED_UP, safeProposal: false })
+    expect((mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls.length).toBe(sent)
+  })
   it('keeps the delivery reservation when the SDK refuses the exit', async () => {
     mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => { await options.durableRecovery?.reserve(); return null })
     await review(); await press('Confirm & deliver')

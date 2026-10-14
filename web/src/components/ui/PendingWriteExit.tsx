@@ -20,7 +20,10 @@ export function PendingWriteExit({ pending, disabled, look, settle, exit }: {
 }) {
   const [working, setWorking] = useState(false)
   const [shown, setShown] = useState<Look>(null)
-  const settling = useRef(false)
+  // Each settlement is recorded once per attempt; the callback is read through a ref so a new closure never restarts the look.
+  const settledOnce = useRef<string | null>(null)
+  const settleRef = useRef(settle)
+  settleRef.current = settle
   const { chainId, address, data, value } = pending.request
   useEffect(() => {
     if (!look) return
@@ -28,7 +31,8 @@ export function PendingWriteExit({ pending, disabled, look, settle, exit }: {
     const ask = () => { void look({ chainId, owner: pending.owner, to: address, data, value }).then(next => {
       if (stopped) return
       if (next && 'settled' in next) {
-        if (!settling.current && settle) { settling.current = true; void settle(next.settled).finally(() => { settling.current = false }) }
+        const mark = `${pending.id}:${next.settled.hash}`
+        if (settledOnce.current !== mark && settleRef.current) { settledOnce.current = mark; void settleRef.current(next.settled) }
         setShown(null)
         return
       }
@@ -37,7 +41,7 @@ export function PendingWriteExit({ pending, disabled, look, settle, exit }: {
     ask()
     const timer = setInterval(ask, 15_000)
     return () => { stopped = true; clearInterval(timer) }
-  }, [look, settle, chainId, pending.owner, address, data, value])
+  }, [look, chainId, pending.owner, pending.id, address, data, value])
   // Without the SDK's look, only a write that never returned a hash has an exit.
   const line = look ? (shown && 'line' in shown ? shown.line : undefined) : (!pending.hash && !pending.safeProposal ? writeHeldMessage() : undefined)
   const exitOffered = look && shown && 'exit' in shown && shown.exit

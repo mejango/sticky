@@ -345,6 +345,36 @@ describe('reviewed durable bridge workflow', () => {
     expect((mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls.length).toBe(sent)
     await vi.waitFor(() => expect(text()).not.toContain('may still execute'))
   })
+  it('adopts the sped-up transaction the SDK authenticated in place of the saved hash, marks the step done, and sends nothing again', async () => {
+    const SPED_UP = H(91)
+    await hashedThenDropped(); await press('Cancel')
+    expect(readPendingBridgeWrite(OWNER)?.hash).toBe(HASH)
+    const sent = (mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls.length
+    await act(async () => root.unmount()); root = createRoot(host)
+    mocks.tx.storedHold = vi.fn(async () => ({ settled: { result: 'success' as const, hash: SPED_UP } }))
+    await render()
+    await vi.waitFor(() => expect(readPendingBridgeWrite(OWNER)).toBeNull())
+    expect(mocks.verifyWrite).toHaveBeenCalledWith({ chainId: 1 }, OWNER, SPED_UP, expect.anything(), { hash: SPED_UP, safeProposal: false })
+    expect(mocks.verifyWrite).not.toHaveBeenCalledWith(expect.anything(), OWNER, HASH, expect.anything(), expect.anything())
+    expect(readBridgeRecords(KEY)[0].steps).toHaveLength(1)
+    expect((mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls.length).toBe(sent)
+  })
+  it('keeps the prepare submission marker on the sped-up hash when the route refresh then fails', async () => {
+    approved = true
+    const SPED_UP = H(91)
+    mocks.tx.send = vi.fn(async (_request: TxRequest, given: TxSendOptions) => {
+      await given.durableRecovery?.reserve(); await given.durableRecovery?.submitted(HASH, false)
+      return null
+    })
+    await review(); await press('Confirm & queue'); await press('Cancel')
+    await act(async () => root.unmount()); root = createRoot(host)
+    mocks.tx.storedHold = vi.fn(async () => ({ settled: { result: 'success' as const, hash: SPED_UP } }))
+    mocks.movements.mockRejectedValue(new Error('Route refresh unavailable'))
+    await render()
+    await vi.waitFor(() => expect(readBridgeRecords(KEY)[0].submission?.hash).toBe(SPED_UP))
+    expect(readPendingBridgeWrite(OWNER)?.hash).toBe(SPED_UP)
+    expect(button('Continue transfer')).toBeUndefined()
+  })
   it('settles, never abandons, a prepare that confirms while its exit is shown, even when the route refresh then fails', async () => {
     approved = true
     mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => { await options.durableRecovery?.reserve(); return null })

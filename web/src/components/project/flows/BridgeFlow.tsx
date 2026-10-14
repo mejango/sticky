@@ -16,7 +16,7 @@ import { useWallet } from '@/hooks/useWallet'
 import { parseAmount } from '@/lib/sticky-amount'
 import { bridgeCalldata, bridgeRouteId, bridgeWriteHasUniqueReference, createStickyBridge, type BridgeMovement, type BridgeRoute } from '@/lib/sticky-bridge'
 import {
-  assertPendingBridgeWrite, bridgeStorageKey, endPendingBridgeAttempt, createPendingBridgeWrite, discardBridgeDraft, readBridgeRecords, readPendingBridgeWrite, readWatchedBridgeRoutes, reconcileBridgeRecord,
+  adoptSettlementHash, assertPendingBridgeWrite, bridgeStorageKey, endPendingBridgeAttempt, createPendingBridgeWrite, discardBridgeDraft, readBridgeRecords, readPendingBridgeWrite, readWatchedBridgeRoutes, reconcileBridgeRecord,
   restoreBridgeWrite, retryPendingBridgeSubmission, savePendingBridgeWrite, savePendingBridgeSubmission, storeBridgeWrite, updateBridgeRecord, updateBridgeRecords, withBridgeLock,
   type BridgeRecord, type PendingBridgeWrite,
 } from '@/lib/sticky-bridge-journal'
@@ -269,14 +269,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
   async function settleStored(held: PendingBridgeWrite, hash: Hex) {
     const stored = readPendingBridgeWrite(held.owner)
     if (!stored || stored.id !== held.id) throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
-    const submitted = stored.hash ? stored : savePendingBridgeSubmission(stored, hash, false)
-    if (submitted.metadata && submitted.recordKey) {
-      const record = readBridgeRecords(submitted.recordKey).find(item => item.metadata === submitted.metadata)
-      if (record && record.prepareData === submitted.request.data) await updateBridgeRecord(submitted.recordKey, submitted.metadata, current => {
-        assertPendingBridgeWrite(submitted)
-        return { ...current, submission: { hash: submitted.hash!, safeProposal: submitted.safeProposal } }
-      })
-    }
+    const submitted = await adoptSettlementHash(stored.owner, stored.id, hash)
     // Even when the recovery cannot finish, the list shows the saved submission, so nothing offers to send it again.
     try { await recover(hash, submitted) } finally { await refresh().catch(() => undefined) }
   }

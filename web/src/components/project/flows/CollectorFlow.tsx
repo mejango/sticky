@@ -15,7 +15,7 @@ import { useWallet } from '@/hooks/useWallet'
 import { parseAmount } from '@/lib/sticky-amount'
 import { createStickyBridge } from '@/lib/sticky-bridge'
 import {
-  assertPendingBridgeWrite, endPendingBridgeAttempt, createPendingBridgeWrite, readPendingBridgeWrite, retryPendingBridgeSubmission, savePendingBridgeWrite, savePendingBridgeSubmission, saveWatchedBridgeRoute,
+  adoptSettlementHash, assertPendingBridgeWrite, endPendingBridgeAttempt, createPendingBridgeWrite, readPendingBridgeWrite, retryPendingBridgeSubmission, savePendingBridgeWrite, savePendingBridgeSubmission, saveWatchedBridgeRoute,
   storeBridgeWrite, withBridgeLock, type PendingBridgeWrite,
 } from '@/lib/sticky-bridge-journal'
 import type { CollectorSource } from '@/lib/sticky-collector'
@@ -155,7 +155,7 @@ export function CollectorFlow({ source, info, onSettled }: {
   async function settleStored(held: PendingBridgeWrite, hash: Hex) {
     const stored = readPendingBridgeWrite(held.owner)
     if (!stored || stored.id !== held.id) throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
-    await recover(hash, stored.hash ? stored : savePendingBridgeSubmission(stored, hash, false))
+    await recover(hash, await adoptSettlementHash(stored.owner, stored.id, hash))
     await refresh()
   }
   async function recover(hash: Hex, held: PendingBridgeWrite) {

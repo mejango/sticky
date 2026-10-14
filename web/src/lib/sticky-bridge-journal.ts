@@ -239,6 +239,26 @@ export function savePendingBridgeSubmission(expected: PendingBridgeWrite, hash: 
   return submitted
 }
 /**
+ * The SDK authenticated `hash` as the transaction that settled this attempt (a speed-up replaces the saved one).
+ * Under the same reservation, save it as the submission reference and move the transfer's marker to it, so the
+ * normal recovery verifies the settled transaction. Only the SDK's hash is ever passed here; a Safe proposal keeps
+ * its proposal hash.
+ */
+export async function adoptSettlementHash(owner: Address, id: string | undefined, hash: Hex, storage: BridgeStorage = localStorage): Promise<PendingBridgeWrite> {
+  const stored = readStoredPendingBridgeWrite(owner, storage)
+  if (!stored || !id || stored.id !== id || !isHash(hash)) throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
+  if (stored.safeProposal || (stored.hash && stored.hash.toLowerCase() === hash.toLowerCase())) return stored
+  const adopted: PendingBridgeWrite = { ...stored, hash, safeProposal: false }
+  if (stored.metadata && stored.recordKey) {
+    const { metadata } = stored
+    await updateBridgeRecords(stored.recordKey, records => records.map(record =>
+      record.metadata === metadata && record.prepareData === stored.request.data ? { ...record, submission: { hash, safeProposal: false } } : record), storage)
+  }
+  savePendingBridgeWrite(owner, adopted, storage)
+  return adopted
+}
+
+/**
  * The one place an attempt's domain reservation ends: after the SDK's exit released its call, or after a failure
  * before the wallet opened. It matches the raw stored reservation by attempt id, hashed or hashless, whatever reply
  * is retained in memory; clears the matching transfer's submission marker (the metadata and steps stay, so the
