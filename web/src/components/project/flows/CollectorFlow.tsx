@@ -102,8 +102,8 @@ export function CollectorFlow({ source, info, onSettled }: {
     if (!queue) throw new Error('Read the queued allocation before choosing an amount.')
     const count = parseAmount(amount, queue.meta.decimals)
     const prepared = await delivery.prepare(source, gate.account, count)
-    // Held by "all" when the user chose it and the delivery takes the whole queue.
-    if (all && count === queue.pending) prepared.request = { ...prepared.request, max: true }
+    // Held by "all" for as long as the user's choice is Max (until they edit the amount), whatever the queue did since.
+    if (all) prepared.request = { ...prepared.request, max: true }
     assertCurrent(identity)
     tx.reset(); handledHash.current = null
     setReview({ identity, owner: gate.account, delivery: prepared, rows: [

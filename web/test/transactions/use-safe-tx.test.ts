@@ -1253,6 +1253,18 @@ describe('useSafeTx', () => {
       } finally { vi.useRealTimers() }
     })
 
+    it('counts the 30 minutes from the time the legacy reservation was saved: one saved 40 minutes ago whose transaction is absent gets the warned exit at once', async () => {
+      vi.useFakeTimers()
+      try {
+        const data = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
+        const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n }
+        mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => { throw new TransactionNotFoundError({ hash }) })
+        const hook = await renderHook()
+        await act(async () => { await hook.ref.current!.adoptStored({ ...write, hash: HASH, safeProposal: false, submittedAt: Date.now() - 40 * 60_000 }) })
+        await expect(hook.ref.current!.storedHold(write)).resolves.toMatchObject({ exit: true })
+      } finally { vi.useRealTimers() }
+    })
+
     it('does not take a call another tab settled between the read and the adoption', async () => {
       const data = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
       const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n }

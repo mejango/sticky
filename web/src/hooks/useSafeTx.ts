@@ -541,7 +541,7 @@ function openStored(write: StoredWrite): WriteHoldHandle {
 }
 
 /** A write a domain journal saved: its call, the intent key it was held under, and the reference it was given, if any. */
-type StoredWrite = { chainId: number; owner: Address; to: Address; data: Hex; value: bigint | string; intent?: string; hash?: Hex; safeProposal?: boolean }
+type StoredWrite = { chainId: number; owner: Address; to: Address; data: Hex; value: bigint | string; intent?: string; hash?: Hex; safeProposal?: boolean; submittedAt?: number }
 
 export function useSafeTx(chainId: number) {
   const queryClient = useQueryClient()
@@ -1154,8 +1154,8 @@ export function useSafeTx(chainId: number) {
   }, [])
 
   /**
-   * A domain reservation main's journal left with no SDK record (a hashless write): reserve it in a hold and keep
-   * the uncertainty, so the SDK offers its warned, explicit exit. Nothing is ever released here. A call that
+   * A domain reservation main's journal left with no SDK record (hashless, hashed or a Safe proposal): adopt it into a
+   * hold, keeping its hash or proposal hash and the time it was saved, and keep the uncertainty, so the SDK offers its warned, explicit exit. Nothing is ever released here. A call that
    * already has a hold, or a settlement, is left as it is.
    */
   const adoptStored = useCallback(async (write: StoredWrite): Promise<void> => {
@@ -1167,7 +1167,7 @@ export function useSafeTx(chainId: number) {
       if (state.status !== 'clear' || state.settled) return
       // Atomic: reserved only when the key still has no hold and no settlement, under the lock; otherwise the current
       // state comes back and nothing is taken. A saved hash (or a Safe proposal's hash) is verified and kept.
-      await stored.adopt(state, write.safeProposal && write.hash ? { safe: { safeTxHash: write.hash } } : write.hash ? { hash: write.hash } : undefined, client)
+      await stored.adopt(state, write.safeProposal && write.hash ? { safe: { safeTxHash: write.hash }, submittedAt: write.submittedAt } : write.hash ? { hash: write.hash, submittedAt: write.submittedAt } : undefined, client)
     } catch { /* The reservation stays in its journal, and the panel's own recovery still applies. */ }
   }, [])
 

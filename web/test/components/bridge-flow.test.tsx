@@ -439,13 +439,13 @@ describe('reviewed durable bridge workflow', () => {
   // domain lock, keeping the hash and any Safe identity; if its transaction dropped, the gate offers the warned exit.
   it('adopts a hashed legacy reservation with its hash, and a Safe one with its proposal hash, under the domain lock', async () => {
     savePendingBridgeWrite(OWNER, createPendingBridgeWrite({ owner: OWNER, request: storeBridgeWrite(queuedRequest()), intent: 'intent:bridge-queue:abc' }))
-    const hashed = { ...readPendingBridgeWrite(OWNER)!, hash: HASH, safeProposal: false }
+    const hashed = { ...readPendingBridgeWrite(OWNER)!, hash: HASH, safeProposal: false, at: 1_700_000_000_000 }
     savePendingBridgeWrite(OWNER, hashed)
     mocks.tx.adoptStored = vi.fn(async () => undefined)
     mocks.tx.storedHold = vi.fn(async () => ({ exit: false, line: 'Still pending.' }))
     await render()
     await vi.waitFor(() => expect(mocks.tx.adoptStored).toHaveBeenCalledOnce())
-    expect(mocks.tx.adoptStored).toHaveBeenCalledWith(expect.objectContaining({ owner: OWNER, hash: HASH, safeProposal: false }))
+    expect(mocks.tx.adoptStored).toHaveBeenCalledWith(expect.objectContaining({ owner: OWNER, hash: HASH, safeProposal: false, submittedAt: 1_700_000_000_000 }))
 
     await act(async () => root.unmount()); root = createRoot(host)
     savePendingBridgeWrite(OWNER, { ...hashed, safeProposal: true })

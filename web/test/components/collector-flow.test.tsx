@@ -351,6 +351,16 @@ describe('permissionless collector delivery', () => {
     await vi.waitFor(() => expect(mocks.tx.adoptStored).toHaveBeenCalledOnce())
     expect(mocks.tx.adoptStored).toHaveBeenCalledWith(expect.objectContaining({ owner: OWNER, hash: HASH, safeProposal: false }))
   })
+  it('keeps "all" when the queue grew after Max was pressed', async () => {
+    await render()
+    await press('Max')
+    mocks.read.mockResolvedValue({ pending: 12n * UNIT, meta: ROUTE.sourceMeta })
+    mocks.prepare.mockImplementation(async (source: CollectorSource, _owner: unknown, amount: bigint) => ({ source, amount, pending: 12n * UNIT, meta: ROUTE.sourceMeta, verified: source.verified, request: requestOf(source, amount) }))
+    await press('Review delivery')
+    await press('Confirm & deliver')
+    const sent = (mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls[0] as [{ max?: boolean }]
+    expect(sent[0].max).toBe(true)
+  })
   it('sends a delivery chosen with Max as "all", and a typed amount as itself', async () => {
     await render()
     await press('Max')

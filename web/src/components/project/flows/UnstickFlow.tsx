@@ -315,9 +315,9 @@ export function UnstickFlow({
     try {
       const next = await planUnstick(info, address, shares, landed, controller.signal)
       if (controller.signal.aborted) return
-      // Held by "all" when the user chose it and the plan unsticks the whole balance.
+      // Held by "all" for as long as the user's choice is max (until they edit the amount), whatever the balance did since.
       const last = next.steps[next.steps.length - 1]
-      setPlan(all.current && last && shares === next.balance ? { ...next, steps: [...next.steps.slice(0, -1), { ...last, max: true }] } : next)
+      setPlan(all.current && last ? { ...next, steps: [...next.steps.slice(0, -1), { ...last, max: true }] } : next)
       setError(null)
     } catch (reason) {
       if (controller.signal.aborted) return

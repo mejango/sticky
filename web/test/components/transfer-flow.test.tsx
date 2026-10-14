@@ -477,6 +477,17 @@ describe('the choice of "all"', () => {
     expect(Object.isFrozen(sentRequest())).toBe(true)
   })
 
+  it('keeps "all" when the balance grew after max was pressed', async () => {
+    await render()
+    await type('Recipient', BOB)
+    await press(modal(), 'max')
+    mocks.position.mockResolvedValue(position(3n * E18))
+    mocks.read.mockResolvedValue(balance(3n * E18))
+    await press(modal(), 'Review transfer')
+    await press(confirm(), 'Confirm & transfer')
+    expect(sentRequest()).toMatchObject({ max: true, args: [BOB, 2n * E18] })
+  })
+
   it('does not send "all" for the same number typed by hand, or when the amount is edited after max', async () => {
     await render()
     await type('Recipient', BOB)
