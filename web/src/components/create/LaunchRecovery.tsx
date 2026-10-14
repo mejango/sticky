@@ -67,7 +67,8 @@ export function LaunchRecovery({ controller, session, generation, busy, act }: {
   if (outcome.status === 'held') {
     return <HeldLaunch bundle={bundle} busy={busy}
       onSettled={() => void recover()}
-      onReleased={by => void act(async () => { if (by === 'user') await retire({ by: 'exit' }); else await recover() }, true)} />
+      // Never behind the host's busy flag: the SDK's retirement takes its own locks, and the journal follows on 'none'.
+      onReleased={by => void (by === 'user' ? retire({ by: 'exit' }) : recover())} />
   }
   if (!checkAction) return null
   return (

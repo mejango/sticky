@@ -368,6 +368,17 @@ describe('Sticky launch browser boundaries', () => {
       await expect(recover(saved({ hash: HASH }))).resolves.toMatchObject({ status: 'done', result: 'success', authenticated: true, hash: HASH })
     })
 
+    it('lets a launch that confirmed while it ran be finished: the hold settles from the chain before it is discarded', async () => {
+      const call = kind === 'direct' ? { to: DEPLOYER, data: session().plan.targets[0].call.data, value: 2n }
+        : { to: paymentSession().payment.option.target as Address, data: paymentSession().payment.option.calldata as Hex, value: BigInt(paymentSession().payment.option.amount) }
+      const placed = { blockHash: `0x${'ed'.repeat(32)}` as Hex, blockNumber: 10n, transactionIndex: 0 }
+      fake.receipt.mockResolvedValue({ status: 'success', transactionHash: HASH, from: OWNER, to: call.to, logs: [], ...placed })
+      fake.transaction.mockResolvedValue({ hash: HASH, from: OWNER, to: call.to, input: call.data, value: call.value, nonce: 7, ...placed })
+      await send(callbacks())
+      const done = { ...saved({ hash: HASH }), results: { 8453: { hash: HASH, projectId: '1', token: TOKEN } } } as StickyLaunchSession
+      await expect(fake.ports.canDiscard(done)).resolves.toBe(true)
+    })
+
     it('needs no mined-failure proof for an attempt the user exited', async () => {
       const base = kind === 'direct' ? session() : paymentSession()
       const attempt = { started: true, hash: HASH, exited: true }

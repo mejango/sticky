@@ -454,7 +454,11 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       if (!saved) return true
       // A launch whose deployments the journal proved has followed its success: that retires the SDK's attempt.
       const hash = session[saved.kind === 'payment' ? 'payment' : 'direct']?.hash
-      if (launchComplete(session)) await attempts.retire(saved.attempt, { by: 'settled', ...(hash ? { hash } : {}) })
+      if (launchComplete(session)) {
+        // The hold reads the chain first, so a submission that confirmed while the launch ran is settled, not pending.
+        await attempts.recover(saved.attempt, saved.client)
+        await attempts.retire(saved.attempt, { by: 'settled', ...(hash ? { hash } : {}) })
+      }
       return attempts.canDiscard(saved.attempt)
     },
     verifyDeployment: verifyStickyLaunchDeployment,

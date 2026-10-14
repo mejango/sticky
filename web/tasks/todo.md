@@ -82,4 +82,9 @@ Hosted verification passed at `f6ed26bc8a41d748ef1caa1831dee1efc7eebd05`: all se
 - [ ] HeldWritesNotice: skipped (needs useHeldWrites, outside the thin binding); add with SDK 2.40's core hooks.
 - [x] Copy from SDK constants; delete check-required.ts and app duplicates.
 - [x] Tests: race (red with the old order), ported scenarios, grep gate, happy-path parity.
-- [ ] Full gate, push, PR (no merge).
+- [x] Full gate, push, PR (no merge).
+
+### Review
+- Full `npm run check` passes: prod audit 0 vulnerabilities, lint, types, inventories (10 useSafeTx sends), 164 files / 3839 unit tests (coverage 94.29/90.99/94.25/96.75), three production builds, 54 browser cases.
+- Codex round 1: [P1] a launch that confirmed during its run could not Finish (canDiscard retired a pending hold); [P2] a launch exit's retirement could be dropped behind the host's busy flag. Both fixed (recover before retiring; retire outside the host action), P1 with a red-first test. Round 2: both closed, no new findings.
+- Rulings: no nana-sdk-react (wagmi 2 peer); thin copy of its hooks in `src/lib/held-write-react.ts` until SDK 2.40. HeldWritesNotice skipped for now. Approval counts unchanged.
