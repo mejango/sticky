@@ -234,6 +234,8 @@ type SafeProposal = {
   message: string | null
   /** The Safe's own event shows it ran; only its result is unknown, so it is never sent again. */
   ran?: boolean
+  /** The write hold of this call: told the moment the chain proves the Safe ran it, whether or not any flow is open. */
+  hold?: WriteHoldHandle | null
   onConfirmed: () => void
 }
 
@@ -315,7 +317,7 @@ type Outcome = { executionHash: Hex } | { phase: ProposalPhase; message: string;
  * it ({@link watchSafeProposal}). Whichever answers first stops the other.
  */
 async function awaitExecution(
-  { chainId, safe, proposalHash }: SafeProposal,
+  { chainId, safe, proposalHash, hold }: SafeProposal,
   client: FollowClient,
 ): Promise<Outcome> {
   type Ended = Outcome | { ranOnChain: true }
@@ -344,6 +346,8 @@ async function awaitExecution(
   try {
     const first = await Promise.race([executed, ended])
     if (!('ranOnChain' in first)) return first
+    // The Safe's own event proves it ran: the hold keeps that at once, even with no result yet.
+    void hold?.onExecuted(client).catch(() => undefined)
     // The Safe's own event shows it ran this proposal. Its execution hash,
     // from the service, decides the result; without one the line alone stands.
     const named = await Promise.race([
@@ -387,6 +391,7 @@ async function followProposal(key: string, client: FollowClient, reply: boolean)
     }
   }
   updateProposal(key, { phase: 'executing', executionHash })
+  void proposal.hold?.onExecuted(client, executionHash).catch(() => undefined)
   const failed = `Safe executed the proposal, but the onchain transaction failed (${executionHash}).`
   // The execution was first seen now: its receipt has an hour from here.
   const seenAt = Date.now()
@@ -450,7 +455,7 @@ async function followProposal(key: string, client: FollowClient, reply: boolean)
 
 /** Record a proposal and follow it; `reply` says whether the hash is the wallet's own answer. */
 function recordProposal(
-  proposal: Pick<SafeProposal, 'chainId' | 'safe' | 'call' | 'proposalHash'> & { ran?: boolean },
+  proposal: Pick<SafeProposal, 'chainId' | 'safe' | 'call' | 'proposalHash'> & { ran?: boolean; hold?: WriteHoldHandle | null },
   client: FollowClient,
   reply: boolean,
   onConfirmed: () => void,
@@ -516,6 +521,8 @@ export function useSafeTx(chainId: number) {
     () => undefined,
   )
   const inFlightRef = useRef(false)
+  /** True from the moment the call is reserved until the wallet's own promise settles: nothing recovers an attempt still at the prompt. */
+  const walletOpenRef = useRef(false)
   const generation = useRef(0)
   const renderedChain = useRef(chainId)
   useEffect(() => {
@@ -670,7 +677,7 @@ export function useSafeTx(chainId: number) {
         if (proposalHash && publicClient) {
           // The registry follows a proposal it already has; only a missing one (a fresh page) is made again.
           if (!proposals.has(key)) {
-            recordProposal({ chainId: record.chainId, safe: record.account, call, proposalHash, ...(state.status === 'ran-executed' ? { ran: true } : {}) },
+            recordProposal({ chainId: record.chainId, safe: record.account, call, proposalHash, hold: holdRef.current, ...(state.status === 'ran-executed' ? { ran: true } : {}) },
               publicClient, true, () => refreshDetachedProposal(key, record.chainId))
           } else if (restart && proposals.get(key)?.phase === 'awaiting') startFollowingProposal(key, publicClient, false)
           showProposal(key)
@@ -695,13 +702,6 @@ export function useSafeTx(chainId: number) {
       .catch(() => { /* Unverified is not released; the next look asks again. */ })
     return () => { stopped = true }
   }, [hold, publicClient, shownKey, proposal?.receipt, receiptData, showHeld])
-  useEffect(() => {
-    if (!hold || !publicClient || !proposal || !(proposal.ran || proposal.phase === 'executing' || proposal.phase === 'confirming')) return
-    void hold.onExecuted(publicClient, proposal.executionHash ?? undefined)
-      .then(state => { if (holdRef.current === hold && mounted.current) showHeld(state) })
-      .catch(() => { /* The proposal's own follower keeps asking. */ })
-  }, [hold, publicClient, proposal, showHeld])
-
   const holdOpen = !!held
   // While held, the SDK is asked again: a hash that shows up is followed, a
   // dropped one earns the exit, and a confirmation releases it.
@@ -709,7 +709,7 @@ export function useSafeTx(chainId: number) {
     if (!hold || !publicClient || !holdOpen) return
     const timer = setInterval(() => {
       void hold.state(publicClient)
-        .then(next => { if (holdRef.current === hold && mounted.current) apply(next, false) })
+        .then(next => { if (holdRef.current === hold && mounted.current && !walletOpenRef.current) apply(next, false) })
         .catch(() => { /* A node that cannot answer keeps the hold. */ })
     }, HOLD_CHECK_INTERVAL_MS)
     return () => clearInterval(timer)
@@ -783,7 +783,7 @@ export function useSafeTx(chainId: number) {
             if (holdsCall(held) || queued) {
               if (queued) {
                 const { proposalHash, call } = queued
-                recordProposal({ chainId: request.chainId, safe: account, call, proposalHash }, publicClient, false,
+                recordProposal({ chainId: request.chainId, safe: account, call, proposalHash, hold: handle }, publicClient, false,
                   () => refreshDetachedProposal(key, request.chainId))
               } else if (held?.phase === 'awaiting') {
                 startFollowingProposal(key, publicClient, false)
@@ -842,14 +842,17 @@ export function useSafeTx(chainId: number) {
             beforeWrite: async () => {
               await options.beforeWrite?.()
               await options.durableRecovery?.reserve()
+              walletOpenRef.current = true
               await gate?.beforeSend()
             },
             onBeforeWriteAborted: async () => {
+              walletOpenRef.current = false
               gate?.onRejected()
               await options.durableRecovery?.releaseUnsubmitted()
               await options.onBeforeWriteAborted?.()
             },
             onWriteRejected: async () => {
+              walletOpenRef.current = false
               gate?.onRejected()
               await options.durableRecovery?.releaseUnsubmitted()
               await options.onWriteRejected?.()
@@ -891,7 +894,8 @@ export function useSafeTx(chainId: number) {
             },
             write: simulated => {
               walletInvoked = true
-              return writeContractAsync({ ...simulated, chainId: request.chainId })
+              walletOpenRef.current = true
+              return writeContractAsync({ ...simulated, chainId: request.chainId }).finally(() => { walletOpenRef.current = false })
             },
             onPhase: next => { if (isCurrent()) setPhase(next) },
           })
@@ -903,7 +907,7 @@ export function useSafeTx(chainId: number) {
             inFlightRef.current = false
             showProposal(
               recordProposal(
-                { chainId: request.chainId, safe: account, call: sentCall, proposalHash: txHash },
+                { chainId: request.chainId, safe: account, call: sentCall, proposalHash: txHash, hold: handle },
                 publicClient,
                 true,
                 () => refreshDetachedProposal(proposalKey(request.chainId, account, sentCall), request.chainId),
@@ -917,6 +921,7 @@ export function useSafeTx(chainId: number) {
         }
         return handle ? await handle.send(publicClient, execute) : await execute(null)
       } catch (e) {
+        walletOpenRef.current = false
         if (!isCurrent()) return null
         inFlightRef.current = false
         // The call is held: its state says why, and a hash it already has is followed.
@@ -929,7 +934,7 @@ export function useSafeTx(chainId: number) {
         if (e instanceof SubmittedContractWriteError && typeof e.hash === 'string' && isHash(e.hash)) {
           if (viaSafe) {
             const call = callOf(request)
-            showProposal(recordProposal({ chainId: request.chainId, safe: account, call, proposalHash: e.hash },
+            showProposal(recordProposal({ chainId: request.chainId, safe: account, call, proposalHash: e.hash, hold: handle },
               publicClient, true, () => refreshDetachedProposal(proposalKey(request.chainId, account, call), request.chainId)))
           } else setHash(e.hash)
           setPhase('pending')

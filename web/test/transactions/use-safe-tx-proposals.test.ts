@@ -549,6 +549,8 @@ describe('a Safe proposal', () => {
   })
 })
 
+const NO_RECORD = new Error("Safe's transaction service has no record of this proposal.")
+
 describe('a Safe proposal awaiting its signers', () => {
   const EXPIRED = "This Safe proposal's deadline passed. Review it again."
 
@@ -656,6 +658,31 @@ describe('a Safe proposal awaiting its signers', () => {
         await reopened.close()
       }
     } finally { vi.useRealTimers() }
+  })
+
+  it('saves that the Safe ran a proposal when the background follower proves it after Done, so a reload and a service gap offer no resend', async () => {
+    signersDecide()
+    let watchEnds!: (end: string) => void
+    mocks.watchSafeProposal.mockImplementationOnce(() => new Promise(resolve => (watchEnds = resolve)))
+    const flow = await mount()
+    await flow.send()
+    await settle()
+    // Done, with nobody looking at the proposal any more.
+    await act(async () => flow.tx.dismiss())
+    await flow.close()
+    watchEnds('executed')
+    await settle()
+    expect(recoveryRecords()[0]).toMatchObject({ executed: true })
+
+    // A reload, and Safe's service gone: the saved proof keeps the call held, never resendable.
+    vi.resetModules()
+    ;({ useSafeTx } = await import('@/hooks/useSafeTx'))
+    mocks.waitForSafeExecutionHash.mockRejectedValue(NO_RECORD)
+    const reopened = await mount()
+    await reopened.send()
+    await settle()
+    expect(reopened.tx.held).toBeNull()
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
   })
 
   it('stops being watched once its execution is known', async () => {
@@ -788,7 +815,6 @@ describe("a Safe proposal's last look at the chain", () => {
     act(async () => {
       await vi.advanceTimersByTimeAsync(ms)
     })
-  const NO_RECORD = new Error("Safe's transaction service has no record of this proposal.")
 
   it('holds an execution returned at once when the independent canonical lookup is unavailable', async () => {
     // Safe{Wallet} executed at once, and the node learned the execution only after the probe.

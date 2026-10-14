@@ -953,6 +953,23 @@ describe('useSafeTx', () => {
     expect(again.ref.current!.held).not.toBeNull()
   })
 
+  it('keeps the wallet prompt open past the poll without showing a resend exit', async () => {
+    vi.useFakeTimers()
+    try {
+      let answer!: (hash: Hex) => void
+      mocks.writeContract.mockImplementationOnce(() => new Promise<Hex>(resolve => { answer = resolve }))
+      const hook = await renderHook()
+      let sent!: Promise<Hex | null>
+      await act(async () => { sent = hook.ref.current!.send(request, reviewedByAlice); await vi.advanceTimersByTimeAsync(10) })
+      expect(hook.ref.current!.phase).toBe('signing')
+      await act(async () => { await vi.advanceTimersByTimeAsync(40_000) })
+      expect(hook.ref.current).toMatchObject({ phase: 'signing', held: null })
+      await act(async () => { answer(HASH); await sent })
+      expect(hook.ref.current).toMatchObject({ phase: 'pending', hash: HASH })
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+    } finally { vi.useRealTimers() }
+  })
+
   it('still holds and sends where the browser has no Web Locks', async () => {
     vi.stubGlobal('navigator', { locks: undefined })
     vi.spyOn(console, 'warn').mockImplementation(() => {})
