@@ -16,7 +16,7 @@ import { useWallet } from '@/hooks/useWallet'
 import { parseAmount } from '@/lib/sticky-amount'
 import { bridgeCalldata, bridgeRouteId, bridgeWriteHasUniqueReference, createStickyBridge, type BridgeMovement, type BridgeRoute } from '@/lib/sticky-bridge'
 import {
-  assertPendingBridgeWrite, bridgeStorageKey, createPendingBridgeWrite, discardBridgeDraft, readBridgeRecords, readPendingBridgeWrite, readWatchedBridgeRoutes, reconcileBridgeRecord,
+  assertPendingBridgeWrite, bridgeStorageKey, clearPendingBridgeAttempt, createPendingBridgeWrite, discardBridgeDraft, readBridgeRecords, readPendingBridgeWrite, readWatchedBridgeRoutes, reconcileBridgeRecord,
   restoreBridgeWrite, retryPendingBridgeSubmission, savePendingBridgeWrite, savePendingBridgeSubmission, storeBridgeWrite, updateBridgeRecord, updateBridgeRecords, withBridgeLock,
   type BridgeRecord, type PendingBridgeWrite,
 } from '@/lib/sticky-bridge-journal'
@@ -251,7 +251,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
           },
           releaseUnsubmitted: undo,
           // The user's exit released the SDK hold: the reservation goes, the saved transfer stays.
-          released: async () => { await undo(); setPending(null) },
+          released: async () => { clearPendingBridgeAttempt(current.owner, held.id); setPending(null) },
           submitted: async (hash, safeProposal) => {
             // A queued Safe proposal can be adopted without reserving a new write.
             if (!reserved && !readPendingBridgeWrite(current.owner)) { savePendingBridgeWrite(current.owner, held); reserved = true }
@@ -339,7 +339,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
         {pending ? <div role="status" className="space-y-2 border-t border-line pt-3">
           <p className="text-sm">A bridge transaction may still execute. Check its wallet status before continuing.</p>
           {!pending.hash && !bridgeWriteHasUniqueReference(pending.request.data) ? <p className="text-sm text-muted">The wallet did not return a submission reference. A matching historical approval or bridge-send transaction cannot prove this attempt finished; this browser keeps further bridge actions locked.</p> : null}
-          <PendingWriteExit pending={pending} disabled={busy} exit={() => run(async () => {
+          <PendingWriteExit pending={pending} disabled={busy} look={tx.storedHold} exit={() => run(async () => {
             if (!(await tx.exitStored({ chainId: pending.request.chainId, owner: pending.owner, to: pending.request.address, data: pending.request.data, value: pending.request.value }))) return
             // The reservation goes; the saved transfer and its metadata stay, so its next step can be reviewed again.
             assertPendingBridgeWrite(pending); savePendingBridgeWrite(pending.owner, null); setPending(null); await refresh()

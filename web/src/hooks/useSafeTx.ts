@@ -1019,6 +1019,17 @@ export function useSafeTx(chainId: number) {
     } catch { /* The hold stays; the next look shows why. */ }
   }, [publicClient, reset, apply])
 
+  /** What the SDK says of a stored write (hashed or not), so a panel shows its line and offers an exit only when the SDK does. */
+  const storedHold = useCallback(async (write: { chainId: number; owner: Address; to: Address; data: Hex; value: bigint | string }): Promise<{ exit: boolean; line: string; warning?: string } | null> => {
+    try {
+      const client = getPublicClient(wagmiConfig, { chainId: write.chainId as never }) as unknown as Parameters<WriteHoldHandle['state']>[0] | undefined
+      if (!client) return null
+      const state = await holds.open({ chainId: write.chainId, account: write.owner, safe: false, call: { to: write.to, data: write.data, value: write.value } }).state(client)
+      if (state.status === 'clear') return null
+      return { exit: state.exit, line: state.line, ...('warning' in state && state.warning ? { warning: state.warning } : {}) }
+    } catch { return null }
+  }, [])
+
   /**
    * A write saved by a domain journal that a reload left held, with no flow open: the SDK's exit for
    * its exact call. True when the call is no longer held, so the caller may clear its own reservation.
@@ -1093,6 +1104,7 @@ export function useSafeTx(chainId: number) {
       : phase === 'pending' && receipt.isError && !receiptData),
     send,
     exitStored,
+    storedHold,
     reset,
     dismiss,
   }

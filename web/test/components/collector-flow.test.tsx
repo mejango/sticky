@@ -272,6 +272,49 @@ describe('permissionless collector delivery', () => {
     await press('Confirm & deliver')
     expect(mocks.tx.send).toHaveBeenCalledOnce()
   })
+  async function hashedThenDropped() {
+    const normalSend = mocks.tx.send as (request: TxRequest, options: TxSendOptions) => Promise<string | null>
+    let options!: TxSendOptions
+    mocks.tx.send = vi.fn(async (_request: TxRequest, given: TxSendOptions) => {
+      options = given
+      await given.durableRecovery?.reserve(); await given.durableRecovery?.submitted(HASH, false)
+      return null
+    })
+    await review(); await press('Confirm & deliver')
+    return { normalSend, released: () => options.durableRecovery!.released!() }
+  }
+  it('clears the reservation of a delivery whose hash was saved when the SDK exit releases it, and allows exactly one more send', async () => {
+    const { normalSend, released } = await hashedThenDropped()
+    const route = readWatchedBridgeRoutes(10, INFO.stToken, 4000n)
+    expect(readPendingBridgeWrite(OWNER)?.hash).toBe(HASH)
+    await act(async () => { await released() })
+    expect(readPendingBridgeWrite(OWNER)).toBeNull()
+    expect(readWatchedBridgeRoutes(10, INFO.stToken, 4000n)).toEqual(route)
+    mocks.tx.send = vi.fn(normalSend)
+    await press('Cancel'); await review(); await press('Confirm & deliver')
+    expect(mocks.tx.send).toHaveBeenCalledOnce()
+  })
+  it('after a reload, shows the exit for a dropped hashed delivery the SDK offers one for, and clears it keeping the route', async () => {
+    await hashedThenDropped(); await press('Cancel')
+    const route = readWatchedBridgeRoutes(10, INFO.stToken, 4000n)
+    await act(async () => root.unmount()); root = createRoot(host)
+    mocks.tx.storedHold = vi.fn(async () => ({ exit: true, line: 'Held.', warning: 'Careful.' }))
+    mocks.tx.exitStored = vi.fn(async () => true)
+    await render()
+    expect(readPendingBridgeWrite(OWNER)?.hash).toBe(HASH)
+    await press(WRITE_EXIT_LABEL)
+    expect(readPendingBridgeWrite(OWNER)).toBeNull()
+    expect(readWatchedBridgeRoutes(10, INFO.stToken, 4000n)).toEqual(route)
+  })
+  it('after a reload, shows no exit for a hash the chain still knows', async () => {
+    await hashedThenDropped(); await press('Cancel')
+    await act(async () => root.unmount()); root = createRoot(host)
+    mocks.tx.storedHold = vi.fn(async () => ({ exit: false, line: 'Still pending in your wallet. Speed it up or cancel it there.' }))
+    await render()
+    expect(text()).toContain('Still pending in your wallet')
+    expect([...document.querySelectorAll('button')].some(node => node.textContent === WRITE_EXIT_LABEL)).toBe(false)
+    expect(readPendingBridgeWrite(OWNER)).not.toBeNull()
+  })
   it('keeps the delivery reservation when the SDK refuses the exit', async () => {
     mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => { await options.durableRecovery?.reserve(); return null })
     await review(); await press('Confirm & deliver')

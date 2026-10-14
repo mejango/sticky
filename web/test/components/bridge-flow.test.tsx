@@ -238,6 +238,51 @@ describe('reviewed durable bridge workflow', () => {
     await press('Confirm & approve')
     expect(mocks.tx.send).toHaveBeenCalledOnce()
   })
+  /** The wallet replied with a hash and the review closed without a result: the attempt is saved with its hash. */
+  async function hashedThenDropped() {
+    const normalSend = mocks.tx.send as (request: TxRequest, options: TxSendOptions) => Promise<Hex | null>
+    let options!: TxSendOptions
+    mocks.tx.send = vi.fn(async (_request: TxRequest, given: TxSendOptions) => {
+      options = given
+      await given.durableRecovery?.reserve(); await given.durableRecovery?.submitted(HASH, false)
+      return null
+    })
+    await review(); await press('Confirm & approve')
+    return { normalSend, released: () => options.durableRecovery!.released!() }
+  }
+  it('clears the reservation of an attempt whose hash was saved when the SDK exit releases it, and allows exactly one more send', async () => {
+    const { normalSend, released } = await hashedThenDropped()
+    const metadata = readBridgeRecords(KEY)[0].metadata
+    expect(readPendingBridgeWrite(OWNER)?.hash).toBe(HASH)
+    await act(async () => { await released() })
+    expect(readPendingBridgeWrite(OWNER)).toBeNull()
+    expect(readBridgeRecords(KEY)[0].metadata).toBe(metadata)
+    mocks.tx.send = vi.fn(normalSend)
+    await press('Cancel'); await press('Continue transfer'); await press('Confirm & approve')
+    expect(mocks.tx.send).toHaveBeenCalledOnce()
+  })
+  it('after a reload, shows the exit for a dropped hashed reservation the SDK offers one for, and clears it keeping the transfer', async () => {
+    await hashedThenDropped(); await press('Cancel')
+    const metadata = readBridgeRecords(KEY)[0].metadata
+    await act(async () => root.unmount()); root = createRoot(host)
+    mocks.tx.storedHold = vi.fn(async () => ({ exit: true, line: 'Held.', warning: 'Careful.' }))
+    mocks.tx.exitStored = vi.fn(async () => true)
+    await render()
+    expect(readPendingBridgeWrite(OWNER)?.hash).toBe(HASH)
+    await press(WRITE_EXIT_LABEL)
+    expect(readPendingBridgeWrite(OWNER)).toBeNull()
+    expect(readBridgeRecords(KEY)[0].metadata).toBe(metadata)
+  })
+  it('after a reload, shows no exit for a hash the chain still knows', async () => {
+    await hashedThenDropped(); await press('Cancel')
+    await act(async () => root.unmount()); root = createRoot(host)
+    mocks.tx.storedHold = vi.fn(async () => ({ exit: false, line: 'Still pending in your wallet. Speed it up or cancel it there.' }))
+    mocks.tx.exitStored = vi.fn(async () => true)
+    await render()
+    expect(text()).toContain('Still pending in your wallet')
+    expect([...document.querySelectorAll('button')].some(node => node.textContent === WRITE_EXIT_LABEL)).toBe(false)
+    expect(readPendingBridgeWrite(OWNER)).not.toBeNull()
+  })
   it('keeps the reservation when the SDK refuses the exit', async () => {
     mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => { await options.durableRecovery?.reserve(); return null })
     await review(); await press('Confirm & approve'); await press('Cancel')

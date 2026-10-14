@@ -15,7 +15,7 @@ import { useWallet } from '@/hooks/useWallet'
 import { parseAmount } from '@/lib/sticky-amount'
 import { createStickyBridge } from '@/lib/sticky-bridge'
 import {
-  assertPendingBridgeWrite, createPendingBridgeWrite, readPendingBridgeWrite, retryPendingBridgeSubmission, savePendingBridgeWrite, savePendingBridgeSubmission, saveWatchedBridgeRoute,
+  assertPendingBridgeWrite, clearPendingBridgeAttempt, createPendingBridgeWrite, readPendingBridgeWrite, retryPendingBridgeSubmission, savePendingBridgeWrite, savePendingBridgeSubmission, saveWatchedBridgeRoute,
   storeBridgeWrite, withBridgeLock, type PendingBridgeWrite,
 } from '@/lib/sticky-bridge-journal'
 import type { CollectorSource } from '@/lib/sticky-collector'
@@ -140,7 +140,7 @@ export function CollectorFlow({ source, info, onSettled }: {
           },
           releaseUnsubmitted: undo,
           // The user's exit released the SDK hold: the reservation goes, the saved transfer stays.
-          released: async () => { await undo(); setPending(null) },
+          released: async () => { clearPendingBridgeAttempt(current.owner, held.id); setPending(null) },
           submitted: (hash, safeProposal) => {
             if (!reserved && !readPendingBridgeWrite(current.owner)) { savePendingBridgeWrite(current.owner, held); reserved = true }
             savePendingBridgeSubmission(held, hash, safeProposal)
@@ -212,7 +212,7 @@ export function CollectorFlow({ source, info, onSettled }: {
         <p className="text-sm">A transaction may still execute. Recover it before delivering another allocation.</p>
         {ours ? <>
           {!pending.hash ? <p className="text-sm text-muted">The wallet returned no submission reference. This attempt remains locked; a matching earlier transaction cannot prove it finished.</p> : null}
-          <PendingWriteExit pending={pending} disabled={busy} exit={() => run(async () => {
+          <PendingWriteExit pending={pending} disabled={busy} look={tx.storedHold} exit={() => run(async () => {
             if (!(await tx.exitStored({ chainId: pending.request.chainId, owner: pending.owner, to: pending.request.address, data: pending.request.data, value: pending.request.value }))) return
             assertPendingBridgeWrite(pending); savePendingBridgeWrite(pending.owner, null); setPending(null); await refresh()
           })} />

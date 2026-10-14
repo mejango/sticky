@@ -238,6 +238,13 @@ export function savePendingBridgeSubmission(expected: PendingBridgeWrite, hash: 
   savePendingBridgeWrite(expected.owner, submitted, storage)
   return submitted
 }
+/** Clear the reservation of exactly this attempt, with or without its saved hash; another attempt's is never touched. */
+export function clearPendingBridgeAttempt(owner: Address, id: string | undefined, storage: BridgeStorage = localStorage): void {
+  const current = readPendingBridgeWrite(owner, storage)
+  if (!current || !id || current.id !== id) throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
+  assertPendingBridgeWrite(current, storage)
+  savePendingBridgeWrite(owner, null, storage)
+}
 /** Under the owner lock, retry only the trusted reply retained for this exact raw reservation. */
 export function retryPendingBridgeSubmission(expected: PendingBridgeWrite, storage: BridgeStorage = localStorage): void {
   const current = readStoredPendingBridgeWrite(expected.owner, storage)
