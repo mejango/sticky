@@ -330,7 +330,7 @@ describe('a Safe proposal', () => {
 
     mocks.writeContract.mockResolvedValueOnce(SECOND_PROPOSAL)
     await act(async () => after.tx.reset())
-    await after.send({ ...request, args: [BOB, 6n] })
+    await after.send({ ...request, args: [SAFE, 5n] })
     expect(mocks.writeContract).toHaveBeenCalledTimes(2)
   })
 
@@ -1185,7 +1185,7 @@ describe('generic Safe durable recovery', () => {
     await reopened.send()
     expect(reopened.tx).toMatchObject({ phase: 'submitted', held: { label: WRITE_EXIT_LABEL } })
     expect(mocks.writeContract).toHaveBeenCalledOnce()
-    await reopened.send({ ...request, args: [BOB, 6n] })
+    await reopened.send({ ...request, args: [SAFE, 5n] })
     expect(mocks.writeContract).toHaveBeenCalledTimes(2)
   })
 
@@ -1237,7 +1237,7 @@ describe('generic Safe durable recovery', () => {
     await settle()
     await first.close()
     const reopened = await mount()
-    await reopened.send({ ...request, args: [BOB, 6n] })
+    await reopened.send({ ...request, args: [SAFE, 5n] })
     expect(mocks.writeContract).toHaveBeenCalledTimes(2)
     await act(async () => { execute() })
     await settle()

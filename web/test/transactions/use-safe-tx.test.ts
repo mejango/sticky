@@ -13,6 +13,7 @@ import { TransactionNotFoundError, TransactionReceiptNotFoundError } from 'viem'
 import { SAFE_EXEC_ABI } from '@bananapus/nana-sdk-core/safe-service'
 import { payIntent } from '@bananapus/nana-sdk-core/review'
 import { buildBridgeClaimTx, buildBridgePrepareTx, buildCashOutTx, buildPayTx, buildToRemoteTx, stickySourceCollectorAbi } from '@bananapus/nana-sdk-core/v6'
+import { holdIntent } from '@/lib/sticky-hold-intent'
 import { createBrowserWriteRecovery, createWriteHold, WRITE_HOLD_STALE_REVIEW_LINE, WRITE_HOLD_IN_TAB_LINE, WRITE_EXIT_LABEL, writeExitMessage, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -205,7 +206,7 @@ describe('useSafeTx', () => {
     expect(recipientBalance).toBe(5n)
 
     // A different amount is a different call, which the hold does not cover.
-    await act(async () => { await second.ref.current!.send({ ...request, args: [BOB, 6n] }, reviewedByAlice) })
+    await act(async () => { await second.ref.current!.send({ ...request, args: [ALICE, 5n] }, reviewedByAlice) })
     expect(second.ref.current).toMatchObject({ phase: 'pending', hash: HASH })
     expect(mocks.writeContract).toHaveBeenCalledTimes(2)
     await act(async () => second.renderer.unmount())
@@ -433,7 +434,8 @@ describe('useSafeTx', () => {
 
     await act(async () => {
       const first = hook.ref.current!.send(request, reviewedByAlice)
-      await Promise.resolve()
+      // The hold reads the chain for the call and its older holds before the review opens.
+      await vi.waitFor(() => expect(mocks.requestReview).toHaveBeenCalledTimes(1))
       await expect(hook.ref.current!.send(request, reviewedByAlice)).resolves.toBeNull()
       finishReview(false)
       await first
@@ -1066,7 +1068,7 @@ describe('useSafeTx', () => {
 
     // Tab A reloads: its stored look reads the settlement, and its exit never counts as an abandon.
     const reloaded = await renderHook()
-    const write = { chainId: 10, owner: ALICE, to: BOB, data: encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] }), value: 7n }
+    const write = { chainId: 10, owner: ALICE, to: BOB, data: encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] }), value: 7n, intent: holdIntent(request, ALICE) }
     await expect(reloaded.ref.current!.storedHold(write)).resolves.toEqual({ settled: { result: 'success', hash: HASH } })
     await expect(reloaded.ref.current!.exitStored(write)).resolves.toEqual({ outcome: 'settled', hash: HASH, result: 'success' })
     expect(journal.released).not.toHaveBeenCalled()
@@ -1098,13 +1100,16 @@ describe('useSafeTx', () => {
       expect(hook.ref.current).toMatchObject({ phase: 'submitted' })
       expect(hook.ref.current!.held).not.toBeNull()
     })
-    it('keeps a typed amount as the choice: a different typed amount is a different write', async () => {
+    it('holds a transfer by its token and recipient, not its amount, and treats another recipient as another write', async () => {
       mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
       const abiTransfer = parseAbi(['function transfer(address to, uint256 amount)'])
       const hook = await renderHook()
       await act(async () => { await hook.ref.current!.send({ chainId: 10, address: X, abi: abiTransfer, functionName: 'transfer', args: [BOB, 5n] } as never, reviewedByAlice) })
       await act(async () => hook.ref.current!.reset())
       await act(async () => { await hook.ref.current!.send({ chainId: 10, address: X, abi: abiTransfer, functionName: 'transfer', args: [BOB, 7n] } as never, reviewedByAlice) })
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+      await act(async () => hook.ref.current!.reset())
+      await act(async () => { await hook.ref.current!.send({ chainId: 10, address: X, abi: abiTransfer, functionName: 'transfer', args: [ALICE, 5n] } as never, reviewedByAlice) })
       expect(mocks.writeContract).toHaveBeenCalledTimes(2)
     })
 
@@ -1128,6 +1133,29 @@ describe('useSafeTx', () => {
       await act(async () => { await hook.ref.current!.send(approve(7n, parentB) as never, reviewedByAlice) })
       expect(mocks.writeContract).toHaveBeenCalledTimes(3)
     })
+    it.each([
+      ['a transfer of Sticky tokens', { chainId: 10, address: X, abi: parseAbi(['function transfer(address to, uint256 amount)']), functionName: 'transfer', args: [BOB, 5n] }, { chainId: 10, address: X, abi: parseAbi(['function transfer(address to, uint256 amount)']), functionName: 'transfer', args: [BOB, 7n] }],
+      ['a collector settle', { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'settle', args: [12n, X, 0n, 5n] }, { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'settle', args: [12n, X, 0n, 7n] }],
+    ] as [string, TxRequestOf, TxRequestOf][])('holds %s by its identity, so a retry of another amount is refused until the exit', async (_name, first, retry) => {
+      mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
+      const hook = await renderHook()
+      await act(async () => { await hook.ref.current!.send(first as never, reviewedByAlice) })
+      await act(async () => hook.ref.current!.reset())
+      await act(async () => { await hook.ref.current!.send(retry as never, reviewedByAlice) })
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+    })
+
+    it('does not block a stick to another project behind an unresolved stick', async () => {
+      mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
+      const stickTo = (project: bigint) => buildPayTx({ chainId: 10, terminal: X, projectId: project, token: X, amount: 5n, beneficiary: ALICE, minReturnedTokens: 9n, memo: '', metadata: '0x' })
+      const hook = await renderHook()
+      await act(async () => { await hook.ref.current!.send(stickTo(12n) as never, reviewedByAlice) })
+      expect(hook.ref.current!.held).not.toBeNull()
+      await act(async () => hook.ref.current!.reset())
+      await act(async () => { await hook.ref.current!.send(stickTo(13n) as never, reviewedByAlice) })
+      expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+    })
+
     it('holds a stick by its project and beneficiary, not its amount, and treats another beneficiary as another write', async () => {
       mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
       const [, first] = pairs[0]
@@ -1205,7 +1233,7 @@ describe('useSafeTx', () => {
       vi.useFakeTimers()
       try {
         const data = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
-        const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n }
+        const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n, intent: holdIntent(request, ALICE) }
         const hook = await renderHook()
         // Nothing is held for it yet: main's journal never made an SDK record.
         await expect(hook.ref.current!.storedHold(write)).resolves.toBeNull()
@@ -1225,7 +1253,7 @@ describe('useSafeTx', () => {
       vi.useFakeTimers()
       try {
         const data = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
-        const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n }
+        const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n, intent: holdIntent(request, ALICE) }
         mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => { throw new TransactionNotFoundError({ hash }) })
         const hook = await renderHook()
         await act(async () => { await hook.ref.current!.adoptStored({ ...write, hash: HASH, safeProposal: false }) })
@@ -1242,7 +1270,7 @@ describe('useSafeTx', () => {
       vi.useFakeTimers()
       try {
         const data = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
-        const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n }
+        const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n, intent: holdIntent(request, ALICE) }
         mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => { throw new TransactionNotFoundError({ hash }) })
         const hook = await renderHook()
         await act(async () => { await hook.ref.current!.adoptStored({ ...write, hash: HASH, safeProposal: false, submittedAt: Date.now() - 40 * 60_000 }) })
@@ -1252,7 +1280,7 @@ describe('useSafeTx', () => {
 
     it('does not take a call another tab settled between the read and the adoption', async () => {
       const data = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
-      const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n }
+      const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n, intent: holdIntent(request, ALICE) }
       const hook = await renderHook()
       await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
       mocks.receipt = { data: canonicalReceipt('success'), isError: false }
@@ -1312,7 +1340,7 @@ describe('useSafeTx', () => {
         expect(hook.ref.current).toMatchObject({ phase: 'error', held: null })
 
         // Another tab reserves the same call and loses its wallet reply.
-        const otherTab = createWriteHold().open({ chainId: 10, account: ALICE, safe: false, call: { to: BOB, data: callData, value: 7n } })
+        const otherTab = createWriteHold().open({ chainId: 10, account: ALICE, safe: false, namespace: holdIntent(request, ALICE), call: { to: BOB, data: callData, value: 7n } })
         await otherTab.send(mocks.publicClient as never, async gate => { await gate.beforeSend(); throw new Error('lost') }).catch(() => undefined)
 
         // The storage notification reaches this tab: a replayed state, never an exit.

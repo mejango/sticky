@@ -219,7 +219,7 @@ const SHOWN_AS: Record<ProposalPhase, TxPhase> = {
 
 const SAFE_EXECUTION_CONFIRMING = 'Executed by your Safe. Confirming it onchain.'
 /** What a Safe app replied in place of a proposal or execution hash. */
-const SAFE_REPLY_UNREADABLE = 'Safe did not return a proposal hash. Check Safe before sending this again.'
+const SAFE_REPLY_UNREADABLE = 'Check this proposal in your Safe before sending it again.'
 /** A receipt still missing this long after its execution was first seen is not coming. */
 const RECEIPT_HORIZON_MS = 60 * 60_000
 
@@ -501,7 +501,7 @@ function legacyHolds(namespace: string | undefined, to: Address, data: Hex): { m
 function openStored(write: StoredWrite): WriteHoldHandle {
   return holds.open(
     { chainId: write.chainId, account: write.owner, safe: !!write.safeProposal, namespace: write.intent, call: { to: write.to, data: write.data, value: write.value } },
-    { legacy: write.data.startsWith('0x095ea7b3') ? [] : legacyHolds(write.intent, write.to, write.data) },
+    { legacy: legacyHolds(write.intent, write.to, write.data) },
   )
 }
 
@@ -843,8 +843,7 @@ export function useSafeTx(chainId: number) {
         // A domain journal (bridge, collector) holds its own writes; every other write is held here.
         // The SDK hold covers every write; a domain journal keeps its own reservation beside it.
         const namespace = holdIntent(request, account)
-        // An approval is not matched to older holds by target and selector: that would make a pending approval of a token block every other approval of it.
-        handle = holds.open({ chainId: request.chainId, account, safe: viaSafe, namespace, call: sentCall }, { legacy: request.functionName === 'approve' ? [] : legacyHolds(namespace, sentCall.to, sentCall.data) })
+        handle = holds.open({ chainId: request.chainId, account, safe: viaSafe, namespace, call: sentCall }, { legacy: legacyHolds(namespace, sentCall.to, sentCall.data) })
         releasedRef.current = options.durableRecovery?.released ?? null
         settledRef.current = options.durableRecovery?.settled ?? null
         watchHold(handle)
