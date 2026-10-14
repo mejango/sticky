@@ -658,6 +658,32 @@ describe('a Safe proposal awaiting its signers', () => {
     expect(mocks.writeContract).toHaveBeenCalledTimes(2)
   })
 
+  it('shows neutral copy, retires the registry entry and ignores the follower when another tab exits the hold with no settlement', async () => {
+    vi.useFakeTimers()
+    try {
+      mocks.waitForSafeExecutionHash.mockRejectedValue(new Error('Safe service unavailable'))
+      mocks.writeContract.mockResolvedValueOnce(PROPOSAL).mockResolvedValueOnce(SECOND_PROPOSAL)
+      const flow = await mount()
+      await flow.send()
+      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      expect(flow.tx.held).toMatchObject({ label: WRITE_EXIT_LABEL })
+
+      const callData = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
+      const other = createWriteHold().open({ chainId: 10, account: SAFE, safe: true, call: { to: BOB, data: callData, value: 7n } })
+      const seen = await other.state(mocks.publicClient as never)
+      await other.exit(seen, { checkedWallet: true }, mocks.publicClient as never)
+      await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
+      expect(flow.tx).toMatchObject({ phase: 'submitted', held: null, notice: 'This transaction is no longer held here. Check your wallet before sending it again.' })
+
+      // A late follower callback does not revive the entry, and a retry is a fresh proposal.
+      await act(async () => { await vi.advanceTimersByTimeAsync(120_000) })
+      expect(flow.tx.notice).toBe('This transaction is no longer held here. Check your wallet before sending it again.')
+      await act(async () => flow.tx.reset())
+      await act(async () => { await flow.tx.send(request, reviewedBySafe) })
+      expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+    } finally { vi.useRealTimers() }
+  })
+
   it('follows a proposal the Safe shows executed to its result', async () => {
     const execute = signersDecide()
     let watchEnds!: (end: string) => void

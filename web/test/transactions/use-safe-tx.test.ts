@@ -14,7 +14,8 @@ import { SAFE_EXEC_ABI } from '@bananapus/nana-sdk-core/safe-service'
 import { payIntent } from '@bananapus/nana-sdk-core/review'
 import { buildBridgeClaimTx, buildBridgePrepareTx, buildCashOutTx, buildPayTx, buildToRemoteTx, stickySourceCollectorAbi } from '@bananapus/nana-sdk-core/v6'
 import { holdIntent } from '@/lib/sticky-hold-intent'
-import { createBrowserWriteRecovery, createWriteHold, WRITE_HOLD_STALE_REVIEW_LINE, WRITE_HOLD_IN_TAB_LINE, WRITE_EXIT_LABEL, writeExitMessage, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
+import { legacyNamespaces } from '@/lib/legacy-intents'
+import { createWriteHold, WRITE_HOLD_STALE_REVIEW_LINE, WRITE_HOLD_IN_TAB_LINE, WRITE_EXIT_LABEL, writeExitMessage, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 
@@ -1145,6 +1146,21 @@ describe('useSafeTx', () => {
       expect(mocks.writeContract).toHaveBeenCalledOnce()
     })
 
+    it.each([
+      ['a claim and stick', 'stickRewardsFor', (groups: bigint[]) => [12n, groups]],
+      ['a compound', 'compoundFor', (groups: bigint[]) => [12n, ALICE, groups]],
+      ['a begin-vesting', 'beginVestingFor', (groups: bigint[]) => [12n, ALICE, groups]],
+    ] as const)('holds %s by project, account and action, so the groups a retry derives anew do not make it a new write', async (_name, functionName, args) => {
+      mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
+      const call = (groups: bigint[]) => ({ chainId: 10, address: X, abi: parseAbi([`function ${functionName}(uint256 project, ${functionName === 'stickRewardsFor' ? '' : 'address holder, '}uint256[] groups)`]), functionName, args: args(groups) })
+      const hook = await renderHook()
+      await act(async () => { await hook.ref.current!.send(call([0n, 4000n]) as never, reviewedByAlice) })
+      expect(hook.ref.current!.held).not.toBeNull()
+      await act(async () => hook.ref.current!.reset())
+      await act(async () => { await hook.ref.current!.send(call([4000n]) as never, reviewedByAlice) })
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+    })
+
     it('does not block a stick to another project behind an unresolved stick', async () => {
       mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
       const stickTo = (project: bigint) => buildPayTx({ chainId: 10, terminal: X, projectId: project, token: X, amount: 5n, beneficiary: ALICE, minReturnedTokens: 9n, memo: '', metadata: '0x' })
@@ -1176,11 +1192,15 @@ describe('useSafeTx', () => {
     const X = '0x3333333333333333333333333333333333333333' as Address
     const stick = (min: bigint) => buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 5n, beneficiary: ALICE, minReturnedTokens: min, memo: '', metadata: '0x' })
 
+    // What origin/main saved: the app-local namespace (the frozen legacy builder), the first quote's calldata, reserved with no hash.
+    const mainEraHold = async (tx: ReturnType<typeof stick>) => {
+      const hold = createWriteHold().open({ chainId: 10, account: ALICE, safe: false, namespace: legacyNamespaces(tx)[0], call: { to: tx.address, data: encodeFunctionData({ abi: tx.abi, functionName: tx.functionName, args: tx.args } as never), value: tx.value } })
+      await hold.send(mocks.publicClient as never, async gate => { await gate.beforeSend(); throw new Error('lost') }).catch(() => undefined)
+    }
+
     it('refuses a retry under the intent key while a main-era exact-calldata hold stands, until the exit', async () => {
       const first = stick(9n)
-      // What shipped: a hold on the exact call, with no namespace.
-      const mainEra = createBrowserWriteRecovery({ chainId: 10, account: ALICE, safe: false, call: { to: first.address, data: encodeFunctionData({ abi: first.abi, functionName: first.functionName, args: first.args } as never), value: first.value } })
-      await mainEra.withLock(async () => { mainEra.reserve(undefined, { nonce: 7, blockNumber: 100n }) })
+      await mainEraHold(first)
       const hook = await renderHook()
       await act(async () => { await hook.ref.current!.send(first as never, reviewedByAlice) })
       expect(mocks.writeContract).not.toHaveBeenCalled()
@@ -1294,9 +1314,7 @@ describe('useSafeTx', () => {
     it('holds a retry under the intent key against a main-era hold with different calldata and the same call target', async () => {
       const first = buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 5n, beneficiary: ALICE, minReturnedTokens: 9n, memo: '', metadata: '0x' })
       const retry = buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 5n, beneficiary: ALICE, minReturnedTokens: 8n, memo: '', metadata: '0x' })
-      // What shipped on main: an exact-call hold with the first quote's calldata, no namespace.
-      const mainEra = createBrowserWriteRecovery({ chainId: 10, account: ALICE, safe: false, call: { to: first.address, data: encodeFunctionData({ abi: first.abi, functionName: first.functionName, args: first.args } as never), value: first.value } })
-      await mainEra.withLock(async () => { mainEra.reserve(undefined, { nonce: 7, blockNumber: 100n }) })
+      await mainEraHold(first)
       const hook = await renderHook()
       await act(async () => { await hook.ref.current!.send(retry as never, reviewedByAlice) })
       expect(mocks.writeContract).not.toHaveBeenCalled()

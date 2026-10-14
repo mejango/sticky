@@ -34,6 +34,7 @@ function fixture(chainIds = [84532], capability: 'sponsored' | 'self-paid' | 'un
     sendPayment: vi.fn(async (_session, callbacks) => { await callbacks.beforeWrite(); callbacks.submitted(H2) }),
     verifyPayment: vi.fn(async () => true), verifyDeployment: vi.fn(async () => null),
     requireRetry: vi.fn(async () => {}),
+    hold: { look: vi.fn(async () => ({ line: 'Held.', label: 'I checked my wallet, allow another send', exit: true })), exit: vi.fn(async () => true) },
     publishListing: vi.fn(async () => 'listing-identity'), sponsor: vi.fn(async (_session, beforeRequest) => { await beforeRequest() }),
     record: vi.fn(async () => true), changed: vi.fn(),
   }
@@ -297,9 +298,41 @@ describe('durable Sticky launch controller', () => {
     await expect(f.controller.run()).rejects.toThrow('Unknown submission')
     await f.controller.addHash(84532, H1)
     await expect(f.controller.retry()).rejects.toThrow('no recorded transaction hash')
+    expect(f.ports.hold.exit).not.toHaveBeenCalled()
     expect(f.ports.requireRetry).not.toHaveBeenCalled()
     expect(f.store.load()?.direct).toEqual({ started: true })
     expect(f.store.load()?.directAttempts).toBeUndefined()
+  })
+
+  it('shows the SDK hold of a started submission, and nothing before one', async () => {
+    const f = fixture()
+    await expect(f.controller.hold()).resolves.toBeNull()
+    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); throw new Error('Unknown submission') })
+    await expect(f.controller.run()).rejects.toThrow('Unknown submission')
+    await expect(f.controller.hold()).resolves.toMatchObject({ exit: true })
+    expect(f.ports.hold.look).toHaveBeenCalledWith(expect.objectContaining({ direct: { started: true } }), 'direct')
+  })
+
+  it('lets the SDK exit release a hashless submission, and sends again afterwards; a refused exit changes nothing', async () => {
+    const f = fixture()
+    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); throw new Error('Unknown submission') })
+    await expect(f.controller.run()).rejects.toThrow('Unknown submission')
+    vi.mocked(f.ports.hold.exit).mockResolvedValueOnce(false)
+    await f.controller.exitHold()
+    expect(f.store.load()?.direct).toEqual({ started: true })
+    await f.controller.exitHold()
+    expect(f.store.load()?.direct).toBeUndefined()
+    expect(f.store.load()?.directAttempts).toBeUndefined()
+    await f.controller.run()
+    expect(f.ports.sendDirect).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps a hashed submission as an attempt when the SDK exit releases it, so its proof is still required', async () => {
+    const f = fixture()
+    await f.controller.run()
+    await f.controller.exitHold()
+    expect(f.store.load()?.direct).toBeUndefined()
+    expect(f.store.load()?.directAttempts).toEqual([{ started: true, hash: H1 }])
   })
 
   it('keeps the original hash locked when finalized failure proof is unavailable or reorged', async () => {

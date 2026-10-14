@@ -8,9 +8,10 @@ import type { TxRequest } from '@/hooks/useSafeTx'
  * retry of the same action from any app, tab or deploy is held by the first attempt until it settles or the user takes
  * its explicit exit.
  *
- * Not covered by an SDK builder, keyed with `writeIntentKey` from identity alone: a transfer of Sticky tokens (token,
+ * Not covered by an SDK builder, keyed with `writeIntentKey` from identity alone (never derived reward groups): a claim-and-stick,
+ * a compound and a begin-vesting (project, account, action), a transfer of Sticky tokens (token,
  * recipient, account) and a collector settle (collector, source project, Sticky token, group, account). The rest (a fund, a
- * collect, a claim-and-stick, a trust, the auto-stick settings, a compound, a begin-vesting, a receiver deploy and a settle)
+ * collect, a trust, the auto-stick settings, a receiver deploy and a settle)
  * are held by their exact call (undefined): their calldata is typed input and does not regenerate on a retry.
  */
 export function holdIntent(request: Pick<TxRequest, 'chainId' | 'address' | 'functionName' | 'args' | 'parent'>, account: Address): string | undefined {
@@ -40,6 +41,10 @@ export function holdIntent(request: Pick<TxRequest, 'chainId' | 'address' | 'fun
     case 'settle':
       return writeIntentKey('collector-settle', { chain: chainId, collector: intent.address(request.address), sourceProjectId: args[0] as bigint, stickyToken: intent.address(args[1] as Address), groupId: args[2] as bigint, account: intent.address(account) })
     // An approval step belongs to the action it serves: no amount, only the step, the token and the spender.
+    case 'stickRewardsFor':
+    case 'compoundFor':
+    case 'beginVestingFor':
+      return writeIntentKey(request.functionName, { chain: chainId, terminal: intent.address(request.address), projectId: args[0] as bigint, account: intent.address(account) })
     case 'approve':
       return approvalIntent(request.parent ?? PARENTLESS, { step: (args[1] as bigint) === 0n ? 'reset' : 'approve', token: request.address, spender: args[0] as Address })
     default:

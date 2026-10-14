@@ -10,7 +10,7 @@ import { displayChainName, explorerTxUrl } from '@/lib/chainDisplay'
 import type { ChainEnvironment } from '@/lib/chains'
 import { STICKY_LAUNCH_EVENT, takeStickyLaunchRequest } from '@/lib/sticky-launch-events'
 import type { LaunchPlan } from '@/lib/sticky-launch-plan'
-import { STICKY_LAUNCH_KEY, launchCanClear, launchComplete, type StickyLaunchSession } from '@/lib/sticky-launch-session'
+import { STICKY_LAUNCH_KEY, launchCanClear, launchComplete, type LaunchHoldView, type StickyLaunchSession } from '@/lib/sticky-launch-session'
 
 const CreateForm = dynamic(() => import('./StickyCreateForm').then(module => module.StickyCreateForm), { loading: () => <p role="status">Loading create form…</p> })
 type Controller = ReturnType<typeof import('@/lib/sticky-launch-adapter').createBrowserStickyLaunchController>
@@ -27,6 +27,8 @@ export function StickyLaunchHost() {
   const [restoring, setRestoring] = useState(true)
   const [busy, setBusy] = useState(false)
   const [phase, setPhase] = useState('')
+  /** The SDK's line and exit for the wallet submission this launch started, if it still holds one. */
+  const [held, setHeld] = useState<LaunchHoldView | null>(null)
   const [hash, setHash] = useState('')
   const [hashChain, setHashChain] = useState<number | null>(null)
   const controller = useRef<Promise<Controller> | null>(null)
@@ -85,7 +87,7 @@ export function StickyLaunchHost() {
   const savedLaunchId = session?.plan.id
   useEffect(() => {
     if (!savedLaunchId || corrupt || restoring) return
-    const check = () => { if (!document.hidden) void action(current => current.refresh(), true) }
+    const check = () => { if (!document.hidden) void action(async current => { await current.refresh(); setHeld(await current.hold()) }, true) }
     check()
     const interval = window.setInterval(check, 12_000)
     document.addEventListener('visibilitychange', check)
@@ -124,9 +126,14 @@ export function StickyLaunchHost() {
                   : <span className="text-muted">{session.direct?.started || session.payment?.started || session.published || session.listing.requested ? 'Waiting for verified deployment' : 'Ready for review'}</span>}
               </li>
             })}</ul>
+            {held && !complete ? <div role="status" className="space-y-1 text-sm">
+              <p>{held.line}</p>
+              {held.warning ? <p className="text-muted">{held.warning}</p> : null}
+            </div> : null}
             {session.error || session.listing.error ? <p className="break-words text-sm text-err">{session.error || session.listing.error}</p> : null}
             <div className="flex flex-wrap gap-3">
               <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(current => current.refresh())}>Check again</button>
+              {!recoveryOnly && !complete && held?.exit ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(async current => { await current.exitHold(); setHeld(await current.hold()) })}>{held.label}</button> : null}
               {!recoveryOnly && !complete && (session.direct?.started || session.payment?.started) ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(current => current.retry())}>Check failed transaction for retry</button> : null}
               {!recoveryOnly && !complete && !session.direct?.started && !session.payment?.started && (!session.listing.requested || session.listing.selfPaid) ?
                 <button type="button" className="btn-primary px-3 py-2" disabled={busy} onClick={() => void action(current => current.run())}>{session.mode === 'center' ? 'Request sponsored launch' : 'Continue launch'}</button> : null}

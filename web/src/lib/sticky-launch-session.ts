@@ -118,6 +118,9 @@ export type SubmissionCallbacks = {
   submitted: (hash: Hex, proposalHash?: Hex) => void
 }
 
+/** What the SDK says of a launch write that may have reached the wallet. */
+export type LaunchHoldView = { line: string; warning?: string; label: string; exit: boolean }
+
 export type StickyLaunchPorts = {
   store: ReturnType<typeof createStickyLaunchStore>
   guard: (owner: `0x${string}`) => void
@@ -129,6 +132,11 @@ export type StickyLaunchPorts = {
   sendPayment: (session: StickyLaunchSession, callbacks: SubmissionCallbacks) => Promise<void>
   verifyPayment: (session: StickyLaunchSession) => Promise<boolean>
   requireRetry: (session: StickyLaunchSession, kind: 'direct' | 'payment', purpose: 'retry' | 'retire') => Promise<void>
+  /** The SDK hold of the submission a launch started: its line and exit, and the exit itself (true once released). */
+  hold: {
+    look: (session: StickyLaunchSession, kind: 'direct' | 'payment') => Promise<LaunchHoldView | null>
+    exit: (session: StickyLaunchSession, kind: 'direct' | 'payment') => Promise<boolean>
+  }
   verifyDeployment: (session: StickyLaunchSession, target: LaunchTarget, hash: Hex) => Promise<LaunchResult | null>
   publishListing: (plan: LaunchPlan) => Promise<string>
   sponsor: (session: StickyLaunchSession, beforeRequest: () => void) => Promise<void>
@@ -310,13 +318,30 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
       const kind = session.payment?.started ? 'payment' : 'direct'
       const submitted = session[kind]
       if (!submitted?.started || !submitted.hash) {
-        throw new Error('This submission has no recorded transaction hash. Keep it saved; another receipt cannot release an unknown wallet submission.')
+        throw new Error('This submission has no recorded transaction hash. Check your wallet, then use the exit shown for it; another receipt cannot release an unknown wallet submission.')
       }
       await ports.requireRetry(session, kind, 'retry')
       ports.guard(session.plan.owner)
       return kind === 'direct'
         ? save({ ...session, directAttempts: [...(session.directAttempts ?? []), submitted], direct: undefined })
         : save({ ...session, paymentAttempts: [...(session.paymentAttempts ?? []), session.payment!], payment: undefined })
+    }),
+    /** The SDK's line and exit for the submission this launch started, if any. */
+    hold: async () => {
+      const session = load()
+      const kind = session.payment?.started ? 'payment' : session.direct?.started ? 'direct' : null
+      return kind ? ports.hold.look(session, kind) : null
+    },
+    /** The user checked their wallet: when the SDK releases the call, the started submission ends (a hashed one stays as an attempt). */
+    exitHold: () => exclusively(async () => {
+      const session = load()
+      requireSingleHomeChain(session.plan.targets)
+      const kind = session.payment?.started ? 'payment' : 'direct'
+      const submitted = session[kind]
+      if (!submitted?.started || !(await ports.hold.exit(session, kind))) return session
+      return kind === 'direct'
+        ? save({ ...session, directAttempts: submitted.hash ? [...(session.directAttempts ?? []), submitted] : session.directAttempts, direct: undefined })
+        : save({ ...session, paymentAttempts: submitted.hash ? [...(session.paymentAttempts ?? []), session.payment!] : session.paymentAttempts, payment: undefined })
     }),
     selfPay: () => exclusively(async () => {
       const session = load()
