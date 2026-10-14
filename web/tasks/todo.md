@@ -63,3 +63,23 @@ Hosted verification passed at `f6ed26bc8a41d748ef1caa1831dee1efc7eebd05`: all se
 - Core 2.27.0 is installed from the authenticated registry tarball at integrity `sha512-fVGeoj2OE1iVIIZmvFY6aQUtZKlydnJkxulreKM3wIYLm7I+rXnSdsIwqRXf5VnRUyLOCWc7NuIyKGxk8jp+wA==`; registry provenance binds it to SDK release commit `b313472ad2f8b996e61c8b8b494d7413e59f8e8a`, and all 769 compiled/public files match the reviewed preview. Connect remains 0.5.6 and the React SDK is absent.
 - The pinned Node 26.7.0/npm 12.0.1 release path passes a clean locked install, zero-vulnerability production audit, lint, nonincremental types, deployment/schema/transaction inventories, 163 files and 3,777 coverage tests (94.63% statements, 90.91% branches, 94.90% functions, 96.59% lines), the standard plus deterministic/Signa production builds, and all 54 browser cases. The initial restricted Playwright start failed only because the sandbox refused its loopback listener; the same built artifacts passed outside that restriction.
 - The remaining release boundary is the exact committed revision's hardened OCI smoke and six hosted PR checks. Contract deployment, PR merge and application deployment remain outside this adoption task.
+
+# SDK 2.39 migration: held writes and saved attempts from the SDK
+
+## Plan refinement
+- **Objective:** Move Sticky onto `@bananapus/nana-sdk-core` 2.39.0 and `@bananapus/nana-sdk-react` 53.0.0 so every hold watcher, Safe follower and saved-attempt recovery is the SDK's (useHeldWrite, useSavedAttempt, createSavedAttemptRecovery, HeldWritesNotice), with the frozen recovery rule (ALIGN/recovery-rule.md) unchanged and no added click, wait or notice on the normal path. Push a PR, do not merge.
+- **System fit:** Wallet send (useSafeTx, launch adapter) -> SDK hold reservation -> SDK view/follower -> settlement -> app domain checks (bridge verifyWrite, launch verifyDeployment/verifyPayment) -> journal records domain data only. Owners: SDK owns hold, follow, exit, recovery outcomes and copy; Sticky owns journals (launch session, bridge pending record), domain authentication and `confirmRetirable` re-reads. Unaffected: builders, intents (sticky-hold-intent), review dialogs, Relayr/Center domain calls.
+- **Reuse and simplicity:** Delete the in-memory Safe registry and hold watchers in useSafeTx (one useHeldWrite per flow), PendingWriteExit, check-required.ts, the launch hold/exitHold/forceExit/sponsorUnknown views, bridge-journal settlement adoption glue; one shared SavedWriteRecovery component binds useSavedAttempt + useHeldWrite for Bridge and Collector; the launch host binds the same hooks. Keep legacy-intents.ts passed as `legacy`. Only new app code: attempt builders (domain inputs) and a source gate test.
+- **Evidence and unknowns:** SDK sources at juice-sdk-v4 origin/main af41636 (2.39.0/53.0.0, integrity checked). Found: nana-sdk-react 53.0.0 imports wagmi 2's `useToken`, missing in wagmi 3.7.6, so webpack and Node fail to link it; scoped workaround (webpack parser rule for that package, vitest inline) plus an `overrides` peer pin, reported as an SDK defect. Browser suite has no wallet; the happy-path click/notice comparison is a jsdom test against main's counts.
+- **Verification:** Red-first: cross-tab launch-send race (two controllers, one storage: the second sees held, never check/send); ported scenarios on the SDK path (double-send refused, settled-while-away, unreadable storage warned exit, stale check refused, wallet rejection retires); grep gate over src for app-local hold/recovery patterns and copied SDK copy; happy-path click/notice parity for stick, unstick and launch. Then full `npm run check` (audit, lint, types, inventories, coverage, build, browser).
+- **Resource budget:** One worktree, Node 26.7.0 with `npx npm@12.0.1`; no subagents. Port tests by scenario instead of internals; replan if the SDK hooks cannot express a Sticky flow without app-local hold logic.
+
+### Work
+- [x] Bump core 2.39.0, add react 53.0.0, lockfile via npm 12; build workaround for wagmi 3.
+- [ ] useSafeTx on useHeldWrite; delete registry, watchers, stored-hold APIs.
+- [ ] Bridge/Collector: SavedWriteRecovery (useSavedAttempt + useHeldWrite); delete PendingWriteExit and journal settlement glue.
+- [ ] Launch: attempt builders + useSavedAttempt in the host (direct, payment, sponsor with the 30-minute window); delete launch hold views; reserve before journaling.
+- [ ] HeldWritesNotice for the connected account (held phase only).
+- [ ] Copy from SDK constants; delete check-required.ts and app duplicates.
+- [ ] Tests: race, ported scenarios, grep gate, happy-path parity; update inventories.
+- [ ] Full gate, Codex review (max 2 rounds), push, PR.
