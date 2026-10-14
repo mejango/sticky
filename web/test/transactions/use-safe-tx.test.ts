@@ -79,6 +79,7 @@ vi.mock('@/lib/safe-connector', async importOriginal => ({
 import { useSafeTx } from '@/hooks/useSafeTx'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 
+const TRANSACTION_WENT_THROUGH = 'Your earlier transaction went through.'
 const STILL_PENDING_LINE = 'Still pending in your wallet. Speed it up or cancel it there.'
 const ALICE = '0x1111111111111111111111111111111111111111' as Address
 const BOB = '0x2222222222222222222222222222222222222222' as Address
@@ -639,6 +640,51 @@ describe('useSafeTx', () => {
       await look()
       await act(async () => hook.ref.current!.held!.exit!())
       expect(hook.ref.current).toMatchObject({ phase: 'idle', held: null })
+    } finally { vi.useRealTimers() }
+  })
+
+  /** An exit is on screen for a dropped hash; then the chain shows that same hash mined and successful. */
+  async function exitOpenThenConfirmed() {
+    const hook = await renderHook()
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    mocks.receipt = { data: undefined, isError: true }
+    chain.pending(HASH)
+    await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
+    await look()
+    chain.gone()
+    chain.moved(true, { hash: EXECUTION_HASH, to: ALICE, input: '0x' })
+    await look()
+    expect(hook.ref.current!.held!.exit).toBeTypeOf('function')
+    // It was confirmed all along: the node now shows it mined, with its receipt.
+    mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => ({
+      hash, from: ALICE, to: BOB, nonce: 7, input: encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] }),
+      value: 7n, blockHash: BLOCK_HASH, blockNumber: 77n, transactionIndex: 0,
+    }))
+    mocks.publicClient.getTransactionReceipt.mockImplementation(async () => canonicalReceipt('success'))
+    return hook
+  }
+
+  it('ends the attempt without sending when a confirmation lands while the exit is open', async () => {
+    vi.useFakeTimers()
+    try {
+      const hook = await exitOpenThenConfirmed()
+      await act(async () => hook.ref.current!.held!.exit!())
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+      expect(hook.ref.current!.notice).toBe(TRANSACTION_WENT_THROUGH)
+      expect(hook.ref.current!.held).toBeNull()
+      await look()
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+    } finally { vi.useRealTimers() }
+  })
+
+  it('keeps the settlement a poll returned while the exit was open, and sends nothing', async () => {
+    vi.useFakeTimers()
+    try {
+      const hook = await exitOpenThenConfirmed()
+      await look()
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+      expect(hook.ref.current!.held).toBeNull()
+      expect(hook.ref.current!.notice).toBe(TRANSACTION_WENT_THROUGH)
     } finally { vi.useRealTimers() }
   })
 

@@ -23,7 +23,7 @@ import { useWallet } from '@/hooks/useWallet'
 import { submitReviewedContractWrite } from '@/lib/contract-write'
 import {
   createWriteHold, gasWithHeadroom, transactionMessage, writeExitMessage, WRITE_EXIT_LABEL,
-  SAFE_PROPOSAL_EXECUTED_LINE, SAFE_PROPOSAL_REPLACED_LINE,
+  SAFE_PROPOSAL_EXECUTED_LINE, SAFE_PROPOSAL_REPLACED_LINE, WRITE_HOLD_REVERTED_LINE,
   SubmittedContractWriteError, WriteHeldError, WriteHoldBusyError, WriteHoldNonceError,
   waitForTrackedReceipt, type WriteHoldGate, type WriteHoldHandle, type WriteHoldState,
 } from '@bananapus/nana-sdk-core/review'
@@ -528,8 +528,19 @@ export function useSafeTx(chainId: number) {
   const [hold, setHold] = useState<WriteHoldHandle | null>(null)
   const holdRef = useRef<WriteHoldHandle | null>(null)
   const [held, setHeld] = useState<WriteHoldState | null>(null)
+  const heldRef = useRef<WriteHoldState | null>(null)
+  /** How a hold the user was looking at ended without a send: its settlement, kept. */
+  const [settledNote, setSettledNote] = useState<string | null>(null)
   const showHeld = useCallback((value: WriteHoldState | null) => {
-    setHeld(value && value.status !== 'clear' ? value : null)
+    const shown = value && value.status !== 'clear' ? value : null
+    // A hold on screen that clears meanwhile ends the attempt: nothing is sent, and the result stays shown.
+    if (!shown && (heldRef.current && 'exit' in heldRef.current && heldRef.current.exit) && value?.status === 'clear') {
+      const result = value.settled?.result
+      setSettledNote(result === 'failed' ? WRITE_HOLD_REVERTED_LINE : result === 'expired' ? SAFE_PROPOSAL_EXPIRED : 'Your earlier transaction went through.')
+      setPhase('submitted')
+    }
+    heldRef.current = shown
+    setHeld(shown)
   }, [])
   const watchHold = useCallback((next: WriteHoldHandle | null) => {
     holdRef.current = next
@@ -619,7 +630,7 @@ export function useSafeTx(chainId: number) {
       : receiptReverted
         ? 'error'
         : phase
-  const notice = exitOffered?.line ?? (recoveryProofPending
+  const notice = exitOffered?.line ?? settledNote ?? (recoveryProofPending
     ? 'Checking the original transaction’s canonical result before allowing another action.'
     :
     proposal?.phase === 'awaiting'
@@ -741,6 +752,7 @@ export function useSafeTx(chainId: number) {
       showProposal(null)
       setPolledReceipt(null)
       watchHold(null)
+      setSettledNote(null)
       // Read once: the review, the sent gas and the proposal tracking must all
       // agree on whether a Safe proposes this call.
       const viaSafe = isSafeConnection(wagmiConfig)
@@ -959,6 +971,7 @@ export function useSafeTx(chainId: number) {
     setHash(null)
     showProposal(null)
     watchHold(null)
+    setSettledNote(null)
   }, [showProposal, watchHold])
 
   /** The user checked their wallet: the SDK releases the record they saw, if it is still the one held. */
