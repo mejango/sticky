@@ -1,3 +1,4 @@
+import { resetWriteHoldsForTests } from '@bananapus/nana-sdk-core/testing'
 import { afterEach, beforeEach, vi } from 'vitest'
 import { browserWriteRecoveryModel } from './support/write-recovery'
 
@@ -20,11 +21,8 @@ beforeEach(() => {
     vi.stubGlobal('sessionStorage', browser.sessionStorage)
     browser.localStorage.clear()
   }
-  // The SDK keeps held writes in one tab-wide memory, shared by every test of this file.
-  const tab = globalThis as unknown as Record<symbol, unknown>
-  const memory = tab[Symbol.for('nana-sdk:held-writes')] as Map<string, string> | undefined
-  memory?.clear()
-  ;(tab[Symbol.for('nana-sdk:held-writes-seen')] as WeakMap<object, Map<string, string>> | undefined)?.get(memory ?? {})?.clear()
+  // The SDK's held writes live in one tab-wide memory and are followed by timers: its reset empties both in place.
+  resetWriteHoldsForTests()
   const { locks } = browserWriteRecoveryModel()
   const navigator = globalThis.navigator ?? {}
   vi.stubGlobal('navigator', new Proxy(navigator, {

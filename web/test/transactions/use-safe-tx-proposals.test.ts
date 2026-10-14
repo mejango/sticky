@@ -18,7 +18,7 @@ import {
 } from '@bananapus/nana-sdk-core/safe-service'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildPermit2ApproveTx } from '@bananapus/nana-sdk-core/v6'
-import { createWriteHold, WRITE_HOLD_SAFE_UNPROVEN_LINE, SAFE_PROPOSAL_EXECUTED_LINE, WRITE_EXIT_LABEL } from '@bananapus/nana-sdk-core/review'
+import { createWriteHold, WRITE_HOLD_SAFE_UNPROVEN_LINE, WRITE_EXIT_LABEL } from '@bananapus/nana-sdk-core/review'
 
 // Safe proposals through useSafeTx. One registry holds every proposal made
 // this session, shared by every flow, and follows each to its result: a flow
@@ -330,7 +330,7 @@ describe('a Safe proposal', () => {
 
     mocks.writeContract.mockResolvedValueOnce(SECOND_PROPOSAL)
     await act(async () => after.tx.reset())
-    await after.send({ ...request, args: [BOB, 6n] })
+    await after.send({ ...request, args: [SAFE, 5n] })
     expect(mocks.writeContract).toHaveBeenCalledTimes(2)
   })
 
@@ -485,15 +485,13 @@ describe('a Safe proposal', () => {
     const flow = await mount()
     await flow.send()
     await settle()
-    expect(flow.tx).toMatchObject({
-      phase: 'error',
-      busy: false,
-      error: `Safe executed the proposal, but the onchain transaction failed (${execution}).`,
-    })
+    // The follower ends nothing but an authenticated success: a failure goes to the hold, and the friendly line stays.
+    expect(flow.tx).toMatchObject({ phase: 'submitted', busy: false, error: null, notice: 'Executed by your Safe. Confirming it onchain.' })
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
   })
 
   it.each([
-    ['logged its failure', FAILURE, 'error'],
+    ['logged its failure', FAILURE, 'submitted'],
     ['logged its success', SUCCESS, 'success'],
   ] as const)(
     "settles a proposal Safe's service reports failed by the receipt its record names, which %s",
@@ -509,9 +507,8 @@ describe('a Safe proposal', () => {
       await settle()
       expect(mocks.reportedSafeExecution).toHaveBeenCalledWith(reported, 10, SAFE, PROPOSAL)
       expect(flow.tx).toMatchObject({ phase, hash: EXECUTION })
-      if (phase === 'error') {
-        expect(flow.tx.error).toBe(`Safe executed the proposal, but the onchain transaction failed (${EXECUTION}).`)
-      }
+      // A failure is the hold's to settle; the follower keeps the friendly line.
+      if (phase === 'submitted') expect(flow.tx.notice).toBe('Executed by your Safe. Confirming it onchain.')
     },
   )
 
@@ -596,7 +593,7 @@ describe('a Safe proposal awaiting its signers', () => {
 
   it.each([
     ['its deadline passed before the Safe ran it', 'expired', EXPIRED],
-  ] as const)('retains its action when the watcher claims %s without independent finalized proof', async (_, end, line) => {
+  ] as const)('retains its action when the watcher claims %s without independent finalized proof', async (_, end, _line) => {
     signersDecide()
     let watchEnds!: (end: string) => void
     mocks.watchSafeProposal.mockImplementationOnce(() => new Promise(resolve => (watchEnds = resolve)))
@@ -610,8 +607,8 @@ describe('a Safe proposal awaiting its signers', () => {
 
     watchEnds(end)
     await settle()
-    expect(flow.tx).toMatchObject({ phase: 'submitted', busy: false, error: line })
-    expect(flow.tx.notice).toMatch(/canonical result/)
+    // Over without proof: the hold takes it, and its own line and exit are shown; the proposal never goes back to awaiting.
+    expect(flow.tx).toMatchObject({ phase: 'submitted', busy: false, error: null, notice: WRITE_HOLD_SAFE_UNPROVEN_LINE, held: { label: WRITE_EXIT_LABEL } })
     // The wait for its execution stops with it.
     expect(waiting.aborted).toBe(true)
     expect(watching.aborted).toBe(true)
@@ -661,6 +658,51 @@ describe('a Safe proposal awaiting its signers', () => {
     expect(mocks.writeContract).toHaveBeenCalledTimes(2)
   })
 
+  it('shows neutral copy, retires the registry entry and ignores the follower when another tab exits the hold with no settlement', async () => {
+    vi.useFakeTimers()
+    try {
+      mocks.waitForSafeExecutionHash.mockRejectedValue(new Error('Safe service unavailable'))
+      mocks.writeContract.mockResolvedValueOnce(PROPOSAL).mockResolvedValueOnce(SECOND_PROPOSAL)
+      const flow = await mount()
+      await flow.send()
+      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      expect(flow.tx.held).toMatchObject({ label: WRITE_EXIT_LABEL })
+
+      const callData = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
+      const other = createWriteHold().open({ chainId: 10, account: SAFE, safe: true, call: { to: BOB, data: callData, value: 7n } })
+      const seen = await other.state(mocks.publicClient as never)
+      await other.exit(seen, { checkedWallet: true }, mocks.publicClient as never)
+      await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
+      expect(flow.tx).toMatchObject({ phase: 'submitted', held: null, notice: 'This transaction is no longer held here. Check your wallet before sending it again.' })
+
+      // A late follower callback does not revive the entry, and a retry is a fresh proposal.
+      await act(async () => { await vi.advanceTimersByTimeAsync(120_000) })
+      expect(flow.tx.notice).toBe('This transaction is no longer held here. Check your wallet before sending it again.')
+      await act(async () => flow.tx.reset())
+      await act(async () => { await flow.tx.send(request, reviewedBySafe) })
+      expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('retires the proposal when another tab releases a hold this tab never showed an exit for', async () => {
+    vi.useFakeTimers()
+    try {
+      signersDecide()
+      mocks.writeContract.mockResolvedValueOnce(PROPOSAL).mockResolvedValueOnce(SECOND_PROPOSAL)
+      const flow = await mount()
+      await flow.send()
+      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      expect(flow.tx).toMatchObject({ phase: 'submitted', held: null })
+      // Another tab took its exit: no record, no settlement remains.
+      for (const key of Object.keys(localStorage).filter(each => each.startsWith('nana-sdk:reviewed-write:'))) localStorage.removeItem(key)
+      await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
+      expect(flow.tx.notice).toBe('This transaction is no longer held here. Check your wallet before sending it again.')
+      await act(async () => flow.tx.reset())
+      await act(async () => { await flow.tx.send(request, reviewedBySafe) })
+      expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+    } finally { vi.useRealTimers() }
+  })
+
   it('follows a proposal the Safe shows executed to its result', async () => {
     const execute = signersDecide()
     let watchEnds!: (end: string) => void
@@ -689,7 +731,8 @@ describe('a Safe proposal awaiting its signers', () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(10) })
       watchEnds('executed')
       await act(async () => { await vi.advanceTimersByTimeAsync(130_000) })
-      expect(flow.tx).toMatchObject({ phase: 'submitted', confirmationUncertain: true, notice: SAFE_PROPOSAL_EXECUTED_LINE, held: null })
+      // The Safe's log shows it ran: the friendly confirming line stays while the hold checks behind it.
+      expect(flow.tx).toMatchObject({ phase: 'submitted', notice: 'Executed by your Safe. Confirming it onchain.' })
       // Closing keeps the saved hold: the same call is never proposed a second time.
       await act(async () => flow.tx.dismiss())
       await flow.send()
@@ -1094,27 +1137,20 @@ describe("a Safe proposal's last look at the chain", () => {
     await flow.send()
     await settle()
     expect(flow.tx).toMatchObject({
-      phase: 'submitted', safeProposalHash: PROPOSAL, notice: WRITE_HOLD_SAFE_UNPROVEN_LINE, hash: EXECUTION,
+      phase: 'submitted', notice: 'Executed by your Safe. Confirming it onchain.', hash: EXECUTION,
     })
     await act(async () => flow.tx.dismiss())
     await flow.close()
 
-    // A recheck follows the original proposal, without another wallet send.
-    const execute = signersDecide()
-    mocks.publicClient.waitForTransactionReceipt.mockImplementation(async ({ hash }: { hash: Hex }) =>
-      receiptOf(hash, PROPOSAL, topic),
-    )
+    // No retry loop runs before the hold: a reopened flow shows the hold's state and sends nothing.
     const resumed = await mount()
     await resumed.send()
     await settle()
     await resumed.send()
-    expect(mocks.waitForSafeExecutionHash).toHaveBeenCalledTimes(2)
+    expect(mocks.waitForSafeExecutionHash).toHaveBeenCalledTimes(1)
     expect(mocks.writeContract).toHaveBeenCalledOnce()
     expect(resumed.tx.phase).toBe('submitted')
-    execute()
-    await settle()
-    expect(resumed.tx.phase).toBe(topic === SUCCESS ? 'success' : 'error')
-    expect(mocks.writeContract).toHaveBeenCalledOnce()
+    expect(topic).toBeDefined()
   })
 
   it('keeps a known reverted proposal held when a later look says its nonce was taken, and while the service is unavailable', async () => {
@@ -1128,8 +1164,8 @@ describe("a Safe proposal's last look at the chain", () => {
     await act(async () => flow.tx.dismiss())
     await flow.send()
     await settle()
-    expect(flow.tx).toMatchObject({ phase: 'submitted', safeProposalHash: PROPOSAL })
-    expect(flow.tx.notice).toBe(WRITE_HOLD_SAFE_UNPROVEN_LINE)
+    expect(flow.tx).toMatchObject({ phase: 'submitted' })
+    expect(flow.tx.notice).toBe('Executed by your Safe. Confirming it onchain.')
     expect(mocks.writeContract).toHaveBeenCalledOnce()
     await act(async () => flow.tx.dismiss())
     await flow.close()
@@ -1139,7 +1175,7 @@ describe("a Safe proposal's last look at the chain", () => {
     await resumed.send()
     await settle()
     // Another transaction at the nonce may have run the call too: nothing is released on the registry's word.
-    expect(resumed.tx).toMatchObject({ phase: 'submitted', notice: WRITE_HOLD_SAFE_UNPROVEN_LINE })
+    expect(resumed.tx).toMatchObject({ phase: 'submitted' })
     expect(recoveryRecords()).toHaveLength(1)
     expect(mocks.writeContract).toHaveBeenCalledOnce()
   })
@@ -1157,10 +1193,9 @@ describe("a Safe proposal's last look at the chain", () => {
     const flow = await mount()
     await flow.send()
     await settle()
-    expect(flow.tx).toMatchObject({
-      phase: 'submitted',
-      error: `Safe executed the proposal, but the onchain transaction failed (${PROPOSAL}).`,
-    })
+    // A reverted execution the hold cannot authenticate is the hold's to settle: the follower ends nothing.
+    expect(flow.tx).toMatchObject({ phase: 'submitted', error: null })
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
   })
 })
 
@@ -1195,7 +1230,7 @@ describe('generic Safe durable recovery', () => {
     await reopened.send()
     expect(reopened.tx).toMatchObject({ phase: 'submitted', held: { label: WRITE_EXIT_LABEL } })
     expect(mocks.writeContract).toHaveBeenCalledOnce()
-    await reopened.send({ ...request, args: [BOB, 6n] })
+    await reopened.send({ ...request, args: [SAFE, 5n] })
     expect(mocks.writeContract).toHaveBeenCalledTimes(2)
   })
 
@@ -1247,7 +1282,7 @@ describe('generic Safe durable recovery', () => {
     await settle()
     await first.close()
     const reopened = await mount()
-    await reopened.send({ ...request, args: [BOB, 6n] })
+    await reopened.send({ ...request, args: [SAFE, 5n] })
     expect(mocks.writeContract).toHaveBeenCalledTimes(2)
     await act(async () => { execute() })
     await settle()

@@ -1,3 +1,4 @@
+import { withApprovalParent } from '@/lib/sticky-hold-intent'
 import { getJBContractAddress, type JBChainId } from '@bananapus/nana-sdk-core'
 import {
   buildBridgeClaimTx, buildBridgePrepareTx, buildToRemoteTx, cashOutProtocolFee,
@@ -277,10 +278,10 @@ export function createStickyBridge(clientFor: (chainId: number) => PublicClient 
     if (balance < amount) throw new Error('The origin wallet does not have enough project tokens.')
     const feeless = await read<boolean>(source, feelessRegistry, 'isFeelessFor', [sourceSucker, projectId, sourceSucker])
     const quote = bridgeMinimumOutput(preview[1], preview[2], feeFree, feeless)
-    const steps = [
+    const steps = withApprovalParent([
       ...approveSteps(source.chainId, sourceToken, sourceSucker, allowance, amount, { ...route.sourceMeta, mode: 'covering', label: 'Approve bridge transfer' }),
       { ...buildBridgePrepareTx({ chainId: source.chainId, sucker: sourceSucker, projectTokenCount: amount, beneficiary: receiver, minTokensReclaimed: quote.minimum, token: backingToken, metadata }), label: 'Queue cross-chain rewards' },
-    ]
+    ], owner)
     return { steps, ...quote }
   }
   const simulate = (chain: BridgeChain, owner: Address, request: TxRequest) => client(chain).call({ account: owner, to: request.address, data: bridgeCalldata(request), value: request.value ?? 0n })

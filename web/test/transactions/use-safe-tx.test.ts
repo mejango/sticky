@@ -11,8 +11,11 @@ import {
 } from 'viem'
 import { TransactionNotFoundError, TransactionReceiptNotFoundError } from 'viem'
 import { SAFE_EXEC_ABI } from '@bananapus/nana-sdk-core/safe-service'
+import { payIntent } from '@bananapus/nana-sdk-core/review'
 import { buildBridgeClaimTx, buildBridgePrepareTx, buildCashOutTx, buildPayTx, buildToRemoteTx, stickySourceCollectorAbi } from '@bananapus/nana-sdk-core/v6'
-import { createBrowserWriteRecovery, createWriteHold, WRITE_HOLD_STALE_REVIEW_LINE, WRITE_HOLD_IN_TAB_LINE, WRITE_EXIT_LABEL, writeExitMessage, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
+import { holdIntent } from '@/lib/sticky-hold-intent'
+import { legacyNamespaces } from '@/lib/legacy-intents'
+import { createWriteHold, WRITE_HOLD_STALE_REVIEW_LINE, WRITE_HOLD_IN_TAB_LINE, WRITE_EXIT_LABEL, writeExitMessage, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 
@@ -23,6 +26,7 @@ vi.mock('@tanstack/react-query', async importOriginal => ({
 }))
 
 const mocks = vi.hoisted(() => ({
+  noClient: false,
   account: undefined as Address | undefined,
   centerWallet: false,
   chainId: 1,
@@ -48,7 +52,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@wagmi/core', () => ({
   getAccount: mocks.getAccount,
-  getPublicClient: () => mocks.publicClient,
+  getPublicClient: () => (mocks.noClient ? undefined : mocks.publicClient),
 }))
 vi.mock('wagmi', () => ({
   usePublicClient: () => mocks.publicClient,
@@ -204,7 +208,7 @@ describe('useSafeTx', () => {
     expect(recipientBalance).toBe(5n)
 
     // A different amount is a different call, which the hold does not cover.
-    await act(async () => { await second.ref.current!.send({ ...request, args: [BOB, 6n] }, reviewedByAlice) })
+    await act(async () => { await second.ref.current!.send({ ...request, args: [ALICE, 5n] }, reviewedByAlice) })
     expect(second.ref.current).toMatchObject({ phase: 'pending', hash: HASH })
     expect(mocks.writeContract).toHaveBeenCalledTimes(2)
     await act(async () => second.renderer.unmount())
@@ -432,7 +436,8 @@ describe('useSafeTx', () => {
 
     await act(async () => {
       const first = hook.ref.current!.send(request, reviewedByAlice)
-      await Promise.resolve()
+      // The hold reads the chain for the call and its older holds before the review opens.
+      await vi.waitFor(() => expect(mocks.requestReview).toHaveBeenCalledTimes(1))
       await expect(hook.ref.current!.send(request, reviewedByAlice)).resolves.toBeNull()
       finishReview(false)
       await first
@@ -1065,7 +1070,7 @@ describe('useSafeTx', () => {
 
     // Tab A reloads: its stored look reads the settlement, and its exit never counts as an abandon.
     const reloaded = await renderHook()
-    const write = { chainId: 10, owner: ALICE, to: BOB, data: encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] }), value: 7n }
+    const write = { chainId: 10, owner: ALICE, to: BOB, data: encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] }), value: 7n, intent: holdIntent(request, ALICE) }
     await expect(reloaded.ref.current!.storedHold(write)).resolves.toEqual({ settled: { result: 'success', hash: HASH } })
     await expect(reloaded.ref.current!.exitStored(write)).resolves.toEqual({ outcome: 'settled', hash: HASH, result: 'success' })
     expect(journal.released).not.toHaveBeenCalled()
@@ -1080,7 +1085,7 @@ describe('useSafeTx', () => {
     const pairs: [string, TxRequestOf, TxRequestOf][] = [
       ['a stick, whose minimum is a quote', buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 5n, beneficiary: ALICE, minReturnedTokens: 9n, memo: '', metadata: '0x' }), buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 5n, beneficiary: ALICE, minReturnedTokens: 8n, memo: '', metadata: '0x' })],
       ['an unstick, whose minimum is a quote', buildCashOutTx({ chainId: 10, terminal: X, holder: ALICE, projectId: 12n, cashOutCount: 5n, tokenToReclaim: X, minTokensReclaimed: 9n, beneficiary: ALICE, metadata: '0x' }), buildCashOutTx({ chainId: 10, terminal: X, holder: ALICE, projectId: 12n, cashOutCount: 5n, tokenToReclaim: X, minTokensReclaimed: 8n, beneficiary: ALICE, metadata: '0x' })],
-      ['an approval, whose amount covers a moving claim', { chainId: 10, address: X, abi: parseAbi(['function approve(address spender, uint256 amount)']), functionName: 'approve', args: [BOB, 5n], moving: true }, { chainId: 10, address: X, abi: parseAbi(['function approve(address spender, uint256 amount)']), functionName: 'approve', args: [BOB, 6n], moving: true }],
+      ['an approval, whose amount covers a moving claim', { chainId: 10, address: X, abi: parseAbi(['function approve(address spender, uint256 amount)']), functionName: 'approve', args: [BOB, 5n] }, { chainId: 10, address: X, abi: parseAbi(['function approve(address spender, uint256 amount)']), functionName: 'approve', args: [BOB, 6n] }],
       ['a bridge queue, whose minimum is a quote', buildBridgePrepareTx({ chainId: 10, sucker: X, projectTokenCount: 5n, beneficiary: word, minTokensReclaimed: 9n, token: X, metadata: word }), buildBridgePrepareTx({ chainId: 10, sucker: X, projectTokenCount: 5n, beneficiary: word, minTokensReclaimed: 8n, token: X, metadata: word })],
       ['a bridge send, whose transport budget is a quote', buildToRemoteTx({ chainId: 10, sucker: X, token: X, value: 3n }), buildToRemoteTx({ chainId: 10, sucker: X, token: X, value: 4n })],
       ['a bridge claim, whose proof moves with the tree', buildBridgeClaimTx({ chainId: 10, sucker: X, claim: { token: X, leaf: leaf(word), proof: Array(32).fill(word) as never } }), buildBridgeClaimTx({ chainId: 10, sucker: X, claim: { token: X, leaf: leaf(`0x${'11'.repeat(32)}`), proof: Array(32).fill(`0x${'11'.repeat(32)}`) as never } })],
@@ -1097,10 +1102,43 @@ describe('useSafeTx', () => {
       expect(hook.ref.current).toMatchObject({ phase: 'submitted' })
       expect(hook.ref.current!.held).not.toBeNull()
     })
+    it('holds a transfer by its token and recipient, not its amount, and treats another recipient as another write', async () => {
+      mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
+      const abiTransfer = parseAbi(['function transfer(address to, uint256 amount)'])
+      const hook = await renderHook()
+      await act(async () => { await hook.ref.current!.send({ chainId: 10, address: X, abi: abiTransfer, functionName: 'transfer', args: [BOB, 5n] } as never, reviewedByAlice) })
+      await act(async () => hook.ref.current!.reset())
+      await act(async () => { await hook.ref.current!.send({ chainId: 10, address: X, abi: abiTransfer, functionName: 'transfer', args: [BOB, 7n] } as never, reviewedByAlice) })
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+      await act(async () => hook.ref.current!.reset())
+      await act(async () => { await hook.ref.current!.send({ chainId: 10, address: X, abi: abiTransfer, functionName: 'transfer', args: [ALICE, 5n] } as never, reviewedByAlice) })
+      expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+    })
+
+    it('keys an approval by its parent action and step, never by its amount: a revocation and another action\'s approval are their own intents', async () => {
+      const abiApprove = parseAbi(['function approve(address spender, uint256 amount)'])
+      const parentA = payIntent({ chainId: 10, project: 12n, beneficiary: ALICE })
+      const parentB = payIntent({ chainId: 10, project: 13n, beneficiary: ALICE })
+      const approve = (amount: bigint, parent: string) => ({ chainId: 10, address: X, abi: abiApprove, functionName: 'approve', args: [BOB, amount], parent })
+      mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
+      const hook = await renderHook()
+      await act(async () => { await hook.ref.current!.send(approve(5n, parentA) as never, reviewedByAlice) })
+      await act(async () => hook.ref.current!.reset())
+      // The same step of the same action, whatever the amount, is a retry.
+      await act(async () => { await hook.ref.current!.send(approve(6n, parentA) as never, reviewedByAlice) })
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+      await act(async () => hook.ref.current!.reset())
+      // A revocation is another step; another action's approval is another parent.
+      await act(async () => { await hook.ref.current!.send(approve(0n, parentA) as never, reviewedByAlice) })
+      expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+      await act(async () => hook.ref.current!.reset())
+      await act(async () => { await hook.ref.current!.send(approve(7n, parentB) as never, reviewedByAlice) })
+      expect(mocks.writeContract).toHaveBeenCalledTimes(3)
+    })
     it.each([
-      ['a collector delivery whose bridge lane the app resolved differently', { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'send', args: [12n, X, 0n, 5n, X, X], value: 77n }, { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'send', args: [12n, X, 0n, 5n, ALICE, ALICE], value: 77n }],
-      ['a bridge queue whose backing token the route resolved differently', buildBridgePrepareTx({ chainId: 10, sucker: X, projectTokenCount: 5n, beneficiary: `0x${'00'.repeat(32)}`, minTokensReclaimed: 9n, token: X, metadata: `0x${'00'.repeat(32)}` }), buildBridgePrepareTx({ chainId: 10, sucker: X, projectTokenCount: 5n, beneficiary: `0x${'00'.repeat(32)}`, minTokensReclaimed: 9n, token: ALICE, metadata: `0x${'00'.repeat(32)}` })],
-    ] as [string, TxRequestOf, TxRequestOf][])('keys %s by the user choice alone, not by what the app picked', async (_name, first, retry) => {
+      ['a transfer of Sticky tokens', { chainId: 10, address: X, abi: parseAbi(['function transfer(address to, uint256 amount)']), functionName: 'transfer', args: [BOB, 5n] }, { chainId: 10, address: X, abi: parseAbi(['function transfer(address to, uint256 amount)']), functionName: 'transfer', args: [BOB, 7n] }],
+      ['a collector settle', { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'settle', args: [12n, X, 0n, 5n] }, { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'settle', args: [12n, X, 0n, 7n] }],
+    ] as [string, TxRequestOf, TxRequestOf][])('holds %s by its identity, so a retry of another amount is refused until the exit', async (_name, first, retry) => {
       mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
       const hook = await renderHook()
       await act(async () => { await hook.ref.current!.send(first as never, reviewedByAlice) })
@@ -1109,51 +1147,43 @@ describe('useSafeTx', () => {
       expect(mocks.writeContract).toHaveBeenCalledOnce()
     })
 
-    // The user's choice is "all", not the number that was filled in: a balance that moved is the same choice.
     it.each([
-      ['an unstick of everything', buildCashOutTx({ chainId: 10, terminal: X, holder: ALICE, projectId: 12n, cashOutCount: 5n, tokenToReclaim: X, minTokensReclaimed: 9n, beneficiary: ALICE, metadata: '0x' }), buildCashOutTx({ chainId: 10, terminal: X, holder: ALICE, projectId: 12n, cashOutCount: 7n, tokenToReclaim: X, minTokensReclaimed: 8n, beneficiary: ALICE, metadata: '0x' })],
-      ['a transfer of everything', { chainId: 10, address: X, abi: parseAbi(['function transfer(address to, uint256 amount)']), functionName: 'transfer', args: [BOB, 5n] }, { chainId: 10, address: X, abi: parseAbi(['function transfer(address to, uint256 amount)']), functionName: 'transfer', args: [BOB, 7n] }],
-      ['a collector delivery of everything queued', { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'send', args: [12n, X, 0n, 5n, X, X], value: 77n }, { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'send', args: [12n, X, 0n, 7n, X, X], value: 77n }],
-      ['a collector settle of everything queued', { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'settle', args: [12n, X, 0n, 5n] }, { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'settle', args: [12n, X, 0n, 7n] }],
-    ] as [string, TxRequestOf, TxRequestOf][])('holds %s by "all", so a retry after the balance moved is refused', async (_name, first, retry) => {
+      ['a claim and stick', 'stickRewardsFor', (groups: bigint[]) => [12n, groups]],
+      ['a compound', 'compoundFor', (groups: bigint[]) => [12n, ALICE, groups]],
+      ['a begin-vesting', 'beginVestingFor', (groups: bigint[]) => [12n, ALICE, groups]],
+    ] as const)('holds %s by project, account and action, so the groups a retry derives anew do not make it a new write', async (_name, functionName, args) => {
       mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
+      const call = (groups: bigint[]) => ({ chainId: 10, address: X, abi: parseAbi([`function ${functionName}(uint256 project, ${functionName === 'stickRewardsFor' ? '' : 'address holder, '}uint256[] groups)`]), functionName, args: args(groups) })
       const hook = await renderHook()
-      await act(async () => { await hook.ref.current!.send({ ...first, max: true } as never, reviewedByAlice) })
+      await act(async () => { await hook.ref.current!.send(call([0n, 4000n]) as never, reviewedByAlice) })
       expect(hook.ref.current!.held).not.toBeNull()
       await act(async () => hook.ref.current!.reset())
-      await act(async () => { await hook.ref.current!.send({ ...retry, max: true } as never, reviewedByAlice) })
+      await act(async () => { await hook.ref.current!.send(call([4000n]) as never, reviewedByAlice) })
       expect(mocks.writeContract).toHaveBeenCalledOnce()
     })
-    it('keeps a typed amount as the choice: a different typed amount is a different write', async () => {
+
+    it('does not block a stick to another project behind an unresolved stick', async () => {
       mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
-      const abiTransfer = parseAbi(['function transfer(address to, uint256 amount)'])
+      const stickTo = (project: bigint) => buildPayTx({ chainId: 10, terminal: X, projectId: project, token: X, amount: 5n, beneficiary: ALICE, minReturnedTokens: 9n, memo: '', metadata: '0x' })
       const hook = await renderHook()
-      await act(async () => { await hook.ref.current!.send({ chainId: 10, address: X, abi: abiTransfer, functionName: 'transfer', args: [BOB, 5n] } as never, reviewedByAlice) })
+      await act(async () => { await hook.ref.current!.send(stickTo(12n) as never, reviewedByAlice) })
+      expect(hook.ref.current!.held).not.toBeNull()
       await act(async () => hook.ref.current!.reset())
-      await act(async () => { await hook.ref.current!.send({ chainId: 10, address: X, abi: abiTransfer, functionName: 'transfer', args: [BOB, 7n] } as never, reviewedByAlice) })
+      await act(async () => { await hook.ref.current!.send(stickTo(13n) as never, reviewedByAlice) })
       expect(mocks.writeContract).toHaveBeenCalledTimes(2)
     })
 
-    it('does not let a pending approval that covers a moving amount block a revocation or a cap', async () => {
-      const abiApprove = parseAbi(['function approve(address spender, uint256 amount)'])
-      mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
-      const hook = await renderHook()
-      await act(async () => { await hook.ref.current!.send({ chainId: 10, address: X, abi: abiApprove, functionName: 'approve', args: [BOB, 5n], moving: true } as never, reviewedByAlice) })
-      await act(async () => hook.ref.current!.reset())
-      // A revocation and a user-chosen cap are their own intents.
-      await act(async () => { await hook.ref.current!.send({ chainId: 10, address: X, abi: abiApprove, functionName: 'approve', args: [BOB, 0n] } as never, reviewedByAlice) })
-      expect(mocks.writeContract).toHaveBeenCalledTimes(2)
-      await act(async () => hook.ref.current!.reset())
-      await act(async () => { await hook.ref.current!.send({ chainId: 10, address: X, abi: abiApprove, functionName: 'approve', args: [BOB, 1000n] } as never, reviewedByAlice) })
-      expect(mocks.writeContract).toHaveBeenCalledTimes(3)
-    })
-    it('still treats a different intent as a different write', async () => {
+    it('holds a stick by its project and beneficiary, not its amount, and treats another beneficiary as another write', async () => {
       mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
       const [, first] = pairs[0]
       const hook = await renderHook()
       await act(async () => { await hook.ref.current!.send(first as never, reviewedByAlice) })
       await act(async () => hook.ref.current!.reset())
-      const other = buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 6n, beneficiary: ALICE, minReturnedTokens: 9n, memo: '', metadata: '0x' })
+      const bigger = buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 6n, beneficiary: ALICE, minReturnedTokens: 9n, memo: '', metadata: '0x' })
+      await act(async () => { await hook.ref.current!.send(bigger as never, reviewedByAlice) })
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+      await act(async () => hook.ref.current!.reset())
+      const other = buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 5n, beneficiary: BOB, minReturnedTokens: 9n, memo: '', metadata: '0x' })
       await act(async () => { await hook.ref.current!.send(other as never, reviewedByAlice) })
       expect(mocks.writeContract).toHaveBeenCalledTimes(2)
     })
@@ -1163,11 +1193,15 @@ describe('useSafeTx', () => {
     const X = '0x3333333333333333333333333333333333333333' as Address
     const stick = (min: bigint) => buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 5n, beneficiary: ALICE, minReturnedTokens: min, memo: '', metadata: '0x' })
 
+    // What origin/main saved: the app-local namespace (the frozen legacy builder), the first quote's calldata, reserved with no hash.
+    const mainEraHold = async (tx: ReturnType<typeof stick>) => {
+      const hold = createWriteHold().open({ chainId: 10, account: ALICE, safe: false, namespace: legacyNamespaces(tx)[0], call: { to: tx.address, data: encodeFunctionData({ abi: tx.abi, functionName: tx.functionName, args: tx.args } as never), value: tx.value } })
+      await hold.send(mocks.publicClient as never, async gate => { await gate.beforeSend(); throw new Error('lost') }).catch(() => undefined)
+    }
+
     it('refuses a retry under the intent key while a main-era exact-calldata hold stands, until the exit', async () => {
       const first = stick(9n)
-      // What shipped: a hold on the exact call, with no namespace.
-      const mainEra = createBrowserWriteRecovery({ chainId: 10, account: ALICE, safe: false, call: { to: first.address, data: encodeFunctionData({ abi: first.abi, functionName: first.functionName, args: first.args } as never), value: first.value } })
-      await mainEra.withLock(async () => { mainEra.reserve(undefined, { nonce: 7, blockNumber: 100n }) })
+      await mainEraHold(first)
       const hook = await renderHook()
       await act(async () => { await hook.ref.current!.send(first as never, reviewedByAlice) })
       expect(mocks.writeContract).not.toHaveBeenCalled()
@@ -1177,6 +1211,10 @@ describe('useSafeTx', () => {
       expect(hook.ref.current).toMatchObject({ phase: 'idle', held: null })
       await act(async () => { await hook.ref.current!.send(first as never, reviewedByAlice) })
       expect(mocks.writeContract).toHaveBeenCalledOnce()
+    })
+
+    it('gives an approval no legacy namespace', () => {
+      expect(legacyNamespaces({ chainId: 10, address: X, functionName: 'approve', args: [ALICE, 5n] })).toEqual([])
     })
 
     it('shows the SDK message when a review went stale because another window sent the same intent and it already settled', async () => {
@@ -1220,7 +1258,7 @@ describe('useSafeTx', () => {
       vi.useFakeTimers()
       try {
         const data = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
-        const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n }
+        const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n, intent: holdIntent(request, ALICE) }
         const hook = await renderHook()
         // Nothing is held for it yet: main's journal never made an SDK record.
         await expect(hook.ref.current!.storedHold(write)).resolves.toBeNull()
@@ -1236,11 +1274,42 @@ describe('useSafeTx', () => {
       } finally { vi.useRealTimers() }
     })
 
+    describe('a saved write whose adoption is refused or unreadable is check-required, never a dead end', () => {
+      const dataOf = () => encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
+      const writeOf = () => ({ chainId: 10, owner: ALICE, to: BOB, data: dataOf(), value: 7n, intent: holdIntent(request, ALICE) })
+
+      it('reports a refused adoption (the chain id cannot be read), and the explicit action retires it', async () => {
+        mocks.publicClient.getChainId.mockRejectedValue(new Error('rpc down'))
+        const hook = await renderHook()
+        await expect(hook.ref.current!.adoptStored({ ...writeOf(), hash: HASH })).resolves.toBe('refused')
+        expect(recoveryRecords()).toHaveLength(0)
+        await expect(hook.ref.current!.exitStored({ ...writeOf(), hash: HASH })).resolves.toEqual({ outcome: 'released' })
+      })
+
+      it('reports a refused adoption when the saved transaction is not this call', async () => {
+        mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => ({ hash, from: ALICE, to: BOB, input: '0xdeadbeef', value: 7n, nonce: 7, blockHash: BLOCK_HASH, blockNumber: 77n, transactionIndex: 0 }))
+        const hook = await renderHook()
+        await expect(hook.ref.current!.adoptStored({ ...writeOf(), hash: HASH })).resolves.toBe('refused')
+        await expect(hook.ref.current!.exitStored({ ...writeOf(), hash: HASH })).resolves.toEqual({ outcome: 'released' })
+      })
+
+      it('never counts an unreadable hold as released, so the exit can be tried again', async () => {
+        const hook = await renderHook()
+        mocks.noClient = true
+        try { await expect(hook.ref.current!.exitStored(writeOf())).resolves.toEqual({ outcome: 'unreadable' }) } finally { mocks.noClient = false }
+      })
+
+      it('reports an adopted write as adopted, and a settlement as the outcome of the exit', async () => {
+        const hook = await renderHook()
+        await expect(hook.ref.current!.adoptStored(writeOf())).resolves.toBe('adopted')
+      })
+    })
+
     it('adopts a hashed legacy reservation the node never knew, and offers the warned exit after 30 minutes', async () => {
       vi.useFakeTimers()
       try {
         const data = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
-        const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n }
+        const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n, intent: holdIntent(request, ALICE) }
         mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => { throw new TransactionNotFoundError({ hash }) })
         const hook = await renderHook()
         await act(async () => { await hook.ref.current!.adoptStored({ ...write, hash: HASH, safeProposal: false }) })
@@ -1257,7 +1326,7 @@ describe('useSafeTx', () => {
       vi.useFakeTimers()
       try {
         const data = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
-        const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n }
+        const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n, intent: holdIntent(request, ALICE) }
         mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => { throw new TransactionNotFoundError({ hash }) })
         const hook = await renderHook()
         await act(async () => { await hook.ref.current!.adoptStored({ ...write, hash: HASH, safeProposal: false, submittedAt: Date.now() - 40 * 60_000 }) })
@@ -1267,7 +1336,7 @@ describe('useSafeTx', () => {
 
     it('does not take a call another tab settled between the read and the adoption', async () => {
       const data = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
-      const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n }
+      const write = { chainId: 10, owner: ALICE, to: BOB, data, value: 7n, intent: holdIntent(request, ALICE) }
       const hook = await renderHook()
       await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
       mocks.receipt = { data: canonicalReceipt('success'), isError: false }
@@ -1281,9 +1350,7 @@ describe('useSafeTx', () => {
     it('holds a retry under the intent key against a main-era hold with different calldata and the same call target', async () => {
       const first = buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 5n, beneficiary: ALICE, minReturnedTokens: 9n, memo: '', metadata: '0x' })
       const retry = buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 5n, beneficiary: ALICE, minReturnedTokens: 8n, memo: '', metadata: '0x' })
-      // What shipped on main: an exact-call hold with the first quote's calldata, no namespace.
-      const mainEra = createBrowserWriteRecovery({ chainId: 10, account: ALICE, safe: false, call: { to: first.address, data: encodeFunctionData({ abi: first.abi, functionName: first.functionName, args: first.args } as never), value: first.value } })
-      await mainEra.withLock(async () => { mainEra.reserve(undefined, { nonce: 7, blockNumber: 100n }) })
+      await mainEraHold(first)
       const hook = await renderHook()
       await act(async () => { await hook.ref.current!.send(retry as never, reviewedByAlice) })
       expect(mocks.writeContract).not.toHaveBeenCalled()
@@ -1327,7 +1394,7 @@ describe('useSafeTx', () => {
         expect(hook.ref.current).toMatchObject({ phase: 'error', held: null })
 
         // Another tab reserves the same call and loses its wallet reply.
-        const otherTab = createWriteHold().open({ chainId: 10, account: ALICE, safe: false, call: { to: BOB, data: callData, value: 7n } })
+        const otherTab = createWriteHold().open({ chainId: 10, account: ALICE, safe: false, namespace: holdIntent(request, ALICE), call: { to: BOB, data: callData, value: 7n } })
         await otherTab.send(mocks.publicClient as never, async gate => { await gate.beforeSend(); throw new Error('lost') }).catch(() => undefined)
 
         // The storage notification reaches this tab: a replayed state, never an exit.

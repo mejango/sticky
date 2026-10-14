@@ -1,5 +1,6 @@
 'use client'
 
+import { UNREADABLE_ERROR } from '@/lib/check-required'
 import { useEffect, useId, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { formatUnits, isAddress, isHash, toHex, type Address, type Hex } from 'viem'
@@ -231,7 +232,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
     const current = active
     await run(async () => {
       if (readPendingBridgeWrite(current.owner)) throw new Error('Recover the pending bridge transaction before sending it again.')
-      const held = createPendingBridgeWrite({ owner: current.owner, request: storeBridgeWrite(current.request), intent: holdIntent(current.request), ...(current.record ? { metadata: current.record.metadata, recordKey: current.key } : {}) })
+      const held = createPendingBridgeWrite({ owner: current.owner, request: storeBridgeWrite(current.request), intent: holdIntent(current.request, current.owner), ...(current.record ? { metadata: current.record.metadata, recordKey: current.key } : {}) })
       setReview({ ...current, attempt: held })
       let reserved = false
       const undo = () => endPendingBridgeAttempt(current.owner, held.id)
@@ -251,7 +252,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
           // The user's exit released the SDK hold: the reservation goes, the saved transfer stays.
           released: async () => { await endPendingBridgeAttempt(current.owner, held.id); setPending(null) },
           // A confirmation the SDK authenticated while the exit was shown: settle, never abandon.
-          settled: settlement => run(async () => { await settleStored(held, settlement.hash); setReview(null); tx.reset() }),
+          settled: settlement => run(async () => { await settleStored(held, settlement.hash, settlement.result); setReview(null); tx.reset() }),
           submitted: async (hash, safeProposal) => {
             // A queued Safe proposal can be adopted without reserving a new write.
             if (!reserved && !readPendingBridgeWrite(current.owner)) { savePendingBridgeWrite(current.owner, held); reserved = true }
@@ -267,17 +268,17 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
     })
   }
   /** True once the settlement is adopted. A busy flow skips it and a failed recovery leaves it, so the panel asks again. */
-  async function settleFromPanel(held: PendingBridgeWrite, hash: Hex): Promise<boolean> {
+  async function settleFromPanel(held: PendingBridgeWrite, hash: Hex, result?: 'success' | 'failed'): Promise<boolean> {
     if (busy) return false
     let adopted = false
-    await run(async () => { await settleStored(held, hash); adopted = true })
+    await run(async () => { await settleStored(held, hash, result); adopted = true })
     return adopted
   }
   /** The SDK settled this write on authenticated evidence: its hash becomes the submission reference, and the normal confirmed-step recovery runs. */
-  async function settleStored(held: PendingBridgeWrite, hash: Hex) {
+  async function settleStored(held: PendingBridgeWrite, hash: Hex, result?: 'success' | 'failed') {
     const stored = readPendingBridgeWrite(held.owner)
     if (!stored || stored.id !== held.id) throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
-    const submitted = await adoptSettlementHash(stored.owner, stored.id, hash)
+    const submitted = await adoptSettlementHash(stored.owner, stored.id, hash, undefined, result)
     // Even when the recovery cannot finish, the list shows the saved submission, so nothing offers to send it again.
     try { await recover(hash, submitted) } finally { await refresh().catch(() => undefined) }
   }
@@ -360,15 +361,21 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
         {pending ? <div role="status" className="space-y-2 border-t border-line pt-3">
           <p className="text-sm">A bridge transaction may still execute. Check its wallet status before continuing.</p>
           {!pending.hash && !bridgeWriteHasUniqueReference(pending.request.data) ? <p className="text-sm text-muted">The wallet did not return a submission reference. A matching historical approval or bridge-send transaction cannot prove this attempt finished; this browser keeps further bridge actions locked.</p> : null}
-          <PendingWriteExit pending={pending} disabled={busy} look={tx.storedHold} adopt={write => withBridgeLock(() => tx.adoptStored(write), true).catch(() => undefined)}
-            settle={settlement => settleFromPanel(pending, settlement.hash)}
-            exit={() => run(async () => {
+          <PendingWriteExit pending={pending} disabled={busy} confirming="Your transfer went through. Its result is still confirming." look={tx.storedHold} adopt={write => withBridgeLock(() => tx.adoptStored(write), true).catch(() => 'refused' as const)}
+            settle={settlement => settleFromPanel(pending, settlement.hash, settlement.result)}
+            exit={async () => {
+              let unreadable = false
+              await run(async () => {
               const out = await tx.exitStored({ chainId: pending.request.chainId, owner: pending.owner, to: pending.request.address, data: pending.request.data, value: pending.request.value, intent: pending.intent, hash: pending.hash, safeProposal: pending.safeProposal })
-              if (out.outcome === 'settled') return settleStored(pending, out.hash)
-              if (out.outcome !== 'released') return
+              if (out.outcome === 'settled') return settleStored(pending, out.hash, out.result)
+              if (out.outcome === 'unreadable') { unreadable = true; throw new Error(UNREADABLE_ERROR) }
+              if (out.outcome !== 'released' || pending.settled === 'success') return
               // Abandoned: the reservation and the submission marker go; the transfer's metadata and steps stay.
-              await endPendingBridgeAttempt(pending.owner, pending.id); setPending(null); await refresh()
-            })} />
+              await endPendingBridgeAttempt(pending.owner, pending.id); setPending(readPendingBridgeWrite(pending.owner)); await refresh()
+              })
+              return unreadable ? 'unreadable' as const : undefined
+            }}
+            force={() => run(async () => { await endPendingBridgeAttempt(pending.owner, pending.id); setPending(readPendingBridgeWrite(pending.owner)); await refresh() })} />
           {pending.safeProposal ? <p className="text-sm text-muted">Open the Safe queue and finish its approvals. Use the executed transaction hash below when it is ready.</p> : null}
           <label htmlFor={`${id}-hash`} className={FIELD_LABEL}>Executed transaction hash</label>
           <input id={`${id}-hash`} className={`${FIELD_INPUT} font-mono text-xs`} value={recoveryHash} placeholder={pending.safeProposal ? '0x…' : pending.hash ?? '0x…'} onChange={event => setRecoveryHash(event.target.value)} />

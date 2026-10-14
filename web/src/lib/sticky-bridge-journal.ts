@@ -4,7 +4,7 @@ import type { TxRequest } from '@/hooks/useSafeTx'
 import { environmentForChainIds, SUPPORTED_CHAINS } from '@/lib/chains'
 import { bridgeCalldata, bridgeRouteId, type BridgeMovement, type BridgeRoute, type createStickyBridge } from '@/lib/sticky-bridge'
 
-export type StoredBridgeWrite = { chainId: number; address: Address; data: Hex; value: string; label: string; moving?: boolean }
+export type StoredBridgeWrite = { chainId: number; address: Address; data: Hex; value: string; label: string; parent?: string }
 export type BridgeRecord = {
   metadata: Hex
   owner: Address
@@ -32,6 +32,10 @@ export type PendingBridgeWrite = {
   request: StoredBridgeWrite
   hash?: Hex
   safeProposal?: boolean
+  /** The SDK's authenticated result for this write, kept with its hash: a success is followed to its end, never retired as unknown. */
+  settled?: 'success' | 'failed'
+  /** The execution that settled a Safe proposal, kept beside the proposal's own hash. */
+  settledHash?: Hex
   recordKey?: string
   metadata?: Hex
   /** The hold key of a write whose calldata regenerates on retry (see `holdIntent`); absent for an exact-call hold. */
@@ -104,12 +108,12 @@ export function saveWatchedBridgeRoute(homeChainId: number, stickyToken: Address
 }
 
 export function storeBridgeWrite(request: TxRequest): StoredBridgeWrite {
-  return { chainId: request.chainId, address: request.address, data: bridgeCalldata(request), value: String(request.value ?? 0n), label: request.label ?? request.functionName, ...(request.moving ? { moving: true } : {}) }
+  return { chainId: request.chainId, address: request.address, data: bridgeCalldata(request), value: String(request.value ?? 0n), label: request.label ?? request.functionName, ...(request.parent ? { parent: request.parent } : {}) }
 }
 export function restoreBridgeWrite(request: StoredBridgeWrite): TxRequest {
   const abi = [...jbSuckerV6Abi, ...parseAbi(['function approve(address spender, uint256 amount)'])]
   const decoded = decodeFunctionData({ abi, data: request.data })
-  return { chainId: request.chainId, address: request.address, abi, functionName: decoded.functionName, args: decoded.args ?? [], value: BigInt(request.value), label: request.label, ...(request.moving ? { moving: true } : {}) }
+  return { chainId: request.chainId, address: request.address, abi, functionName: decoded.functionName, args: decoded.args ?? [], value: BigInt(request.value), label: request.label, ...(request.parent ? { parent: request.parent } : {}) }
 }
 function validWrite(write: StoredBridgeWrite): boolean {
   return !!write && Number.isSafeInteger(write.chainId) && isAddress(write.address, { strict: false }) && /^0x(?:[0-9a-f]{2})+$/i.test(write.data) && /^\d+$/.test(write.value) && typeof write.label === 'string'
@@ -248,11 +252,17 @@ export function savePendingBridgeSubmission(expected: PendingBridgeWrite, hash: 
  * normal recovery verifies the settled transaction. Only the SDK's hash is ever passed here; a Safe proposal keeps
  * its proposal hash.
  */
-export async function adoptSettlementHash(owner: Address, id: string | undefined, hash: Hex, storage: BridgeStorage = localStorage): Promise<PendingBridgeWrite> {
+export async function adoptSettlementHash(owner: Address, id: string | undefined, hash: Hex, storage: BridgeStorage = localStorage, result?: 'success' | 'failed'): Promise<PendingBridgeWrite> {
   const stored = readStoredPendingBridgeWrite(owner, storage)
   if (!stored || !id || stored.id !== id || !isHash(hash)) throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
-  if (stored.safeProposal || (stored.hash && stored.hash.toLowerCase() === hash.toLowerCase())) return stored
-  const adopted: PendingBridgeWrite = { ...stored, hash, safeProposal: false }
+  if (stored.safeProposal || (stored.hash && stored.hash.toLowerCase() === hash.toLowerCase())) {
+    if (!result || stored.settled === result) return stored
+    // A Safe proposal keeps its identity; the authenticated result is recorded beside it before any domain check.
+    const learned: PendingBridgeWrite = { ...stored, settled: result, ...(stored.safeProposal ? { settledHash: hash } : {}) }
+    savePendingBridgeWrite(owner, learned, storage)
+    return learned
+  }
+  const adopted: PendingBridgeWrite = { ...stored, hash, safeProposal: false, ...(result ? { settled: result } : {}) }
   if (stored.metadata && stored.recordKey) {
     const { metadata } = stored
     await updateBridgeRecords(stored.recordKey, records => records.map(record =>
@@ -288,6 +298,8 @@ export async function endPendingBridgeAttempt(owner: Address, id: string | undef
   const stored = readStoredPendingBridgeWrite(owner, storage)
   if (!stored) return
   if (!id || stored.id !== id) throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
+  // Re-read from storage right now: a saved success is followed to its end, never ended as unknown.
+  if (stored.settled === 'success') return
   if (stored.metadata && stored.recordKey) {
     const { metadata } = stored
     await updateBridgeRecords(stored.recordKey, records => records.map(record => record.metadata === metadata ? { ...record, submission: undefined } : record), storage)

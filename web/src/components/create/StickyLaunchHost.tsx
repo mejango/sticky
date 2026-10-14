@@ -4,13 +4,14 @@ import { useQueryClient } from '@tanstack/react-query'
 import dynamic from 'next/dynamic'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { isHash, type Hex } from 'viem'
+import { CONTINUE_ANYWAY_LABEL, UNREADABLE_ERROR, UNREADABLE_LINE } from '@/lib/check-required'
 import { ModalShell } from '@/components/ui/ModalShell'
 import { ProjectLink } from '@/components/ProjectLink'
 import { displayChainName, explorerTxUrl } from '@/lib/chainDisplay'
 import type { ChainEnvironment } from '@/lib/chains'
 import { STICKY_LAUNCH_EVENT, takeStickyLaunchRequest } from '@/lib/sticky-launch-events'
 import type { LaunchPlan } from '@/lib/sticky-launch-plan'
-import { STICKY_LAUNCH_KEY, launchCanClear, launchComplete, type StickyLaunchSession } from '@/lib/sticky-launch-session'
+import { STICKY_LAUNCH_KEY, launchCanClear, launchComplete, type LaunchHoldView, type StickyLaunchSession } from '@/lib/sticky-launch-session'
 
 const CreateForm = dynamic(() => import('./StickyCreateForm').then(module => module.StickyCreateForm), { loading: () => <p role="status">Loading create form…</p> })
 type Controller = ReturnType<typeof import('@/lib/sticky-launch-adapter').createBrowserStickyLaunchController>
@@ -27,6 +28,10 @@ export function StickyLaunchHost() {
   const [restoring, setRestoring] = useState(true)
   const [busy, setBusy] = useState(false)
   const [phase, setPhase] = useState('')
+  /** The SDK's line and exit for the wallet submission this launch started, if it still holds one. */
+  /** A strict read just failed inside the exit: only then is the warned continue offered. */
+  const [unreadable, setUnreadable] = useState(false)
+  const [held, setHeld] = useState<LaunchHoldView | null>(null)
   const [hash, setHash] = useState('')
   const [hashChain, setHashChain] = useState<number | null>(null)
   const controller = useRef<Promise<Controller> | null>(null)
@@ -85,7 +90,7 @@ export function StickyLaunchHost() {
   const savedLaunchId = session?.plan.id
   useEffect(() => {
     if (!savedLaunchId || corrupt || restoring) return
-    const check = () => { if (!document.hidden) void action(current => current.refresh(), true) }
+    const check = () => { if (!document.hidden) void action(async current => { const view = await current.hold(); await current.refresh(); setHeld(previous => view && view.checked === false && previous?.exit ? previous : view) }, true) }
     check()
     const interval = window.setInterval(check, 12_000)
     document.addEventListener('visibilitychange', check)
@@ -97,6 +102,7 @@ export function StickyLaunchHost() {
     await current.prepare(plan, capability)
   }
   const complete = session ? launchComplete(session) : false
+  const settledSuccess = !!session && (session.direct?.settled === 'success' || session.payment?.settled === 'success' || Object.keys(session.proven ?? {}).length > 0)
   const recoveryOnly = !!session && session.plan.targets.length !== 1
   const chainId = hashChain ?? session?.plan.targets[0].chainId
   return <>
@@ -124,10 +130,20 @@ export function StickyLaunchHost() {
                   : <span className="text-muted">{session.direct?.started || session.payment?.started || session.published || session.listing.requested ? 'Waiting for verified deployment' : 'Ready for review'}</span>}
               </li>
             })}</ul>
+            {settledSuccess && !complete ? <p role="status" className="text-sm">Your launch went through. Its project is still confirming.</p> : null}
+            {unreadable && !complete && !settledSuccess ? <div role="status" className="space-y-2 text-sm">
+              <p>{UNREADABLE_LINE}</p>
+              <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(async current => { await current.forceExit(); setUnreadable(false); setHeld(await current.hold()) })}>{CONTINUE_ANYWAY_LABEL}</button>
+            </div> : null}
+            {held && !complete ? <div role="status" className="space-y-1 text-sm">
+              <p>{held.line}</p>
+              {held.warning ? <p className="text-muted">{held.warning}</p> : null}
+            </div> : null}
             {session.error || session.listing.error ? <p className="break-words text-sm text-err">{session.error || session.listing.error}</p> : null}
             <div className="flex flex-wrap gap-3">
               <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(current => current.refresh())}>Check again</button>
-              {!recoveryOnly && !complete && (session.direct?.started || session.payment?.started) ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(current => current.retry())}>Check failed transaction for retry</button> : null}
+              {!recoveryOnly && !complete && !settledSuccess && held?.exit ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(async current => { setUnreadable(false); try { await current.exitHold() } catch (failure) { if (message(failure) === UNREADABLE_ERROR) setUnreadable(true); throw failure } setHeld(await current.hold()) })}>{held.label}</button> : null}
+              {!recoveryOnly && !complete && !settledSuccess && (session.direct?.started || session.payment?.started) ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(current => current.retry())}>Check failed transaction for retry</button> : null}
               {!recoveryOnly && !complete && !session.direct?.started && !session.payment?.started && (!session.listing.requested || session.listing.selfPaid) ?
                 <button type="button" className="btn-primary px-3 py-2" disabled={busy} onClick={() => void action(current => current.run())}>{session.mode === 'center' ? 'Request sponsored launch' : 'Continue launch'}</button> : null}
               {!recoveryOnly && !complete && session.mode === 'center' && !session.listing.requested ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(async current => { await current.selfPay(); await current.run() })}>Pay for launch myself</button> : null}

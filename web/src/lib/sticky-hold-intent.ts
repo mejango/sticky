@@ -1,56 +1,69 @@
-import { intent, writeIntentKey } from '@bananapus/nana-sdk-core/review'
+import { approvalIntent, bridgeIntent, cashOutIntent, payIntent, writeIntentKey, intent } from '@bananapus/nana-sdk-core/review'
+import type { Address } from 'viem'
 import type { TxRequest } from '@/hooks/useSafeTx'
 
 /**
- * The one home for a write's hold key. The SDK holds a write by its exact call, which is right when a retry regenerates
- * the same bytes. Where a retry's calldata or value is regenerated (a quote, a fee, a proof, an amount that covers a
- * moving claim), the exact call changes while the user's intent does not, so a retry would send again with no exit.
- * Those writes are held by their intent, built by the SDK's `writeIntentKey` from the action, the identity of what is
- * acted on and the parameters the user chose, with every volatile field left out. Any other write is held by its
- * exact call (undefined). What the app picks on its own (the bridge lane's sucker and backing token for a collector
- * delivery, the route's backing token for a queue, every quote, fee and proof) never goes in a key. Writes pending from before this key existed are held by their exact call, which the SDK
- * always includes beside the intent.
+ * The one home for a Sticky write's hold key, built only from the SDK's intent builders so every web client keys the same
+ * user action the same way: identity plus the user's explicit choices, never an amount, a quote, a route or a fee. A
+ * retry of the same action from any app, tab or deploy is held by the first attempt until it settles or the user takes
+ * its explicit exit.
+ *
+ * Not covered by an SDK builder, keyed with `writeIntentKey` from identity alone (never derived reward groups): a claim-and-stick,
+ * a compound and a begin-vesting (project, account, action), a transfer of Sticky tokens (token,
+ * recipient, account) and a collector settle (collector, source project, Sticky token, group, account). The rest (a fund, a
+ * collect, a trust, the auto-stick settings, a receiver deploy and a settle)
+ * are held by their exact call (undefined): their calldata is typed input and does not regenerate on a retry.
  */
-export function holdIntent(request: Pick<TxRequest, 'chainId' | 'address' | 'functionName' | 'args' | 'moving' | 'max'>): string | undefined {
+export function holdIntent(request: Pick<TxRequest, 'chainId' | 'address' | 'functionName' | 'args' | 'parent'>, account: Address): string | undefined {
   const args = request.args
-  const chain = request.chainId
-  const address = (value: unknown) => intent.address(String(value))
-  const hex = (value: unknown) => intent.hex(String(value))
-  const amount = (value: unknown) => BigInt(value as bigint | number | string)
-  // "All" is the user's choice when a max button was used: the number it filled in is the balance of the moment.
-  const quantity = (value: unknown) => (request.max ? ('all' as const) : amount(value))
+  const chainId = request.chainId
   switch (request.functionName) {
-    // JBMultiTerminal.pay (a stick): minReturnedTokens (4) is a quote.
+    // JBMultiTerminal.pay (a stick): the project and who the Sticky tokens go to.
     case 'pay':
-      return writeIntentKey('stick', { chain, terminal: address(request.address), projectId: amount(args[0]), token: address(args[1]), amount: amount(args[2]), beneficiary: address(args[3]) })
-    // JBMultiTerminal.cashOutTokensOf (an unstick): minTokensReclaimed (4) is a quote.
+      return payIntent({ chainId, project: args[0] as bigint, beneficiary: args[3] as Address })
+    // JBMultiTerminal.cashOutTokensOf (an unstick): the project, the holder and who receives.
     case 'cashOutTokensOf':
-      return writeIntentKey('unstick', { chain, terminal: address(request.address), holder: address(args[0]), projectId: amount(args[1]), count: quantity(args[2]), token: address(args[3]), beneficiary: address(args[5]) })
-    // An approval covers a claim or a stick that can move: the token and the spender are the intent.
-    case 'approve':
-      return request.moving
-        ? writeIntentKey('approve', { chain, token: address(request.address), spender: address(args[0]), kind: 'moving' })
-        : writeIntentKey('approve', { chain, token: address(request.address), spender: address(args[0]), kind: 'exact', amount: amount(args[1]) })
-    // Sucker.prepare (a bridge queue): minTokensReclaimed (2) is a quote.
+      return cashOutIntent({ chainId, project: args[1] as bigint, holder: args[0] as Address, beneficiary: args[5] as Address })
+    // Sucker.prepare (a bridge queue) and Sucker.toRemote (a bridge send): the sucker, the token and the account.
     case 'prepare':
-      return writeIntentKey('bridge-queue', { chain, sucker: address(request.address), projectTokenCount: amount(args[0]), beneficiary: hex(args[1]), metadata: hex(args[4]) })
-    // Sucker.toRemote (a bridge send): the transport budget is the call's value, a quote.
+      return bridgeIntent({ chainId, sucker: request.address, token: args[3] as Address, account })
     case 'toRemote':
-      return writeIntentKey('bridge-send', { chain, sucker: address(request.address), token: address(args[0]) })
-    // Sucker.claim: the proof moves as the tree grows; the leaf is the intent.
-    case 'claim': {
-      const claim = args[0] as { token: unknown; leaf: { index: unknown } }
-      return writeIntentKey('bridge-claim', { chain, sucker: address(request.address), token: address(claim.token), leaf: amount(claim.leaf.index) })
-    }
-    // Source collector send: the bridge fee is the call's value, a quote.
+      return bridgeIntent({ chainId, sucker: request.address, token: args[0] as Address, account })
+    // Sucker.claim: the claiming account on the sucker, for the token.
+    case 'claim':
+      return bridgeIntent({ chainId, sucker: request.address, token: (args[0] as { token: Address }).token, account })
+    // A collector delivery crosses through a sucker: the same bridge intent.
     case 'send':
-      return writeIntentKey('collector-delivery', { chain, collector: address(request.address), sourceProjectId: amount(args[0]), stickyToken: address(args[1]), groupId: amount(args[2]), amount: quantity(args[3]) })
-    // A transfer or a collector settle held by "all" only; a typed amount is stable and held by its exact call.
+      return bridgeIntent({ chainId, sucker: args[4] as Address, token: args[5] as Address, account })
+    // Not covered by an SDK builder: identity only, never an amount.
     case 'transfer':
-      return request.max ? writeIntentKey('transfer-all', { chain, token: address(request.address), recipient: address(args[0]) }) : undefined
+      return writeIntentKey('transfer', { chain: chainId, token: intent.address(request.address), recipient: intent.address(args[0] as Address), account: intent.address(account) })
     case 'settle':
-      return request.max ? writeIntentKey('collector-settle-all', { chain, collector: address(request.address), sourceProjectId: amount(args[0]), stickyToken: address(args[1]), groupId: amount(args[2]) }) : undefined
+      return writeIntentKey('collector-settle', { chain: chainId, collector: intent.address(request.address), sourceProjectId: args[0] as bigint, stickyToken: intent.address(args[1] as Address), groupId: args[2] as bigint, account: intent.address(account) })
+    // An approval step belongs to the action it serves: no amount, only the step, the token and the spender.
+    case 'stickRewardsFor':
+    case 'compoundFor':
+    case 'beginVestingFor':
+      return writeIntentKey(request.functionName, { chain: chainId, terminal: intent.address(request.address), projectId: args[0] as bigint, account: intent.address(account) })
+    case 'approve':
+      return approvalIntent(request.parent ?? PARENTLESS, { step: (args[1] as bigint) === 0n ? 'reset' : 'approve', token: request.address, spender: args[0] as Address })
     default:
       return undefined
   }
+}
+
+/** Approvals planned without a parent action share one parent, so a pending one still blocks its twin. */
+const PARENTLESS = writeIntentKey('approval-parent', { action: 'unattached' })
+
+/** The key an approval's action is held under: its intent, else its function and contract. */
+export function parentOf(request: Pick<TxRequest, 'chainId' | 'address' | 'functionName' | 'args' | 'parent'>, account: Address): string {
+  return holdIntent(request, account) ?? writeIntentKey('approval-parent', { chain: request.chainId, contract: intent.address(request.address), action: request.functionName })
+}
+
+/** Approvals of a plan take the plan's last step (the action they serve) as their parent. */
+export function withApprovalParent<T extends TxRequest>(steps: T[], account: Address): T[] {
+  const main = steps[steps.length - 1]
+  if (!main || main.functionName === 'approve') return steps
+  const parent = parentOf(main, account)
+  return steps.map(step => (step.functionName === 'approve' ? { ...step, parent } : step))
 }

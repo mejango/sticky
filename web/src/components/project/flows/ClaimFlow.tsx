@@ -1,5 +1,6 @@
 'use client'
 
+import { withApprovalParent } from '@/lib/sticky-hold-intent'
 import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { erc20Abi, formatUnits, type Address } from 'viem'
@@ -119,7 +120,7 @@ async function planClaimAndStick(
     collectable,
     groupIds,
     minted,
-    steps: claimAndStickTxs(info, { groupIds, collectable, allowance, canStick }),
+    steps: withApprovalParent(claimAndStickTxs(info, { groupIds, collectable, allowance, canStick }), account),
   }
 }
 

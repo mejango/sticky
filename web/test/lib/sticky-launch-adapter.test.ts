@@ -1,4 +1,5 @@
 import { stickyDeployerAbi } from '@bananapus/nana-sdk-core'
+import { WRITE_EXIT_LABEL } from '@bananapus/nana-sdk-core/review'
 import { JBCenterRequestError } from '@bananapus/nana-sdk-core/jbcenter'
 import {
   RELAYR_NATIVE_TOKEN, RELAYR_PAYMENT_ADDRESS, RELAYR_PAYMENT_GAS,
@@ -33,7 +34,8 @@ vi.mock('@/lib/wallet-core', async original => ({
   ...(await original<typeof import('@/lib/wallet-core')>()),
   publicClient: () => ({ simulateContract: fake.simulate, estimateContractGas: fake.estimate,
     getCode: fake.getCode, getTransactionReceipt: fake.receipt, waitForTransactionReceipt: fake.receipt, getTransaction: fake.transaction,
-    getBlockNumber: fake.head }),
+    getBlockNumber: fake.head, getTransactionCount: async () => 7, getChainId: async () => 8453,
+    getBlock: async ({ blockNumber }: { blockNumber?: bigint } = {}) => ({ hash: `0x${'ed'.repeat(32)}`, number: blockNumber ?? 11n, timestamp: 1_900_000_000n }) }),
   connectedWallet: fake.connected,
 }))
 vi.mock('@/lib/safe-connector', () => ({
@@ -317,6 +319,70 @@ describe('Sticky launch browser boundaries', () => {
     expect(unknown.rejected).not.toHaveBeenCalled()
   })
 
+  describe.each(['direct', 'payment'] as const)('the SDK hold on a %s launch write', kind => {
+    const send = (noted: ReturnType<typeof callbacks>) => kind === 'direct' ? fake.ports.sendDirect(session(), noted) : fake.ports.sendPayment(paymentSession(), noted)
+    const saved = () => { const base = kind === 'direct' ? session() : paymentSession(); return { ...base, [kind]: { ...base[kind], started: true } } as StickyLaunchSession }
+    const wallet = () => kind === 'direct' ? fake.write : fake.send
+
+    it('refuses a second send while a lost-reply submission stands, and sends exactly once more after its warned exit', async () => {
+      wallet().mockRejectedValueOnce(new Error('wallet transport timeout'))
+      await expect(send(callbacks())).rejects.toThrow('timeout')
+      const again = callbacks()
+      await expect(send(again)).rejects.toMatchObject({ name: 'WriteHeldError' })
+      expect(wallet()).toHaveBeenCalledOnce()
+      expect(again.beforeWrite).not.toHaveBeenCalled()
+
+      const view = await fake.ports.hold.look(saved(), kind)
+      expect(view).toMatchObject({ exit: true, label: WRITE_EXIT_LABEL })
+      await expect(fake.ports.hold.exit(saved(), kind)).resolves.toMatchObject({ released: true })
+      await send(callbacks())
+      expect(wallet()).toHaveBeenCalledTimes(2)
+    })
+
+    it('holds a started submission with no SDK record (saved by the last deploy) with an exit, and never releases it unasked', async () => {
+      const view = await fake.ports.hold.look(saved(), kind)
+      expect(view).toMatchObject({ exit: true })
+      await expect(send(callbacks())).rejects.toMatchObject({ name: 'WriteHeldError' })
+      expect(wallet()).not.toHaveBeenCalled()
+    })
+
+    it('reports the settlement of a confirmed launch write as its own outcome', async () => {
+      const call = kind === 'direct' ? { to: DEPLOYER, data: session().plan.targets[0].call.data, value: 2n }
+        : { to: paymentSession().payment.option.target as Address, data: paymentSession().payment.option.calldata as Hex, value: BigInt(paymentSession().payment.option.amount) }
+      const placed = { blockHash: `0x${'ed'.repeat(32)}` as Hex, blockNumber: 10n, transactionIndex: 0 }
+      fake.receipt.mockResolvedValue({ status: 'success', transactionHash: HASH, from: OWNER, to: call.to, logs: [], ...placed })
+      fake.transaction.mockResolvedValue({ hash: HASH, from: OWNER, to: call.to, input: call.data, value: call.value, nonce: 7, ...placed })
+      await send(callbacks())
+      await expect(fake.ports.hold.look(saved(), kind)).resolves.toMatchObject({ settled: { hash: HASH, result: 'success' } })
+    })
+
+    it('needs no mined-failure proof for an attempt the user exited', async () => {
+      const base = kind === 'direct' ? session() : paymentSession()
+      const attempt = { started: true, hash: HASH, exited: true }
+      const exited = { ...base, [kind === 'direct' ? 'directAttempts' : 'paymentAttempts']: [kind === 'direct' ? attempt : { ...attempt, option: (base as ReturnType<typeof paymentSession>).payment.option }] } as StickyLaunchSession
+      fake.failure.mockResolvedValue(false)
+      fake.callFailure.mockResolvedValue(false)
+      await expect(fake.ports.requireRetry(exited, kind, 'retry')).resolves.toBeUndefined()
+      expect(fake.failure).not.toHaveBeenCalled()
+      expect(fake.callFailure).not.toHaveBeenCalled()
+    })
+
+    it('is check-required, not absent, when the saved transaction does not match the call (adoption refused)', async () => {
+      const started = { ...saved(), [kind]: { ...saved()[kind], started: true, hash: HASH } } as StickyLaunchSession
+      fake.transaction.mockResolvedValue({ hash: HASH, from: OWNER, to: OWNER, input: '0xdeadbeef', value: 0n, nonce: 7, blockHash: `0x${'ed'.repeat(32)}`, blockNumber: 10n, transactionIndex: 0 })
+      await expect(fake.ports.hold.look(started, kind)).resolves.toMatchObject({ exit: true, checkRequired: true })
+      await expect(fake.ports.hold.exit(started, kind)).resolves.toEqual({ released: true })
+    })
+
+    it('holds nothing once the wallet explicitly rejected', async () => {
+      wallet().mockRejectedValueOnce({ code: 4001 })
+      await expect(send(callbacks())).rejects.toMatchObject({ code: 4001 })
+      await expect(fake.ports.hold.look({ ...saved(), [kind]: undefined } as StickyLaunchSession, kind)).resolves.toBeNull()
+      await send(callbacks())
+      expect(wallet()).toHaveBeenCalledTimes(2)
+    })
+  })
+
   it('saves a Safe proposal separately and abort-bounds resolution before checking its execution receipt', async () => {
     fake.safe = true
     fake.write.mockResolvedValue(PROPOSAL)
@@ -325,7 +391,8 @@ describe('Sticky launch browser boundaries', () => {
     expect(noted.submitted.mock.calls).toEqual([[PROPOSAL, PROPOSAL], [HASH, PROPOSAL]])
     expect(fake.resolveSafe).toHaveBeenCalledWith(8453, PROPOSAL, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(fake.receipt).toHaveBeenCalledWith(expect.objectContaining({ hash: HASH }))
-    expect(fake.receipt).not.toHaveBeenCalledWith(expect.objectContaining({ hash: PROPOSAL }))
+    // The SDK hold may probe the proposal hash as an at-once execution; the app never waits on it as a receipt.
+    expect(fake.receipt).not.toHaveBeenCalledWith(expect.objectContaining({ hash: PROPOSAL, timeout: expect.anything() }))
     expect(fake.write.mock.calls[0][0].gas).toBe(0n)
   })
 

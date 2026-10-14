@@ -1,5 +1,6 @@
 'use client'
 
+import { withApprovalParent } from '@/lib/sticky-hold-intent'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { erc20Abi, formatUnits, type Address } from 'viem'
@@ -151,7 +152,7 @@ async function planUnstick(
     }
   }
   const quote = await quoteUnstick(chainId, projectId, stakedToken, holder, count, { signal })
-  const steps = unstickTxs(info, holder, count, quote.net, standing).filter(
+  const steps = withApprovalParent(unstickTxs(info, holder, count, quote.net, standing), holder).filter(
     step => !(off && step.functionName === 'setConfigFor') && !(isTeardown(step) && went.some(sameStep(step))),
   )
   // The unstick is tried against the chain as the holder will send it, before the plan is shown.
@@ -230,8 +231,6 @@ export function UnstickFlow({
   const [preparing, setPreparing] = useState(false)
   const preparation = useRef<AbortController | null>(null)
   const waiting = useRef(false)
-  /** The user pressed max and has not typed since: the choice is "all", not the number that was filled in. */
-  const all = useRef(false)
   const reviewAgain = useRef<() => void>(() => undefined)
 
   const who = address?.toLowerCase()
@@ -315,9 +314,7 @@ export function UnstickFlow({
     try {
       const next = await planUnstick(info, address, shares, landed, controller.signal)
       if (controller.signal.aborted) return
-      // Held by "all" for as long as the user's choice is max (until they edit the amount), whatever the balance did since.
-      const last = next.steps[next.steps.length - 1]
-      setPlan(all.current && last ? { ...next, steps: [...next.steps.slice(0, -1), { ...last, max: true }] } : next)
+      setPlan(next)
       setError(null)
     } catch (reason) {
       if (controller.signal.aborted) return
@@ -355,7 +352,6 @@ export function UnstickFlow({
     if (!address) return
     try {
       setAmount(formatUnits(await heldBy(info, address), SHARE_DECIMALS))
-      all.current = true
     } catch (reason) {
       console.warn(BALANCE_UNREADABLE, { chainId, projectId }, reason)
       setError('Could not read your balance.')
@@ -450,7 +446,7 @@ export function UnstickFlow({
             autoComplete="off"
             placeholder="5"
             value={amount}
-            onChange={event => { all.current = false; setAmount(event.target.value) }}
+            onChange={event => setAmount(event.target.value)}
             className="w-full rounded-[4px] border border-line bg-[#fdffff] py-1.5 pl-2 pr-28 text-ink focus:border-amber focus:outline-none"
           />
           <span className="absolute right-2.5 top-1/2 max-w-[60%] -translate-y-1/2 truncate text-muted">

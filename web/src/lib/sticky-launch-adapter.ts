@@ -2,7 +2,7 @@
 
 import { stickyDeployerAbi, type JBChainId } from '@bananapus/nana-sdk-core'
 import { JBCenterRequestError, type JBCenterIntent } from '@bananapus/nana-sdk-core/jbcenter'
-import { gasWithHeadroom, waitForTrackedReceipt } from '@bananapus/nana-sdk-core/review'
+import { WRITE_EXIT_LABEL, gasWithHeadroom, intent, launchIntent, waitForTrackedReceipt, type WriteHoldGate } from '@bananapus/nana-sdk-core/review'
 import { safeExecutionRunsCalls } from '@bananapus/nana-sdk-core/safe-service'
 import {
   RELAYR_API,
@@ -39,6 +39,8 @@ import {
 import { buildStickyEnvelope, createStickyCenterClient, publishStickyListing } from '@/lib/sticky-listing'
 import { fundingChainLabel, requireFundingChainSelection, requireTransactionReview } from '@/lib/transaction-review'
 import { chainName } from '@/lib/urn'
+import { CHECK_REQUIRED_CREATE_LABEL, CHECK_REQUIRED_LINE, CHECK_REQUIRED_WARNING } from '@/lib/check-required'
+import { holds } from '@/lib/write-holds'
 import { assertNoViewAs } from '@/lib/viewAs'
 import { assertReviewedWallet, connectedWallet, publicClient } from '@/lib/wallet-core'
 import { wagmiConfig } from '@/providers/Providers'
@@ -148,7 +150,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
     if (!session.listing.intentId) throw new Error('The launch has no published listing.')
     return matchingIntent(session, await center.getIntent(session.listing.intentId))
   }
-  const safeResult = async (chainId: number, hash: Hex, viaSafe: boolean, callbacks: SubmissionCallbacks) => {
+  const safeResult = async (chainId: number, hash: Hex, viaSafe: boolean, callbacks: SubmissionCallbacks, held?: ReturnType<typeof launchHold>) => {
     if (!isHash(hash)) throw new Error('The wallet did not return a readable submission hash. Keep the launch saved.')
     await callbacks.submitted(hash, viaSafe ? hash : undefined)
     let execution = hash
@@ -160,10 +162,79 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
     const receipt = await waitForTrackedReceipt(clientFor(chainId), execution)
     if (!isHash(receipt.transactionHash)) throw new Error('The submitted transaction has no readable receipt hash. Keep the launch saved.')
     if (!same(receipt.transactionHash, execution)) await callbacks.submitted(receipt.transactionHash, viaSafe ? hash : undefined)
+    if (held) await settleHold(held, receipt, execution)
     return receipt.transactionHash
+  }
+  /**
+   * The SDK hold of a launch write: its identity is the launch (plan and, for a payment, its bundle), never the calldata,
+   * so a regenerated call is still the same launch. The launch session stays the domain record of its hashes.
+   */
+  const launchHold = (session: StickyLaunchSession, kind: 'direct' | 'payment') => {
+    const { plan } = session
+    const owner = plan.owner
+    const submitted = session[kind]
+    const viaSafe = !!submitted?.proposalHash || isSafeConnection(wagmiConfig)
+    let chainId: number
+    let call: { to: Address; data: Hex; value: bigint }
+    let config: Parameters<typeof launchIntent>[0]['config']
+    if (kind === 'direct') {
+      const [target] = plan.targets
+      chainId = target.chainId
+      call = { to: target.deployer, data: target.call.data as Hex, value: BigInt(target.call.value) }
+      config = { kind, plan: plan.id, deployer: intent.address(target.deployer) }
+    } else {
+      const quote = boundQuote(session)
+      if (!session.payment) throw new Error('Choose a payment option first.')
+      const details = relayrPaymentDetails(session.payment.option, { bundleUuid: quote.bundle_uuid, destinationChainIds: chainsOf(plan), nowSeconds: 0 })
+      chainId = details.chainId
+      call = { to: details.target, data: details.calldata, value: details.amount }
+      config = { kind, plan: plan.id, bundle: quote.bundle_uuid, target: intent.address(details.target) }
+    }
+    const handle = holds.open({ chainId, account: owner, safe: viaSafe, namespace: launchIntent({ chainId, account: owner, config }), call })
+    return { handle, client: clientFor(chainId), submitted, viaSafe }
+  }
+  /** What the SDK says of the hold; a submission the last deploy started has no SDK record yet, so it is adopted with its hash and kept uncertain. */
+  const launchHoldState = async (session: StickyLaunchSession, kind: 'direct' | 'payment') => {
+    const held = launchHold(session, kind)
+    let state = await held.handle.state(held.client)
+    if (state.status === 'clear' && !state.settled && held.submitted?.started) {
+      const hash = held.viaSafe ? held.submitted.proposalHash : held.submitted.hash
+      state = await held.handle.adopt(state, hash ? (held.viaSafe ? { safe: { safeTxHash: hash } } : { hash }) : undefined, held.client)
+      state = await held.handle.state(held.client)
+    }
+    return { ...held, state }
+  }
+  /** The hold's gate around one wallet write: reserved just before the wallet opens, ended when it explicitly rejects. */
+  const gated = (gate: WriteHoldGate, callbacks: SubmissionCallbacks) => ({
+    beforeWrite: async (before: () => Promise<void>) => {
+      await before()
+      try { await gate.beforeSend() } catch (failure) { callbacks.rejected(); throw failure }
+    },
+    aborted: () => { gate.onRejected(); callbacks.rejected() },
+    submitted: (hash: Hex) => gate.afterSubmit(hash),
+  })
+  const settleHold = async (held: ReturnType<typeof launchHold>, receipt: Awaited<ReturnType<typeof waitForTrackedReceipt>>, execution: Hex) => {
+    try { await (held.viaSafe ? held.handle.onExecuted(held.client, execution) : held.handle.onReceipt(receipt, held.client)) } catch { /* Unverified stays held; the next look asks again. */ }
   }
   const ports: StickyLaunchPorts = {
     store, guard, changed,
+    hold: {
+      async look(session, kind) {
+        if (!session[kind]) return null
+        const { state } = await launchHoldState(session, kind)
+        // No hold and no settlement for a started submission: adoption was refused, so only the explicit check is left.
+        if (state.status === 'clear') return state.settled && 'hash' in state.settled ? { settled: state.settled } : { line: CHECK_REQUIRED_LINE, warning: CHECK_REQUIRED_WARNING, label: CHECK_REQUIRED_CREATE_LABEL, exit: true, checkRequired: true }
+        return { line: state.line, ...('warning' in state && state.warning ? { warning: state.warning } : {}), label: WRITE_EXIT_LABEL, exit: !!state.exit, checked: state.checked }
+      },
+      async exit(session, kind) {
+        if (!session[kind]) return { released: false }
+        const { handle, client, state } = await launchHoldState(session, kind)
+        if (state.status === 'clear') return state.settled && 'hash' in state.settled ? { released: false, settled: state.settled } : { released: true }
+        if (!state.exit) return { released: false }
+        const { released, state: after } = await handle.exit(state, { checkedWallet: true }, client)
+        return released ? { released } : { released, ...(after.status === 'clear' && after.settled && 'hash' in after.settled ? { settled: after.settled } : {}) }
+      },
+    },
     async review(plan, sponsored) {
       phase('Checking the launch on its home chain.')
       await checkLaunch(plan)
@@ -240,7 +311,10 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       const authority = reviewedWallet(plan.owner)
       const viaSafe = authority.safe
       let wallet: Awaited<ReturnType<typeof connectedWallet>>['wallet'] | undefined
-      const hash = await submitReviewedContractWrite({ request, expectedAccount: plan.owner,
+      const held = launchHold(session, 'direct')
+      const hash = await held.handle.send(client, async gate => {
+        const hold = gated(gate, callbacks)
+        return submitReviewedContractWrite({ request, expectedAccount: plan.owner,
         currentAccount: () => getAccount(wagmiConfig).address,
         review: () => requireTransactionReview({ title: 'Review Sticky creation', calls: reviewCalls(plan).map(call => ({ ...call, ...(viaSafe ? { safeTxGas: 0n } : {}) })) }),
         switchChain: async chainId => { ({ wallet } = await connectedWallet(chainId as JBChainId, { expected: plan.owner, requireUnchanged: true, changedError: 'Connect the wallet that prepared this launch.' })) },
@@ -251,7 +325,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
           guard(plan.owner)
           return { ...simulated, gas: viaSafe ? 0n : gasWithHeadroom(estimate) }
         },
-        beforeWrite: callbacks.beforeWrite, onBeforeWriteAborted: callbacks.rejected, onWriteRejected: callbacks.rejected,
+        beforeWrite: () => hold.beforeWrite(callbacks.beforeWrite), onBeforeWriteAborted: hold.aborted, onWriteRejected: hold.aborted, onWriteSubmitted: hold.submitted,
         beforeSend: () => {
           requireSingleHomeChain(plan.targets)
           assertReviewedWallet({ ...authority, chainId: target.chainId })
@@ -259,8 +333,9 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
         },
         write: simulated => wallet!.writeContract({ ...simulated, chain }),
         onPhase: value => phase(value === 'signing' ? 'Confirm creation in your wallet.' : 'Checking the launch transaction.'),
+        })
       })
-      await safeResult(target.chainId, hash, viaSafe, callbacks)
+      await safeResult(target.chainId, hash, viaSafe, callbacks, held)
     },
     async sendPayment(session, callbacks) {
       requireSingleHomeChain(session.plan.targets)
@@ -289,7 +364,10 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
         await requireRelayrPaymentRuntime(client)
         guard(owner)
       }
-      const hash = await submitReviewedContractWrite({ request, expectedAccount: owner,
+      const held = launchHold(session, 'payment')
+      const hash = await held.handle.send(client, async gate => {
+        const hold = gated(gate, callbacks)
+        return submitReviewedContractWrite({ request, expectedAccount: owner,
         currentAccount: () => getAccount(wagmiConfig).address,
         review: async reviewed => {
           await reverify()
@@ -304,8 +382,8 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
           guard(owner)
           return { account: owner, to: details.target, data: details.calldata, value: details.amount, gas: viaSafe ? 0n : RELAYR_PAYMENT_GAS }
         },
-        beforeWrite: async () => { await reverify(); await callbacks.beforeWrite() },
-        onBeforeWriteAborted: callbacks.rejected, onWriteRejected: callbacks.rejected,
+        beforeWrite: () => hold.beforeWrite(async () => { await reverify(); await callbacks.beforeWrite() }),
+        onBeforeWriteAborted: hold.aborted, onWriteRejected: hold.aborted, onWriteSubmitted: hold.submitted,
         beforeSend: () => {
           assertReviewedWallet({ ...authority, chainId: details.chainId })
           assertPaymentSnapshot()
@@ -313,8 +391,9 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
         },
         write: simulated => wallet!.sendTransaction({ ...simulated, chain }),
         onPhase: value => phase(value === 'signing' ? 'Confirm payment in your wallet.' : 'Checking the execution payment.'),
+        })
       })
-      const execution = await safeResult(details.chainId, hash, viaSafe, callbacks)
+      const execution = await safeResult(details.chainId, hash, viaSafe, callbacks, held)
       phase('Payment submitted. Checking execution on the home chain.')
       if (!(await ports.verifyPayment({ ...session,
         payment: { ...session.payment, hash: execution, proposalHash: viaSafe ? hash : undefined },
@@ -354,7 +433,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
         if (session.plan.targets.length !== 1) throw new Error('Only a single-chain wallet creation can be retried directly.')
         const attempts = [...(session.directAttempts ?? []), ...(session.direct?.started ? [session.direct] : [])]
         if (!attempts.length) throw new Error(refused)
-        for (const attempt of attempts) {
+        for (const attempt of attempts.filter(each => !each.exited)) {
           if (!(await verifyFinalizedStickyLaunchFailure(session, target, await minedSubmission(target.chainId, attempt), clientFor(target.chainId)))) throw new Error(refused)
         }
       } else {
@@ -362,7 +441,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
         const attempts = [...(session.paymentAttempts ?? []), ...(session.payment?.started ? [session.payment] : [])]
         if (!attempts.length) throw new Error(refused)
         const directPayments = new Map<string, { payment: ReturnType<typeof relayrPaymentDetails>; hashes: Hex[] }>()
-        for (const attempt of attempts) {
+        for (const attempt of attempts.filter(each => !each.exited)) {
           const details = relayrPaymentDetails(attempt.option, { bundleUuid: quote.bundle_uuid,
             destinationChainIds: chainsOf(session.plan), ...(purpose === 'retire' ? { nowSeconds: 0 } : {}) })
           const submission = await minedSubmission(details.chainId, attempt)
@@ -447,6 +526,10 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
     list: () => exclusive(controller.list),
     selfPay: () => exclusive(controller.selfPay),
     retry: () => exclusive(controller.retry),
+    // Reading the hold is a look; saving a settlement it found takes the shared launch lock, like every change.
+    hold: () => controller.hold(exclusive),
+    exitHold: () => exclusive(controller.exitHold),
+    forceExit: () => exclusive(controller.forceExit),
     addHash: (...args: Parameters<typeof controller.addHash>) => exclusive(() => controller.addHash(...args)),
     clear: () => exclusive(controller.clear),
   }
