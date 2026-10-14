@@ -478,6 +478,18 @@ async function followProposal(key: string, client: FollowClient, reply: boolean)
   )
 }
 
+/**
+ * A registry entry never outlives its hold. Before an entry is reused or adopted, the hold's settlement for the same
+ * call (kept by the SDK, and read from any tab) closes it with the authenticated result, whatever flow is mounted.
+ */
+function reconcileProposal(key: string, state: WriteHoldState): void {
+  if (state.status !== 'clear' || !state.settled || !('hash' in state.settled) || !proposals.has(key)) return
+  const settled = state.settled
+  updateProposal(key, settled.result === 'success'
+    ? { phase: 'success', executionHash: settled.hash }
+    : { phase: 'failed', executionHash: settled.hash, message: `Safe executed the proposal, but the onchain transaction failed (${settled.hash}).` })
+}
+
 /** Record a proposal and follow it; `reply` says whether the hash is the wallet's own answer. */
 function recordProposal(
   proposal: Pick<SafeProposal, 'chainId' | 'safe' | 'call' | 'proposalHash'> & { ran?: boolean; hold?: WriteHoldHandle | null },
@@ -592,11 +604,7 @@ export function useSafeTx(chainId: number) {
         settledRef.current = null
         // A Safe proposal never outlives its settled hold: the registry entry takes the authenticated result.
         const registryKey = shownKeyRef.current ?? proposalKeyRef.current
-        if (registryKey && proposals.has(registryKey)) {
-          updateProposal(registryKey, settled.result === 'success'
-            ? { phase: 'success', executionHash: settled.hash }
-            : { phase: 'failed', executionHash: settled.hash, message: `Safe executed the proposal, but the onchain transaction failed (${settled.hash}).` })
-        }
+        if (registryKey) reconcileProposal(registryKey, value)
         if (domain) {
           void Promise.resolve(domain({ hash: settled.hash, result: settled.result })).catch(() => undefined)
           setSettledNote(settled.result === 'failed' ? WRITE_HOLD_REVERTED_LINE : 'Your earlier transaction went through.')
@@ -857,6 +865,8 @@ export function useSafeTx(chainId: number) {
             // An action the Safe already has, from this session or its own queue,
             // is shown as it is and never proposed again.
             const key = proposalKey(request.chainId, account, sentCall)
+            // The registry's entry is reconciled with the hold's settlement before it is reused or adopted.
+            if (handle) reconcileProposal(key, handle.peek())
             const held = proposals.get(key)
             let queued: Awaited<ReturnType<typeof findPendingSafeAppProposal>> = null
             if (!holdsCall(held) && hasSafeService(request.chainId)) {
@@ -1131,6 +1141,11 @@ export function useSafeTx(chainId: number) {
       const stored = holds.open({ chainId: write.chainId, account: write.owner, safe: false, namespace: write.intent, call: { to: write.to, data: write.data, value: write.value } })
       const state = await stored.state(client)
       if (state.status !== 'clear' || state.settled) return
+      // TODO(SDK 2.36): replace this read and send with the atomic `hold.adopt(evidence)`, which reserves only when the
+      // key has no hold and no settlement, under the lock. Until then the state is read again right before sending,
+      // which only narrows the window in which another tab can settle this call.
+      const again = await stored.state(client)
+      if (again.status !== 'clear' || again.settled) return
       await stored.send(client, async gate => { await gate.beforeSend(); throw new Error('Reserved from a saved reservation that has no reference.') }).catch(() => undefined)
     } catch { /* The reservation stays in its journal, and the panel's own recovery still applies. */ }
   }, [])

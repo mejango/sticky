@@ -17,7 +17,7 @@ import { useWallet } from '@/hooks/useWallet'
 import { parseAmount } from '@/lib/sticky-amount'
 import { bridgeCalldata, bridgeRouteId, bridgeWriteHasUniqueReference, createStickyBridge, type BridgeMovement, type BridgeRoute } from '@/lib/sticky-bridge'
 import {
-  adoptSettlementHash, assertPendingBridgeWrite, bridgeStorageKey, endPendingBridgeAttempt, createPendingBridgeWrite, discardBridgeDraft, readBridgeRecords, readPendingBridgeWrite, readWatchedBridgeRoutes, reconcileBridgeRecord,
+  adoptSettlementHash, assertPendingBridgeWrite, ensurePendingBridgeId, bridgeStorageKey, endPendingBridgeAttempt, createPendingBridgeWrite, discardBridgeDraft, readBridgeRecords, readPendingBridgeWrite, readWatchedBridgeRoutes, reconcileBridgeRecord,
   restoreBridgeWrite, retryPendingBridgeSubmission, savePendingBridgeWrite, savePendingBridgeSubmission, storeBridgeWrite, updateBridgeRecord, updateBridgeRecords, withBridgeLock,
   type BridgeRecord, type PendingBridgeWrite,
 } from '@/lib/sticky-bridge-journal'
@@ -330,6 +330,12 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tx.phase, tx.hash, tx.submissionHash, tx.submissionIsSafe, active])
 
+  // A legacy reservation with no attempt id gets a durable one under the domain lock, so adoption, the exit and its end name one attempt.
+  const legacyOwner = pending && !pending.id ? pending.owner : null
+  useEffect(() => {
+    if (!legacyOwner) return
+    void withBridgeLock(async () => { setPending(ensurePendingBridgeId(legacyOwner)) }, true).catch(() => undefined)
+  }, [legacyOwner])
   function closeReview() {
     generation.current += 1
     setReview(null)

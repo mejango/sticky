@@ -261,6 +261,21 @@ export async function adoptSettlementHash(owner: Address, id: string | undefined
 }
 
 /**
+ * Under the domain lock: a legacy reservation saved with no attempt id gets a durable one, with nothing else changed,
+ * so that adoption, the SDK's exit and the end of the reservation all name the same attempt. The exact raw snapshot
+ * is compared again before it is written; anything else that changed it leaves it alone.
+ */
+export function ensurePendingBridgeId(owner: Address, storage: BridgeStorage = localStorage): PendingBridgeWrite | null {
+  const key = pendingKey(owner)
+  const raw = storage.getItem(key)
+  const stored = readStoredPendingBridgeWrite(owner, storage)
+  if (!stored || stored.id) return stored
+  if (storage.getItem(key) !== raw) return readStoredPendingBridgeWrite(owner, storage)
+  const migrated: PendingBridgeWrite = { ...stored, id: crypto.randomUUID() }
+  savePendingBridgeWrite(owner, migrated, storage)
+  return migrated
+}
+/**
  * The one place an attempt's domain reservation ends: after the SDK's exit released its call, or after a failure
  * before the wallet opened. It matches the raw stored reservation by attempt id, hashed or hashless, whatever reply
  * is retained in memory; clears the matching transfer's submission marker (the metadata and steps stay, so the

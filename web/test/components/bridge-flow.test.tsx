@@ -422,6 +422,19 @@ describe('reviewed durable bridge workflow', () => {
     await vi.waitFor(() => expect(mocks.tx.storedHold).toHaveBeenCalled())
     expect(readPendingBridgeWrite(OWNER)).not.toBeNull()
   })
+  it('gives a legacy reservation with no attempt id a durable one, so its exit can end it', async () => {
+    const legacy = { owner: OWNER, request: storeBridgeWrite(queuedRequest()) }
+    localStorage.setItem(`sticky:bridge:pending:v1:${OWNER.toLowerCase()}`, JSON.stringify(legacy))
+    expect(readPendingBridgeWrite(OWNER)?.id).toBeUndefined()
+    mocks.tx.storedHold = vi.fn(async () => ({ exit: true, line: 'Held.', warning: 'Careful.' }))
+    mocks.tx.exitStored = vi.fn(async () => ({ outcome: 'released' as const }))
+    await render()
+    await vi.waitFor(() => expect(readPendingBridgeWrite(OWNER)?.id).toMatch(/^[0-9a-f-]{36}$/))
+    // Only the id was added: the exact snapshot is otherwise unchanged.
+    expect(readPendingBridgeWrite(OWNER)).toMatchObject(legacy)
+    await press(WRITE_EXIT_LABEL)
+    expect(readPendingBridgeWrite(OWNER)).toBeNull()
+  })
   it('keeps the reservation when the SDK refuses the exit', async () => {
     mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => { await options.durableRecovery?.reserve(); return null })
     await review(); await press('Confirm & approve'); await press('Cancel')

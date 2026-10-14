@@ -223,7 +223,8 @@ describe('permissionless collector delivery', () => {
     savePendingBridgeWrite(OWNER, held)
     mocks.verifyWrite.mockRejectedValueOnce(new Error('Failure is not finalized'))
     await render(); await press('Check transaction')
-    expect(readPendingBridgeWrite(OWNER)).toEqual(held)
+    // A legacy snapshot keeps every field and gains only a durable attempt id.
+    expect(readPendingBridgeWrite(OWNER)).toEqual({ ...held, id: expect.any(String) })
     expect(button('Review delivery').disabled).toBe(true)
     mocks.verifyWrite.mockResolvedValue({ success: false, receipt: { blockNumber: 100n } })
     await press('Check transaction')
@@ -246,7 +247,7 @@ describe('permissionless collector delivery', () => {
     savePendingBridgeWrite(OWNER, held); await render()
     expect(button('Check transaction')).toBeUndefined()
     expect(text()).toContain('original bridge or allocation panel')
-    expect(readPendingBridgeWrite(OWNER)).toEqual(held)
+    expect(readPendingBridgeWrite(OWNER)).toEqual({ ...held, id: expect.any(String) })
   })
 
   it('offers the SDK exit for a hashless delivery reservation after reload, clears the reservation, keeps the watched route, and allows exactly one more send', async () => {

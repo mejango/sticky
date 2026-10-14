@@ -16,7 +16,7 @@ import { useWallet } from '@/hooks/useWallet'
 import { parseAmount } from '@/lib/sticky-amount'
 import { createStickyBridge } from '@/lib/sticky-bridge'
 import {
-  adoptSettlementHash, assertPendingBridgeWrite, endPendingBridgeAttempt, createPendingBridgeWrite, readPendingBridgeWrite, retryPendingBridgeSubmission, savePendingBridgeWrite, savePendingBridgeSubmission, saveWatchedBridgeRoute,
+  adoptSettlementHash, assertPendingBridgeWrite, ensurePendingBridgeId, endPendingBridgeAttempt, createPendingBridgeWrite, readPendingBridgeWrite, retryPendingBridgeSubmission, savePendingBridgeWrite, savePendingBridgeSubmission, saveWatchedBridgeRoute,
   storeBridgeWrite, withBridgeLock, type PendingBridgeWrite,
 } from '@/lib/sticky-bridge-journal'
 import type { CollectorSource } from '@/lib/sticky-collector'
@@ -208,6 +208,12 @@ export function CollectorFlow({ source, info, onSettled }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tx.phase, tx.hash, tx.submissionHash, tx.submissionIsSafe, active])
 
+  // A legacy reservation with no attempt id gets a durable one under the domain lock, so adoption, the exit and its end name one attempt.
+  const legacyOwner = pending && !pending.id ? pending.owner : null
+  useEffect(() => {
+    if (!legacyOwner) return
+    void withBridgeLock(async () => { setPending(ensurePendingBridgeId(legacyOwner)) }, true).catch(() => undefined)
+  }, [legacyOwner])
   function closeReview() { setReview(null); tx.dismiss(); void refresh() }
   const ours = pending ? collectorWriteKind(source, pending) : null
   return (

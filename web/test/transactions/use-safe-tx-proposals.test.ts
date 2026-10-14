@@ -784,6 +784,38 @@ describe('a Safe proposal awaiting its signers', () => {
     } finally { vi.useRealTimers() }
   })
 
+  it('reconciles a detached registry entry with a settlement another tab reached, so a retry after the flow closed is fresh', async () => {
+    vi.useFakeTimers()
+    try {
+      signersDecide()
+      mocks.writeContract.mockResolvedValueOnce(PROPOSAL).mockResolvedValueOnce(SECOND_PROPOSAL)
+      const first = await mount()
+      await first.send()
+      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      // The flow is gone: nothing polls this hold in this tab.
+      await act(async () => first.tx.reset())
+      await first.close()
+
+      const placement = { transactionHash: EXECUTION, blockHash: BLOCK_HASH, blockNumber: 9n, transactionIndex: 0 }
+      const receipt = { ...receiptOf(EXECUTION, PROPOSAL), ...placement, from: BOB, to: SAFE, logs: [{ address: SAFE, topics: [SUCCESS, PROPOSAL], data: WORD, ...placement, removed: false }] }
+      const client = {
+        ...mocks.publicClient,
+        getChainId: async () => 10,
+        getBlock: async ({ blockNumber }: { blockNumber?: bigint }) => ({ hash: BLOCK_HASH, number: blockNumber ?? 10n, timestamp: 1_900_000_000n }),
+        getTransaction: async ({ hash }: { hash: Hex }) => { if (hash !== EXECUTION) throw new TransactionNotFoundError({ hash }); return { hash, from: BOB, to: SAFE, input: execTransaction(), ...placement } },
+        getTransactionReceipt: async () => receipt,
+      }
+      const callData = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
+      const other = createWriteHold().open({ chainId: 10, account: SAFE, safe: true, call: { to: BOB, data: callData, value: 7n } })
+      await other.onExecuted(client as never, EXECUTION)
+
+      // A new flow's send finds the registry's entry for the call, and the settled hold beside it: it is fresh.
+      const again = await mount()
+      await act(async () => { await again.tx.send(request, reviewedBySafe) })
+      expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+    } finally { vi.useRealTimers() }
+  })
+
   it('stops being watched once its execution is known', async () => {
     const execute = signersDecide()
     const flow = await mount()
