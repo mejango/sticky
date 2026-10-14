@@ -18,7 +18,7 @@ import {
 } from '@bananapus/nana-sdk-core/safe-service'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildPermit2ApproveTx } from '@bananapus/nana-sdk-core/v6'
-import { SAFE_PROPOSAL_EXECUTED_LINE, SAFE_PROPOSAL_REPLACED_LINE, WRITE_EXIT_LABEL } from '@bananapus/nana-sdk-core/review'
+import { WRITE_HOLD_SAFE_UNPROVEN_LINE, SAFE_PROPOSAL_EXECUTED_LINE, SAFE_PROPOSAL_REPLACED_LINE, WRITE_EXIT_LABEL } from '@bananapus/nana-sdk-core/review'
 
 // Safe proposals through useSafeTx. One registry holds every proposal made
 // this session, shared by every flow, and follows each to its result: a flow
@@ -485,7 +485,7 @@ describe('a Safe proposal', () => {
     expect(flow.tx).toMatchObject({
       phase: 'submitted',
       confirmationUncertain: true,
-      notice: `${UNCONFIRMED} Safe executed the proposal, but the onchain transaction failed.`,
+      notice: WRITE_HOLD_SAFE_UNPROVEN_LINE,
     })
     await flow.send()
     expect(mocks.writeContract).toHaveBeenCalledOnce()
@@ -538,7 +538,7 @@ describe('a Safe proposal', () => {
     expect(flow.tx).toMatchObject({
       phase: 'submitted',
       confirmationUncertain: true,
-      notice: `${UNCONFIRMED} Safe service unavailable`,
+      notice: WRITE_HOLD_SAFE_UNPROVEN_LINE,
     })
     await flow.send()
     expect(mocks.writeContract).toHaveBeenCalledOnce()
@@ -582,7 +582,7 @@ describe('a Safe proposal awaiting its signers', () => {
     expect(recoveryRecords()).toHaveLength(1)
   })
 
-  it('shows the line when another transaction took its nonce and never releases the hold on its own', async () => {
+  it('offers the exit when the watcher says another transaction took the nonce but the hold cannot authenticate it, and sends exactly once more after it is accepted', async () => {
     signersDecide()
     let watchEnds!: (end: string) => void
     mocks.watchSafeProposal.mockImplementationOnce(() => new Promise(resolve => (watchEnds = resolve)))
@@ -594,12 +594,31 @@ describe('a Safe proposal awaiting its signers', () => {
 
     watchEnds('replaced')
     await settle()
-    expect(flow.tx).toMatchObject({ phase: 'submitted', error: SAFE_PROPOSAL_REPLACED_LINE })
-    // The SDK's own look decides the hold (safe-replaced, with the user's exit); the registry's word alone releases nothing.
+    expect(flow.tx).toMatchObject({ phase: 'submitted', notice: WRITE_HOLD_SAFE_UNPROVEN_LINE })
+    expect(flow.tx.held).toMatchObject({ label: WRITE_EXIT_LABEL })
     expect(recoveryRecords()).toHaveLength(1)
-    await act(async () => flow.tx.reset())
-    await flow.send()
     expect(mocks.writeContract).toHaveBeenCalledOnce()
+
+    await act(async () => { flow.tx.held!.exit!() })
+    await settle()
+    expect(flow.tx).toMatchObject({ phase: 'idle', held: null })
+    expect(recoveryRecords().filter(record => !record.released)).toHaveLength(recoveryRecords().length)
+    await expect(flow.send()).resolves.toBe(SECOND_PROPOSAL)
+    expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+  })
+
+  it('offers the exit when the follower ends without proof, and sends exactly once more after it is accepted', async () => {
+    mocks.waitForSafeExecutionHash.mockRejectedValue(new Error('Safe service unavailable'))
+    mocks.writeContract.mockResolvedValueOnce(PROPOSAL).mockResolvedValueOnce(SECOND_PROPOSAL)
+    const flow = await mount()
+    await flow.send()
+    await settle()
+    expect(flow.tx).toMatchObject({ phase: 'submitted', confirmationUncertain: true })
+    expect(flow.tx.held).toMatchObject({ label: WRITE_EXIT_LABEL })
+    await act(async () => { flow.tx.held!.exit!() })
+    await settle()
+    await expect(flow.send()).resolves.toBe(SECOND_PROPOSAL)
+    expect(mocks.writeContract).toHaveBeenCalledTimes(2)
   })
 
   it('follows a proposal the Safe shows executed to its result', async () => {
@@ -799,10 +818,11 @@ describe('a Safe proposal another flow dismissed', () => {
     await second.send()
     expect(second.tx).toMatchObject({ phase: 'submitted', confirmationUncertain: true })
 
-    // The flow that proposed it is the one left showing it.
+    // The hold is the call's, not a display's: the flow that proposed it still shows it until it closes it.
     await act(async () => second.tx.dismiss())
-    expect(first.tx).toMatchObject({ phase: 'idle', busy: false, settled: false, notice: null, hash: null })
+    expect(first.tx).toMatchObject({ phase: 'submitted', held: { label: WRITE_EXIT_LABEL } })
     await act(async () => first.tx.reset())
+    expect(first.tx).toMatchObject({ phase: 'idle', busy: false, settled: false, notice: null, hash: null })
     await first.send()
     expect(mocks.writeContract).toHaveBeenCalledOnce()
     expect(recoveryRecords()).toHaveLength(1)
@@ -862,7 +882,7 @@ describe("a Safe proposal's last look at the chain", () => {
     expect(flow.tx).toMatchObject({
       phase: 'submitted',
       confirmationUncertain: true,
-      notice: `${UNCONFIRMED} Safe's transaction service has no record of this proposal.`,
+      notice: WRITE_HOLD_SAFE_UNPROVEN_LINE,
     })
   })
 

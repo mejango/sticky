@@ -6,6 +6,7 @@
  * wallet is what the confirm showed, and the flow's second read of the chain comes before either.
  */
 
+import { WRITE_HOLD_SAFE_UNPROVEN_LINE } from '@bananapus/nana-sdk-core/review'
 import { QueryClient, QueryClientProvider, notifyManager } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -190,7 +191,7 @@ describe('a Safe review dismissed from its enclosing modal', () => {
     const invalidate = vi.spyOn(client, 'invalidateQueries')
     await press(confirm(), `Confirm & ${kind}`)
 
-    expect(statusLine()).toContain('Safe proposal submitted, but confirmation is unavailable.')
+    expect(statusLine()).toContain(WRITE_HOLD_SAFE_UNPROVEN_LINE)
     expect(primary().textContent).toBe('Done')
     expect(confirm().querySelector('li')?.getAttribute('data-state')).toBe('active')
     expect(invalidate).not.toHaveBeenCalled()

@@ -236,6 +236,7 @@ type SafeProposal = {
   ran?: boolean
   /** The write hold of this call: told the moment the chain proves the Safe ran it, whether or not any flow is open. */
   hold?: WriteHoldHandle | null
+  client?: FollowClient
   onConfirmed: () => void
 }
 
@@ -279,6 +280,11 @@ function updateProposal(key: string, next: Partial<SafeProposal>): void {
     ...(ran && next.phase === 'unproven' ? { ran: true, message: SAFE_PROPOSAL_EXECUTED_LINE } : {}),
   })
   if (next.phase === 'success' && current.phase !== 'success') current.onConfirmed()
+  // The follower ended without proof, or the watcher's replacement is not one the hold can authenticate:
+  // the hold offers the user's exit at once. Authenticated evidence that comes later still settles it.
+  if ((next.phase === 'replaced' || (next.phase === 'unproven' && !ran)) && current.phase !== next.phase && current.client) {
+    void current.hold?.onUnproven(current.client, current.proposalHash).catch(() => undefined)
+  }
   notifyProposals()
 }
 
@@ -467,6 +473,7 @@ function recordProposal(
     executionHash: null,
     receipt: null,
     message: null,
+    client,
     onConfirmed,
   })
   notifyProposals()
@@ -1051,7 +1058,7 @@ export function useSafeTx(chainId: number) {
     /** The transaction has a hash, but its result could not be confirmed here. */
     confirmationUncertain: shownKey
       ? proposal?.phase === 'unproven' || (proposal?.phase === 'awaiting' && !!proposal.message)
-      : held?.status === 'held-no-hash' || (phase === 'pending' && receipt.isError && !receiptData),
+      : held?.status === 'held-no-hash' || held?.status === 'safe-unproven' || (phase === 'pending' && receipt.isError && !receiptData),
     send,
     reset,
     dismiss,
