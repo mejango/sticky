@@ -97,8 +97,6 @@ const BLOCK_HASH = `0x${'ed'.repeat(32)}` as Hex
 const recoveryRecords = () => Object.keys(localStorage).filter(key => key.startsWith('nana-sdk:reviewed-write:')).map(key => JSON.parse(localStorage.getItem(key)!))
 const WORD = `0x${'00'.repeat(32)}` as Hex
 const AWAITING = 'Proposed to your Safe. Its other signers can approve it there.'
-const UNCONFIRMED =
-  'Safe proposal submitted, but confirmation is unavailable. Check Safe before taking another action.'
 const reviewedBySafe = { reviewedAccount: SAFE }
 const ABI = parseAbi(['function transfer(address to, uint256 amount)'])
 const request = {
@@ -421,7 +419,36 @@ describe('a Safe proposal', () => {
     await flow.send()
     await settle()
     expect(flow.tx.phase).toBe(phase)
-    if (phase === 'submitted') expect(flow.tx).toMatchObject({ notice: UNCONFIRMED, confirmationUncertain: true })
+    // Another call ran: nothing proves this one did, so the hold offers its exit at once.
+    if (phase === 'submitted') expect(flow.tx).toMatchObject({ confirmationUncertain: true, held: { label: WRITE_EXIT_LABEL } })
+  })
+
+  it('offers the exit for an execution returned at once that ran another call, after 65 minutes and a remount', async () => {
+    vi.useFakeTimers()
+    try {
+      mocks.writeContract.mockResolvedValueOnce(PROPOSAL).mockResolvedValueOnce(SECOND_PROPOSAL)
+      mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => ({
+        hash, from: BOB, to: SAFE, input: execTransaction('0xdeadbeef'), blockNumber: 9n, blockHash: BLOCK_HASH, transactionIndex: 0,
+      }))
+      mocks.publicClient.waitForTransactionReceipt.mockImplementation(async ({ hash }: { hash: Hex }) => receiptOf(hash, UNSEEN))
+      const pass = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms) })
+      const flow = await mount()
+      await flow.send()
+      await pass(0)
+      await flow.close()
+      await pass(65 * 60_000)
+
+      const reopened = await mount()
+      await reopened.send()
+      await pass(1_000)
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+      expect(reopened.tx.held).toMatchObject({ label: WRITE_EXIT_LABEL })
+      expect(recoveryRecords()[0].executed).not.toBe(true)
+      await act(async () => { reopened.tx.held!.exit!() })
+      await pass(0)
+      await expect(reopened.send()).resolves.toBe(SECOND_PROPOSAL)
+      expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+    } finally { vi.useRealTimers() }
   })
 
   it.each([
