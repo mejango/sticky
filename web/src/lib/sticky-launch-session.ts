@@ -4,7 +4,8 @@ import { requireSingleHomeChain, validateLaunchCall, type LaunchPlan, type Launc
 
 export const STICKY_LAUNCH_KEY = 'sticky-launch-pending-v1'
 export type LaunchResult = { hash: Hex; projectId: string; token: `0x${string}` }
-export type LaunchSubmission = { hash?: Hex; proposalHash?: Hex; started: boolean }
+/** `exited`: the user took the SDK's exit for this attempt, so no later step asks for mined-failure proof of it. */
+export type LaunchSubmission = { hash?: Hex; proposalHash?: Hex; started: boolean; exited?: boolean }
 export type LaunchPaymentSubmission = LaunchSubmission & { option: RelayrPayment; confirmed?: boolean }
 export type StickyLaunchSession = {
   version: 1
@@ -119,7 +120,9 @@ export type SubmissionCallbacks = {
 }
 
 /** What the SDK says of a launch write that may have reached the wallet. */
-export type LaunchHoldView = { line: string; warning?: string; label: string; exit: boolean }
+export type LaunchHoldView = { line: string; warning?: string; label: string; exit: boolean; checked?: boolean }
+/** The hold's authenticated result: a recovery outcome of its own, never an absence of a hold. */
+export type LaunchSettlement = { settled: { hash: Hex; result: 'success' | 'failed' } }
 
 export type StickyLaunchPorts = {
   store: ReturnType<typeof createStickyLaunchStore>
@@ -134,8 +137,8 @@ export type StickyLaunchPorts = {
   requireRetry: (session: StickyLaunchSession, kind: 'direct' | 'payment', purpose: 'retry' | 'retire') => Promise<void>
   /** The SDK hold of the submission a launch started: its line and exit, and the exit itself (true once released). */
   hold: {
-    look: (session: StickyLaunchSession, kind: 'direct' | 'payment') => Promise<LaunchHoldView | null>
-    exit: (session: StickyLaunchSession, kind: 'direct' | 'payment') => Promise<boolean>
+    look: (session: StickyLaunchSession, kind: 'direct' | 'payment') => Promise<LaunchHoldView | LaunchSettlement | null>
+    exit: (session: StickyLaunchSession, kind: 'direct' | 'payment') => Promise<{ released: boolean } & Partial<LaunchSettlement>>
   }
   verifyDeployment: (session: StickyLaunchSession, target: LaunchTarget, hash: Hex) => Promise<LaunchResult | null>
   publishListing: (plan: LaunchPlan) => Promise<string>
@@ -217,6 +220,14 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
       }
     }
     return current
+  }
+  /** The hold's authenticated hash is the submission's hash from here: the journal's own checks run on that transaction. */
+  function saveSettlement(session: StickyLaunchSession, kind: 'direct' | 'payment', hash: Hex) {
+    const chainId = session.plan.targets[0].chainId
+    const candidates = { ...session.candidates, [chainId]: [...new Set([...session.candidates[chainId], hash])] }
+    return kind === 'direct'
+      ? save({ ...session, direct: { ...session.direct, started: true, hash }, candidates })
+      : save({ ...session, payment: { ...session.payment!, started: true, hash }, candidates })
   }
   function callbacks(kind: 'direct' | 'payment'): SubmissionCallbacks {
     return {
@@ -326,22 +337,32 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
         ? save({ ...session, directAttempts: [...(session.directAttempts ?? []), submitted], direct: undefined })
         : save({ ...session, paymentAttempts: [...(session.paymentAttempts ?? []), session.payment!], payment: undefined })
     }),
-    /** The SDK's line and exit for the submission this launch started, if any. */
+    /** The SDK's line and exit for the submission this launch started, if any. A settlement it reached is saved into the journal. */
     hold: async () => {
       const session = load()
       const kind = session.payment?.started ? 'payment' : session.direct?.started ? 'direct' : null
-      return kind ? ports.hold.look(session, kind) : null
+      if (!kind) return null
+      const seen = await ports.hold.look(session, kind)
+      if (seen && 'settled' in seen) {
+        await exclusively(async () => saveSettlement(load(), kind, seen.settled.hash))
+        return null
+      }
+      return seen
     },
-    /** The user checked their wallet: when the SDK releases the call, the started submission ends (a hashed one stays as an attempt). */
+    /** The user checked their wallet: when the SDK releases the call, the exit is recorded on the attempt, so no later step asks for its failure proof. */
     exitHold: () => exclusively(async () => {
       const session = load()
       requireSingleHomeChain(session.plan.targets)
       const kind = session.payment?.started ? 'payment' : 'direct'
       const submitted = session[kind]
-      if (!submitted?.started || !(await ports.hold.exit(session, kind))) return session
+      if (!submitted?.started) return session
+      const outcome = await ports.hold.exit(session, kind)
+      if (outcome.settled) return saveSettlement(session, kind, outcome.settled.hash)
+      if (!outcome.released) return session
+      const exited = { ...submitted, exited: true }
       return kind === 'direct'
-        ? save({ ...session, directAttempts: submitted.hash ? [...(session.directAttempts ?? []), submitted] : session.directAttempts, direct: undefined })
-        : save({ ...session, paymentAttempts: submitted.hash ? [...(session.paymentAttempts ?? []), session.payment!] : session.paymentAttempts, payment: undefined })
+        ? save({ ...session, directAttempts: submitted.hash ? [...(session.directAttempts ?? []), exited] : session.directAttempts, direct: undefined })
+        : save({ ...session, paymentAttempts: submitted.hash ? [...(session.paymentAttempts ?? []), { ...session.payment!, exited: true }] : session.paymentAttempts, payment: undefined })
     }),
     selfPay: () => exclusively(async () => {
       const session = load()

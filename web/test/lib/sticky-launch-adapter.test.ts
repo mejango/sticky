@@ -334,7 +334,7 @@ describe('Sticky launch browser boundaries', () => {
 
       const view = await fake.ports.hold.look(saved(), kind)
       expect(view).toMatchObject({ exit: true, label: WRITE_EXIT_LABEL })
-      await expect(fake.ports.hold.exit(saved(), kind)).resolves.toBe(true)
+      await expect(fake.ports.hold.exit(saved(), kind)).resolves.toMatchObject({ released: true })
       await send(callbacks())
       expect(wallet()).toHaveBeenCalledTimes(2)
     })
@@ -344,6 +344,27 @@ describe('Sticky launch browser boundaries', () => {
       expect(view).toMatchObject({ exit: true })
       await expect(send(callbacks())).rejects.toMatchObject({ name: 'WriteHeldError' })
       expect(wallet()).not.toHaveBeenCalled()
+    })
+
+    it('reports the settlement of a confirmed launch write as its own outcome', async () => {
+      const call = kind === 'direct' ? { to: DEPLOYER, data: session().plan.targets[0].call.data, value: 2n }
+        : { to: paymentSession().payment.option.target as Address, data: paymentSession().payment.option.calldata as Hex, value: BigInt(paymentSession().payment.option.amount) }
+      const placed = { blockHash: `0x${'ed'.repeat(32)}` as Hex, blockNumber: 10n, transactionIndex: 0 }
+      fake.receipt.mockResolvedValue({ status: 'success', transactionHash: HASH, from: OWNER, to: call.to, logs: [], ...placed })
+      fake.transaction.mockResolvedValue({ hash: HASH, from: OWNER, to: call.to, input: call.data, value: call.value, nonce: 7, ...placed })
+      await send(callbacks())
+      await expect(fake.ports.hold.look(saved(), kind)).resolves.toMatchObject({ settled: { hash: HASH, result: 'success' } })
+    })
+
+    it('needs no mined-failure proof for an attempt the user exited', async () => {
+      const base = kind === 'direct' ? session() : paymentSession()
+      const attempt = { started: true, hash: HASH, exited: true }
+      const exited = { ...base, [kind === 'direct' ? 'directAttempts' : 'paymentAttempts']: [kind === 'direct' ? attempt : { ...attempt, option: (base as ReturnType<typeof paymentSession>).payment.option }] } as StickyLaunchSession
+      fake.failure.mockResolvedValue(false)
+      fake.callFailure.mockResolvedValue(false)
+      await expect(fake.ports.requireRetry(exited, kind, 'retry')).resolves.toBeUndefined()
+      expect(fake.failure).not.toHaveBeenCalled()
+      expect(fake.callFailure).not.toHaveBeenCalled()
     })
 
     it('holds nothing once the wallet explicitly rejected', async () => {

@@ -603,9 +603,8 @@ export function useSafeTx(chainId: number) {
       if (reservationRef.current && reservationRef.current !== value.reservation) return false
       if (shown) reservationRef.current = value.reservation
     }
-    if (!shown && value?.status === 'clear' && heldRef.current && (!local || (!value.settled && !exitingRef.current))) {
+    if (!shown && value?.status === 'clear' && heldRef.current && !local) {
       const settled = value.settled
-      const offered = 'exit' in heldRef.current && heldRef.current.exit
       if (settled && 'hash' in settled) {
         const domain = settledRef.current
         settledRef.current = null
@@ -624,8 +623,8 @@ export function useSafeTx(chainId: number) {
           else { setSettledNote(null); setError(WRITE_HOLD_REVERTED_LINE); setPhase('error') }
           inFlightRef.current = false
         }
-      } else if (offered) {
-        // Cleared with no evidence handed back (another tab's exit): nothing is known of the result, so nothing is claimed.
+      } else {
+        // Cleared with no evidence handed back (another tab's exit, whether or not this tab was showing an exit): nothing is known of the result, so nothing is claimed.
         const registryKey = shownKeyRef.current ?? proposalKeyRef.current
         if (registryKey) retireProposal(registryKey)
         showProposal(null)
@@ -653,12 +652,17 @@ export function useSafeTx(chainId: number) {
       // An emission grants no exit, and revokes none: the gate's last answer for the same record stands until the next read.
       const current = heldRef.current
       if (current && state.status !== 'clear' && !state.exit && current.status === state.status && current.exit && current.record.id === state.record.id) return
+      // A clear with no settlement may be another tab's exit: the authoritative read decides (it carries the settlement if there is one).
+      if (state.status === 'clear' && heldRef.current && !exitingRef.current && publicClient) {
+        void hold.state(publicClient).then(next => { if (holdRef.current === hold && mounted.current) showHeld(next) }).catch(() => undefined)
+        return
+      }
       showHeld(state, true)
     }
     // Anything the controller said before this subscription is read from the saved record.
     try { observe(hold.peek()) } catch { /* An unreadable record shows at the next look. */ }
     return hold.subscribe(observe)
-  }, [hold, showHeld])
+  }, [hold, showHeld, publicClient])
 
   const receipt = useWaitForTransactionReceipt({
     hash: hash ?? undefined,

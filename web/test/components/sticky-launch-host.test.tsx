@@ -124,6 +124,20 @@ describe('global Sticky launch host', () => {
     expect(mocks.run).not.toHaveBeenCalled()
   })
 
+  it('keeps the exit already shown when a contended read comes back unchecked', async () => {
+    const pending = saved({ direct: { started: true } })
+    localStorage.setItem(STICKY_LAUNCH_KEY, JSON.stringify(pending))
+    mocks.load.mockReturnValue(pending)
+    const view = { line: 'Held.', label: 'I checked my wallet. Send again', exit: true }
+    mocks.hold.mockResolvedValueOnce(view).mockResolvedValue({ line: 'Held.', label: view.label, exit: false, checked: false })
+    await mount()
+    await show()
+    await act(async () => { await vi.dynamicImportSettled() })
+    expect(button(view.label)).toBeDefined()
+    await click('Check again')
+    expect(button(view.label)).toBeDefined()
+  })
+
   it('keeps a create click made before the lazy dialog host mounts', async () => {
     openStickyLaunch('testnet')
     await mount()

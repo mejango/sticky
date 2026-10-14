@@ -684,6 +684,25 @@ describe('a Safe proposal awaiting its signers', () => {
     } finally { vi.useRealTimers() }
   })
 
+  it('retires the proposal when another tab releases a hold this tab never showed an exit for', async () => {
+    vi.useFakeTimers()
+    try {
+      signersDecide()
+      mocks.writeContract.mockResolvedValueOnce(PROPOSAL).mockResolvedValueOnce(SECOND_PROPOSAL)
+      const flow = await mount()
+      await flow.send()
+      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      expect(flow.tx).toMatchObject({ phase: 'submitted', held: null })
+      // Another tab took its exit: no record, no settlement remains.
+      for (const key of Object.keys(localStorage).filter(each => each.startsWith('nana-sdk:reviewed-write:'))) localStorage.removeItem(key)
+      await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
+      expect(flow.tx.notice).toBe('This transaction is no longer held here. Check your wallet before sending it again.')
+      await act(async () => flow.tx.reset())
+      await act(async () => { await flow.tx.send(request, reviewedBySafe) })
+      expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+    } finally { vi.useRealTimers() }
+  })
+
   it('follows a proposal the Safe shows executed to its result', async () => {
     const execute = signersDecide()
     let watchEnds!: (end: string) => void

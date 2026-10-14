@@ -221,13 +221,16 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       async look(session, kind) {
         if (!session[kind]) return null
         const { state } = await launchHoldState(session, kind)
-        return state.status === 'clear' ? null : { line: state.line, ...('warning' in state && state.warning ? { warning: state.warning } : {}), label: WRITE_EXIT_LABEL, exit: !!state.exit }
+        if (state.status === 'clear') return state.settled && 'hash' in state.settled ? { settled: state.settled } : null
+        return { line: state.line, ...('warning' in state && state.warning ? { warning: state.warning } : {}), label: WRITE_EXIT_LABEL, exit: !!state.exit, checked: state.checked }
       },
       async exit(session, kind) {
-        if (!session[kind]) return false
+        if (!session[kind]) return { released: false }
         const { handle, client, state } = await launchHoldState(session, kind)
-        if (state.status === 'clear' || !state.exit) return false
-        return (await handle.exit(state, { checkedWallet: true }, client)).released
+        if (state.status === 'clear') return { released: false, ...(state.settled && 'hash' in state.settled ? { settled: state.settled } : {}) }
+        if (!state.exit) return { released: false }
+        const { released, state: after } = await handle.exit(state, { checkedWallet: true }, client)
+        return released ? { released } : { released, ...(after.status === 'clear' && after.settled && 'hash' in after.settled ? { settled: after.settled } : {}) }
       },
     },
     async review(plan, sponsored) {
@@ -428,7 +431,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
         if (session.plan.targets.length !== 1) throw new Error('Only a single-chain wallet creation can be retried directly.')
         const attempts = [...(session.directAttempts ?? []), ...(session.direct?.started ? [session.direct] : [])]
         if (!attempts.length) throw new Error(refused)
-        for (const attempt of attempts) {
+        for (const attempt of attempts.filter(each => !each.exited)) {
           if (!(await verifyFinalizedStickyLaunchFailure(session, target, await minedSubmission(target.chainId, attempt), clientFor(target.chainId)))) throw new Error(refused)
         }
       } else {
@@ -436,7 +439,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
         const attempts = [...(session.paymentAttempts ?? []), ...(session.payment?.started ? [session.payment] : [])]
         if (!attempts.length) throw new Error(refused)
         const directPayments = new Map<string, { payment: ReturnType<typeof relayrPaymentDetails>; hashes: Hex[] }>()
-        for (const attempt of attempts) {
+        for (const attempt of attempts.filter(each => !each.exited)) {
           const details = relayrPaymentDetails(attempt.option, { bundleUuid: quote.bundle_uuid,
             destinationChainIds: chainsOf(session.plan), ...(purpose === 'retire' ? { nowSeconds: 0 } : {}) })
           const submission = await minedSubmission(details.chainId, attempt)

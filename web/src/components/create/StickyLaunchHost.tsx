@@ -87,7 +87,7 @@ export function StickyLaunchHost() {
   const savedLaunchId = session?.plan.id
   useEffect(() => {
     if (!savedLaunchId || corrupt || restoring) return
-    const check = () => { if (!document.hidden) void action(async current => { await current.refresh(); setHeld(await current.hold()) }, true) }
+    const check = () => { if (!document.hidden) void action(async current => { const view = await current.hold(); await current.refresh(); setHeld(previous => view && view.checked === false && previous?.exit ? previous : view) }, true) }
     check()
     const interval = window.setInterval(check, 12_000)
     document.addEventListener('visibilitychange', check)

@@ -34,7 +34,7 @@ function fixture(chainIds = [84532], capability: 'sponsored' | 'self-paid' | 'un
     sendPayment: vi.fn(async (_session, callbacks) => { await callbacks.beforeWrite(); callbacks.submitted(H2) }),
     verifyPayment: vi.fn(async () => true), verifyDeployment: vi.fn(async () => null),
     requireRetry: vi.fn(async () => {}),
-    hold: { look: vi.fn(async () => ({ line: 'Held.', label: 'I checked my wallet, allow another send', exit: true })), exit: vi.fn(async () => true) },
+    hold: { look: vi.fn(async () => ({ line: 'Held.', label: 'I checked my wallet, allow another send', exit: true }) as Awaited<ReturnType<StickyLaunchPorts['hold']['look']>>), exit: vi.fn(async () => ({ released: true }) as Awaited<ReturnType<StickyLaunchPorts['hold']['exit']>>) },
     publishListing: vi.fn(async () => 'listing-identity'), sponsor: vi.fn(async (_session, beforeRequest) => { await beforeRequest() }),
     record: vi.fn(async () => true), changed: vi.fn(),
   }
@@ -317,7 +317,7 @@ describe('durable Sticky launch controller', () => {
     const f = fixture()
     vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); throw new Error('Unknown submission') })
     await expect(f.controller.run()).rejects.toThrow('Unknown submission')
-    vi.mocked(f.ports.hold.exit).mockResolvedValueOnce(false)
+    vi.mocked(f.ports.hold.exit).mockResolvedValueOnce({ released: false })
     await f.controller.exitHold()
     expect(f.store.load()?.direct).toEqual({ started: true })
     await f.controller.exitHold()
@@ -332,7 +332,28 @@ describe('durable Sticky launch controller', () => {
     await f.controller.run()
     await f.controller.exitHold()
     expect(f.store.load()?.direct).toBeUndefined()
-    expect(f.store.load()?.directAttempts).toEqual([{ started: true, hash: H1 }])
+    expect(f.store.load()?.directAttempts).toEqual([{ started: true, hash: H1, exited: true }])
+  })
+
+  it('saves a settlement the hold reached while the page was closed into the journal, and offers no send for it', async () => {
+    const f = fixture()
+    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); throw new Error('reload before the hash was saved') })
+    await expect(f.controller.run()).rejects.toThrow()
+    vi.mocked(f.ports.hold.look).mockResolvedValueOnce({ settled: { hash: H1, result: 'success' } })
+    await expect(f.controller.hold()).resolves.toBeNull()
+    expect(f.store.load()).toMatchObject({ direct: { started: true, hash: H1 }, candidates: { 84532: [H1] } })
+    await f.controller.run()
+    expect(f.ports.sendDirect).toHaveBeenCalledOnce()
+  })
+
+  it('saves a settlement that lands during the exit instead of releasing', async () => {
+    const f = fixture()
+    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); throw new Error('lost') })
+    await expect(f.controller.run()).rejects.toThrow()
+    vi.mocked(f.ports.hold.exit).mockResolvedValueOnce({ released: false, settled: { hash: H2, result: 'success' } })
+    await f.controller.exitHold()
+    expect(f.store.load()).toMatchObject({ direct: { started: true, hash: H2 }, candidates: { 84532: [H2] } })
+    expect(f.store.load()?.directAttempts).toBeUndefined()
   })
 
   it('keeps the original hash locked when finalized failure proof is unavailable or reorged', async () => {
