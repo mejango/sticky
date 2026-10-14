@@ -27,6 +27,8 @@ export type StickyLaunchSession = {
     requested?: boolean
     /** The user checked an uncertain sponsor request and took the exit: it no longer blocks. */
     requestExited?: boolean
+    /** When the sponsor request was saved (ms): discovery that stays empty past the SDK's 30 minutes earns the check. */
+    requestedAt?: number
     selfPaid?: boolean
     error?: string
     recorded: Record<number, Hex>
@@ -181,7 +183,7 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     }
   }
   async function refreshSession(session: StickyLaunchSession) {
-    let current = save({ ...session, results: {} })
+    let current = save({ ...session, results: {}, ...(session.listing.requested && !session.listing.requestedAt ? { listing: { ...session.listing, requestedAt: Date.now() } } : {}) })
     if (current.quote || current.listing.requested || current.direct?.started) {
       try {
         const found = await ports.status(current)
@@ -227,8 +229,11 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
   }
   /** A sponsored deployment was requested and discovery cannot say what happened: no transaction is known, so only the user's check remains. */
 const sponsorUnknown = (session: StickyLaunchSession) => !!session.listing.requested && !session.listing.selfPaid && !launchComplete(session) &&
-  !session.direct?.started && !session.payment?.started && !!session.error &&
+  !session.direct?.started && !session.payment?.started &&
+  (!!session.error || Date.now() - (session.listing.requestedAt ?? Date.now()) >= SPONSOR_WINDOW_MS) &&
   !session.plan.targets.some(target => session.candidates[target.chainId]?.length)
+/** The SDK's allowed window: a request that discovery still cannot find after this long earns the explicit check. */
+const SPONSOR_WINDOW_MS = 30 * 60_000
 const SPONSOR_CHECK_VIEW: LaunchHoldView = { line: CHECK_REQUIRED_LINE, warning: CHECK_REQUIRED_WARNING, label: CHECK_REQUIRED_CREATE_LABEL, exit: true, checkRequired: true }
 
 /** The hold's authenticated hash is the submission's hash from here: the journal's own checks run on that transaction. */
@@ -299,7 +304,7 @@ const SPONSOR_CHECK_VIEW: LaunchHoldView = { line: CHECK_REQUIRED_LINE, warning:
             requireSingleHomeChain(session.plan.targets)
             if (session.listing.requested) throw new Error('This sponsor request was already published.')
             // Save immediately before request: a timeout may still queue the deployment.
-            session = save({ ...session, listing: { ...session.listing, requested: true } })
+            session = save({ ...session, listing: { ...session.listing, requested: true, requestedAt: Date.now() } })
           })
           if (!session.listing.requested) throw new Error('The sponsor request was not durably recorded.')
           return refreshSession(load())

@@ -410,6 +410,35 @@ describe('durable Sticky launch controller', () => {
       await expect(f.controller.hold()).resolves.toBeNull()
     })
 
+    it('offers the check once discovery has been empty for 30 minutes since the request, and not before', async () => {
+      vi.useFakeTimers()
+      try {
+        vi.setSystemTime(new Date('2026-10-14T10:00:00Z'))
+        const f = fixture([84532], 'sponsored')
+        vi.mocked(f.ports.sponsor).mockImplementationOnce(async (_session, beforeRequest) => { await beforeRequest(); throw new Error('timeout') })
+        await expect(f.controller.run()).rejects.toThrow('timeout')
+        await f.controller.refresh()
+        expect(f.store.load()?.listing.requestedAt).toBe(Date.now())
+        await expect(f.controller.hold()).resolves.toBeNull()
+        vi.setSystemTime(Date.now() + 29 * 60_000)
+        await f.controller.refresh()
+        await expect(f.controller.hold()).resolves.toBeNull()
+        vi.setSystemTime(Date.now() + 2 * 60_000)
+        await f.controller.refresh()
+        await expect(f.controller.hold()).resolves.toMatchObject({ exit: true, checkRequired: true })
+        await f.controller.exitHold()
+        expect(f.store.load()?.listing.requested).toBe(false)
+      } finally { vi.useRealTimers() }
+    })
+
+    it('stamps a request saved before the time was kept, so its window starts at the next look', async () => {
+      const f = await uncertain()
+      const { requestedAt: _unused, ...listing } = f.store.load()!.listing
+      f.store.save({ ...f.store.load()!, listing })
+      await f.controller.refresh()
+      expect(f.store.load()?.listing.requestedAt).toBeTypeOf('number')
+    })
+
     it('offers no check while an execution was found or discovery works', async () => {
       const f = await uncertain()
       vi.mocked(f.ports.status).mockResolvedValue({ 84532: [H1] })
