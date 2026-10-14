@@ -240,7 +240,7 @@ export function CollectorFlow({ source, info, onSettled }: {
               const out = await tx.exitStored({ chainId: pending.request.chainId, owner: pending.owner, to: pending.request.address, data: pending.request.data, value: pending.request.value, intent: pending.intent, hash: pending.hash, safeProposal: pending.safeProposal })
               if (out.outcome === 'settled') return settleStored(pending, out.hash, out.result)
               if (out.outcome !== 'released' || pending.settled === 'success') return
-              await endPendingBridgeAttempt(pending.owner, pending.id); setPending(null); await refresh()
+              await endPendingBridgeAttempt(pending.owner, pending.id); setPending(readPendingBridgeWrite(pending.owner)); await refresh()
             })} />
           {pending.safeProposal ? <p className="text-sm text-muted">Complete the Safe proposal, then check its executed transaction hash.</p> : null}
           {pending.hash && !pending.safeProposal ? <ViewTransactionLink chainId={pending.request.chainId} hash={pending.hash} /> : null}

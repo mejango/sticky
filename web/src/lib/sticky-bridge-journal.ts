@@ -34,6 +34,8 @@ export type PendingBridgeWrite = {
   safeProposal?: boolean
   /** The SDK's authenticated result for this write, kept with its hash: a success is followed to its end, never retired as unknown. */
   settled?: 'success' | 'failed'
+  /** The execution that settled a Safe proposal, kept beside the proposal's own hash. */
+  settledHash?: Hex
   recordKey?: string
   metadata?: Hex
   /** The hold key of a write whose calldata regenerates on retry (see `holdIntent`); absent for an exact-call hold. */
@@ -254,8 +256,9 @@ export async function adoptSettlementHash(owner: Address, id: string | undefined
   const stored = readStoredPendingBridgeWrite(owner, storage)
   if (!stored || !id || stored.id !== id || !isHash(hash)) throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
   if (stored.safeProposal || (stored.hash && stored.hash.toLowerCase() === hash.toLowerCase())) {
-    if (!result || stored.settled === result || stored.safeProposal) return stored
-    const learned: PendingBridgeWrite = { ...stored, settled: result }
+    if (!result || stored.settled === result) return stored
+    // A Safe proposal keeps its identity; the authenticated result is recorded beside it before any domain check.
+    const learned: PendingBridgeWrite = { ...stored, settled: result, ...(stored.safeProposal ? { settledHash: hash } : {}) }
     savePendingBridgeWrite(owner, learned, storage)
     return learned
   }
@@ -295,6 +298,8 @@ export async function endPendingBridgeAttempt(owner: Address, id: string | undef
   const stored = readStoredPendingBridgeWrite(owner, storage)
   if (!stored) return
   if (!id || stored.id !== id) throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
+  // Re-read from storage right now: a saved success is followed to its end, never ended as unknown.
+  if (stored.settled === 'success') return
   if (stored.metadata && stored.recordKey) {
     const { metadata } = stored
     await updateBridgeRecords(stored.recordKey, records => records.map(record => record.metadata === metadata ? { ...record, submission: undefined } : record), storage)

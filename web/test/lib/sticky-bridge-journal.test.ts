@@ -5,7 +5,7 @@ import { buildBridgePrepareTx } from '@bananapus/nana-sdk-core/v6'
 import { maxUint256, pad, zeroAddress, type Address, type Hex } from 'viem'
 import { bridgeCalldata, type BridgeMovement, type BridgeRoute } from '@/lib/sticky-bridge'
 import {
-  adoptSettlementHash, assertPendingBridgeWrite, bridgeStorageKey, createPendingBridgeWrite, discardBridgeDraft, readBridgeRecords, readPendingBridgeWrite, reconcileBridgeRecord,
+  adoptSettlementHash, endPendingBridgeAttempt, assertPendingBridgeWrite, bridgeStorageKey, createPendingBridgeWrite, discardBridgeDraft, readBridgeRecords, readPendingBridgeWrite, reconcileBridgeRecord,
   restoreBridgeWrite, saveBridgeRecords, savePendingBridgeWrite, storeBridgeWrite, updateBridgeRecords, withBridgeLock,
   readWatchedBridgeRoutes, saveWatchedBridgeRoute, savePendingBridgeSubmission, retryPendingBridgeSubmission,
   type BridgeRecord, type PendingBridgeWrite,
@@ -152,6 +152,31 @@ describe('a settlement keeps its authenticated result in the journal', () => {
     savePendingBridgeWrite(owner, { ...bare, hash: H(91) }, storage)
     await adoptSettlementHash(owner, bare.id, H(91), storage, 'success')
     expect(readPendingBridgeWrite(owner, storage)).toMatchObject({ hash: H(91), settled: 'success' })
+  })
+})
+
+describe('a Safe proposal keeps its authenticated success', () => {
+  const store = () => {
+    let raw: string | null = null
+    return { getItem: () => raw, setItem: (_key: string, value: string) => { raw = value } }
+  }
+
+  it('records the result next to the proposal identity, and the attempt can no longer be ended', async () => {
+    const storage = store()
+    const proposal = { ...createPendingBridgeWrite({ owner, request: storeBridgeWrite(request) }), hash: H(90), safeProposal: true }
+    savePendingBridgeWrite(owner, proposal, storage)
+    const adopted = await adoptSettlementHash(owner, proposal.id, H(91), storage, 'success')
+    expect(adopted).toMatchObject({ hash: H(90), safeProposal: true, settled: 'success', settledHash: H(91) })
+    await endPendingBridgeAttempt(owner, proposal.id, storage)
+    expect(readPendingBridgeWrite(owner, storage)).toMatchObject({ settled: 'success' })
+  })
+
+  it('still ends an attempt with no saved success', async () => {
+    const storage = store()
+    const pending = createPendingBridgeWrite({ owner, request: storeBridgeWrite(request) })
+    savePendingBridgeWrite(owner, pending, storage)
+    await endPendingBridgeAttempt(owner, pending.id, storage)
+    expect(readPendingBridgeWrite(owner, storage)).toBeNull()
   })
 })
 

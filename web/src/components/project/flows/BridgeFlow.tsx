@@ -367,7 +367,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
               if (out.outcome === 'settled') return settleStored(pending, out.hash, out.result)
               if (out.outcome !== 'released' || pending.settled === 'success') return
               // Abandoned: the reservation and the submission marker go; the transfer's metadata and steps stay.
-              await endPendingBridgeAttempt(pending.owner, pending.id); setPending(null); await refresh()
+              await endPendingBridgeAttempt(pending.owner, pending.id); setPending(readPendingBridgeWrite(pending.owner)); await refresh()
             })} />
           {pending.safeProposal ? <p className="text-sm text-muted">Open the Safe queue and finish its approvals. Use the executed transaction hash below when it is ready.</p> : null}
           <label htmlFor={`${id}-hash`} className={FIELD_LABEL}>Executed transaction hash</label>

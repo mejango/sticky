@@ -439,6 +439,25 @@ describe('durable Sticky launch controller', () => {
       expect(f.store.load()?.listing.requestedAt).toBeTypeOf('number')
     })
 
+    it('offers the check past the window even with a candidate that cannot be authenticated, and not before', async () => {
+      vi.useFakeTimers()
+      try {
+        vi.setSystemTime(new Date('2026-10-14T10:00:00Z'))
+        const f = fixture([84532], 'sponsored')
+        vi.mocked(f.ports.sponsor).mockImplementationOnce(async (_session, beforeRequest) => { await beforeRequest(); throw new Error('timeout') })
+        vi.mocked(f.ports.status).mockResolvedValue({ 84532: [H1] })
+        vi.mocked(f.ports.verifyDeployment).mockRejectedValue(new Error('cannot authenticate'))
+        await expect(f.controller.run()).rejects.toThrow('timeout')
+        await f.controller.refresh()
+        await expect(f.controller.hold()).resolves.toBeNull()
+        vi.setSystemTime(Date.now() + 31 * 60_000)
+        await f.controller.refresh()
+        await expect(f.controller.hold()).resolves.toMatchObject({ checkRequired: true })
+        await f.controller.exitHold()
+        expect(f.store.load()?.listing.requested).toBe(false)
+      } finally { vi.useRealTimers() }
+    })
+
     it('offers no check while an execution was found or discovery works', async () => {
       const f = await uncertain()
       vi.mocked(f.ports.status).mockResolvedValue({ 84532: [H1] })

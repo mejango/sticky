@@ -228,10 +228,14 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     return current
   }
   /** A sponsored deployment was requested and discovery cannot say what happened: no transaction is known, so only the user's check remains. */
-const sponsorUnknown = (session: StickyLaunchSession) => !!session.listing.requested && !session.listing.selfPaid && !launchComplete(session) &&
-  !session.direct?.started && !session.payment?.started &&
-  (!!session.error || Date.now() - (session.listing.requestedAt ?? Date.now()) >= SPONSOR_WINDOW_MS) &&
-  !session.plan.targets.some(target => session.candidates[target.chainId]?.length)
+const sponsorUnknown = (session: StickyLaunchSession) => {
+  if (!session.listing.requested || session.listing.selfPaid || launchComplete(session) || session.direct?.started || session.payment?.started) return false
+  // A candidate hash is not an authenticated execution (that would be a verified result, which completes the launch):
+  // within the window it keeps waiting, past it the check is offered like for an empty discovery.
+  const known = session.plan.targets.some(target => session.candidates[target.chainId]?.length)
+  const elapsed = Date.now() - (session.listing.requestedAt ?? Date.now()) >= SPONSOR_WINDOW_MS
+  return elapsed || (!!session.error && !known)
+}
 /** The SDK's allowed window: a request that discovery still cannot find after this long earns the explicit check. */
 const SPONSOR_WINDOW_MS = 30 * 60_000
 const SPONSOR_CHECK_VIEW: LaunchHoldView = { line: CHECK_REQUIRED_LINE, warning: CHECK_REQUIRED_WARNING, label: CHECK_REQUIRED_CREATE_LABEL, exit: true, checkRequired: true }
@@ -382,6 +386,9 @@ const SPONSOR_CHECK_VIEW: LaunchHoldView = { line: CHECK_REQUIRED_LINE, warning:
       const outcome = await ports.hold.exit(session, kind).catch(() => ({ released: true }) as { released: boolean } & Partial<LaunchSettlement>)
       if (outcome.settled) return saveSettlement(session, kind, outcome.settled)
       if (!outcome.released) return session
+      // Re-read right before retiring: a success saved meanwhile is never retired.
+      const latest = load()
+      if (latest[kind]?.settled === 'success') return latest
       const exited = { ...submitted, exited: true }
       return kind === 'direct'
         ? save({ ...session, directAttempts: submitted.hash ? [...(session.directAttempts ?? []), exited] : session.directAttempts, direct: undefined })
