@@ -506,6 +506,42 @@ describe('durable Sticky launch controller', () => {
     expect(g.store.load()?.direct).toMatchObject({ settled: 'success' })
   })
 
+  it('migrates authenticated results of an older journal into proven before a refresh clears them', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-10-14T10:00:00Z'))
+      const f = fixture([84532], 'sponsored')
+      const result = { hash: H1, projectId: '7', token: address('2') }
+      f.store.save({ ...f.store.load()!, mode: 'center', listing: { ...f.store.load()!.listing, requested: true, requestedAt: Date.now() }, candidates: { 84532: [H1] }, results: { 84532: result } })
+      vi.mocked(f.ports.verifyDeployment).mockRejectedValue(new Error('rpc down'))
+      const after = await f.controller.refresh()
+      expect(after.results).toEqual({})
+      expect(f.store.load()?.proven).toEqual({ 84532: result })
+      vi.setSystemTime(Date.now() + 31 * 60_000)
+      await f.controller.refresh()
+      await expect(f.controller.hold()).resolves.toBeNull()
+      await f.controller.exitHold()
+      expect(f.store.load()?.listing.requested).toBe(true)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('saves a hold settlement under the shared lock, reloading the journal inside it', async () => {
+    const f = fixture()
+    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); throw new Error('lost') })
+    await expect(f.controller.run()).rejects.toThrow()
+    vi.mocked(f.ports.hold.look).mockResolvedValueOnce({ settled: { hash: H1, result: 'success' } })
+    const locked = vi.fn()
+    const lock = async <T,>(run: () => Promise<T>): Promise<T> => {
+      locked()
+      // Another writer changes the journal while the lock is awaited: the settlement is saved over that, not over a stale copy.
+      f.store.save({ ...f.store.load()!, error: 'newer snapshot' })
+      return run()
+    }
+    await f.controller.hold(lock)
+    expect(locked).toHaveBeenCalledOnce()
+    expect(f.store.load()).toMatchObject({ error: 'newer snapshot', direct: { hash: H1, settled: 'success' } })
+  })
+
   it('keeps the original hash locked when finalized failure proof is unavailable or reorged', async () => {
     const f = fixture()
     await f.controller.run()

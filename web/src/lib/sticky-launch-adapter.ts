@@ -526,8 +526,8 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
     list: () => exclusive(controller.list),
     selfPay: () => exclusive(controller.selfPay),
     retry: () => exclusive(controller.retry),
-    // Reading the hold takes no lock (a look); the exit takes the launch lock like every change.
-    hold: controller.hold,
+    // Reading the hold is a look; saving a settlement it found takes the shared launch lock, like every change.
+    hold: () => controller.hold(exclusive),
     exitHold: () => exclusive(controller.exitHold),
     forceExit: () => exclusive(controller.forceExit),
     addHash: (...args: Parameters<typeof controller.addHash>) => exclusive(() => controller.addHash(...args)),

@@ -185,7 +185,8 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     }
   }
   async function refreshSession(session: StickyLaunchSession) {
-    let current = save({ ...session, results: {}, ...(session.listing.requested && !session.listing.requestedAt ? { listing: { ...session.listing, requestedAt: Date.now() } } : {}) })
+    // Authenticated results of an older journal join `proven` before the display results are cleared.
+    let current = save({ ...session, results: {}, proven: { ...session.results, ...session.proven }, ...(session.listing.requested && !session.listing.requestedAt ? { listing: { ...session.listing, requestedAt: Date.now() } } : {}) })
     if (current.quote || current.listing.requested || current.direct?.started) {
       try {
         const found = await ports.status(current)
@@ -208,7 +209,12 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
         } catch { /* A bad candidate cannot prevent another canonical receipt from proving this chain. */ }
       }
     }
-    current = save({ ...current, results, proven: { ...current.proven, ...results } })
+    // Merge, never overwrite: a settlement or proof another writer saved while this refresh awaited is kept.
+    const latest = ports.store.load()
+    const kept = <T extends LaunchSubmission>(mine: T | undefined, theirs: T | undefined): T | undefined =>
+      mine && theirs?.settled && !mine.settled && theirs.hash ? { ...mine, hash: theirs.hash, settled: theirs.settled } : mine
+    current = save({ ...current, results, proven: { ...latest?.proven, ...current.proven, ...results },
+      direct: kept(current.direct, latest?.direct), payment: kept(current.payment, latest?.payment) })
     if (current.payment?.hash) {
       let confirmed = false
       try { confirmed = await ports.verifyPayment(current) } catch { /* Unknown funding keeps its exact intent. */ }
@@ -361,7 +367,7 @@ const SPONSOR_CHECK_VIEW: LaunchHoldView = { line: CHECK_REQUIRED_LINE, warning:
         : save({ ...session, paymentAttempts: [...(session.paymentAttempts ?? []), session.payment!], payment: undefined })
     }),
     /** The SDK's line and exit for the submission this launch started, if any. A settlement it reached is saved into the journal. */
-    hold: async () => {
+    hold: async (lock: <T>(run: () => Promise<T>) => Promise<T> = run => run()) => {
       const session = load()
       const kind = session.payment?.started ? 'payment' : session.direct?.started ? 'direct' : null
       if (!kind) return sponsorUnknown(session) ? SPONSOR_CHECK_VIEW : null
@@ -370,7 +376,7 @@ const SPONSOR_CHECK_VIEW: LaunchHoldView = { line: CHECK_REQUIRED_LINE, warning:
       // A hold that cannot be read is check-required: never a missing view, never permission to send.
       const seen = await ports.hold.look(session, kind).catch((): LaunchHoldView => ({ line: CHECK_REQUIRED_LINE, warning: CHECK_REQUIRED_WARNING, label: CHECK_REQUIRED_CREATE_LABEL, exit: true, checkRequired: true }))
       if (seen && 'settled' in seen) {
-        await exclusively(async () => saveSettlement(load(), kind, seen.settled))
+        await lock(() => exclusively(async () => saveSettlement(load(), kind, seen.settled)))
         return null
       }
       return seen
