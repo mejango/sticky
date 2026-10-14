@@ -9,6 +9,7 @@ import type { TxRequest, TxSendOptions } from '@/hooks/useSafeTx'
 import { bridgeCalldata } from '@/lib/sticky-bridge'
 import { createPendingBridgeWrite, readPendingBridgeWrite, readWatchedBridgeRoutes, savePendingBridgeWrite, storeBridgeWrite } from '@/lib/sticky-bridge-journal'
 import type { CollectorSource } from '@/lib/sticky-collector'
+import { WRITE_EXIT_LABEL } from '@bananapus/nana-sdk-core/review'
 import { WalletAuthContext } from '@/providers/WalletAuthContext'
 import {
   COLLECTOR_SOURCE as SOURCE, COLLECTOR_OWNER as OWNER, COLLECTOR_ROUTE as ROUTE, COLLECTOR_HASH as HASH,
@@ -248,6 +249,39 @@ describe('permissionless collector delivery', () => {
     expect(readPendingBridgeWrite(OWNER)).toEqual(held)
   })
 
+  it('offers the SDK exit for a hashless delivery reservation after reload, clears the reservation, keeps the watched route, and allows exactly one more send', async () => {
+    const normalSend = mocks.tx.send as (request: TxRequest, options: TxSendOptions) => Promise<string | null>
+    mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => { await options.durableRecovery?.reserve(); return null })
+    await review(); await press('Confirm & deliver')
+    const route = readWatchedBridgeRoutes(10, INFO.stToken, 4000n)
+    expect(route).toHaveLength(1)
+    await act(async () => root.unmount()); root = createRoot(host)
+    await render()
+    expect(readPendingBridgeWrite(OWNER)?.hash).toBeUndefined()
+    expect(button('Review delivery').disabled).toBe(true)
+
+    // Nothing can send while the reservation stands; the exit is the way out.
+    mocks.tx.exitStored = vi.fn(async () => true)
+    await press(WRITE_EXIT_LABEL)
+    expect(mocks.tx.exitStored).toHaveBeenCalledOnce()
+    expect(readPendingBridgeWrite(OWNER)).toBeNull()
+    expect(readWatchedBridgeRoutes(10, INFO.stToken, 4000n)).toEqual(route)
+
+    mocks.tx.send = vi.fn(normalSend)
+    await review()
+    await press('Confirm & deliver')
+    expect(mocks.tx.send).toHaveBeenCalledOnce()
+  })
+  it('keeps the delivery reservation when the SDK refuses the exit', async () => {
+    mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => { await options.durableRecovery?.reserve(); return null })
+    await review(); await press('Confirm & deliver')
+    await act(async () => root.unmount()); root = createRoot(host)
+    await render()
+    mocks.tx.exitStored = vi.fn(async () => false)
+    await press(WRITE_EXIT_LABEL)
+    expect(readPendingBridgeWrite(OWNER)).not.toBeNull()
+    expect(button('Review delivery').disabled).toBe(true)
+  })
   it('shows recovery even when allocation reads fail', async () => {
     savePendingBridgeWrite(OWNER, { owner: OWNER, request: storeBridgeWrite(requestOf()), hash: HASH })
     mocks.read.mockRejectedValue(new Error('Queue RPC unavailable'))
