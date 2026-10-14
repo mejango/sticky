@@ -9,6 +9,7 @@ import type { TxRequest, TxSendOptions } from '@/hooks/useSafeTx'
 import { bridgeCalldata } from '@/lib/sticky-bridge'
 import { createPendingBridgeWrite, readPendingBridgeWrite, readWatchedBridgeRoutes, savePendingBridgeWrite, storeBridgeWrite } from '@/lib/sticky-bridge-journal'
 import type { CollectorSource } from '@/lib/sticky-collector'
+import { WRITE_EXIT_LABEL } from '@bananapus/nana-sdk-core/review'
 import { WalletAuthContext } from '@/providers/WalletAuthContext'
 import {
   COLLECTOR_SOURCE as SOURCE, COLLECTOR_OWNER as OWNER, COLLECTOR_ROUTE as ROUTE, COLLECTOR_HASH as HASH,
@@ -222,7 +223,8 @@ describe('permissionless collector delivery', () => {
     savePendingBridgeWrite(OWNER, held)
     mocks.verifyWrite.mockRejectedValueOnce(new Error('Failure is not finalized'))
     await render(); await press('Check transaction')
-    expect(readPendingBridgeWrite(OWNER)).toEqual(held)
+    // A legacy snapshot keeps every field and gains only a durable attempt id.
+    expect(readPendingBridgeWrite(OWNER)).toEqual({ ...held, id: expect.any(String) })
     expect(button('Review delivery').disabled).toBe(true)
     mocks.verifyWrite.mockResolvedValue({ success: false, receipt: { blockNumber: 100n } })
     await press('Check transaction')
@@ -245,9 +247,146 @@ describe('permissionless collector delivery', () => {
     savePendingBridgeWrite(OWNER, held); await render()
     expect(button('Check transaction')).toBeUndefined()
     expect(text()).toContain('original bridge or allocation panel')
-    expect(readPendingBridgeWrite(OWNER)).toEqual(held)
+    expect(readPendingBridgeWrite(OWNER)).toEqual({ ...held, id: expect.any(String) })
   })
 
+  it('offers the SDK exit for a hashless delivery reservation after reload, clears the reservation, keeps the watched route, and allows exactly one more send', async () => {
+    const normalSend = mocks.tx.send as (request: TxRequest, options: TxSendOptions) => Promise<string | null>
+    mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => { await options.durableRecovery?.reserve(); return null })
+    await review(); await press('Confirm & deliver')
+    const route = readWatchedBridgeRoutes(10, INFO.stToken, 4000n)
+    expect(route).toHaveLength(1)
+    await act(async () => root.unmount()); root = createRoot(host)
+    await render()
+    expect(readPendingBridgeWrite(OWNER)?.hash).toBeUndefined()
+    expect(button('Review delivery').disabled).toBe(true)
+
+    // Nothing can send while the reservation stands; the exit is the way out.
+    mocks.tx.exitStored = vi.fn(async () => ({ outcome: 'released' as const }))
+    await press(WRITE_EXIT_LABEL)
+    expect(mocks.tx.exitStored).toHaveBeenCalledOnce()
+    expect(mocks.tx.exitStored).toHaveBeenCalledWith(expect.objectContaining({ intent: expect.stringMatching(/^intent:collector-delivery:/) }))
+    expect(readPendingBridgeWrite(OWNER)).toBeNull()
+    expect(readWatchedBridgeRoutes(10, INFO.stToken, 4000n)).toEqual(route)
+
+    mocks.tx.send = vi.fn(normalSend)
+    await review()
+    await press('Confirm & deliver')
+    expect(mocks.tx.send).toHaveBeenCalledOnce()
+  })
+  async function hashedThenDropped() {
+    const normalSend = mocks.tx.send as (request: TxRequest, options: TxSendOptions) => Promise<string | null>
+    let options!: TxSendOptions
+    mocks.tx.send = vi.fn(async (_request: TxRequest, given: TxSendOptions) => {
+      options = given
+      await given.durableRecovery?.reserve(); await given.durableRecovery?.submitted(HASH, false)
+      return null
+    })
+    await review(); await press('Confirm & deliver')
+    return { normalSend, released: () => options.durableRecovery!.released!() }
+  }
+  it('clears the reservation of a delivery whose hash was saved when the SDK exit releases it, and allows exactly one more send', async () => {
+    const { normalSend, released } = await hashedThenDropped()
+    const route = readWatchedBridgeRoutes(10, INFO.stToken, 4000n)
+    expect(readPendingBridgeWrite(OWNER)?.hash).toBe(HASH)
+    await act(async () => { await released() })
+    expect(readPendingBridgeWrite(OWNER)).toBeNull()
+    expect(readWatchedBridgeRoutes(10, INFO.stToken, 4000n)).toEqual(route)
+    mocks.tx.send = vi.fn(normalSend)
+    await press('Cancel'); await review(); await press('Confirm & deliver')
+    expect(mocks.tx.send).toHaveBeenCalledOnce()
+  })
+  it('after a reload, shows the exit for a dropped hashed delivery the SDK offers one for, and clears it keeping the route', async () => {
+    await hashedThenDropped(); await press('Cancel')
+    const route = readWatchedBridgeRoutes(10, INFO.stToken, 4000n)
+    await act(async () => root.unmount()); root = createRoot(host)
+    mocks.tx.storedHold = vi.fn(async () => ({ exit: true, line: 'Held.', warning: 'Careful.' }))
+    mocks.tx.exitStored = vi.fn(async () => ({ outcome: 'released' as const }))
+    await render()
+    expect(readPendingBridgeWrite(OWNER)?.hash).toBe(HASH)
+    await press(WRITE_EXIT_LABEL)
+    expect(readPendingBridgeWrite(OWNER)).toBeNull()
+    expect(readWatchedBridgeRoutes(10, INFO.stToken, 4000n)).toEqual(route)
+  })
+  it('after a reload, shows no exit for a hash the chain still knows', async () => {
+    await hashedThenDropped(); await press('Cancel')
+    await act(async () => root.unmount()); root = createRoot(host)
+    mocks.tx.storedHold = vi.fn(async () => ({ exit: false, line: 'Still pending in your wallet. Speed it up or cancel it there.' }))
+    await render()
+    expect(text()).toContain('Still pending in your wallet')
+    expect([...document.querySelectorAll('button')].some(node => node.textContent === WRITE_EXIT_LABEL)).toBe(false)
+    expect(readPendingBridgeWrite(OWNER)).not.toBeNull()
+  })
+  it('records a settlement the SDK reports after a failed hash save and a reload, and sends nothing again', async () => {
+    await review()
+    const save = failReturnedHashSave()
+    await press('Confirm & deliver')
+    save.mockRestore()
+    const sent = (mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls.length
+    await act(async () => root.unmount()); root = createRoot(host)
+    mocks.tx.storedHold = vi.fn(async () => ({ settled: { result: 'success' as const, hash: HASH } }))
+    await render()
+    await vi.waitFor(() => expect(readPendingBridgeWrite(OWNER)).toBeNull())
+    expect(mocks.verifyWrite).toHaveBeenCalledWith({ chainId: 1 }, OWNER, HASH, expect.anything(), { hash: HASH, safeProposal: false })
+    expect((mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls.length).toBe(sent)
+  })
+  it('adopts the sped-up delivery the SDK authenticated in place of the saved hash, and sends nothing again', async () => {
+    const SPED_UP = H(91)
+    await hashedThenDropped(); await press('Cancel')
+    const sent = (mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls.length
+    await act(async () => root.unmount()); root = createRoot(host)
+    mocks.tx.storedHold = vi.fn(async () => ({ settled: { result: 'success' as const, hash: SPED_UP } }))
+    await render()
+    await vi.waitFor(() => expect(readPendingBridgeWrite(OWNER)).toBeNull())
+    expect(mocks.verifyWrite).toHaveBeenCalledWith({ chainId: 1 }, OWNER, SPED_UP, expect.anything(), { hash: SPED_UP, safeProposal: false })
+    expect((mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls.length).toBe(sent)
+  })
+  // Switch on with SDK 2.36's hold.adopt, as in the bridge flow: a hashed legacy delivery with no SDK record gets the warned exit.
+  it('adopts a hashed legacy delivery reservation with its hash', async () => {
+    const hashed = { ...createPendingBridgeWrite({ owner: OWNER, request: storeBridgeWrite(requestOf()), intent: 'intent:collector-delivery:abc' }), hash: HASH, safeProposal: false }
+    savePendingBridgeWrite(OWNER, hashed)
+    mocks.tx.adoptStored = vi.fn(async () => undefined)
+    mocks.tx.storedHold = vi.fn(async () => ({ exit: false, line: 'Still pending.' }))
+    await render()
+    await vi.waitFor(() => expect(mocks.tx.adoptStored).toHaveBeenCalledOnce())
+    expect(mocks.tx.adoptStored).toHaveBeenCalledWith(expect.objectContaining({ owner: OWNER, hash: HASH, safeProposal: false }))
+  })
+  it('keeps "all" when the queue grew after Max was pressed', async () => {
+    await render()
+    await press('Max')
+    mocks.read.mockResolvedValue({ pending: 12n * UNIT, meta: ROUTE.sourceMeta })
+    mocks.prepare.mockImplementation(async (source: CollectorSource, _owner: unknown, amount: bigint) => ({ source, amount, pending: 12n * UNIT, meta: ROUTE.sourceMeta, verified: source.verified, request: requestOf(source, amount) }))
+    await press('Review delivery')
+    await press('Confirm & deliver')
+    const sent = (mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls[0] as [{ max?: boolean }]
+    expect(sent[0].max).toBe(true)
+  })
+  it('sends a delivery chosen with Max as "all", and a typed amount as itself', async () => {
+    await render()
+    await press('Max')
+    await press('Review delivery')
+    await press('Confirm & deliver')
+    const sent = (mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls[0] as [{ max?: boolean }]
+    expect(sent[0].max).toBe(true)
+
+    ;(mocks.tx.send as ReturnType<typeof vi.fn>).mockClear()
+    await act(async () => root.unmount()); root = createRoot(host)
+    localStorage.clear()
+    await review()
+    await press('Confirm & deliver')
+    const typed = (mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls[0] as [{ max?: boolean }]
+    expect(typed[0].max).toBeUndefined()
+  })
+  it('keeps the delivery reservation when the SDK refuses the exit', async () => {
+    mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => { await options.durableRecovery?.reserve(); return null })
+    await review(); await press('Confirm & deliver')
+    await act(async () => root.unmount()); root = createRoot(host)
+    await render()
+    mocks.tx.exitStored = vi.fn(async () => ({ outcome: 'held' as const }))
+    await press(WRITE_EXIT_LABEL)
+    expect(readPendingBridgeWrite(OWNER)).not.toBeNull()
+    expect(button('Review delivery').disabled).toBe(true)
+  })
   it('shows recovery even when allocation reads fail', async () => {
     savePendingBridgeWrite(OWNER, { owner: OWNER, request: storeBridgeWrite(requestOf()), hash: HASH })
     mocks.read.mockRejectedValue(new Error('Queue RPC unavailable'))

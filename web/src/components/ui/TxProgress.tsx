@@ -1,4 +1,5 @@
-import { txPhaseLabel, type TxPhase } from '@/hooks/useSafeTx'
+import type { ReactNode } from 'react'
+import { txPhaseLabel, type TxPhase, type useSafeTx } from '@/hooks/useSafeTx'
 import { explorerTxUrl } from '@/lib/chainDisplay'
 
 /** A flow's confirm button, from the engine's phase: what the engine is doing while it sends a step (the check before
@@ -10,7 +11,22 @@ export function confirmAction(phase: TxPhase, idle: string): string {
 /** The line a flow's confirm shows while the engine sends a step, from the engine's phase: the check before the wallet
  * is asked, the wallet's own prompt, then the wait for the chain, or a Safe's guidance while it waits on a proposal.
  * Null while nothing is being sent. */
-export function sendingStatus({ phase, safeNonceGuidance, notice }: { phase: TxPhase; safeNonceGuidance?: string | null; notice?: string | null }): string | null {
+export function sendingStatus({ phase, safeNonceGuidance, notice, held, holdNotice }: { phase: TxPhase; safeNonceGuidance?: string | null; notice?: string | null; held?: ReturnType<typeof useSafeTx>['held']; holdNotice?: string | null }): ReactNode {
+  const withNotice = (line: ReactNode): ReactNode => (holdNotice && !held?.notice && line ? <>{line}<span className="mt-1 block">{holdNotice}</span></> : line)
+  return withNotice(sendingLine({ phase, safeNonceGuidance, notice, held }))
+}
+
+function sendingLine({ phase, safeNonceGuidance, notice, held }: { phase: TxPhase; safeNonceGuidance?: string | null; notice?: string | null; held?: ReturnType<typeof useSafeTx>['held'] }): ReactNode {
+  if (held) {
+    // A held write ends only on proof or when the person says they checked their wallet.
+    return (
+      <>
+        <span className="block">{held.warning ? `${held.line} ${held.warning}` : held.line}</span>
+        {held.notice ? <span className="mt-1 block">{held.notice}</span> : null}
+        {held.exit ? <button type="button" className="btn-secondary mt-2 min-h-[44px] px-4 text-sm" onClick={held.exit}>{held.label}</button> : null}
+      </>
+    )
+  }
   if (phase === 'submitted') return notice ?? null
   const label = txPhaseLabel(phase, { idle: '', pending: 'Waiting for confirmation…' })
   return label ? (safeNonceGuidance ?? label) : null

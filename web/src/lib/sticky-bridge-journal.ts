@@ -4,7 +4,7 @@ import type { TxRequest } from '@/hooks/useSafeTx'
 import { environmentForChainIds, SUPPORTED_CHAINS } from '@/lib/chains'
 import { bridgeCalldata, bridgeRouteId, type BridgeMovement, type BridgeRoute, type createStickyBridge } from '@/lib/sticky-bridge'
 
-export type StoredBridgeWrite = { chainId: number; address: Address; data: Hex; value: string; label: string }
+export type StoredBridgeWrite = { chainId: number; address: Address; data: Hex; value: string; label: string; moving?: boolean }
 export type BridgeRecord = {
   metadata: Hex
   owner: Address
@@ -34,6 +34,10 @@ export type PendingBridgeWrite = {
   safeProposal?: boolean
   recordKey?: string
   metadata?: Hex
+  /** The hold key of a write whose calldata regenerates on retry (see `holdIntent`); absent for an exact-call hold. */
+  intent?: string
+  /** When the attempt was reserved (ms), so an adoption counts its unseen time from the send, not from the adoption. Absent on records older than this field. */
+  at?: number
 }
 const PREFIX = 'sticky:bridge:v3:'
 export const bridgeStorageKey = (chainId: number, stickyToken: Address, groupId: bigint, owner: Address) =>
@@ -100,12 +104,12 @@ export function saveWatchedBridgeRoute(homeChainId: number, stickyToken: Address
 }
 
 export function storeBridgeWrite(request: TxRequest): StoredBridgeWrite {
-  return { chainId: request.chainId, address: request.address, data: bridgeCalldata(request), value: String(request.value ?? 0n), label: request.label ?? request.functionName }
+  return { chainId: request.chainId, address: request.address, data: bridgeCalldata(request), value: String(request.value ?? 0n), label: request.label ?? request.functionName, ...(request.moving ? { moving: true } : {}) }
 }
 export function restoreBridgeWrite(request: StoredBridgeWrite): TxRequest {
   const abi = [...jbSuckerV6Abi, ...parseAbi(['function approve(address spender, uint256 amount)'])]
   const decoded = decodeFunctionData({ abi, data: request.data })
-  return { chainId: request.chainId, address: request.address, abi, functionName: decoded.functionName, args: decoded.args ?? [], value: BigInt(request.value), label: request.label }
+  return { chainId: request.chainId, address: request.address, abi, functionName: decoded.functionName, args: decoded.args ?? [], value: BigInt(request.value), label: request.label, ...(request.moving ? { moving: true } : {}) }
 }
 function validWrite(write: StoredBridgeWrite): boolean {
   return !!write && Number.isSafeInteger(write.chainId) && isAddress(write.address, { strict: false }) && /^0x(?:[0-9a-f]{2})+$/i.test(write.data) && /^\d+$/.test(write.value) && typeof write.label === 'string'
@@ -190,14 +194,14 @@ const pendingKey = (owner: Address) => `sticky:bridge:pending:v1:${owner.toLower
 // A failed hash commit survives component remounts only while its exact durable reservation stands.
 const retainedSubmissions = new WeakMap<BridgeStorage, Map<string, { original: string; submitted: string }>>()
 export function createPendingBridgeWrite(value: Omit<PendingBridgeWrite, 'id' | 'hash' | 'safeProposal'>): PendingBridgeWrite {
-  return { ...value, id: crypto.randomUUID() }
+  return { ...value, id: crypto.randomUUID(), at: Date.now() }
 }
 function readStoredPendingBridgeWrite(owner: Address, storage: BridgeStorage): PendingBridgeWrite | null {
   const raw = storage.getItem(pendingKey(owner))
   if (raw === null || raw === 'null') return null
   let value: PendingBridgeWrite
   try { value = JSON.parse(raw) } catch { throw new Error(FAILED) }
-  if (!value || (value.id !== undefined && (typeof value.id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.id))) || value.owner?.toLowerCase() !== owner.toLowerCase() || !validWrite(value.request) || (value.hash !== undefined && !isHash(value.hash)) || (value.metadata !== undefined && !isHash(value.metadata)) || (value.safeProposal !== undefined && typeof value.safeProposal !== 'boolean') || ((value.recordKey === undefined) !== (value.metadata === undefined)) || (value.recordKey !== undefined && typeof value.recordKey !== 'string')) throw new Error(FAILED)
+  if (!value || (value.id !== undefined && (typeof value.id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.id))) || value.owner?.toLowerCase() !== owner.toLowerCase() || !validWrite(value.request) || (value.hash !== undefined && !isHash(value.hash)) || (value.metadata !== undefined && !isHash(value.metadata)) || (value.safeProposal !== undefined && typeof value.safeProposal !== 'boolean') || ((value.recordKey === undefined) !== (value.metadata === undefined)) || (value.recordKey !== undefined && typeof value.recordKey !== 'string') || (value.intent !== undefined && typeof value.intent !== 'string') || (value.at !== undefined && !Number.isFinite(value.at))) throw new Error(FAILED)
   return value
 }
 export function readPendingBridgeWrite(owner: Address, storage: BridgeStorage = localStorage): PendingBridgeWrite | null {
@@ -237,6 +241,58 @@ export function savePendingBridgeSubmission(expected: PendingBridgeWrite, hash: 
   remember()
   savePendingBridgeWrite(expected.owner, submitted, storage)
   return submitted
+}
+/**
+ * The SDK authenticated `hash` as the transaction that settled this attempt (a speed-up replaces the saved one).
+ * Under the same reservation, save it as the submission reference and move the transfer's marker to it, so the
+ * normal recovery verifies the settled transaction. Only the SDK's hash is ever passed here; a Safe proposal keeps
+ * its proposal hash.
+ */
+export async function adoptSettlementHash(owner: Address, id: string | undefined, hash: Hex, storage: BridgeStorage = localStorage): Promise<PendingBridgeWrite> {
+  const stored = readStoredPendingBridgeWrite(owner, storage)
+  if (!stored || !id || stored.id !== id || !isHash(hash)) throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
+  if (stored.safeProposal || (stored.hash && stored.hash.toLowerCase() === hash.toLowerCase())) return stored
+  const adopted: PendingBridgeWrite = { ...stored, hash, safeProposal: false }
+  if (stored.metadata && stored.recordKey) {
+    const { metadata } = stored
+    await updateBridgeRecords(stored.recordKey, records => records.map(record =>
+      record.metadata === metadata && record.prepareData === stored.request.data ? { ...record, submission: { hash, safeProposal: false } } : record), storage)
+  }
+  savePendingBridgeWrite(owner, adopted, storage)
+  return adopted
+}
+
+/**
+ * Under the domain lock: a legacy reservation saved with no attempt id gets a durable one, with nothing else changed,
+ * so that adoption, the SDK's exit and the end of the reservation all name the same attempt. The exact raw snapshot
+ * is compared again before it is written; anything else that changed it leaves it alone.
+ */
+export function ensurePendingBridgeId(owner: Address, storage: BridgeStorage = localStorage): PendingBridgeWrite | null {
+  const key = pendingKey(owner)
+  const raw = storage.getItem(key)
+  const stored = readStoredPendingBridgeWrite(owner, storage)
+  if (!stored || stored.id) return stored
+  if (storage.getItem(key) !== raw) return readStoredPendingBridgeWrite(owner, storage)
+  const migrated: PendingBridgeWrite = { ...stored, id: crypto.randomUUID() }
+  savePendingBridgeWrite(owner, migrated, storage)
+  return migrated
+}
+/**
+ * The one place an attempt's domain reservation ends: after the SDK's exit released its call, or after a failure
+ * before the wallet opened. It matches the raw stored reservation by attempt id, hashed or hashless, whatever reply
+ * is retained in memory; clears the matching transfer's submission marker (the metadata and steps stay, so the
+ * transfer can be continued or cancelled); then removes the reservation. Another attempt's is never touched, and
+ * an already ended attempt is a no-op.
+ */
+export async function endPendingBridgeAttempt(owner: Address, id: string | undefined, storage: BridgeStorage = localStorage): Promise<void> {
+  const stored = readStoredPendingBridgeWrite(owner, storage)
+  if (!stored) return
+  if (!id || stored.id !== id) throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
+  if (stored.metadata && stored.recordKey) {
+    const { metadata } = stored
+    await updateBridgeRecords(stored.recordKey, records => records.map(record => record.metadata === metadata ? { ...record, submission: undefined } : record), storage)
+  }
+  savePendingBridgeWrite(owner, null, storage)
 }
 /** Under the owner lock, retry only the trusted reply retained for this exact raw reservation. */
 export function retryPendingBridgeSubmission(expected: PendingBridgeWrite, storage: BridgeStorage = localStorage): void {

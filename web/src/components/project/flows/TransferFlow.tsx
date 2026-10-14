@@ -92,9 +92,11 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
     setReview(null)
   }
   const editRecipient = edit(setRecipient)
-  const editAmount = edit(setAmount)
+  /** The user pressed max and has not typed since: the choice is "all", not the number that was filled in. */
+  const [all, setAll] = useState(false)
+  const editAmount = (text: string) => { edit(setAmount)(text); setAll(false) }
   const fillMax = () => {
-    if (held !== undefined) editAmount(formatUnits(held, SHARE_DECIMALS))
+    if (held !== undefined) { editAmount(formatUnits(held, SHARE_DECIMALS)); setAll(true) }
   }
 
   async function startReview() {
@@ -119,7 +121,7 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
       const now = await heldBy(info, account)
       if (attempt.current !== mine) return
       if (count > now) return refuse(MORE_THAN_HELD)
-      setReview({ account, plan: transferTx(info, to, count), whole: count === now, preparing: false, error: null })
+      setReview({ account, plan: all ? Object.freeze({ ...transferTx(info, to, count), max: true }) : transferTx(info, to, count), whole: count === now, preparing: false, error: null })
     } catch (reason) {
       if (attempt.current === mine) refuse(reason instanceof Error ? reason.message : BALANCE_UNREADABLE)
     }

@@ -11,6 +11,7 @@ import { act, Profiler, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { encodeAbiParameters, encodeFunctionData, erc20Abi, getAddress, toEventSelector, toHex, UserRejectedRequestError, zeroAddress, type Abi, type Address, type Hex, type TransactionReceipt } from 'viem'
 import { SAFE_EXEC_ABI } from '@bananapus/nana-sdk-core/safe-service'
+import { WRITE_EXIT_LABEL, writeExitMessage, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { REVIEWED_ACCOUNT_CHANGED } from '@/lib/contract-write'
 import { feelessAddressesAbi, stickyAutoStickAbi, stickyHookAbi, terminalAbi } from '@/lib/sticky-abis'
@@ -23,7 +24,7 @@ import { CHAIN, HOLDER, OTHER, PROJECT, REVERT, STAKED, STICKY, deployment, rewa
 const mocks = vi.hoisted(() => ({
   wallet: { address: undefined as string | undefined, isCenterWallet: false },
   openSignIn: vi.fn(),
-  publicClient: { simulateContract: vi.fn(), estimateContractGas: vi.fn(), waitForTransactionReceipt: vi.fn(), getChainId: vi.fn(), getTransaction: vi.fn(), getTransactionReceipt: vi.fn(), getBlock: vi.fn() },
+  publicClient: { simulateContract: vi.fn(), estimateContractGas: vi.fn(), waitForTransactionReceipt: vi.fn(), getChainId: vi.fn(), getTransaction: vi.fn(), getTransactionReceipt: vi.fn(), getBlock: vi.fn(), getBlockNumber: vi.fn(), getTransactionCount: vi.fn() },
   getAccount: vi.fn(),
   requestReview: vi.fn(),
   switchChain: vi.fn(),
@@ -186,6 +187,8 @@ beforeEach(() => {
   mocks.publicClient.simulateContract.mockImplementation(async (request: unknown) => ({ request }))
   mocks.publicClient.estimateContractGas.mockResolvedValue(50_000n)
   mocks.publicClient.getChainId.mockResolvedValue(CHAIN)
+  mocks.publicClient.getBlockNumber.mockResolvedValue(100n)
+  mocks.publicClient.getTransactionCount.mockResolvedValue(3)
   mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: string }) => {
     const transaction = mocks.transactions[hash.toLowerCase()]
     if (!transaction) throw new Error('Transaction not found')
@@ -576,6 +579,52 @@ describe('an amount', () => {
     expect(chain.requests).toHaveLength(0)
   })
 
+  it('holds "all" as the choice: max, a lost reply, a changed balance, and max again is refused', async () => {
+    const { set } = world({ balance: E18 })
+    await render()
+    await press('max', form())
+    await until(() => document.querySelector<HTMLInputElement>('input')!.value === '1', 'the balance')
+    await press('Unstick', form())
+    await until(planned(1), 'the plan')
+    mocks.writeContract.mockRejectedValueOnce(new Error('Connection lost after sending'))
+    await press('Confirm & unstick', confirm()!)
+    await until(() => nameOf(confirm()!).includes('Done'), 'the uncertain send')
+    expect(called()).toEqual(['cashOutTokensOf'])
+    await press('Done', confirm()!)
+
+    // More tokens arrive while the first attempt is unresolved; max fills in a different number.
+    set({ balance: 2n * E18 })
+    await press('max', form())
+    await until(() => document.querySelector<HTMLInputElement>('input')!.value === '2', 'the new balance')
+    await press('Unstick', form())
+    await until(planned(1), 'the new plan')
+    await press('Confirm & unstick', confirm()!)
+    await until(() => nameOf(confirm()!).includes('Done'), 'the refusal')
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
+  })
+  it('keeps "all" as the choice when the balance grew after max was pressed, so the retry is refused', async () => {
+    const { set } = world({ balance: E18 })
+    await render()
+    await press('max', form())
+    await until(() => document.querySelector<HTMLInputElement>('input')!.value === '1', 'the balance')
+    // More tokens arrive before the review: the number filled in is no longer the whole balance.
+    set({ balance: 2n * E18 })
+    await press('Unstick', form())
+    await until(planned(1), 'the plan')
+    mocks.writeContract.mockRejectedValueOnce(new Error('Connection lost after sending'))
+    await press('Confirm & unstick', confirm()!)
+    await until(() => nameOf(confirm()!).includes('Done'), 'the uncertain send')
+    await press('Done', confirm()!)
+
+    set({ balance: 7n * E18 / 2n })
+    await press('max', form())
+    await until(() => document.querySelector<HTMLInputElement>('input')!.value === '3.5', 'the grown balance')
+    await press('Unstick', form())
+    await until(planned(1), 'the new plan')
+    await press('Confirm & unstick', confirm()!)
+    await until(() => nameOf(confirm()!).includes('Done'), 'the refusal')
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
+  })
   it('fills in the holder\'s whole balance from the chain with max, to the last digit', async () => {
     world({ balance: 1_234_567_890_123_456_789n, enabled: true })
     await render()
@@ -650,7 +699,7 @@ describe('a send that stops halfway', () => {
     expect(called().filter(name => name === 'setConfigFor')).toHaveLength(1)
   })
 
-  it('holds an uncertain wallet reply after reopening the review without repeating the attempted step', async () => {
+  it('holds an uncertain wallet reply after reopening the review without repeating the attempted step, until the person says they checked their wallet', async () => {
     const { set } = world(on)
     await review('1')
     await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
@@ -658,7 +707,9 @@ describe('a send that stops halfway', () => {
     await press('Remove auto-stick permission', confirm()!)
     await until(() => nameOf(confirm()!).includes('Done'), 'the uncertain send')
 
-    expect(confirm()!.textContent).toContain('This app cannot safely send the action again.')
+    expect(confirm()!.textContent).toContain(writeHeldMessage())
+    expect(confirm()!.textContent).toContain(writeExitMessage({ value: 0n }))
+    expect(nameOf(confirm()!)).toContain(WRITE_EXIT_LABEL)
     expect(nameOf(confirm()!)).not.toContain('Retry')
     expect(steps().map(step => step.state)).toEqual(['complete', 'active', 'pending', 'pending'])
     expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor'])
@@ -670,9 +721,16 @@ describe('a send that stops halfway', () => {
     await press('Remove auto-stick permission', confirm()!)
     await until(() => nameOf(confirm()!).includes('Done'), 'the saved uncertain send')
 
-    expect(confirm()!.textContent).toContain('This app cannot safely send the action again.')
-    expect(nameOf(confirm()!)).not.toContain('Retry')
+    expect(confirm()!.textContent).toContain(writeHeldMessage())
     expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor'])
+
+    // The exit is the person's: they checked their wallet, so the step can go out again.
+    await press(WRITE_EXIT_LABEL, confirm()!)
+    await until(() => nameOf(confirm()!).includes('Remove auto-stick permission'), 'the step offered again')
+    expect(confirm()!.textContent).not.toContain(writeHeldMessage())
+    await press('Remove auto-stick permission', confirm()!)
+    await until(() => called().length === 3, 'the step sent again')
+    expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor', 'setTrustedSenderFor'])
   })
 
   it('counts a transaction that went through once, however often the page renders again after it', async () => {
