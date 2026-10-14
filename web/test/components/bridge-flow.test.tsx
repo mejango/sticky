@@ -435,6 +435,9 @@ describe('reviewed durable bridge workflow', () => {
     await press(WRITE_EXIT_LABEL)
     expect(readPendingBridgeWrite(OWNER)).toBeNull()
   })
+  // Switch on with SDK 2.36's hold.adopt: a main-era reservation with a saved hash and no SDK record is adopted under the
+  // domain lock, keeping the hash and any Safe identity; if its transaction dropped, the gate offers the warned exit.
+  it.todo('adopts a hashed legacy reservation, and offers the warned exit after 30 minutes when its transaction dropped')
   it('keeps the reservation when the SDK refuses the exit', async () => {
     mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => { await options.durableRecovery?.reserve(); return null })
     await review(); await press('Confirm & approve'); await press('Cancel')
