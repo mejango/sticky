@@ -688,6 +688,32 @@ describe('useSafeTx', () => {
     } finally { vi.useRealTimers() }
   })
 
+  it('offers the exit for a hash the node showed pending and then lost for 30 minutes', async () => {
+    vi.useFakeTimers()
+    try {
+      const hook = await renderHook()
+      await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+      mocks.receipt = { data: undefined, isError: true }
+      chain.pending(HASH)
+      await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
+      await look()
+      expect(hook.ref.current!.held).toMatchObject({ line: STILL_PENDING_LINE, exit: null })
+
+      // The node no longer knows it, and the nonce never moved: pending for now.
+      chain.gone()
+      await act(async () => { await vi.advanceTimersByTimeAsync(20 * 60_000) })
+      expect(hook.ref.current!.held).toMatchObject({ exit: null })
+
+      // Missing for 30 minutes: the exit is offered, with the SDK's line.
+      await act(async () => { await vi.advanceTimersByTimeAsync(11 * 60_000) })
+      expect(hook.ref.current!.held).toMatchObject({ label: WRITE_EXIT_LABEL })
+      expect(hook.ref.current!.held!.exit).toBeTypeOf('function')
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+      await act(async () => hook.ref.current!.held!.exit!())
+      expect(hook.ref.current).toMatchObject({ phase: 'idle', held: null })
+    } finally { vi.useRealTimers() }
+  })
+
   it('follows the original when the chain shows it ran at its nonce under a speed-up, and never offers the exit', async () => {
     vi.useFakeTimers()
     try {
