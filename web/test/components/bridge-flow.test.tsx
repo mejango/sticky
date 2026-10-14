@@ -229,6 +229,8 @@ describe('reviewed durable bridge workflow', () => {
     mocks.tx.exitStored = vi.fn(async () => ({ outcome: 'released' as const }))
     await press(WRITE_EXIT_LABEL)
     expect(mocks.tx.exitStored).toHaveBeenCalledOnce()
+    // The stored write is looked up by the same intent key the hold was opened under.
+    expect(mocks.tx.exitStored).toHaveBeenCalledWith(expect.objectContaining({ intent: expect.stringMatching(/^approve:/) }))
     expect(readPendingBridgeWrite(OWNER)).toBeNull()
     expect(readBridgeRecords(KEY)).toHaveLength(1)
     expect(readBridgeRecords(KEY)[0].metadata).toBe(metadata)
@@ -374,6 +376,22 @@ describe('reviewed durable bridge workflow', () => {
     await vi.waitFor(() => expect(readBridgeRecords(KEY)[0].submission?.hash).toBe(SPED_UP))
     expect(readPendingBridgeWrite(OWNER)?.hash).toBe(SPED_UP)
     expect(button('Continue transfer')).toBeUndefined()
+  })
+  it('retries a settlement whose recovery failed or was skipped, and marks it handled only once adopted', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      await hashedThenDropped(); await press('Cancel')
+      await act(async () => root.unmount()); root = createRoot(host)
+      mocks.tx.storedHold = vi.fn(async () => ({ settled: { result: 'success' as const, hash: HASH } }))
+      mocks.verifyWrite.mockRejectedValueOnce(new Error('Node unavailable'))
+      await render()
+      await vi.waitFor(() => expect(mocks.verifyWrite).toHaveBeenCalledTimes(1))
+      // The first recovery failed: the reservation stands, and the settlement is not marked handled.
+      expect(readPendingBridgeWrite(OWNER)).not.toBeNull()
+      await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
+      await vi.waitFor(() => expect(readPendingBridgeWrite(OWNER)).toBeNull())
+      expect(mocks.verifyWrite).toHaveBeenCalledTimes(2)
+    } finally { vi.useRealTimers() }
   })
   it('settles, never abandons, a prepare that confirms while its exit is shown, even when the route refresh then fails', async () => {
     approved = true

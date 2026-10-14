@@ -9,8 +9,9 @@ import {
   type Address,
   type Hex,
 } from 'viem'
-import { TransactionNotFoundError } from 'viem'
+import { TransactionNotFoundError, TransactionReceiptNotFoundError } from 'viem'
 import { SAFE_EXEC_ABI } from '@bananapus/nana-sdk-core/safe-service'
+import { buildBridgeClaimTx, buildBridgePrepareTx, buildCashOutTx, buildPayTx, buildToRemoteTx, stickySourceCollectorAbi } from '@bananapus/nana-sdk-core/v6'
 import { createWriteHold, WRITE_HOLD_IN_TAB_LINE, WRITE_EXIT_LABEL, writeExitMessage, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -82,6 +83,7 @@ import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 
 const TRANSACTION_WENT_THROUGH = 'Your earlier transaction went through.'
 const STILL_PENDING_LINE = 'Still pending in your wallet. Speed it up or cancel it there.'
+type TxRequestOf = object
 const ALICE = '0x1111111111111111111111111111111111111111' as Address
 const BOB = '0x2222222222222222222222222222222222222222' as Address
 /** Every request below was built for, and reviewed by, Alice. */
@@ -1060,6 +1062,82 @@ describe('useSafeTx', () => {
     await expect(reloaded.ref.current!.exitStored(write)).resolves.toEqual({ outcome: 'settled', hash: HASH, result: 'success' })
     expect(journal.released).not.toHaveBeenCalled()
     expect(mocks.writeContract).toHaveBeenCalledOnce()
+  })
+
+  describe('a retry whose calldata regenerates', () => {
+    const X = '0x3333333333333333333333333333333333333333' as Address
+    const word = `0x${'00'.repeat(32)}` as Hex
+    const leaf = (proof: Hex) => ({ index: 4n, beneficiary: word, projectTokenCount: 1n, terminalTokenAmount: 1n, metadata: word, proof })
+    // Each pair is the same user intent with only its volatile field changed (a quote, a fee, a proof, an amount to cover).
+    const pairs: [string, TxRequestOf, TxRequestOf][] = [
+      ['a stick, whose minimum is a quote', buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 5n, beneficiary: ALICE, minReturnedTokens: 9n, memo: '', metadata: '0x' }), buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 5n, beneficiary: ALICE, minReturnedTokens: 8n, memo: '', metadata: '0x' })],
+      ['an unstick, whose minimum is a quote', buildCashOutTx({ chainId: 10, terminal: X, holder: ALICE, projectId: 12n, cashOutCount: 5n, tokenToReclaim: X, minTokensReclaimed: 9n, beneficiary: ALICE, metadata: '0x' }), buildCashOutTx({ chainId: 10, terminal: X, holder: ALICE, projectId: 12n, cashOutCount: 5n, tokenToReclaim: X, minTokensReclaimed: 8n, beneficiary: ALICE, metadata: '0x' })],
+      ['an approval, whose amount covers a moving claim', { chainId: 10, address: X, abi: parseAbi(['function approve(address spender, uint256 amount)']), functionName: 'approve', args: [BOB, 5n] }, { chainId: 10, address: X, abi: parseAbi(['function approve(address spender, uint256 amount)']), functionName: 'approve', args: [BOB, 6n] }],
+      ['a bridge queue, whose minimum is a quote', buildBridgePrepareTx({ chainId: 10, sucker: X, projectTokenCount: 5n, beneficiary: word, minTokensReclaimed: 9n, token: X, metadata: word }), buildBridgePrepareTx({ chainId: 10, sucker: X, projectTokenCount: 5n, beneficiary: word, minTokensReclaimed: 8n, token: X, metadata: word })],
+      ['a bridge send, whose transport budget is a quote', buildToRemoteTx({ chainId: 10, sucker: X, token: X, value: 3n }), buildToRemoteTx({ chainId: 10, sucker: X, token: X, value: 4n })],
+      ['a bridge claim, whose proof moves with the tree', buildBridgeClaimTx({ chainId: 10, sucker: X, claim: { token: X, leaf: leaf(word), proof: Array(32).fill(word) as never } }), buildBridgeClaimTx({ chainId: 10, sucker: X, claim: { token: X, leaf: leaf(`0x${'11'.repeat(32)}`), proof: Array(32).fill(`0x${'11'.repeat(32)}`) as never } })],
+      ['a collector delivery, whose bridge fee is a quote', { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'send', args: [12n, X, 0n, 5n, X, X], value: 77n }, { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'send', args: [12n, X, 0n, 5n, X, X], value: 88n }],
+    ]
+    it.each(pairs)('holds %s by its intent, so the retry needs the explicit exit', async (_name, first, retry) => {
+      mocks.writeContract.mockRejectedValueOnce(new Error('The wallet broadcast it but its RPC response was lost.'))
+      const hook = await renderHook()
+      await act(async () => { await hook.ref.current!.send(first as never, reviewedByAlice) })
+      expect(hook.ref.current!.held).not.toBeNull()
+      await act(async () => hook.ref.current!.reset())
+      await act(async () => { await hook.ref.current!.send(retry as never, reviewedByAlice) })
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+      expect(hook.ref.current).toMatchObject({ phase: 'submitted' })
+      expect(hook.ref.current!.held).not.toBeNull()
+    })
+    it('still treats a different intent as a different write', async () => {
+      mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
+      const [, first] = pairs[0]
+      const hook = await renderHook()
+      await act(async () => { await hook.ref.current!.send(first as never, reviewedByAlice) })
+      await act(async () => hook.ref.current!.reset())
+      const other = buildPayTx({ chainId: 10, terminal: X, projectId: 12n, token: X, amount: 6n, beneficiary: ALICE, minReturnedTokens: 9n, memo: '', metadata: '0x' })
+      await act(async () => { await hook.ref.current!.send(other as never, reviewedByAlice) })
+      expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  describe('a pending write another tab settled', () => {
+    const callData = encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] })
+    /** Tab B verifies the receipt with its own client and settles the hold; tab A's local receipt reads stay unavailable. */
+    async function settledElsewhere() {
+      mocks.receipt = { data: undefined, isError: true }
+      mocks.publicClient.getTransactionReceipt.mockImplementation(async ({ hash }: { hash: Hex }) => { throw new TransactionReceiptNotFoundError({ hash }) })
+      const tabB = { ...mocks.publicClient, getTransactionReceipt: async () => canonicalReceipt('success') }
+      const handle = createWriteHold().open({ chainId: 10, account: ALICE, safe: false, call: { to: BOB, data: callData, value: 7n } })
+      const result = await handle.onReceipt(canonicalReceipt('success') as never, tabB as never)
+      expect(result).toMatchObject({ status: 'clear', settled: { result: 'success', hash: HASH } })
+    }
+    it('finishes an ordinary pending write on the settlement hash, whatever the previous state offered', async () => {
+      vi.useFakeTimers()
+      try {
+        const hook = await renderHook()
+        await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+        expect(hook.ref.current).toMatchObject({ phase: 'pending', busy: true })
+        await settledElsewhere()
+        await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
+        expect(hook.ref.current).toMatchObject({ phase: 'success', busy: false, hash: HASH })
+        expect(mocks.writeContract).toHaveBeenCalledOnce()
+      } finally { vi.useRealTimers() }
+    })
+    it('hands a domain-journaled write the settlement, once, and does not abandon it', async () => {
+      vi.useFakeTimers()
+      try {
+        const journal = { reserve: vi.fn(), releaseUnsubmitted: vi.fn(), submitted: vi.fn(), released: vi.fn(), settled: vi.fn() }
+        const hook = await renderHook()
+        await act(async () => { await hook.ref.current!.send(request, { ...reviewedByAlice, durableRecovery: journal }) })
+        await settledElsewhere()
+        await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
+        await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
+        expect(journal.settled).toHaveBeenCalledOnce()
+        expect(journal.settled).toHaveBeenCalledWith({ hash: HASH, result: 'success' })
+        expect(journal.released).not.toHaveBeenCalled()
+      } finally { vi.useRealTimers() }
+    })
   })
 
   it('still holds and sends where the browser has no Web Locks', async () => {

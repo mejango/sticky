@@ -28,6 +28,7 @@ import {
   waitForTrackedReceipt, type WriteHoldGate, type WriteHoldHandle, type WriteHoldState,
 } from '@bananapus/nana-sdk-core/review'
 import { hasSafeService } from '@bananapus/nana-sdk-core/safe-service'
+import { holdIntent } from '@/lib/sticky-hold-intent'
 import { getViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 import { assertReviewedWallet } from '@/lib/wallet-core'
 import {
@@ -565,18 +566,36 @@ export function useSafeTx(chainId: number) {
   const heldRef = useRef<WriteHoldState | null>(null)
   /** How a hold the user was looking at ended without a send: its settlement, kept. */
   const [settledNote, setSettledNote] = useState<string | null>(null)
-  const showHeld = useCallback((value: WriteHoldState | null) => {
+  /**
+   * `local`: the state came from this flow's own receipt, which its normal success path already handles.
+   * Otherwise a hold on screen that clears with an SDK-authenticated settlement (this tab or another's) ends the
+   * attempt whatever it offered before: the settlement is handed off and the pending phase finishes.
+   */
+  const showHeld = useCallback((value: WriteHoldState | null, local = false) => {
     const shown = value && value.status !== 'clear' ? value : null
-    // A hold on screen that clears meanwhile ends the attempt: nothing is sent, and the result stays shown.
-    if (!shown && (heldRef.current && 'exit' in heldRef.current && heldRef.current.exit) && value?.status === 'clear') {
-      const result = value.settled?.result
-      if (value.settled && 'hash' in value.settled && settledRef.current) {
-        const settle = settledRef.current
+    if (!shown && value?.status === 'clear' && heldRef.current && !local) {
+      const settled = value.settled
+      const offered = 'exit' in heldRef.current && heldRef.current.exit
+      if (settled && 'hash' in settled) {
+        const domain = settledRef.current
         settledRef.current = null
-        void Promise.resolve(settle({ hash: value.settled.hash, result: value.settled.result })).catch(() => undefined)
+        if (domain) {
+          void Promise.resolve(domain({ hash: settled.hash, result: settled.result })).catch(() => undefined)
+          setSettledNote(settled.result === 'failed' ? WRITE_HOLD_REVERTED_LINE : 'Your earlier transaction went through.')
+          setPhase('submitted')
+        } else if (!shownKeyRef.current) {
+          // An ordinary write: finish the pending phase on the authenticated hash. A Safe proposal's phase is the registry's.
+          setHash(settled.hash)
+          setSettledNote('Your earlier transaction went through.')
+          if (settled.result === 'success') setPhase('success')
+          else { setSettledNote(null); setError(`Transaction reverted onchain (${settled.hash}).`); setPhase('error') }
+          inFlightRef.current = false
+        }
+      } else if (offered) {
+        // Cleared with no evidence handed back (released elsewhere): nothing is sent, and the result stays shown.
+        setSettledNote(value.settled?.result === 'expired' ? SAFE_PROPOSAL_EXPIRED : 'Your earlier transaction went through.')
+        setPhase('submitted')
       }
-      setSettledNote(result === 'failed' ? WRITE_HOLD_REVERTED_LINE : result === 'expired' ? SAFE_PROPOSAL_EXPIRED : 'Your earlier transaction went through.')
-      setPhase('submitted')
     }
     heldRef.current = shown
     setHeld(shown)
@@ -588,9 +607,19 @@ export function useSafeTx(chainId: number) {
   }, [])
   useEffect(() => {
     if (!hold) return
+    // Only the SDK's gate offers an exit (peek, replay and other tabs' changes carry none), so what it emits is shown as is.
+    const observe = (state: WriteHoldState) => {
+      if (holdRef.current !== hold || !mounted.current) return
+      // A settlement is taken from the read that returned it (the poll, the exit, the receipt), never from its emission.
+      if (state.status === 'clear' && state.settled) return
+      // An emission grants no exit, and revokes none: the gate's last answer for the same record stands until the next read.
+      const current = heldRef.current
+      if (current && state.status !== 'clear' && !state.exit && current.status === state.status && current.exit && current.record.id === state.record.id) return
+      showHeld(state, true)
+    }
     // Anything the controller said before this subscription is read from the saved record.
-    try { showHeld(hold.peek()) } catch { /* An unreadable record shows at the next look. */ }
-    return hold.subscribe(state => { if (holdRef.current === hold && mounted.current) showHeld(state) })
+    try { observe(hold.peek()) } catch { /* An unreadable record shows at the next look. */ }
+    return hold.subscribe(observe)
   }, [hold, showHeld])
 
   const receipt = useWaitForTransactionReceipt({
@@ -730,7 +759,7 @@ export function useSafeTx(chainId: number) {
     if (!confirmed) return
     let stopped = false
     void hold.onReceipt(confirmed, publicClient)
-      .then(state => { if (!stopped && holdRef.current === hold && mounted.current) showHeld(state) })
+      .then(state => { if (!stopped && holdRef.current === hold && mounted.current) showHeld(state, true) })
       .catch(() => { /* Unverified is not released; the next look asks again. */ })
     return () => { stopped = true }
   }, [hold, publicClient, shownKey, proposal?.receipt, receiptData, showHeld])
@@ -797,7 +826,7 @@ export function useSafeTx(chainId: number) {
         let sentCall = callOf(request)
         // A domain journal (bridge, collector) holds its own writes; every other write is held here.
         // The SDK hold covers every write; a domain journal keeps its own reservation beside it.
-        handle = holds.open({ chainId: request.chainId, account, safe: viaSafe, call: sentCall })
+        handle = holds.open({ chainId: request.chainId, account, safe: viaSafe, namespace: holdIntent(request), call: sentCall })
         releasedRef.current = options.durableRecovery?.released ?? null
         settledRef.current = options.durableRecovery?.settled ?? null
         watchHold(handle)
@@ -1046,11 +1075,11 @@ export function useSafeTx(chainId: number) {
   }, [publicClient, reset, apply, showHeld])
 
   /** What the SDK says of a stored write (hashed or not), so a panel shows its line and offers an exit only when the SDK does. */
-  const storedHold = useCallback(async (write: { chainId: number; owner: Address; to: Address; data: Hex; value: bigint | string }): Promise<StoredHold> => {
+  const storedHold = useCallback(async (write: { chainId: number; owner: Address; to: Address; data: Hex; value: bigint | string; intent?: string }): Promise<StoredHold> => {
     try {
       const client = getPublicClient(wagmiConfig, { chainId: write.chainId as never }) as unknown as Parameters<WriteHoldHandle['state']>[0] | undefined
       if (!client) return null
-      const state = await holds.open({ chainId: write.chainId, account: write.owner, safe: false, call: { to: write.to, data: write.data, value: write.value } }).state(client)
+      const state = await holds.open({ chainId: write.chainId, account: write.owner, safe: false, namespace: write.intent, call: { to: write.to, data: write.data, value: write.value } }).state(client)
       if (state.status === 'clear') return state.settled && 'hash' in state.settled ? { settled: { hash: state.settled.hash, result: state.settled.result } } : null
       return { exit: state.exit, line: state.line, ...('warning' in state && state.warning ? { warning: state.warning } : {}) }
     } catch { return null }
@@ -1060,11 +1089,11 @@ export function useSafeTx(chainId: number) {
    * A write saved by a domain journal that a reload left held, with no flow open: the SDK's exit for
    * its exact call. True when the call is no longer held, so the caller may clear its own reservation.
    */
-  const exitStored = useCallback(async (write: { chainId: number; owner: Address; to: Address; data: Hex; value: bigint | string }): Promise<StoredExit> => {
+  const exitStored = useCallback(async (write: { chainId: number; owner: Address; to: Address; data: Hex; value: bigint | string; intent?: string }): Promise<StoredExit> => {
     try {
       const client = getPublicClient(wagmiConfig, { chainId: write.chainId as never }) as unknown as Parameters<WriteHoldHandle['state']>[0] | undefined
       if (!client) return { outcome: 'held' }
-      const stored = holds.open({ chainId: write.chainId, account: write.owner, safe: false, call: { to: write.to, data: write.data, value: write.value } })
+      const stored = holds.open({ chainId: write.chainId, account: write.owner, safe: false, namespace: write.intent, call: { to: write.to, data: write.data, value: write.value } })
       const settledOf = (state: WriteHoldState): StoredExit =>
         state.status === 'clear' && state.settled && 'hash' in state.settled
           ? { outcome: 'settled', hash: state.settled.hash, result: state.settled.result }

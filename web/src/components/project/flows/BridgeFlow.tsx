@@ -8,6 +8,7 @@ import { reviewGate } from '@/components/project/flows/review-gate'
 import { FIELD_INPUT, FIELD_LABEL, StakeAgeFields } from '@/components/project/StakeAgeFields'
 import { ModalShell } from '@/components/ui/ModalShell'
 import { TxConfirmDialog, type TxConfirmRow } from '@/components/ui/TxConfirmDialog'
+import { holdIntent } from '@/lib/sticky-hold-intent'
 import { PendingWriteExit } from '@/components/ui/PendingWriteExit'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, ViewTransactionLink } from '@/components/ui/TxProgress'
@@ -230,7 +231,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
     const current = active
     await run(async () => {
       if (readPendingBridgeWrite(current.owner)) throw new Error('Recover the pending bridge transaction before sending it again.')
-      const held = createPendingBridgeWrite({ owner: current.owner, request: storeBridgeWrite(current.request), ...(current.record ? { metadata: current.record.metadata, recordKey: current.key } : {}) })
+      const held = createPendingBridgeWrite({ owner: current.owner, request: storeBridgeWrite(current.request), intent: holdIntent(current.request), ...(current.record ? { metadata: current.record.metadata, recordKey: current.key } : {}) })
       setReview({ ...current, attempt: held })
       let reserved = false
       const undo = () => endPendingBridgeAttempt(current.owner, held.id)
@@ -264,6 +265,13 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
       })
       setPending(readPendingBridgeWrite(current.owner))
     })
+  }
+  /** True once the settlement is adopted. A busy flow skips it and a failed recovery leaves it, so the panel asks again. */
+  async function settleFromPanel(held: PendingBridgeWrite, hash: Hex): Promise<boolean> {
+    if (busy) return false
+    let adopted = false
+    await run(async () => { await settleStored(held, hash); adopted = true })
+    return adopted
   }
   /** The SDK settled this write on authenticated evidence: its hash becomes the submission reference, and the normal confirmed-step recovery runs. */
   async function settleStored(held: PendingBridgeWrite, hash: Hex) {
@@ -347,9 +355,9 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
           <p className="text-sm">A bridge transaction may still execute. Check its wallet status before continuing.</p>
           {!pending.hash && !bridgeWriteHasUniqueReference(pending.request.data) ? <p className="text-sm text-muted">The wallet did not return a submission reference. A matching historical approval or bridge-send transaction cannot prove this attempt finished; this browser keeps further bridge actions locked.</p> : null}
           <PendingWriteExit pending={pending} disabled={busy} look={tx.storedHold}
-            settle={settlement => run(() => settleStored(pending, settlement.hash))}
+            settle={settlement => settleFromPanel(pending, settlement.hash)}
             exit={() => run(async () => {
-              const out = await tx.exitStored({ chainId: pending.request.chainId, owner: pending.owner, to: pending.request.address, data: pending.request.data, value: pending.request.value })
+              const out = await tx.exitStored({ chainId: pending.request.chainId, owner: pending.owner, to: pending.request.address, data: pending.request.data, value: pending.request.value, intent: pending.intent })
               if (out.outcome === 'settled') return settleStored(pending, out.hash)
               if (out.outcome !== 'released') return
               // Abandoned: the reservation and the submission marker go; the transfer's metadata and steps stay.

@@ -7,6 +7,7 @@ import { BridgeFlow } from '@/components/project/flows/BridgeFlow'
 import { reviewGate } from '@/components/project/flows/review-gate'
 import { FIELD_INPUT, FIELD_LABEL } from '@/components/project/StakeAgeFields'
 import { TxConfirmDialog, type TxConfirmRow } from '@/components/ui/TxConfirmDialog'
+import { holdIntent } from '@/lib/sticky-hold-intent'
 import { PendingWriteExit } from '@/components/ui/PendingWriteExit'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, ViewTransactionLink } from '@/components/ui/TxProgress'
@@ -117,7 +118,7 @@ export function CollectorFlow({ source, info, onSettled }: {
     const current = active
     await run(async () => {
       if (readPendingBridgeWrite(current.owner)) throw new Error('Recover the pending transaction before sending again.')
-      const held = createPendingBridgeWrite({ owner: current.owner, request: storeBridgeWrite(current.delivery.request) })
+      const held = createPendingBridgeWrite({ owner: current.owner, request: storeBridgeWrite(current.delivery.request), intent: holdIntent(current.delivery.request) })
       setReview({ ...current, attempt: held })
       let reserved = false
       const undo = () => endPendingBridgeAttempt(current.owner, held.id)
@@ -150,6 +151,13 @@ export function CollectorFlow({ source, info, onSettled }: {
       })
       setPending(readPendingBridgeWrite(current.owner))
     })
+  }
+  /** True once the settlement is adopted. A busy flow skips it and a failed recovery leaves it, so the panel asks again. */
+  async function settleFromPanel(held: PendingBridgeWrite, hash: Hex): Promise<boolean> {
+    if (busy) return false
+    let adopted = false
+    await run(async () => { await settleStored(held, hash); adopted = true })
+    return adopted
   }
   /** The SDK settled this write on authenticated evidence: its hash becomes the submission reference, and the normal recovery runs. */
   async function settleStored(held: PendingBridgeWrite, hash: Hex) {
@@ -221,9 +229,9 @@ export function CollectorFlow({ source, info, onSettled }: {
         {ours ? <>
           {!pending.hash ? <p className="text-sm text-muted">The wallet returned no submission reference. This attempt remains locked; a matching earlier transaction cannot prove it finished.</p> : null}
           <PendingWriteExit pending={pending} disabled={busy} look={tx.storedHold}
-            settle={settlement => run(() => settleStored(pending, settlement.hash))}
+            settle={settlement => settleFromPanel(pending, settlement.hash)}
             exit={() => run(async () => {
-              const out = await tx.exitStored({ chainId: pending.request.chainId, owner: pending.owner, to: pending.request.address, data: pending.request.data, value: pending.request.value })
+              const out = await tx.exitStored({ chainId: pending.request.chainId, owner: pending.owner, to: pending.request.address, data: pending.request.data, value: pending.request.value, intent: pending.intent })
               if (out.outcome === 'settled') return settleStored(pending, out.hash)
               if (out.outcome !== 'released') return
               await endPendingBridgeAttempt(pending.owner, pending.id); setPending(null); await refresh()

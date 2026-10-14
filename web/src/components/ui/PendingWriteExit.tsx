@@ -13,26 +13,31 @@ type Look = StoredHold
 export function PendingWriteExit({ pending, disabled, look, settle, exit }: {
   pending: PendingBridgeWrite
   disabled: boolean
-  look?: (write: { chainId: number; owner: PendingBridgeWrite['owner']; to: PendingBridgeWrite['request']['address']; data: PendingBridgeWrite['request']['data']; value: string }) => Promise<Look>
+  look?: (write: { chainId: number; owner: PendingBridgeWrite['owner']; to: PendingBridgeWrite['request']['address']; data: PendingBridgeWrite['request']['data']; value: string; intent?: string }) => Promise<Look>
   /** The SDK settled the write on authenticated evidence: record it, never abandon. */
-  settle?: (settlement: { hash: `0x${string}`; result: 'success' | 'failed' }) => Promise<void>
+  settle?: (settlement: { hash: `0x${string}`; result: 'success' | 'failed' }) => Promise<boolean>
   exit: () => Promise<void>
 }) {
   const [working, setWorking] = useState(false)
   const [shown, setShown] = useState<Look>(null)
   // Each settlement is recorded once per attempt; the callback is read through a ref so a new closure never restarts the look.
   const settledOnce = useRef<string | null>(null)
+  const settling = useRef(false)
   const settleRef = useRef(settle)
   settleRef.current = settle
   const { chainId, address, data, value } = pending.request
   useEffect(() => {
     if (!look) return
     let stopped = false
-    const ask = () => { void look({ chainId, owner: pending.owner, to: address, data, value }).then(next => {
+    const ask = () => { void look({ chainId, owner: pending.owner, to: address, data, value, intent: pending.intent }).then(next => {
       if (stopped) return
       if (next && 'settled' in next) {
         const mark = `${pending.id}:${next.settled.hash}`
-        if (settledOnce.current !== mark && settleRef.current) { settledOnce.current = mark; void settleRef.current(next.settled) }
+        // Handled only once adopted: a skipped (flow busy) or failed recovery is tried again at the next look.
+        if (settledOnce.current !== mark && !settling.current && settleRef.current) {
+          settling.current = true
+          void Promise.resolve(settleRef.current(next.settled)).then(adopted => { if (adopted) settledOnce.current = mark }).catch(() => undefined).finally(() => { settling.current = false })
+        }
         setShown(null)
         return
       }
@@ -41,7 +46,7 @@ export function PendingWriteExit({ pending, disabled, look, settle, exit }: {
     ask()
     const timer = setInterval(ask, 15_000)
     return () => { stopped = true; clearInterval(timer) }
-  }, [look, chainId, pending.owner, pending.id, address, data, value])
+  }, [look, chainId, pending.owner, pending.id, pending.intent, address, data, value])
   // Without the SDK's look, only a write that never returned a hash has an exit.
   const line = look ? (shown && 'line' in shown ? shown.line : undefined) : (!pending.hash && !pending.safeProposal ? writeHeldMessage() : undefined)
   const exitOffered = look && shown && 'exit' in shown && shown.exit

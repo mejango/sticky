@@ -34,6 +34,8 @@ export type PendingBridgeWrite = {
   safeProposal?: boolean
   recordKey?: string
   metadata?: Hex
+  /** The hold key of a write whose calldata regenerates on retry (see `holdIntent`); absent for an exact-call hold. */
+  intent?: string
 }
 const PREFIX = 'sticky:bridge:v3:'
 export const bridgeStorageKey = (chainId: number, stickyToken: Address, groupId: bigint, owner: Address) =>
@@ -197,7 +199,7 @@ function readStoredPendingBridgeWrite(owner: Address, storage: BridgeStorage): P
   if (raw === null || raw === 'null') return null
   let value: PendingBridgeWrite
   try { value = JSON.parse(raw) } catch { throw new Error(FAILED) }
-  if (!value || (value.id !== undefined && (typeof value.id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.id))) || value.owner?.toLowerCase() !== owner.toLowerCase() || !validWrite(value.request) || (value.hash !== undefined && !isHash(value.hash)) || (value.metadata !== undefined && !isHash(value.metadata)) || (value.safeProposal !== undefined && typeof value.safeProposal !== 'boolean') || ((value.recordKey === undefined) !== (value.metadata === undefined)) || (value.recordKey !== undefined && typeof value.recordKey !== 'string')) throw new Error(FAILED)
+  if (!value || (value.id !== undefined && (typeof value.id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.id))) || value.owner?.toLowerCase() !== owner.toLowerCase() || !validWrite(value.request) || (value.hash !== undefined && !isHash(value.hash)) || (value.metadata !== undefined && !isHash(value.metadata)) || (value.safeProposal !== undefined && typeof value.safeProposal !== 'boolean') || ((value.recordKey === undefined) !== (value.metadata === undefined)) || (value.recordKey !== undefined && typeof value.recordKey !== 'string') || (value.intent !== undefined && typeof value.intent !== 'string')) throw new Error(FAILED)
   return value
 }
 export function readPendingBridgeWrite(owner: Address, storage: BridgeStorage = localStorage): PendingBridgeWrite | null {

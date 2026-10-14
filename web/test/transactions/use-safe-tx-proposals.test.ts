@@ -420,8 +420,12 @@ describe('a Safe proposal', () => {
     await flow.send()
     await settle()
     expect(flow.tx.phase).toBe(phase)
-    // Another call ran: nothing proves this one did, so the hold offers its exit at once.
-    if (phase === 'submitted') expect(flow.tx).toMatchObject({ confirmationUncertain: true, held: { label: WRITE_EXIT_LABEL } })
+    // Another call ran: nothing proves this one did. The mined transaction can't be read as this call yet, so the SDK's
+    // chain-checked state offers no exit until its 30 minutes pass (the next test), and nothing is sent in the meantime.
+    if (phase === 'submitted') {
+      expect(flow.tx.held).toBeNull()
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+    }
   })
 
   it('offers the exit for an execution returned at once that ran another call, after 65 minutes and a remount', async () => {
@@ -684,6 +688,26 @@ describe('a Safe proposal awaiting its signers', () => {
       expect(mocks.writeContract).toHaveBeenCalledOnce()
       expect(recoveryRecords()).toHaveLength(1)
 
+      // Remount and reload: the follower's reply is unreadable and the SDK has nothing authenticated to settle the hold
+      // with, so it stays: no remount or reload sends again, and the reservation stands. (What the caller believes is
+      // never evidence; the settlement path has its own authenticated tests.)
+      mocks.waitForSafeExecutionHash.mockRejectedValue(new Error('unreadable'))
+      for (const reload of [false, true]) {
+        if (reload) {
+          await flow.close()
+          vi.resetModules()
+          ;({ useSafeTx } = await import('@/hooks/useSafeTx'))
+        }
+        const reopened = await mount()
+        await reopened.send()
+        await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+        await act(async () => reopened.tx.dismiss())
+        await reopened.send()
+        await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+        expect(mocks.writeContract).toHaveBeenCalledOnce()
+        expect(recoveryRecords()).toHaveLength(1)
+        await reopened.close()
+      }
     } finally { vi.useRealTimers() }
   })
 
