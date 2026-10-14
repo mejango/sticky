@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { writeExitMessage, writeHeldMessage, WRITE_EXIT_LABEL } from '@bananapus/nana-sdk-core/review'
-import { CHECK_REQUIRED_LABEL, CHECK_REQUIRED_LINE, CHECK_REQUIRED_WARNING } from '@/lib/check-required'
+import { CONTINUE_ANYWAY_LABEL, UNREADABLE_LINE, CHECK_REQUIRED_LABEL, CHECK_REQUIRED_LINE, CHECK_REQUIRED_WARNING } from '@/lib/check-required'
 import type { StoredHold } from '@/hooks/useSafeTx'
 import type { PendingBridgeWrite } from '@/lib/sticky-bridge-journal'
 
@@ -11,7 +11,7 @@ type Look = StoredHold
  * hashed or not. The exit shows only when the SDK offers one (a hash the chain still knows has none); `exit`
  * asks the SDK to release the call and clears the reservation only after it does.
  */
-export function PendingWriteExit({ pending, disabled, look, adopt, settle, exit, confirming }: {
+export function PendingWriteExit({ pending, disabled, look, adopt, settle, exit, confirming, force }: {
   /** The notice for a write the hold settled as success whose details are still being read. */
   confirming?: string
   pending: PendingBridgeWrite
@@ -21,9 +21,17 @@ export function PendingWriteExit({ pending, disabled, look, adopt, settle, exit,
   adopt?: (write: { chainId: number; owner: PendingBridgeWrite['owner']; to: PendingBridgeWrite['request']['address']; data: PendingBridgeWrite['request']['data']; value: string; intent?: string; hash?: `0x${string}`; safeProposal?: boolean; submittedAt?: number }) => Promise<'adopted' | 'refused' | void>
   /** The SDK settled the write on authenticated evidence: record it, never abandon. */
   settle?: (settlement: { hash: `0x${string}`; result: 'success' | 'failed' }) => Promise<boolean>
-  exit: () => Promise<void>
+  exit: () => Promise<void | 'unreadable'>
+  /** Discards an unreadable record: offered only after the exit reported it could not read it. */
+  force?: () => Promise<void>
 }) {
   const [working, setWorking] = useState(false)
+  const [unreadable, setUnreadable] = useState(false)
+  const take = () => { setWorking(true); void exit().then(result => setUnreadable(result === 'unreadable')).finally(() => setWorking(false)) }
+  const forced = unreadable && force ? <>
+    <p className="text-sm text-muted">{UNREADABLE_LINE}</p>
+    <button className="btn-link" disabled={disabled || working} onClick={() => { setWorking(true); void force().then(() => setUnreadable(false)).finally(() => setWorking(false)) }}>{CONTINUE_ANYWAY_LABEL}</button>
+  </> : null
   const [shown, setShown] = useState<Look>(null)
   // Adoption refused or unreadable: with no hold shown, the one explicit check is all that is left.
   const [refused, setRefused] = useState(false)
@@ -72,7 +80,8 @@ export function PendingWriteExit({ pending, disabled, look, adopt, settle, exit,
     return (
       <>
         <p className="text-sm text-muted">{`${CHECK_REQUIRED_LINE} ${CHECK_REQUIRED_WARNING}`}</p>
-        <button className="btn-link" disabled={disabled || working} onClick={() => { setWorking(true); void exit().finally(() => setWorking(false)) }}>{CHECK_REQUIRED_LABEL}</button>
+        <button className="btn-link" disabled={disabled || working} onClick={take}>{CHECK_REQUIRED_LABEL}</button>
+        {forced}
       </>
     )
   }
@@ -80,7 +89,8 @@ export function PendingWriteExit({ pending, disabled, look, adopt, settle, exit,
   return (
     <>
       <p className="text-sm text-muted">{offered && warning ? `${line} ${warning}` : line}</p>
-      {offered ? <button className="btn-link" disabled={disabled || working} onClick={() => { setWorking(true); void exit().finally(() => setWorking(false)) }}>{shown && 'checkRequired' in shown && shown.checkRequired ? CHECK_REQUIRED_LABEL : WRITE_EXIT_LABEL}</button> : null}
+      {offered ? <button className="btn-link" disabled={disabled || working} onClick={take}>{shown && 'checkRequired' in shown && shown.checkRequired ? CHECK_REQUIRED_LABEL : WRITE_EXIT_LABEL}</button> : null}
+      {forced}
     </>
   )
 }

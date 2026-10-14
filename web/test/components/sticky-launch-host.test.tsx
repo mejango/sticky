@@ -8,7 +8,7 @@ import { openStickyLaunch } from '@/lib/sticky-launch-events'
 type FormProps = { environment: string; prepare: (plan: LaunchPlan, capability: 'sponsored' | 'self-paid' | 'unavailable') => Promise<void> }
 const mocks = vi.hoisted(() => ({
   queryClient: {}, refreshHome: vi.fn(), make: vi.fn(), load: vi.fn(), prepare: vi.fn(), run: vi.fn(), refresh: vi.fn(),
-  selfPay: vi.fn(), list: vi.fn(), clear: vi.fn(), addHash: vi.fn(), retry: vi.fn(), hold: vi.fn(), exitHold: vi.fn(),
+  selfPay: vi.fn(), list: vi.fn(), clear: vi.fn(), addHash: vi.fn(), retry: vi.fn(), hold: vi.fn(), exitHold: vi.fn(), forceExit: vi.fn(),
   changed: null as null | ((session: StickyLaunchSession | null) => void),
   plan: null as LaunchPlan | null, capability: 'self-paid' as 'sponsored' | 'self-paid' | 'unavailable',
 }))
@@ -25,7 +25,7 @@ import { StickyLaunchHost } from '@/components/create/StickyLaunchHost'
 const ADDRESS = `0x${'1'.repeat(40)}` as const
 const HASH = `0x${'a'.repeat(64)}` as const
 const controller = { load: mocks.load, prepare: mocks.prepare, run: mocks.run, refresh: mocks.refresh,
-  selfPay: mocks.selfPay, list: mocks.list, clear: mocks.clear, addHash: mocks.addHash, retry: mocks.retry, hold: mocks.hold, exitHold: mocks.exitHold }
+  selfPay: mocks.selfPay, list: mocks.list, clear: mocks.clear, addHash: mocks.addHash, retry: mocks.retry, hold: mocks.hold, exitHold: mocks.exitHold, forceExit: mocks.forceExit }
 function saved(overrides: Partial<StickyLaunchSession> = {}): StickyLaunchSession {
   return { version: 1, plan: mocks.plan!, mode: 'direct', published: false, candidates: { 84532: [] }, results: {},
     listing: { state: 'pending', recorded: {} }, ...overrides }
@@ -45,7 +45,7 @@ beforeEach(() => {
   mocks.prepare.mockImplementation(async (_plan: LaunchPlan, capability: 'sponsored' | 'self-paid' | 'unavailable') => {
     mocks.changed?.(saved({ mode: capability === 'sponsored' ? 'center' : 'direct' }))
   })
-  for (const fn of [mocks.run, mocks.refresh, mocks.selfPay, mocks.list, mocks.clear, mocks.addHash, mocks.retry, mocks.exitHold]) fn.mockResolvedValue(undefined)
+  for (const fn of [mocks.run, mocks.refresh, mocks.selfPay, mocks.list, mocks.clear, mocks.addHash, mocks.retry, mocks.exitHold, mocks.forceExit]) fn.mockResolvedValue(undefined)
   mocks.hold.mockResolvedValue(null)
   container = document.createElement('div')
   document.body.append(container)
@@ -148,6 +148,24 @@ describe('global Sticky launch host', () => {
     expect(button('Check again')).toBeDefined()
     expect(button('Check failed transaction for retry')).toBeUndefined()
     expect(button('Continue launch')).toBeUndefined()
+  })
+
+  it('offers the warned continue button only after the exit could not read the hold', async () => {
+    const pending = saved({ direct: { started: true } })
+    localStorage.setItem(STICKY_LAUNCH_KEY, JSON.stringify(pending))
+    mocks.load.mockReturnValue(pending)
+    mocks.hold.mockResolvedValue({ line: 'Held.', label: 'I checked my wallet. Send again', exit: true })
+    mocks.exitHold.mockRejectedValueOnce(new Error("Couldn't check this transaction. Try again."))
+    mocks.forceExit.mockImplementationOnce(async () => { mocks.hold.mockResolvedValue(null); mocks.changed?.(saved()) })
+    await mount()
+    await show()
+    await act(async () => { await vi.dynamicImportSettled() })
+    expect(button('I checked my wallet. Continue anyway')).toBeUndefined()
+    await click('I checked my wallet. Send again')
+    expect(container.textContent).toContain("This browser can't read its saved transactions. Check your wallet before sending again.")
+    await click('I checked my wallet. Continue anyway')
+    expect(mocks.forceExit).toHaveBeenCalledOnce()
+    expect(button('I checked my wallet. Continue anyway')).toBeUndefined()
   })
 
   it('keeps a create click made before the lazy dialog host mounts', async () => {

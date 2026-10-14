@@ -18,6 +18,19 @@ const mount = async (props: Partial<Parameters<typeof PendingWriteExit>[0]>) => 
   await act(async () => { await Promise.resolve() })
 }
 
+describe('PendingWriteExit after a strict read failed inside the exit', () => {
+  it('offers the warned continue button only after the exit reported unreadable, and it discards the record', async () => {
+    const force = vi.fn(async () => {})
+    await mount({ look: async () => null, adopt: async () => 'refused' as const, exit: async () => 'unreadable' as const, force })
+    expect(button('I checked my wallet. Continue anyway')).toBeUndefined()
+    await act(async () => { button('I checked it. Review it again.')!.click() })
+    await act(async () => { await Promise.resolve() })
+    expect(container.textContent).toContain("This browser can't read its saved transactions. Check your wallet before sending again.")
+    await act(async () => { button('I checked my wallet. Continue anyway')!.click() })
+    expect(force).toHaveBeenCalledOnce()
+  })
+})
+
 describe('PendingWriteExit when adoption is refused or unreadable', () => {
   it.each([['refuses', async () => 'refused' as const], ['throws', async () => { throw new Error('rpc down') }]])('offers the one explicit check when adoption %s and nothing is held', async (_name, adopt) => {
     const exit = vi.fn(async () => {})

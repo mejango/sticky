@@ -529,6 +529,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
     // Reading the hold takes no lock (a look); the exit takes the launch lock like every change.
     hold: controller.hold,
     exitHold: () => exclusive(controller.exitHold),
+    forceExit: () => exclusive(controller.forceExit),
     addHash: (...args: Parameters<typeof controller.addHash>) => exclusive(() => controller.addHash(...args)),
     clear: () => exclusive(controller.clear),
   }

@@ -1,6 +1,6 @@
 import { isAddress, isHash, type Hex } from 'viem'
 import type { RelayrPayment, RelayrQuote } from '@bananapus/nana-sdk-core/review/relayr'
-import { CHECK_REQUIRED_CREATE_LABEL, CHECK_REQUIRED_LINE, CHECK_REQUIRED_WARNING } from '@/lib/check-required'
+import { UNREADABLE_ERROR, CHECK_REQUIRED_CREATE_LABEL, CHECK_REQUIRED_LINE, CHECK_REQUIRED_WARNING } from '@/lib/check-required'
 import { requireSingleHomeChain, validateLaunchCall, type LaunchPlan, type LaunchTarget } from '@/lib/sticky-launch-plan'
 
 export const STICKY_LAUNCH_KEY = 'sticky-launch-pending-v1'
@@ -240,7 +240,7 @@ const sponsorUnknown = (session: StickyLaunchSession) => {
   return elapsed || (!!session.error && !known)
 }
 /** The SDK's allowed window: a request that discovery still cannot find after this long earns the explicit check. */
-const UNREADABLE = "Couldn't check this transaction. Try again."
+const UNREADABLE = UNREADABLE_ERROR
 const SPONSOR_WINDOW_MS = 30 * 60_000
 const SPONSOR_CHECK_VIEW: LaunchHoldView = { line: CHECK_REQUIRED_LINE, warning: CHECK_REQUIRED_WARNING, label: CHECK_REQUIRED_CREATE_LABEL, exit: true, checkRequired: true }
 
@@ -393,6 +393,18 @@ const SPONSOR_CHECK_VIEW: LaunchHoldView = { line: CHECK_REQUIRED_LINE, warning:
       // Re-read right before retiring: a success saved meanwhile is never retired.
       const latest = load()
       if (latest[kind]?.settled === 'success') return latest
+      const exited = { ...submitted, exited: true }
+      return kind === 'direct'
+        ? save({ ...session, directAttempts: submitted.hash ? [...(session.directAttempts ?? []), exited] : session.directAttempts, direct: undefined })
+        : save({ ...session, paymentAttempts: submitted.hash ? [...(session.paymentAttempts ?? []), { ...session.payment!, exited: true }] : session.paymentAttempts, payment: undefined })
+    }),
+    /** After a strict read failed inside the user's own exit: they checked their wallet, so the unreadable submission is discarded (recorded as an exit). A saved success is never discarded. */
+    forceExit: () => exclusively(async () => {
+      const session = load()
+      requireSingleHomeChain(session.plan.targets)
+      const kind = session.payment?.started ? 'payment' : 'direct'
+      const submitted = session[kind]
+      if (!submitted?.started || submitted.settled === 'success' || established(session)) return session
       const exited = { ...submitted, exited: true }
       return kind === 'direct'
         ? save({ ...session, directAttempts: submitted.hash ? [...(session.directAttempts ?? []), exited] : session.directAttempts, direct: undefined })

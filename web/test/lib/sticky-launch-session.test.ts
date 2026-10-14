@@ -493,6 +493,19 @@ describe('durable Sticky launch controller', () => {
     })
   })
 
+  it('discards an unreadable submission only on the forced action, recording the exit, and never a saved success', async () => {
+    const f = fixture()
+    await f.controller.run()
+    await f.controller.forceExit()
+    expect(f.store.load()?.direct).toBeUndefined()
+    expect(f.store.load()?.directAttempts).toEqual([{ started: true, hash: H1, exited: true }])
+    const g = fixture()
+    await g.controller.run()
+    g.store.save({ ...g.store.load()!, direct: { started: true, hash: H1, settled: 'success' } })
+    await g.controller.forceExit()
+    expect(g.store.load()?.direct).toMatchObject({ settled: 'success' })
+  })
+
   it('keeps the original hash locked when finalized failure proof is unavailable or reorged', async () => {
     const f = fixture()
     await f.controller.run()
