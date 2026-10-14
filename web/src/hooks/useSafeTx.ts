@@ -100,6 +100,8 @@ export type TxRequest = {
   label?: string
   /** An approval that covers an amount that can still move (a claim, a stick): held by token and spender, not by amount. */
   moving?: boolean
+  /** The user chose "all" (a max button) rather than a typed amount: held by that choice, not by the number filled in. */
+  max?: boolean
 }
 
 export type TxSendOptions = {

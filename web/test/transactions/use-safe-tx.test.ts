@@ -1109,6 +1109,31 @@ describe('useSafeTx', () => {
       expect(mocks.writeContract).toHaveBeenCalledOnce()
     })
 
+    // The user's choice is "all", not the number that was filled in: a balance that moved is the same choice.
+    it.each([
+      ['an unstick of everything', buildCashOutTx({ chainId: 10, terminal: X, holder: ALICE, projectId: 12n, cashOutCount: 5n, tokenToReclaim: X, minTokensReclaimed: 9n, beneficiary: ALICE, metadata: '0x' }), buildCashOutTx({ chainId: 10, terminal: X, holder: ALICE, projectId: 12n, cashOutCount: 7n, tokenToReclaim: X, minTokensReclaimed: 8n, beneficiary: ALICE, metadata: '0x' })],
+      ['a transfer of everything', { chainId: 10, address: X, abi: parseAbi(['function transfer(address to, uint256 amount)']), functionName: 'transfer', args: [BOB, 5n] }, { chainId: 10, address: X, abi: parseAbi(['function transfer(address to, uint256 amount)']), functionName: 'transfer', args: [BOB, 7n] }],
+      ['a collector delivery of everything queued', { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'send', args: [12n, X, 0n, 5n, X, X], value: 77n }, { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'send', args: [12n, X, 0n, 7n, X, X], value: 77n }],
+      ['a collector settle of everything queued', { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'settle', args: [12n, X, 0n, 5n] }, { chainId: 10, address: X, abi: stickySourceCollectorAbi, functionName: 'settle', args: [12n, X, 0n, 7n] }],
+    ] as [string, TxRequestOf, TxRequestOf][])('holds %s by "all", so a retry after the balance moved is refused', async (_name, first, retry) => {
+      mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
+      const hook = await renderHook()
+      await act(async () => { await hook.ref.current!.send({ ...first, max: true } as never, reviewedByAlice) })
+      expect(hook.ref.current!.held).not.toBeNull()
+      await act(async () => hook.ref.current!.reset())
+      await act(async () => { await hook.ref.current!.send({ ...retry, max: true } as never, reviewedByAlice) })
+      expect(mocks.writeContract).toHaveBeenCalledOnce()
+    })
+    it('keeps a typed amount as the choice: a different typed amount is a different write', async () => {
+      mocks.writeContract.mockRejectedValueOnce(new Error('lost'))
+      const abiTransfer = parseAbi(['function transfer(address to, uint256 amount)'])
+      const hook = await renderHook()
+      await act(async () => { await hook.ref.current!.send({ chainId: 10, address: X, abi: abiTransfer, functionName: 'transfer', args: [BOB, 5n] } as never, reviewedByAlice) })
+      await act(async () => hook.ref.current!.reset())
+      await act(async () => { await hook.ref.current!.send({ chainId: 10, address: X, abi: abiTransfer, functionName: 'transfer', args: [BOB, 7n] } as never, reviewedByAlice) })
+      expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+    })
+
     it('does not let a pending approval that covers a moving amount block a revocation or a cap', async () => {
       const abiApprove = parseAbi(['function approve(address spender, uint256 amount)'])
       mocks.writeContract.mockRejectedValueOnce(new Error('lost'))

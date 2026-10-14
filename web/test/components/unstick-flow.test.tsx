@@ -579,6 +579,29 @@ describe('an amount', () => {
     expect(chain.requests).toHaveLength(0)
   })
 
+  it('holds "all" as the choice: max, a lost reply, a changed balance, and max again is refused', async () => {
+    const { set } = world({ balance: E18 })
+    await render()
+    await press('max', form())
+    await until(() => document.querySelector<HTMLInputElement>('input')!.value === '1', 'the balance')
+    await press('Unstick', form())
+    await until(planned(1), 'the plan')
+    mocks.writeContract.mockRejectedValueOnce(new Error('Connection lost after sending'))
+    await press('Confirm & unstick', confirm()!)
+    await until(() => nameOf(confirm()!).includes('Done'), 'the uncertain send')
+    expect(called()).toEqual(['cashOutTokensOf'])
+    await press('Done', confirm()!)
+
+    // More tokens arrive while the first attempt is unresolved; max fills in a different number.
+    set({ balance: 2n * E18 })
+    await press('max', form())
+    await until(() => document.querySelector<HTMLInputElement>('input')!.value === '2', 'the new balance')
+    await press('Unstick', form())
+    await until(planned(1), 'the new plan')
+    await press('Confirm & unstick', confirm()!)
+    await until(() => nameOf(confirm()!).includes('Done'), 'the refusal')
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
+  })
   it('fills in the holder\'s whole balance from the chain with max, to the last digit', async () => {
     world({ balance: 1_234_567_890_123_456_789n, enabled: true })
     await render()
