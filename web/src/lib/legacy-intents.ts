@@ -21,10 +21,9 @@ export function legacyNamespaces(request: Pick<TxRequest, 'chainId' | 'address' 
       return [writeIntentKey('stick', { chain, terminal: address(request.address), projectId: amount(args[0]), token: address(args[1]), amount: amount(args[2]), beneficiary: address(args[3]) })]
     case 'cashOutTokensOf':
       return quantities(args[2]).map(count => writeIntentKey('unstick', { chain, terminal: address(request.address), holder: address(args[0]), projectId: amount(args[1]), count, token: address(args[3]), beneficiary: address(args[5]) }))
-    // The old "moving" approval key is left out: it ignored the amount, so it would hold every other approval of the token to
-    // this spender. An approval is an idempotent allowance, so a repeat costs gas, not funds.
+    // No old key holds an approval (jango 2026-10-14): a repeat costs gas, not funds.
     case 'approve':
-      return [writeIntentKey('approve', { chain, token: address(request.address), spender: address(args[0]), kind: 'exact', amount: amount(args[1]) })]
+      return []
     case 'prepare':
       return [writeIntentKey('bridge-queue', { chain, sucker: address(request.address), projectTokenCount: amount(args[0]), beneficiary: hex(args[1]), metadata: hex(args[4]) })]
     case 'toRemote':

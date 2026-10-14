@@ -1212,6 +1212,10 @@ describe('useSafeTx', () => {
       expect(mocks.writeContract).toHaveBeenCalledOnce()
     })
 
+    it('gives an approval no legacy namespace', () => {
+      expect(legacyNamespaces({ chainId: 10, address: X, functionName: 'approve', args: [ALICE, 5n] })).toEqual([])
+    })
+
     it('shows the SDK message when a review went stale because another window sent the same intent and it already settled', async () => {
       const call = stick(9n)
       const other = createWriteHold().open({ chainId: 10, account: ALICE, safe: false, call: { to: call.address, data: encodeFunctionData({ abi: call.abi, functionName: call.functionName, args: call.args } as never), value: call.value } })
