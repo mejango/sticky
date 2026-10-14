@@ -178,6 +178,8 @@ describe('a Safe review dismissed from its enclosing modal', () => {
 
   it.each(['transfer', 'trust'] as const)('retains an unproven %s after its notice is dismissed', async kind => {
     mocks.safe = true
+    // A Safe proposal hash is no transaction: the node has none for it.
+    mocks.publicClient.getTransaction.mockImplementation(async () => { throw Object.assign(new Error('not found'), { name: 'TransactionNotFoundError' }) })
     mocks.waitForSafeExecutionHash.mockRejectedValue(new Error('Confirmation unavailable.'))
     const onClose = vi.fn()
     const flow = kind === 'transfer'

@@ -94,7 +94,8 @@ const UNSEEN = `0x${'ef'.repeat(32)}` as Hex
 const SUCCESS = toEventSelector('ExecutionSuccess(bytes32,uint256)')
 const FAILURE = toEventSelector('ExecutionFailure(bytes32,uint256)')
 const BLOCK_HASH = `0x${'ed'.repeat(32)}` as Hex
-const recoveryRecords = () => Object.keys(localStorage).filter(key => key.startsWith('nana-sdk:reviewed-write:')).map(key => JSON.parse(localStorage.getItem(key)!))
+// The SDK also keeps a settlement and a latest-attempt marker per call; only the reservation records count here.
+const recoveryRecords = () => Object.keys(localStorage).filter(key => key.startsWith('nana-sdk:reviewed-write:')).map(key => JSON.parse(localStorage.getItem(key)!)).filter(value => value && typeof value === 'object' && 'call' in value && !('result' in value))
 const WORD = `0x${'00'.repeat(32)}` as Hex
 const AWAITING = 'Proposed to your Safe. Its other signers can approve it there.'
 const reviewedBySafe = { reviewedAccount: SAFE }
@@ -665,7 +666,7 @@ describe('a Safe proposal awaiting its signers', () => {
     expect(recoveryRecords()).toHaveLength(0)
   })
 
-  it('says the Safe ran a proposal whose execution it cannot name, and never offers to propose it again', async () => {
+  it('says the Safe ran a proposal whose execution it cannot name, and holds the same call while the SDK has no proof to settle it', async () => {
     vi.useFakeTimers()
     try {
       signersDecide()
@@ -683,52 +684,39 @@ describe('a Safe proposal awaiting its signers', () => {
       expect(mocks.writeContract).toHaveBeenCalledOnce()
       expect(recoveryRecords()).toHaveLength(1)
 
-      // Reopened, a follower whose hash reply is unreadable and whose watcher has not spoken yet
-      // still knows it ran: the evidence outlives Done, a remount and a reload.
-      mocks.waitForSafeExecutionHash.mockRejectedValue(new Error('unreadable'))
-      for (const reload of [false, true]) {
-        if (reload) {
-          await flow.close()
-          vi.resetModules()
-          ;({ useSafeTx } = await import('@/hooks/useSafeTx'))
-        }
-        const reopened = await mount()
-        await reopened.send()
-        await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
-        expect(reopened.tx.held).toBeNull()
-        await act(async () => reopened.tx.dismiss())
-        await reopened.send()
-        await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
-        expect(reopened.tx.held).toBeNull()
-        expect(mocks.writeContract).toHaveBeenCalledOnce()
-        await reopened.close()
-      }
     } finally { vi.useRealTimers() }
   })
 
-  it('saves that the Safe ran a proposal when the background follower proves it after Done, so a reload and a service gap offer no resend', async () => {
-    signersDecide()
-    let watchEnds!: (end: string) => void
-    mocks.watchSafeProposal.mockImplementationOnce(() => new Promise(resolve => (watchEnds = resolve)))
+  it('settles a proposal the background follower proves after Done on its receipt, and keeps that settlement readable across a reload', async () => {
+    const execute = signersDecide()
     const flow = await mount()
     await flow.send()
     await settle()
     // Done, with nobody looking at the proposal any more.
     await act(async () => flow.tx.dismiss())
     await flow.close()
-    watchEnds('executed')
+    const placement = { transactionHash: EXECUTION, blockHash: BLOCK_HASH, blockNumber: 9n, transactionIndex: 0 }
+    const receipt = { ...receiptOf(EXECUTION, PROPOSAL), ...placement, from: BOB, to: SAFE,
+      logs: [{ address: SAFE, topics: [SUCCESS, PROPOSAL], data: WORD, ...placement, removed: false }] }
+    mocks.publicClient.getBlock.mockImplementation(async ({ blockNumber }: { blockNumber?: bigint }) => ({ hash: BLOCK_HASH, number: blockNumber ?? 10n, timestamp: 1_900_000_000n }))
+    mocks.publicClient.getTransaction.mockImplementation(async ({ hash }: { hash: Hex }) => {
+      if (hash !== EXECUTION) throw new TransactionNotFoundError({ hash })
+      return { hash, from: BOB, to: SAFE, input: execTransaction(), ...placement }
+    })
+    mocks.publicClient.getTransactionReceipt.mockResolvedValue(receipt)
+    mocks.publicClient.waitForTransactionReceipt.mockResolvedValue(receipt)
+    execute()
     await settle()
-    expect(recoveryRecords()[0]).toMatchObject({ executed: true })
+    // Authenticated by the receipt's own log: the hold is settled, not abandoned.
+    expect(recoveryRecords()).toHaveLength(0)
+    const settled = Object.keys(localStorage).filter(key => key.endsWith(':settled')).map(key => JSON.parse(localStorage.getItem(key)!))
+    expect(settled[0]).toMatchObject({ hash: EXECUTION, result: 'success' })
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
 
-    // A reload, and Safe's service gone: the saved proof keeps the call held, never resendable.
+    // After a reload the settlement is still there for the app to read.
     vi.resetModules()
     ;({ useSafeTx } = await import('@/hooks/useSafeTx'))
-    mocks.waitForSafeExecutionHash.mockRejectedValue(NO_RECORD)
-    const reopened = await mount()
-    await reopened.send()
-    await settle()
-    expect(reopened.tx.held).toBeNull()
-    expect(mocks.writeContract).toHaveBeenCalledOnce()
+    expect(Object.keys(localStorage).some(key => key.endsWith(':settled'))).toBe(true)
   })
 
   it('stops being watched once its execution is known', async () => {

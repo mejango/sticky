@@ -11,7 +11,7 @@ import {
 } from 'viem'
 import { TransactionNotFoundError } from 'viem'
 import { SAFE_EXEC_ABI } from '@bananapus/nana-sdk-core/safe-service'
-import { WRITE_HOLD_IN_TAB_LINE, WRITE_EXIT_LABEL, writeExitMessage, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
+import { createWriteHold, WRITE_HOLD_IN_TAB_LINE, WRITE_EXIT_LABEL, writeExitMessage, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 
@@ -47,6 +47,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@wagmi/core', () => ({
   getAccount: mocks.getAccount,
+  getPublicClient: () => mocks.publicClient,
 }))
 vi.mock('wagmi', () => ({
   usePublicClient: () => mocks.publicClient,
@@ -92,7 +93,8 @@ const canonicalReceipt = (status: 'success' | 'reverted', transactionHash: Hex =
   status, transactionHash, blockNumber: 77n, blockHash: BLOCK_HASH, transactionIndex: 0,
   from: ALICE, to: BOB, logs: [],
 })
-const recoveryRecords = () => Object.keys(localStorage).filter(key => key.startsWith('nana-sdk:reviewed-write:')).map(key => JSON.parse(localStorage.getItem(key)!))
+// The SDK also keeps a settlement and a latest-attempt marker per call; only the reservation records count here.
+const recoveryRecords = () => Object.keys(localStorage).filter(key => key.startsWith('nana-sdk:reviewed-write:')).map(key => JSON.parse(localStorage.getItem(key)!)).filter(value => value && typeof value === 'object' && 'call' in value && !('result' in value))
 const ABI = parseAbi(['function transfer(address to, uint256 amount)'])
 const request = {
   chainId: 10,
@@ -629,12 +631,9 @@ describe('useSafeTx', () => {
       expect(hook.ref.current!.held).toMatchObject({ label: WRITE_EXIT_LABEL })
       expect(hook.ref.current!.held!.exit).toBeTypeOf('function')
 
-      // It reappears before the exit is accepted: the hold stays.
+      // A proven drop (another transaction used its nonce at a finalized block) can't run, whatever a node still shows:
+      // the exit is accepted even if the node shows the old hash pending again.
       chain.pending(HASH)
-      await act(async () => hook.ref.current!.held!.exit!())
-      expect(hook.ref.current!.phase).toBe('pending')
-      expect(recoveryRecords()).toHaveLength(1)
-
       chain.gone()
       chain.moved(true, { hash: EXECUTION_HASH, to: ALICE, input: '0x' })
       await look()
@@ -1038,6 +1037,29 @@ describe('useSafeTx', () => {
     await act(async () => { await hook.ref.current!.send(request, { ...reviewedByAlice, durableRecovery: journal }) })
     expect(mocks.writeContract).toHaveBeenCalledOnce()
     expect(journal.reserve).toHaveBeenCalledTimes(2)
+  })
+
+  it('reads a settlement another tab reached, after a reload, and hands it to the app without resending', async () => {
+    const journal = { reserve: vi.fn(), releaseUnsubmitted: vi.fn(), submitted: vi.fn(), released: vi.fn() }
+    // Tab A sends and is closed with the hash saved.
+    const tabA = await renderHook()
+    await act(async () => { await tabA.ref.current!.send(request, { ...reviewedByAlice, durableRecovery: journal }) })
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
+    await act(async () => tabA.renderer.unmount())
+
+    // Tab B, a second controller on the same storage, verifies the receipt and settles the hold.
+    mocks.receipt = { data: canonicalReceipt('success'), isError: false }
+    const tabB = createWriteHold().open({ chainId: 10, account: ALICE, safe: false, call: { to: BOB, data: encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] }), value: 7n } })
+    const settled = await tabB.onReceipt(canonicalReceipt('success') as never, mocks.publicClient as never)
+    expect(settled).toMatchObject({ status: 'clear', settled: { result: 'success', hash: HASH } })
+
+    // Tab A reloads: its stored look reads the settlement, and its exit never counts as an abandon.
+    const reloaded = await renderHook()
+    const write = { chainId: 10, owner: ALICE, to: BOB, data: encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] }), value: 7n }
+    await expect(reloaded.ref.current!.storedHold(write)).resolves.toEqual({ settled: { result: 'success', hash: HASH } })
+    await expect(reloaded.ref.current!.exitStored(write)).resolves.toEqual({ outcome: 'settled', hash: HASH, result: 'success' })
+    expect(journal.released).not.toHaveBeenCalled()
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
   })
 
   it('still holds and sends where the browser has no Web Locks', async () => {
