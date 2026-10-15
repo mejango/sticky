@@ -754,6 +754,21 @@ describe('useSafeTx', () => {
     } finally { vi.useRealTimers() }
   })
 
+  it('takes a second send of the same action right after the first one confirmed, without refusing it', async () => {
+    mocks.writeContract.mockResolvedValueOnce(HASH).mockResolvedValueOnce(EXECUTION_HASH)
+    const hook = await renderHook()
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    mocks.receipt = { data: canonicalReceipt('success'), isError: false }
+    await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
+    expect(hook.ref.current!.phase).toBe('success')
+    // The next send, at once: no hold, no "went through while you were away", no busy refusal.
+    let second: Hex | null = null
+    await act(async () => { second = await hook.ref.current!.send(request, reviewedByAlice) })
+    expect(second).toBe(EXECUTION_HASH)
+    expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+    expect(hook.ref.current).toMatchObject({ phase: 'pending', held: null, error: null })
+  })
+
   it('does not confirm a new action using the previous successful receipt', async () => {
     const hook = await renderHook()
     await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })

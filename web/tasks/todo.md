@@ -102,3 +102,4 @@ Hosted verification passed at `f6ed26bc8a41d748ef1caa1831dee1efc7eebd05`: all se
 - [x] Bump core 2.41.0; useSafeTx on useHeldSend; gate keeps the createHeldWriteView ban.
 - [x] Salt and builder rulings: nothing applies (no salt; no redeem, burn, Safe batch or sync write).
 - [x] Full gate, push, PR.
+- [x] SDK 2.41.1: removed the engine's post-receipt `check()` (the SDK's own checked read after a send replaces it); kept the brief busy retry (a different race, still reproduced) and the wallet-rejection handling (it picks the error line, not a workaround). The SDK now reads a mined-but-unreadable hash right after the send; the flow keeps its own waiting line and shows the SDK's line only for a long pending wait, as on main. New test: a second send of the same action right after the first confirmed is taken (it also passes on 2.41.0 here).
