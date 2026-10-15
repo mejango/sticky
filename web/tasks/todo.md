@@ -103,3 +103,15 @@ Hosted verification passed at `f6ed26bc8a41d748ef1caa1831dee1efc7eebd05`: all se
 - [x] Salt and builder rulings: nothing applies (no salt; no redeem, burn, Safe batch or sync write).
 - [x] Full gate, push, PR.
 - [x] SDK 2.41.1: removed the engine's post-receipt `check()` (the SDK's own checked read after a send replaces it); kept the brief busy retry (a different race, still reproduced) and the wallet-rejection handling (it picks the error line, not a workaround). The SDK now reads a mined-but-unreadable hash right after the send; the flow keeps its own waiting line and shows the SDK's line only for a long pending wait, as on main. New test: a second send of the same action right after the first confirmed is taken (it also passes on 2.41.0 here).
+
+# SDK 2.41.2
+
+## Plan refinement
+- **Objective:** Take core 2.41.2 and remove the two engine workarounds it makes unnecessary (the busy-retry loop and the app's own waiting line), with no other change.
+- **System fit:** Only `useSafeTx`'s send call and its long-pending line change; the SDK now owns both the send-time lock and the confirming line.
+- **Reuse and simplicity:** Applies the coordinator's validated diff verbatim; deletes code, adds none.
+- **Evidence and unknowns:** 2.41.2 integrity matches; the coordinator validated it against Sticky with both workarounds removed.
+- **Verification:** Full `npm run check`.
+- **Resource budget:** One small PR from origin/main in .worktrees/sticky-2412; no merge.
+
+- [x] Bump core 2.41.2; remove the busy retry and the app waiting line; full gate passes (3842 unit, 54 browser).

@@ -16,7 +16,7 @@ import {
 import { usePublicClient, useSwitchChain, useWaitForTransactionReceipt, useWriteContract } from 'wagmi'
 import { useHeldSend, type HeldSendInput } from '@bananapus/nana-sdk-core/review/react'
 import {
-  gasWithHeadroom, settledLine, transactionMessage, HELD_AWAY_SUCCESS_LINE, WRITE_HOLD_PENDING_LINE, WRITE_HOLD_UNCHECKED_LINE,
+  gasWithHeadroom, settledLine, transactionMessage, HELD_AWAY_SUCCESS_LINE, HELD_CONFIRMING_LINE, WRITE_HOLD_UNCHECKED_LINE,
   SubmittedContractWriteError, WriteHeldError, WriteHoldBusyError, WriteHoldNonceError, WriteHoldStaleReviewError,
   type WriteHoldClient,
   type WriteHoldGate,
@@ -374,19 +374,8 @@ export function useSafeTx(chainId: number) {
         if (viaSafe && !isHash(hash)) throw new Error('Check this proposal in your Safe before sending it again.')
         return hash
       }
-      // The held write's first read, as it starts, takes the call's lock for a moment: a send waits it out briefly.
-      // ponytail: fixed one-second wait; a longer hold is another window's send, refused as busy.
-      const sendHeld = async (): Promise<Hex> => {
-        for (const started = Date.now(); ; await new Promise(resolve => setTimeout(resolve, 0))) {
-          try {
-            return await latest.current.send(held, execute)
-          } catch (e) {
-            if (!(e instanceof WriteHoldBusyError) || walletInvoked || Date.now() - started > 1_000 || !isCurrent()) throw e
-          }
-        }
-      }
       try {
-        const hash = await sendHeld()
+        const hash = await latest.current.send(held, execute)
         if (!isCurrent()) return null
         // A Safe proposal is with its signers: the flow may close. A direct write keeps the lock until it settles.
         if (viaSafe) inFlight.current = false
@@ -462,9 +451,8 @@ export function useSafeTx(chainId: number) {
       ? { line: shown.line ?? '', warning: exitWarning(shown) ?? '', label: write.exitAction.label, notice: shown.notice, exit: runExit }
       : write.sendAgainAction
         ? { line: shown.line ?? '', warning: '', label: write.sendAgainAction.label, notice: shown.notice, exit: () => { void write.sendAgainAction?.run().then(reset) } }
-        // A direct write the wallet has held a while: the SDK's pending line, no exit. Until then the flow's own
-        // waiting line stands, as on main.
-        : shown.phase === 'confirming' && !safe && shown.line === WRITE_HOLD_PENDING_LINE
+        // A direct write the wallet has held a while: the SDK's pending line, no exit.
+        : shown.phase === 'confirming' && !safe && shown.line && shown.line !== HELD_CONFIRMING_LINE
           ? { line: shown.line, warning: '', label: '', notice: shown.notice, exit: null }
           : null
   const awaitingProposal = shown?.phase === 'awaiting' && sent?.safe ? sent.hash : null
