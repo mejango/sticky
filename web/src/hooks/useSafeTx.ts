@@ -1,7 +1,6 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { flushSync } from 'react-dom'
 import { getAccount } from '@wagmi/core'
 import { useQueryClient } from '@tanstack/react-query'
 import { refreshAfterConfirmedWrite } from '@/lib/sticky-refresh'
@@ -9,16 +8,15 @@ import {
   BaseError,
   encodeFunctionData,
   isHash,
-  zeroAddress,
   type Abi,
   type Address,
   type Hex,
   type TransactionReceipt,
 } from 'viem'
 import { usePublicClient, useSwitchChain, useWaitForTransactionReceipt, useWriteContract } from 'wagmi'
-import { useHeldWrite } from '@bananapus/nana-sdk-core/review/react'
+import { useHeldSend, type HeldSendInput } from '@bananapus/nana-sdk-core/review/react'
 import {
-  gasWithHeadroom, settledLine, transactionMessage, HELD_AWAY_SUCCESS_LINE, HELD_CONFIRMING_LINE, WRITE_HOLD_UNCHECKED_LINE,
+  gasWithHeadroom, settledLine, transactionMessage, HELD_AWAY_SUCCESS_LINE, WRITE_HOLD_PENDING_LINE, WRITE_HOLD_UNCHECKED_LINE,
   SubmittedContractWriteError, WriteHeldError, WriteHoldBusyError, WriteHoldNonceError, WriteHoldStaleReviewError,
   type WriteHoldClient,
   type WriteHoldGate,
@@ -151,13 +149,9 @@ export function legacyHolds(namespace: string | undefined, call: { to: Address; 
   return [{ match: { to: call.to, selector: call.data.slice(0, 10) as Hex } }, ...(request ? legacyNamespaces(request).filter(old => old !== namespace) : [])]
 }
 
-/** The write a flow holds: what the SDK's held write is opened on. */
-type Target = { chainId: number; account: Address; safe: boolean; namespace?: string; legacy: ReturnType<typeof legacyHolds>; call: SafeAppCall & { value: bigint } }
-const keyOf = (target: Target | null) => JSON.stringify(target, (_, value) => (typeof value === 'bigint' ? `${value}n` : value))
-
 /**
  * The one transaction pipeline every project-page write flow uses: exact review, simulation, then the send under the
- * SDK's held write (useHeldWrite), which watches it, follows its transaction or Safe proposal, gives its one line and
+ * SDK's held send (useHeldSend, as every site sends a call known only at send time), which watches it, follows its transaction or Safe proposal, gives its one line and
  * its exit, and settles it. The flow shows the SDK's view; nothing here decides whether a write may be sent again.
  */
 export function useSafeTx(chainId: number) {
@@ -172,8 +166,9 @@ export function useSafeTx(chainId: number) {
   const [sent, setSent] = useState<{ hash: Hex; safe: boolean } | null>(null)
   /** The hold's authenticated success, with its receipt. */
   const [result, setResult] = useState<{ hash: Hex; receipt: TransactionReceipt | null } | null>(null)
-  const [target, setTarget] = useState<Target | null>(null)
-  const publicClient = usePublicClient({ chainId: target?.chainId ?? chainId })
+  /** Whether the write this flow sent is a Safe proposal. */
+  const [safe, setSafe] = useState(false)
+  const publicClient = usePublicClient({ chainId })
   const options = useRef<TxSendOptions | null>(null)
   const inFlight = useRef(false)
   const mounted = useRef(true)
@@ -203,17 +198,10 @@ export function useSafeTx(chainId: number) {
     setError(null)
     setSent(null)
     setResult(null)
-    setTarget(null)
   }, [queryClient])
 
-  const write = useHeldWrite({
+  const write = useHeldSend({
     hold: holds,
-    chainId: target?.chainId ?? chainId,
-    account: target?.account ?? zeroAddress,
-    safe: target?.safe,
-    namespace: target?.namespace,
-    legacy: target?.legacy,
-    call: target?.call,
     client: publicClient,
     // As often as before: a held write is asked again every 15 seconds while visible.
     pollMs: 15_000,
@@ -236,33 +224,17 @@ export function useSafeTx(chainId: number) {
   const latest = useRef(write)
   latest.current = write
 
-  // A send waits for the held write of its target to be opened and watched, then sends through it.
-  const bound = useRef(keyOf(null))
-  const waiting = useRef<{ key: string; resolve: () => void }[]>([])
-  const targetKey = keyOf(target)
-  useEffect(() => {
-    bound.current = targetKey
-    waiting.current = waiting.current.filter(waiter => (waiter.key === targetKey ? (waiter.resolve(), false) : true))
-  }, [targetKey])
-  /** Commits the target at once, effects included, so its held write is watched; else resolves once it is. */
-  const bind = useCallback((next: Target): Promise<void> | null => {
-    const key = keyOf(next)
-    flushSync(() => setTarget(next))
-    return bound.current === key ? null : new Promise<void>(resolve => { waiting.current.push({ key, resolve }) })
-  }, [])
-
   // A direct write's receipt is handed to its hold, which verifies it and settles at once.
   // The transaction a direct write is followed by: the wallet's reply, or the one its hold already tracks.
   const tracked = write.state && write.state.status !== 'clear' && !write.state.record.safe
     ? ('hash' in write.state && write.state.hash ? write.state.hash : write.state.record.hash)
     : undefined
   const watched = (sent && !sent.safe ? sent.hash : undefined) ?? (phase === 'pending' ? tracked : undefined)
-  const receipt = useWaitForTransactionReceipt({ hash: watched, chainId: target?.chainId ?? chainId, timeout: 120_000, query: { enabled: !!watched } })
+  const receipt = useWaitForTransactionReceipt({ hash: watched, chainId, timeout: 120_000, query: { enabled: !!watched } })
   const receiptData = watched && receipt.data?.transactionHash?.toLowerCase() === watched.toLowerCase() ? receipt.data : undefined
   useEffect(() => {
     if (!receiptData || !publicClient) return
-    // The view then reads the settlement the receipt proved: its result comes from that read.
-    void latest.current.handle?.onReceipt(receiptData, publicClient).then(() => latest.current.check(), () => undefined)
+    void latest.current.handle?.onReceipt(receiptData, publicClient).catch(() => undefined)
   }, [receiptData, publicClient])
 
   const send = useCallback(
@@ -307,11 +279,8 @@ export function useSafeTx(chainId: number) {
         setPhase('error')
         return null
       }
-      // Out of whatever React is running (a send can start in an effect) before the target is committed.
-      await Promise.resolve()
-      const binding = bind({ chainId: request.chainId, account, safe: viaSafe, namespace, legacy: legacyHolds(namespace, call, request), call })
-      if (binding) await binding
-      if (!isCurrent()) return null
+      const held: HeldSendInput = { chainId: request.chainId, account, safe: viaSafe, namespace, legacy: legacyHolds(namespace, call, request), call }
+      setSafe(viaSafe)
       let walletInvoked = false
       /** The wallet refused it, or it stopped before the wallet: the SDK dropped its reservation, nothing was sent. */
       let unsent = false
@@ -410,7 +379,7 @@ export function useSafeTx(chainId: number) {
       const sendHeld = async (): Promise<Hex> => {
         for (const started = Date.now(); ; await new Promise(resolve => setTimeout(resolve, 0))) {
           try {
-            return await latest.current.send(execute)
+            return await latest.current.send(held, execute)
           } catch (e) {
             if (!(e instanceof WriteHoldBusyError) || walletInvoked || Date.now() - started > 1_000 || !isCurrent()) throw e
           }
@@ -449,15 +418,10 @@ export function useSafeTx(chainId: number) {
           return e.hash
         }
         // A write that may have reached the wallet stays held, whatever was thrown.
+        // The SDK keeps it held (its view, current from this send on, shows it): never an error to retry.
         if (walletInvoked && !unsent) {
-          try {
-            const view = await latest.current.check()
-            if (view.phase !== 'clear') { setPhase('pending'); return null }
-          } catch {
-            setError(WRITE_HOLD_UNCHECKED_LINE)
-            setPhase('error')
-            return null
-          }
+          setPhase('pending')
+          return null
         }
         if (e instanceof TransactionReviewCancelledError) {
           setPhase('idle')
@@ -468,13 +432,12 @@ export function useSafeTx(chainId: number) {
         return null
       }
     },
-    [chainId, isConnected, isCenterWallet, publicClient, switchChainAsync, writeContractAsync, bind],
+    [chainId, isConnected, isCenterWallet, publicClient, switchChainAsync, writeContractAsync],
   )
 
   // While the wallet's own prompt is open the call is reserved, not lost: the flow shows the prompt, not the hold.
   const prompting = phase === 'review' || phase === 'simulating' || phase === 'signing'
   const shown = phase === 'pending' && !prompting ? write : null
-  const safe = !!target?.safe
   // A result is the hold's settlement (onSettled); a receipt alone is followed, never shown as one. A reverted receipt
   // the hold keeps until finality lets the flow close while the hold keeps checking.
   const effectivePhase: TxPhase = !shown
@@ -499,12 +462,13 @@ export function useSafeTx(chainId: number) {
       ? { line: shown.line ?? '', warning: exitWarning(shown) ?? '', label: write.exitAction.label, notice: shown.notice, exit: runExit }
       : write.sendAgainAction
         ? { line: shown.line ?? '', warning: '', label: write.sendAgainAction.label, notice: shown.notice, exit: () => { void write.sendAgainAction?.run().then(reset) } }
-        // A direct write the wallet has held a while: the SDK's pending line, no exit.
-        : shown.phase === 'confirming' && !safe && shown.line && shown.line !== HELD_CONFIRMING_LINE
+        // A direct write the wallet has held a while: the SDK's pending line, no exit. Until then the flow's own
+        // waiting line stands, as on main.
+        : shown.phase === 'confirming' && !safe && shown.line === WRITE_HOLD_PENDING_LINE
           ? { line: shown.line, warning: '', label: '', notice: shown.notice, exit: null }
           : null
   const awaitingProposal = shown?.phase === 'awaiting' && sent?.safe ? sent.hash : null
-  closing.current = { handle: write.handle, client: publicClient as WriteHoldClient | undefined, chainId: target?.chainId ?? chainId,
+  closing.current = { handle: write.handle, client: publicClient as WriteHoldClient | undefined, chainId,
     follow: !!sent?.safe && (shown?.phase === 'awaiting' || shown?.phase === 'confirming') }
   // The lock is let go once the result is committed, so a click before that commit's effects sends nothing.
   useEffect(() => {

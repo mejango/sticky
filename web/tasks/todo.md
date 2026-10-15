@@ -88,3 +88,18 @@ Hosted verification passed at `f6ed26bc8a41d748ef1caa1831dee1efc7eebd05`: all se
 - Full `npm run check` passes: prod audit 0 vulnerabilities, lint, types, inventories (10 useSafeTx sends), 164 files / 3839 unit tests (coverage 94.29/90.99/94.25/96.75), three production builds, 54 browser cases.
 - Codex round 1: [P1] a launch that confirmed during its run could not Finish (canDiscard retired a pending hold); [P2] a launch exit's retirement could be dropped behind the host's busy flag. Both fixed (recover before retiring; retire outside the host action), P1 with a red-first test. Round 2: both closed, no new findings.
 - Rulings: no nana-sdk-react (wagmi 2 peer); thin copy of its hooks in `src/lib/held-write-react.ts` until SDK 2.40. HeldWritesNotice skipped for now. Approval counts unchanged.
+
+# SDK 2.41 follow-up
+
+## Plan refinement
+- **Objective:** Take core 2.41.0 and send through its `useHeldSend`, so all four sites send a call known only at send time the same way; confirm the salt and new-builder rulings apply or not.
+- **System fit:** Only `useSafeTx`'s binding changes (the SDK opens, reuses and starts the held view per send); flows, journals and recovery are unchanged.
+- **Reuse and simplicity:** Deletes the local target state, the flushSync binding and its render wait. Salt: Sticky deploys with `deployStickyFor` and has no contract salt, so nothing to change. Sticky has no redeem, burn, Safe batch or sync write, so no 2.41 builder applies and no legacy key is needed.
+- **Evidence and unknowns:** 2.41.0 integrity matches the coordinator's; `useHeldSend` read from the installed package.
+- **Verification:** Existing engine, flow, happy-path and gate suites, then the full `npm run check`.
+- **Resource budget:** One small PR from origin/main in .worktrees/sticky-241; no merge.
+
+- [x] Bump core 2.41.0; useSafeTx on useHeldSend; gate keeps the createHeldWriteView ban.
+- [x] Salt and builder rulings: nothing applies (no salt; no redeem, burn, Safe batch or sync write).
+- [x] Full gate, push, PR.
+- [x] SDK 2.41.1: removed the engine's post-receipt `check()` (the SDK's own checked read after a send replaces it); kept the brief busy retry (a different race, still reproduced) and the wallet-rejection handling (it picks the error line, not a workaround). The SDK now reads a mined-but-unreadable hash right after the send; the flow keeps its own waiting line and shows the SDK's line only for a long pending wait, as on main. New test: a second send of the same action right after the first confirmed is taken (it also passes on 2.41.0 here).
