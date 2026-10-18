@@ -118,6 +118,14 @@ export async function emit(group, {
       console.log(`${alias}: ${contract.name}.json`);
     }
   }
+  // Publish the shared record only after all families and creation artifacts succeed.
+  // Verify.s.sol writes family manifests; this projection keeps the canonical singleton
+  // consumer path current without inventing a second source of deployment identity.
+  for (const { folder, manifest } of families[0].manifests) {
+    const shared = Object.fromEntries(Object.entries(manifest).filter(([field]) =>
+      field !== 'destinationChainId' && !/^(sourceCollector|sourceFeePayer|registry|tokens)(Codehash|Salt)?$/.test(field)));
+    write(`deployments/${folder}/verified.json`, `${JSON.stringify(shared, null, 2)}\n`);
+  }
 }
 
 // Derive explicit child identities from their complete compiled code and recorded constructor bindings.

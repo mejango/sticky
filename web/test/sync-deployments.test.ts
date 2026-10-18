@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { getContractAddress, zeroAddress } from 'viem'
+import { zeroAddress } from 'viem'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   deploymentsFromRecords,
@@ -24,6 +24,7 @@ const script = fileURLToPath(
   new URL('../scripts/sync-deployments.mjs', import.meta.url),
 )
 
+const deploymentAuthority = '0xd5136c794ee43BEf1eD4cF1eB6DEe45b7F803437'
 const addresses = {
   deployer: '0xdA38Ec48B5b1d186B02BA99F297e95153BEE33a9',
   hook: '0xa8DcD735031cf96C4213D9A3f66a1DFFDCdba693',
@@ -63,7 +64,7 @@ function record(
   mkdirSync(directory, { recursive: true })
   writeFileSync(
     join(directory, 'verified.json'),
-    JSON.stringify({ kind: 'verified', chainId, ...addresses, ...overrides.verified }),
+    JSON.stringify({ kind: 'verified', chainId, deploymentAuthority, directory: addresses.terminal, ...addresses, ...overrides.verified }),
   )
   writeFileSync(
     join(directory, 'StickyDeployer.json'),
@@ -259,7 +260,7 @@ describe('sync-deployments.mjs', () => {
 })
 
 const collector = '0x1111111111111111111111111111111111111111'
-const feePayer = getContractAddress({ from: collector, nonce: 1n })
+const feePayer = '0x2222222222222222222222222222222222222222'
 const codeHash = `0x${'12'.repeat(32)}`
 const sourceBindings = {
   registry: addresses.deployer, tokens: addresses.hook, directory: addresses.terminal,
@@ -270,14 +271,14 @@ function family(source: string, sourceChainId: number, home = 1, overrides: Reco
   const directory = join(root, source, 'source-collectors', String(home))
   mkdirSync(directory, { recursive: true })
   writeFileSync(join(directory, 'verified.json'), JSON.stringify({
-    kind: 'verified', chainId: sourceChainId, destinationChainId: home,
+    kind: 'verified', chainId: sourceChainId, destinationChainId: home, deploymentAuthority, ...addresses,
     sourceCollector: collector, sourceFeePayer: feePayer,
     sourceCollectorCodehash: codeHash, sourceFeePayerCodehash: codeHash,
     ...sourceBindings, ...overrides,
   }))
   for (const [name, address, args] of [
-    ['StickySourceCollector', collector, [sourceBindings.registry, sourceBindings.tokens, sourceBindings.rewardReceiverFactory, String(home)]],
-    ['StickySourceFeePayer', feePayer, []],
+    ['StickySourceCollector', collector, [sourceBindings.registry, sourceBindings.tokens, sourceBindings.rewardReceiverFactory, String(home), feePayer]],
+    ['StickySourceFeePayer', feePayer, [deploymentAuthority]],
   ] as const) {
     writeFileSync(join(directory, `${name}.json`), JSON.stringify({
       contractName: name, address, args, chainId: `0x${sourceChainId.toString(16)}`, destinationChainId: home,
@@ -336,6 +337,25 @@ describe('collectorsFromRecords', () => {
     expect(() => collectorsFromRecords(root)).toThrow('artifact does not match')
   })
 
+  it.each([
+    ['StickySourceCollector', [sourceBindings.registry, sourceBindings.tokens, sourceBindings.rewardReceiverFactory, '1']],
+    ['StickySourceCollector', [sourceBindings.registry, sourceBindings.tokens, sourceBindings.rewardReceiverFactory, '1', collector]],
+    ['StickySourceFeePayer', []],
+    ['StickySourceFeePayer', [addresses.controller]],
+  ])('rejects stale or substituted %s constructor bindings', (name, args) => {
+    const directory = family('base', 8453)
+    const path = join(directory, `${name}.json`)
+    writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), args }))
+    expect(() => collectorsFromRecords(root)).toThrow('artifact does not match')
+  })
+
+  it.each([{ deploymentAuthority: addresses.controller }, { hook: addresses.controller }, { directory: addresses.controller }])(
+    'rejects family/shared binding disagreement: %j', overrides => {
+      family('base', 8453, 1, overrides)
+      expect(() => collectorsFromRecords(root)).toThrow('shared deployment bindings disagree')
+    },
+  )
+
   it('requires the same complete family identity on each source chain', () => {
     family('ethereum', 1)
     family('base', 8453, 1, { sourceCollectorCodehash: `0x${'34'.repeat(32)}` })
@@ -351,17 +371,23 @@ describe('collectorsFromRecords', () => {
     expect(() => collectorsFromRecords(root)).toThrow('artifact does not match')
   })
 
-  it.each([
-    { transactionHash: `0x${'34'.repeat(32)}` },
-    { blockHash: `0x${'34'.repeat(32)}` },
-    { blockNumber: '0x11' }, { blockNumber: '0x0' },
-  ])('requires parent and child evidence from one nonzero creation block: %j', overrides => {
+  it('accepts independent successful creation transactions for the explicit peers', () => {
+    const directory = family('base', 8453)
+    const path = join(directory, 'StickySourceFeePayer.json')
+    const artifact = JSON.parse(readFileSync(path, 'utf8'))
+    artifact.receipt = { status: '0x1', transactionHash: `0x${'34'.repeat(32)}`, blockHash: `0x${'56'.repeat(32)}`, blockNumber: '0x11' }
+    writeFileSync(path, JSON.stringify(artifact))
+    expect(collectorsFromRecords(root)).toHaveLength(1)
+  })
+
+  it('rejects a zero creation block for an explicit peer', () => {
+    const overrides = { blockNumber: '0x0' }
     const directory = family('base', 8453)
     const path = join(directory, 'StickySourceFeePayer.json')
     const artifact = JSON.parse(readFileSync(path, 'utf8'))
     artifact.receipt = { ...artifact.receipt, ...overrides }
     writeFileSync(path, JSON.stringify(artifact))
-    expect(() => collectorsFromRecords(root)).toThrow('share one successful creation transaction')
+    expect(() => collectorsFromRecords(root)).toThrow('nonzero block')
   })
 
   it('requires a verified home-chain deployment', () => {

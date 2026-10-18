@@ -7,7 +7,7 @@ import {
 } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { getAddress, getContractAddress, isAddress, isHash, zeroAddress } from 'viem'
+import { getAddress, isAddress, isHash, zeroAddress } from 'viem'
 
 // Sticky's contract addresses and scan start blocks come from the repository's
 // verified deployment records. Railway builds from web/ alone, so the result is
@@ -150,7 +150,8 @@ export function collectorsFromRecords(root = RECORDS) {
           !Number.isSafeInteger(destinationChainId) || destinationChainId <= 0 || String(destinationChainId) !== family.name) {
           throw new Error('a verified record must identify its source and home chain')
         }
-        if (readJson(join(directory, 'verified.json')).chainId !== sourceChainId) {
+        const shared = readJson(join(directory, 'verified.json'))
+        if (shared.chainId !== sourceChainId) {
           throw new Error('the family record belongs to another source chain')
         }
         if (!deployments[sourceChainId] || !deployments[destinationChainId]) {
@@ -174,13 +175,20 @@ export function collectorsFromRecords(root = RECORDS) {
           deployment.receiverFactory !== deployments[destinationChainId].rewardReceiverFactory) {
           throw new Error('the source and home receiver factories disagree')
         }
-        if (getContractAddress({ from: deployment.address, nonce: 1n }) !== deployment.feePayer) {
-          throw new Error('the fee payer is not the collector constructor child')
+        // Canonical family manifests certify the live reciprocal collector/fee-payer binding.
+        // Both peers are explicit deployments, not a parent and its CREATE child.
+        const authority = checksummed(record.deploymentAuthority, 'deploymentAuthority')
+        if (authority !== checksummed(shared.deploymentAuthority, 'shared deploymentAuthority') ||
+          deployment.directory !== checksummed(shared.directory, 'shared directory') ||
+          ADDRESS_FIELDS.some(field => checksummed(record[field], field) !== deployments[sourceChainId][field])) {
+          throw new Error('the family and shared deployment bindings disagree')
         }
-        let creation
+        if (deployment.address === deployment.feePayer) {
+          throw new Error('the collector and fee payer must be distinct deployments')
+        }
         for (const [name, expectedAddress, expectedArgs] of [
-          ['StickySourceCollector', deployment.address, [deployment.registry, deployment.tokens, deployment.receiverFactory, String(destinationChainId)]],
-          ['StickySourceFeePayer', deployment.feePayer, []],
+          ['StickySourceCollector', deployment.address, [deployment.registry, deployment.tokens, deployment.receiverFactory, String(destinationChainId), deployment.feePayer]],
+          ['StickySourceFeePayer', deployment.feePayer, [authority]],
         ]) {
           const artifact = readJson(join(path, `${name}.json`))
           if (checksummed(artifact.address, `${name} address`) !== expectedAddress ||
@@ -192,11 +200,9 @@ export function collectorsFromRecords(root = RECORDS) {
             throw new Error(`${name} artifact does not match the executed destination family`)
           }
           const blockNumber = hexNumber(artifact.receipt.blockNumber, `${name} receipt.blockNumber`)
-          const receipt = `${artifact.receipt.transactionHash.toLowerCase()}:${artifact.receipt.blockHash.toLowerCase()}:${blockNumber}`
-          if (blockNumber === 0n || (creation !== undefined && creation !== receipt)) {
-            throw new Error('the collector and fee payer must share one successful creation transaction')
+          if (blockNumber === 0n) {
+            throw new Error(`${name} must have a successful creation receipt at a nonzero block`)
           }
-          creation = receipt
         }
         const key = `${sourceChainId}:${destinationChainId}`
         if (keys.has(key)) throw new Error(`duplicate source/home family ${key}`)

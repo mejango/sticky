@@ -68,7 +68,10 @@ function fixture(group, { revision = 'abc123' } = {}) {
     for (const destination of destinationChainIds(group)) {
       files[`${familyDirectory(folder, destination)}/verified.json`] = JSON.stringify({
         ...addresses, ...familyAddresses(group, destination), revision, chainId,
-        destinationChainId: destination, kind: 'verified',
+        destinationChainId: destination, kind: 'verified', rpcBlockNumber: chainId + 10,
+        rpcBlockHash: '0x' + '77'.repeat(32), sourceCollectorSalt: 'collector-salt',
+        sourceFeePayerSalt: 'fee-salt', sourceCollectorCodehash: 'collector-hash',
+        sourceFeePayerCodehash: 'fee-hash', registryCodehash: 'registry-hash', tokensCodehash: 'tokens-hash',
       });
     }
   }
@@ -146,7 +149,18 @@ for (const group of Object.keys(networks)) {
       }
       // Explicit singleton deployments retain their own creation receipts.
       assert.equal(written[`deployments/${folder}/StickyHook.json`].receipt.transactionHash, '0xtx-StickyHook');
-      assert.ok(!written[`deployments/${folder}/verified.json`], 'canonical singleton manifest is not rewritten');
+      const shared = written[`deployments/${folder}/verified.json`];
+      assert.equal(shared.kind, 'verified');
+      assert.equal(shared.chainId, chainId);
+      assert.equal(shared.revision, 'abc123');
+      assert.equal(shared.deploymentAuthority, addresses.deploymentAuthority);
+      assert.equal(shared.hook, addresses.hook);
+      assert.equal(shared.rpcBlockNumber, chainId + 10);
+      assert.equal(shared.rpcBlockHash, '0x' + '77'.repeat(32));
+      for (const field of ['destinationChainId', 'sourceCollector', 'sourceFeePayer', 'registry', 'tokens',
+        'sourceCollectorSalt', 'sourceFeePayerSalt', 'sourceCollectorCodehash', 'sourceFeePayerCodehash', 'registryCodehash', 'tokensCodehash']) {
+        assert.equal(shared[field], undefined, `shared manifest excludes ${field}`);
+      }
       assert.ok(!written[`deployments/${folder}/StickySourceCollector.json`], 'no flat source-collector artifact');
     }
     assert.equal(verified.length, networks[group].length * (6 + 2 * destinationChainIds(group).length));
@@ -184,6 +198,7 @@ test('creation bytecode that disagrees with the recorded bindings stops the grou
   };
   await assert.rejects(emit('mainnets', options), /creation bytecode of StickyDistributor/);
   assert.ok(!written['deployments/ethereum/StickyDistributor.json']);
+  assert.ok(!Object.keys(written).some(path => path.endsWith('/verified.json')), 'no shared manifest is published for a partial artifact group');
 });
 
 test('explorer verification failure stops the group, but an already verified source does not', async () => {
@@ -198,7 +213,7 @@ test('explorer verification failure stops the group, but an already verified sou
     ? verifiedSpawn(command, args, options) : { status: 1, stderr: 'Contract source code already verified' };
   await emit('testnets', verified.options);
   assert.equal(Object.keys(verified.written).length,
-    networks.testnets.length * (6 + 2 * destinationChainIds('testnets').length));
+    networks.testnets.length * (7 + 2 * destinationChainIds('testnets').length));
 });
 
 test('constructor bindings are encoded from the manifest and rejected when the compiled constructor changes', () => {
