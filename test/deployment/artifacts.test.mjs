@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { constructorArgs, contracts, create2Address, emit, trustedForwarder } from '../../script/artifacts.mjs';
+import { constructorArgs, contracts, create2Address, emit, explorerFetch, trustedForwarder } from '../../script/artifacts.mjs';
 import { destinationChainIds, familyDirectory, networks, suite } from '../../script/deploy.mjs';
 
 const code = '0x6080604052';
@@ -168,7 +168,8 @@ for (const group of Object.keys(networks)) {
       assert.equal(command, 'forge');
       assert.equal(args[0], 'verify-contract');
       assert.equal(args.at(-2), '--constructor-args');
-      assert.ok(args.includes('--via-ir') && args.includes('--skip-is-verified-check'));
+      assert.ok(args.includes('--via-ir') && args.includes('--watch'));
+      assert.ok(!args.includes('--skip-is-verified-check'), 'native verification check makes interrupted runs idempotent');
       assert.ok(!args.includes('--broadcast'));
     }
     const chainIds = new Set(verified.map(({ args }) => args[args.indexOf('--chain-id') + 1]));
@@ -439,5 +440,65 @@ test('missing, duplicate or computed Solidity setup authority is rejected before
     assert.equal(setup.fetched.length, 0);
     assert.equal(setup.verified.length, 0);
     assert.deepEqual(setup.written, {});
+  }
+});
+
+
+// These responses reproduce the explorer's NOTOK envelope and temporary empty evidence,
+// without public API traffic or real backoff delays.
+const explorerUrl = action => `https://example.invalid/api?action=${action}&apikey=private-test-key`;
+function explorerResponses(responses) {
+  const delays = [];
+  let calls = 0;
+  return {
+    delays, get calls() { return calls; },
+    options: {
+      fetchResponse: async () => ({ ok: true, status: 200, json: async () => responses[Math.min(calls++, responses.length - 1)] }),
+      wait: async delay => { delays.push(delay); },
+    },
+  };
+}
+
+for (const rate of [
+  { status: '0', message: 'NOTOK', result: 'Max rate limit reached, please use API Key for higher rate limit' },
+  { message: 'NOTOK', error: { message: 'Max calls per sec rate limit reached' } },
+]) {
+  test('rate-limit result/error is retried even when message is NOTOK', async () => {
+    const found = { result: { blockHash: '0x123' } };
+    const run = explorerResponses([rate, found]);
+    assert.deepEqual(await explorerFetch(explorerUrl('eth_getTransactionReceipt'), run.options), found);
+    assert.equal(run.calls, 2);
+    assert.deepEqual(run.delays, [250, 2000, 250]);
+  });
+}
+
+for (const [action, missing, found] of [
+  ['eth_getTransactionReceipt', { jsonrpc: '2.0', result: null }, { result: { blockHash: '0x123' } }],
+  ['getcontractcreation', { status: '0', message: 'No data found', result: [] }, { status: '1', result: [{ txHash: '0x123' }] }],
+]) {
+  test(`${action}: transient missing evidence retries, persistent missing evidence fails closed`, async () => {
+    const recovered = explorerResponses([missing, found]);
+    assert.deepEqual(await explorerFetch(explorerUrl(action), recovered.options), found);
+    assert.equal(recovered.calls, 2);
+    const absent = explorerResponses([missing]);
+    await assert.rejects(explorerFetch(explorerUrl(action), absent.options), /missing creation or receipt evidence persisted after 8 attempts/);
+    assert.equal(absent.calls, 8);
+    assert.ok(absent.delays.every(delay => delay <= 10_000));
+    assert.equal(absent.delays.reduce((a, b) => a + b), 56_000);
+  });
+}
+
+test('persistent rate limits and unretryable API errors identify the action without exposing secrets', async () => {
+  const limited = explorerResponses([{ status: '0', message: 'NOTOK', result: 'Max rate limit reached' }]);
+  await assert.rejects(explorerFetch(explorerUrl('getcontractcreation'), limited.options), /Explorer getcontractcreation: rate limit persisted after 8 attempts/);
+  assert.equal(limited.calls, 8);
+  for (const failure of [
+    { status: '0', message: 'NOTOK', result: 'Invalid API key private-test-key' },
+    { error: { message: 'Invalid method private-test-key' } },
+  ]) {
+    const rejected = explorerResponses([failure]);
+    await assert.rejects(explorerFetch(explorerUrl('getcontractcreation'), rejected.options), error =>
+      /Explorer getcontractcreation: API rejected/.test(error.message) && !/private-test-key|https:/.test(error.message));
+    assert.equal(rejected.calls, 1);
   }
 });

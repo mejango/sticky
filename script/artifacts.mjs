@@ -183,7 +183,7 @@ function verify({ alias, chainId, address, contract, argsHex, spawn, env, key })
   const args = ['verify-contract', address, `src/${contract.name}.sol:${contract.name}`, '--chain-id', String(chainId),
     '--verifier', 'etherscan', '--verifier-url', `${explorer}?chainid=${chainId}`, '--etherscan-api-key', key,
     '--compiler-version', '0.8.28', '--num-of-optimizations', '200', '--evm-version', 'cancun', '--via-ir',
-    '--skip-is-verified-check', '--watch', '--retries', '12', '--delay', '10'];
+    '--watch', '--retries', '12', '--delay', '10'];
   if (argsHex) args.push('--constructor-args', `0x${argsHex}`);
   const result = spawn('forge', args, { env, encoding: 'utf8' });
   const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
@@ -193,12 +193,29 @@ function verify({ alias, chainId, address, contract, argsHex, spawn, env, key })
   console.log(`${alias}: ${contract.name} source verified`);
 }
 
-async function explorerFetch(url) {
+export async function explorerFetch(url, { fetchResponse = fetch, wait = sleep } = {}) {
+  const action = new URL(url).searchParams.get('action');
   for (let attempt = 1; ; attempt++) {
-    await sleep(250);
-    const body = await (await fetch(url)).json();
-    if (!/rate limit|max calls/i.test(String(body.message ?? body.result ?? '')) || attempt === 8) return body;
-    await sleep(1000 * 2 ** attempt);
+    await wait(250);
+    const response = await fetchResponse(url);
+    const body = await response.json();
+    // Etherscan can put the useful rate-limit detail in result while message is only NOTOK.
+    const detail = [body.message, typeof body.result === 'string' ? body.result : '', body.error?.message].join(' ');
+    const throttled = response.status === 429 || /rate limit|max calls/i.test(detail);
+    const absent = !body.error && (
+      (action === 'eth_getTransactionReceipt' && body.result === null && body.status !== '0') ||
+      (action === 'getcontractcreation' && Array.isArray(body.result) && body.result.length === 0));
+    const retry = throttled ? 'rate limit' : absent ? 'missing creation or receipt evidence' : undefined;
+    if (retry) {
+      if (attempt === 8) throw new Error(`Explorer ${action}: ${retry} persisted after 8 attempts.`);
+      await wait(Math.min(1000 * 2 ** attempt, 10_000));
+      continue;
+    }
+    // Do not echo the request URL, key or untrusted response text in operator diagnostics.
+    if (response.ok === false || body.error || body.status === '0') {
+      throw new Error(`Explorer ${action}: API rejected the evidence request (HTTP ${response.status ?? 'unknown'}, status ${body.status === '0' ? '0' : 'error'}).`);
+    }
+    return body;
   }
 }
 
