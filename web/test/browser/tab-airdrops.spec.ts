@@ -1,5 +1,5 @@
 import { expect, test, type BrowserContext, type Locator, type Page } from '@playwright/test'
-import deployments from '../../src/lib/sticky-deployments.json'
+import deployments from '../fixtures/historical-sticky-deployments.json'
 import { expectAxeClean, expectNoDocumentOverflow } from './page-checks'
 import { HOLDER, PROJECT, viewports } from './suite'
 import { blockExternalTraffic, settling } from './traffic'
