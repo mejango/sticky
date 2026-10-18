@@ -39,6 +39,6 @@ The client used to prepare the production proposal was upstream Sphinx `f34436a`
 
 ## Consumer qualification
 
-The core SDK candidate at `ddbba6080252f5a876d7161c39f9867aa7db2762` was packed and loaded into the frontend before package publication. All 3,847 frontend tests pass with coverage, and the current registry/configuration checks additionally pass. The production build passes. Deployment tooling passes 120 tests. These results do not claim that the official npm release or live frontend cutover has happened.
+The core SDK candidate at `ddbba6080252f5a876d7161c39f9867aa7db2762` was packed and loaded into the frontend before package publication. All 3,847 frontend tests pass with coverage, and the current registry/configuration checks additionally pass. The production build and both browser builds pass. All 54 browser cases pass, including the unchanged suite-wide request and batching audit. Lint, types and 120 deployment tooling tests also pass. These results do not claim that the official npm release or live frontend cutover has happened.
 
 Historical October RPC recordings remain byte-identical. Only recorded-reader tests and isolated loopback browser builds select the historical test registry. Production has no generation selection or previous-generation routing; its configuration rejects the historical fixture flag outside the isolated browser output directories and local origins. Current address/SDK parity checks and finalized onchain fork lifecycle smokes exercise the new deployment separately.
