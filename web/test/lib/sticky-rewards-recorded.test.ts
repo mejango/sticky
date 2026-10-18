@@ -11,6 +11,12 @@ import recorded from './recorded/funding-basesep.json'
 // through the block Bendystraw was indexed through, 500 blocks a request. Only the two services are stood in for: the
 // reader, the scanner and the merge are the real ones. The pots are the same from either source.
 
+// This October recording predates the current deployment. Its registry is test-only;
+// production and current-generation tests continue to use the canonical release records.
+vi.mock('@/lib/sticky-deployments.json', async () => ({
+  default: (await import('../fixtures/historical-sticky-deployments.json')).default,
+}))
+
 const center = vi.hoisted(() => ({ client: vi.fn() }))
 vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: center.client }))
 

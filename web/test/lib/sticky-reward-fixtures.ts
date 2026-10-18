@@ -20,13 +20,13 @@ import { stickyDeployment } from '@/lib/sticky-addresses'
 // faked, so Multicall3 batching, pinned blocks and the shapes of a revert and of a lost request are all real.
 
 export const CHAIN = 84532
-/** Past Base Sepolia's Multicall3 deployment, which viem checks when a read is pinned to a block. */
-export const HEAD = 47_400_000n
 /** The pinned block's time, and so the clock a round's claim deadline is measured against. */
 export const NOW = 1_790_000_000
 const MULTICALL3 = '0xca11bde05977b3631167028862be2a173976ca11'
 
 export const deployment = stickyDeployment(CHAIN)!
+/** Synthetic head after the current deployment and Multicall3, not a recorded live pool. */
+export const HEAD = deployment.fromBlock + 100_000n
 export const address = (digit: string) => getAddress(`0x${digit.repeat(40)}`)
 export const STAKED = address('2')
 export const STICKY = address('3')

@@ -2,6 +2,7 @@ import type { QueryClient } from '@tanstack/react-query'
 import type { ReactElement } from 'react'
 import { pad, toHex, type Address, type Hex } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { stickyDeployment } from '@/lib/sticky-addresses'
 import type { IndexedMove, IndexedPosition, IndexedSetting, IndexedStickyEvent } from '@/lib/sticky-indexed'
 import {
   E18,
@@ -53,12 +54,12 @@ const B = '0x6dae00000000000000000000000000000000a25f' as Address
 const GRANTER = `0x${'d'.repeat(40)}` as Address
 const SENDER = `0x${'c'.repeat(40)}` as Address
 
-/** Each chain's head, and how far Bendystraw's status trails it, as A.2 measured them (median, Arbitrum's p90). */
+/** Synthetic current-generation heads preserve A.2's measured scan spans and indexer lag (Arbitrum's p90). */
 const HEADS: Record<number, { head: bigint; behind: bigint }> = {
-  [SEPOLIA]: { head: 11_820_000n, behind: 1n },
-  [OP_SEPOLIA]: { head: 49_505_000n, behind: 5n },
-  [BASE_SEPOLIA]: { head: 47_520_000n, behind: 4n },
-  [ARB_SEPOLIA]: { head: 314_460_000n, behind: 33n },
+  [SEPOLIA]: { head: stickyDeployment(SEPOLIA)!.fromBlock + 38_141n, behind: 1n },
+  [OP_SEPOLIA]: { head: stickyDeployment(OP_SEPOLIA)!.fromBlock + 220_567n, behind: 5n },
+  [BASE_SEPOLIA]: { head: stickyDeployment(BASE_SEPOLIA)!.fromBlock + 218_441n, behind: 4n },
+  [ARB_SEPOLIA]: { head: stickyDeployment(ARB_SEPOLIA)!.fromBlock + 1_753_381n, behind: 33n },
 }
 
 /** One hook event of a project's history, a transaction of its own at `block` unless another event shares the block. */

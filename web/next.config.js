@@ -1,5 +1,6 @@
 /** @type {import('next').NextConfig} */
 const { PHASE_DEVELOPMENT_SERVER } = require('next/constants')
+const path = require('node:path')
 
 // The app may be framed only by Safe.
 const securityHeaders = [
@@ -34,6 +35,13 @@ module.exports = phase => {
     process.env.NEXT_PUBLIC_SITE_URL ||
       (phase === PHASE_DEVELOPMENT_SERVER ? 'http://127.0.0.1:8788' : 'https://sticky.center'),
   ).origin
+  // The October browser recording has its own deployment identities. This
+  // fixture override is legal only for the two isolated local test builds.
+  const historicalFixture = process.env.STICKY_HISTORICAL_BROWSER_FIXTURE === 'true'
+  if (historicalFixture && (!['.next-browser', '.next-signa'].includes(process.env.NEXT_DIST_DIR)
+      || !['127.0.0.1', 'localhost'].includes(new URL(siteOrigin).hostname))) {
+    throw new Error('Historical Sticky fixtures are restricted to isolated local browser builds.')
+  }
   const noindex =
     siteOrigin === 'https://sticky.center'
       ? []
@@ -68,6 +76,12 @@ module.exports = phase => {
       process.env.NEXT_PUBLIC_DETERMINISTIC_BROWSER === 'true'
         ? ['tsx', 'ts', 'jsx', 'js', 'browsertest.tsx']
         : ['tsx', 'ts', 'jsx', 'js'],
+    ...(historicalFixture ? {
+      webpack(config) {
+        config.resolve.alias['@/lib/sticky-deployments.json$'] = path.join(__dirname, 'test/fixtures/historical-sticky-deployments.json')
+        return config
+      },
+    } : {}),
     images: {
       // Project media is content-addressed (IPFS), so optimized variants can be
       // cached aggressively. Bundled artwork uses hashed static imports and is

@@ -296,7 +296,7 @@ describe('the recipient', () => {
   )
 
   it('counts the auto-stick adapter, and every other Sticky contract, among the recorded contracts it refuses', () => {
-    expect(recorded).toContainEqual(['autoStick', '0x9B091e21d25c424De67751F4b6Ae8494351218C5'])
+    expect(recorded).toContainEqual(['autoStick', '0x866e6F89964aFB151eb6F91fc7eB53483689E89c'])
     expect(recorded.map(([field]) => field)).toEqual(
       expect.arrayContaining(['deployer', 'hook', 'terminal', 'controller', 'distributor', 'rewardReceiverFactory', 'autoStick']),
     )
