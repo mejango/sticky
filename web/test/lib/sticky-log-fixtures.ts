@@ -13,8 +13,8 @@ export const OTHER = `0x${'b'.repeat(40)}` as Address
 export const SENDER = `0x${'c'.repeat(40)}` as Address
 export const GRANTER = `0x${'d'.repeat(40)}` as Address
 export const STAKED_TOKEN = `0x${'e'.repeat(40)}` as Address
-/** Where project 23 was created in these tests. A log is ten blocks later unless it says otherwise. */
-export const CREATED = 51_900_000n
+/** The modeled current-generation project 23 starts after its deployer. These are synthetic logs, not the live legacy pool. */
+export const CREATED = deployment.fromBlock + 100_000n
 
 // The topics the old client read these events by, precomputed with `cast keccak` (webclient/app.js:82-98).
 // The logs are written from them by hand, so decoding is checked against the old client's field layout
