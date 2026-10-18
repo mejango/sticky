@@ -31,7 +31,7 @@ const explorer = 'https://api.etherscan.io/v2/api';
 
 export async function emit(group, {
   env = process.env, spawn = spawnSync, fetchJson = explorerFetch, read = readFileSync, write = writeFileSync,
-  verifySources = true,
+  verifySources = true, wait = sleep,
 } = {}) {
   if (!networks[group]) throw new Error('Network group must be testnets or mainnets.');
   const key = env.ETHERSCAN_API_KEY?.trim();
@@ -94,7 +94,7 @@ export async function emit(group, {
       }
       const receipt = (await fetchJson(`${explorer}?chainid=${chainId}&module=proxy&action=eth_getTransactionReceipt&txhash=${txHash}&apikey=${key}`)).result;
       if (!receipt?.blockHash) throw new Error(`${alias}: no receipt for ${txHash}`);
-      if (verifySources) verify({ alias, chainId, address, contract, argsHex, spawn, env: childEnv, key });
+      if (verifySources) await verify({ alias, chainId, address, contract, argsHex, spawn, env: childEnv, key, wait });
       const record = {
         format: 'sphinx-sol-ct-artifact-1',
         address: address.toLowerCase(),
@@ -179,16 +179,25 @@ export function constructorArgs(contract, manifest, artifact) {
   return { args, argsHex };
 }
 
-function verify({ alias, chainId, address, contract, argsHex, spawn, env, key }) {
+const rateLimited = detail => /rate limit|max calls/i.test(detail);
+
+async function verify({ alias, chainId, address, contract, argsHex, spawn, env, key, wait }) {
   const args = ['verify-contract', address, `src/${contract.name}.sol:${contract.name}`, '--chain-id', String(chainId),
     '--verifier', 'etherscan', '--verifier-url', `${explorer}?chainid=${chainId}`, '--etherscan-api-key', key,
     '--compiler-version', '0.8.28', '--num-of-optimizations', '200', '--evm-version', 'cancun', '--via-ir',
     '--watch', '--retries', '12', '--delay', '10'];
   if (argsHex) args.push('--constructor-args', `0x${argsHex}`);
-  const result = spawn('forge', args, { env, encoding: 'utf8' });
-  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
-  if (result.status !== 0 && !/already verified/i.test(output)) {
-    throw new Error(`${alias}: explorer verification of ${contract.name} failed:\n${output.slice(-800)}`);
+  for (let attempt = 1; ; attempt++) {
+    const result = spawn('forge', args, { env, encoding: 'utf8' });
+    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+    if (!result.error && (result.status === 0 || /already verified/i.test(output))) break;
+    if (rateLimited(output) && attempt < 8) {
+      await wait(Math.min(1000 * 2 ** attempt, 10_000));
+      continue;
+    }
+    // Forge may echo verifier URLs or credentials in its own error output.
+    const diagnostic = output.split(key).join('[redacted]').replace(/https?:\/\/[^\s]+/gi, '[redacted URL]');
+    throw new Error(`${alias}: explorer verification of ${contract.name} failed after ${attempt} attempt(s):\n${diagnostic.slice(-800)}`);
   }
   console.log(`${alias}: ${contract.name} source verified`);
 }
@@ -201,7 +210,7 @@ export async function explorerFetch(url, { fetchResponse = fetch, wait = sleep }
     const body = await response.json();
     // Etherscan can put the useful rate-limit detail in result while message is only NOTOK.
     const detail = [body.message, typeof body.result === 'string' ? body.result : '', body.error?.message].join(' ');
-    const throttled = response.status === 429 || /rate limit|max calls/i.test(detail);
+    const throttled = response.status === 429 || rateLimited(detail);
     const absent = !body.error && (
       (action === 'eth_getTransactionReceipt' && body.result === null && body.status !== '0') ||
       (action === 'getcontractcreation' && Array.isArray(body.result) && body.result.length === 0));

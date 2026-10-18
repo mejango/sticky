@@ -502,3 +502,39 @@ test('persistent rate limits and unretryable API errors identify the action with
     assert.equal(rejected.calls, 1);
   }
 });
+
+
+test('Forge native lookup throttling retries before publishing and retains native verification flags', async () => {
+  const setup = fixture('mainnets');
+  const spawn = setup.options.spawn;
+  const delays = [];
+  let calls = 0;
+  setup.options.wait = async delay => { delays.push(delay); };
+  setup.options.spawn = (command, args) => command === 'forge' && ++calls === 1
+    ? { status: 1, stderr: 'Max calls per sec rate limit reached (5/sec)' }
+    : spawn(command, args);
+  await emit('mainnets', setup.options);
+  assert.equal(calls, 57);
+  assert.deepEqual(delays, [2000]);
+  assert.ok(setup.verified.every(({ args }) => args.includes('--watch') && !args.includes('--skip-is-verified-check')));
+});
+
+for (const [output, expectedCalls] of [
+  ['Max calls per sec rate limit reached (5/sec)', 8],
+  ['Invalid API key key at https://example.invalid/?apikey=key', 1],
+]) {
+  test(`Forge failures remain bounded and do not publish artifacts (${expectedCalls} attempts)`, async () => {
+    const setup = fixture('mainnets');
+    const spawn = setup.options.spawn;
+    const delays = [];
+    let calls = 0;
+    setup.options.wait = async delay => { delays.push(delay); };
+    setup.options.spawn = (command, args) => command === 'forge'
+      ? (++calls, { status: 1, stderr: output }) : spawn(command, args);
+    await assert.rejects(emit('mainnets', setup.options), error =>
+      error.message.includes(`after ${expectedCalls} attempt(s)`) && !/https:|apikey=key|API key key/.test(error.message));
+    assert.equal(calls, expectedCalls);
+    assert.deepEqual(setup.written, {});
+    assert.equal(delays.reduce((a, b) => a + b, 0), expectedCalls === 8 ? 54000 : 0);
+  });
+}
