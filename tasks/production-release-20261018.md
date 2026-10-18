@@ -31,8 +31,14 @@ The client used to prepare the production proposal was upstream Sphinx `f34436a`
 
 - Finalized contract deployment verification: passed on all eight chains.
 - Explorer source verification: passed for all 112 contract records using the standard emitter, with no source-verification bypass. Canonical artifact publication is recorded by this commit.
-- SDK: publish the release that consumes this exact artifact commit and its generated collector records, then pin and test that official package in the frontend.
+- SDK: https://github.com/Bananapus/juice-sdk-v4/pull/245 updates the current singleton bindings and all32collector records. Publish the release that consumes this exact artifact commit and its generated collector records, then pin and test that official package in the frontend.
 - Bendystraw: https://github.com/peripheralist/bendystraw/pull/40 targets only the current generation, starting from each Hook and Distributor creation receipt. Maintainer merge, indexer deployment and replay/cutover are separate requirements; a PR does not update the live API.
 - Frontend: generated deployment registries, required checks, production build and browser smoke must pass against the final package/data identities before cutover. The pre-release live revision is `80ec842`; its Railway deployment is `45e0ff83-3d9c-4675-a142-0ab13b740cdc`.
 - Generic lifecycle smoke passed on all four mainnets and Sepolia using actual deployed suites on disposable forks, with local mock backing and fork-only time travel for weekly vesting. It is not a live wallet transaction or evidence that four real weeks have elapsed.
 - JBX pool creation, permanent launch settings and source reward allocations are intentionally deferred. There is no additional global contract activation transaction after the singleton wiring; pools use the existing permissionless launch path.
+
+## Consumer qualification
+
+The core SDK candidate at `ddbba6080252f5a876d7161c39f9867aa7db2762` was packed and loaded into the frontend before package publication. All3,847frontend tests pass with coverage, and the current registry/configuration checks additionally pass. The production build passes. Deployment tooling passes120tests. These results do not claim that the official npm release or live frontend cutover has happened.
+
+Historical October RPC recordings remain byte-identical. Only recorded-reader tests and isolated loopback browser builds select the historical test registry. Production has no generation selection or previous-generation routing; its configuration rejects the historical fixture flag outside the isolated browser output directories and local origins. Current address/SDK parity checks and finalized onchain fork lifecycle smokes exercise the new deployment separately.
