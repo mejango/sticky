@@ -77,8 +77,11 @@ module.exports = phase => {
         ? ['tsx', 'ts', 'jsx', 'js', 'browsertest.tsx']
         : ['tsx', 'ts', 'jsx', 'js'],
     ...(historicalFixture ? {
-      webpack(config) {
-        config.resolve.alias['@/lib/sticky-deployments.json$'] = path.join(__dirname, 'test/fixtures/historical-sticky-deployments.json')
+      webpack(config, { webpack }) {
+        config.plugins.push(new webpack.NormalModuleReplacementPlugin(
+          /(?:^|[\\/])sticky-deployments\.json$/,
+          path.join(__dirname, 'test/fixtures/historical-sticky-deployments.json'),
+        ))
         return config
       },
     } : {}),

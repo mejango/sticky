@@ -20,7 +20,19 @@ it.each(['.next-browser', '.next-signa'])('isolates the historical recording in 
   vi.stubEnv('STICKY_HISTORICAL_BROWSER_FIXTURE', 'true')
   vi.stubEnv('NEXT_PUBLIC_SITE_URL', 'http://127.0.0.1:8793')
   vi.stubEnv('NEXT_DIST_DIR', dist)
-  const webpack = { resolve: { alias: {} as Record<string, string> } }
-  config('phase-production-build').webpack(webpack)
-  expect(webpack.resolve.alias['@/lib/sticky-deployments.json$']).toMatch(/test\/fixtures\/historical-sticky-deployments.json$/)
+  const build = { plugins: [] as unknown[] }
+  let rule: RegExp | undefined
+  let replacement: string | undefined
+  class NormalModuleReplacementPlugin {
+    constructor(pattern: RegExp, target: string) {
+      rule = pattern
+      replacement = target
+    }
+  }
+  config('phase-production-build').webpack(build, { webpack: { NormalModuleReplacementPlugin } })
+  expect(build.plugins).toHaveLength(1)
+  expect(rule?.test('@/lib/sticky-deployments.json')).toBe(true)
+  expect(rule?.test('/app/src/lib/sticky-deployments.json')).toBe(true)
+  expect(rule?.test('/app/src/lib/sticky-source-collectors.json')).toBe(false)
+  expect(replacement).toMatch(/test\/fixtures\/historical-sticky-deployments.json$/)
 })
