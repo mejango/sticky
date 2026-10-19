@@ -6,8 +6,8 @@
     "1": {
       "chainId": 1,
       "rpcAlias": "ethereum",
-      "blockNumber": 26149188,
-      "blockHash": "0xaddf5db4175ca8a6c92885cee2619e4012b867f8ff15ff42889de2de1b98784e",
+      "blockNumber": 26222466,
+      "blockHash": "0x44086952aeeb0ff5590b1479b3d2274c569c9824d8d291a290e17753c417b69c",
       "contracts": [
         {
           "name": "JBController",
@@ -182,8 +182,8 @@
     "10": {
       "chainId": 10,
       "rpcAlias": "optimism",
-      "blockNumber": 157940574,
-      "blockHash": "0x7653b5502773e096dc637685b97fc5c24970bbf61d9831f0739bdbe7180e4a70",
+      "blockNumber": 158382006,
+      "blockHash": "0xc5bf650d9e7612b8fa2bfcf6f5dd4eb68e22f6aa358d31e9c132558e59e336f8",
       "contracts": [
         {
           "name": "JBController",
@@ -314,8 +314,8 @@
     "8453": {
       "chainId": 8453,
       "rpcAlias": "base",
-      "blockNumber": 52345331,
-      "blockHash": "0x7d3b8898d9c8959201d6c5171b70f6a7bdb56c454e602f19d41d6a0e74cc4d45",
+      "blockNumber": 52786721,
+      "blockHash": "0xe82a63e436affcd513c956c75c1904389e84c947d3b2198810093a36ec59e991",
       "contracts": [
         {
           "name": "JBController",
@@ -446,8 +446,8 @@
     "42161": {
       "chainId": 42161,
       "rpcAlias": "arbitrum",
-      "blockNumber": 512949569,
-      "blockHash": "0x2b04b520d63191f0d7bb70e9055215e9c9852bc2707c7a3936062f433eb05386",
+      "blockNumber": 516103499,
+      "blockHash": "0x55bd31e7ce3d6c7b50044be20ced1b6073562dc3a1906637d1b78fc3c1c8843d",
       "contracts": [
         {
           "name": "JBController",
@@ -574,7 +574,8 @@
         }
       },
       "contractCount": 11,
-      "evmBlockNumber": 26149158
+      "evmBlockNumber": 26222453
     }
-  }
+  },
+  "checkpointUpdatedAt": "2026-10-19T00:16:08.687Z"
 }

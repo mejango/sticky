@@ -20,7 +20,7 @@ contract StickyJbxAuthorityForkTest is StickyJbxDeployedFork {
     address internal constant _OPERATOR = 0xB853758A70a6b4216c09f1d071eA2344AbA0a34f;
     address internal constant _PERMISSIONS = 0xf92AC1aB5A00033E35a3975739124F61928C36B0;
 
-    // Full runtime hashes from independent eth_getCode reads at the fixture's pinned Ethereum block 26_149_188.
+    // Independent full runtime hashes; setUp rechecks them at the source census checkpoint.
     // Artifact deployedBytecode contains immutable placeholders and is not a valid runtime identity.
     // These pins and the getter checks below do not claim complete source-to-bytecode equivalence.
     bytes32 internal constant _FORWARDER_CODEHASH = 0x5ea5f923538e42ae3888d77a2aaad0c5b0dbdb01cbffe5aa1f9bf833da29e411;

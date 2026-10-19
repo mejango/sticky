@@ -1,0 +1,38 @@
+// @vitest-environment node
+import { createRequire } from 'node:module'
+import { expect, it, vi } from 'vitest'
+
+const config = createRequire(import.meta.url)('../next.config.js')
+
+it('keeps historical deployment fixtures out of production builds', () => {
+  vi.stubEnv('STICKY_HISTORICAL_BROWSER_FIXTURE', '')
+  expect(config('phase-production-build').webpack).toBeUndefined()
+  vi.stubEnv('STICKY_HISTORICAL_BROWSER_FIXTURE', 'true')
+  vi.stubEnv('NEXT_PUBLIC_SITE_URL', 'https://sticky.center')
+  vi.stubEnv('NEXT_DIST_DIR', '.next-browser')
+  expect(() => config('phase-production-build')).toThrow('restricted')
+  vi.stubEnv('NEXT_PUBLIC_SITE_URL', 'http://127.0.0.1:8793')
+  vi.stubEnv('NEXT_DIST_DIR', '.next')
+  expect(() => config('phase-production-build')).toThrow('restricted')
+})
+
+it.each(['.next-browser', '.next-signa'])('isolates the historical recording in %s', dist => {
+  vi.stubEnv('STICKY_HISTORICAL_BROWSER_FIXTURE', 'true')
+  vi.stubEnv('NEXT_PUBLIC_SITE_URL', 'http://127.0.0.1:8793')
+  vi.stubEnv('NEXT_DIST_DIR', dist)
+  const build = { plugins: [] as unknown[] }
+  let rule: RegExp | undefined
+  let replacement: string | undefined
+  class NormalModuleReplacementPlugin {
+    constructor(pattern: RegExp, target: string) {
+      rule = pattern
+      replacement = target
+    }
+  }
+  config('phase-production-build').webpack(build, { webpack: { NormalModuleReplacementPlugin } })
+  expect(build.plugins).toHaveLength(1)
+  expect(rule?.test('@/lib/sticky-deployments.json')).toBe(true)
+  expect(rule?.test('/app/src/lib/sticky-deployments.json')).toBe(true)
+  expect(rule?.test('/app/src/lib/sticky-source-collectors.json')).toBe(false)
+  expect(replacement).toMatch(/test\/fixtures\/historical-sticky-deployments.json$/)
+})

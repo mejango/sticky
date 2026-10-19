@@ -24,15 +24,18 @@ import {StickyRealProjectContext, StickyRealProjectFork} from "./StickyRealProje
 abstract contract StickyJbxDeployedFork is StickyRealProjectFork {
     address internal constant _JBX = 0x4554CC10898f92D45378b98D6D6c2dD54c687Fb2;
     address internal constant _JBX_DONOR = 0x823b92d6a4b2AED4b15675c7917c9f922ea8ADAD;
-    uint256 internal constant _JBX_ETHEREUM_BLOCK = 26_149_188;
-    bytes32 internal constant _JBX_ETHEREUM_BLOCK_HASH =
-        0xaddf5db4175ca8a6c92885cee2619e4012b867f8ff15ff42889de2de1b98784e;
     uint256 internal constant _ARBITRUM_RPC_CHAIN_ID = 42_161;
     bytes32 internal constant _JBX_RUNTIME_HASH = 0x575717dcd7f821c737de4e441be3cd1761cb58c622479d1d7f9d2f1b4821544b;
 
     /// @notice Selects the pinned live release; all ten manifest runtimes must match before any test writes.
     function _deployedJbxContext() internal returns (StickyRealProjectContext memory context) {
-        context.forkId = _selectPinnedFork("ethereum", _JBX_ETHEREUM_BLOCK, 1, _JBX_ETHEREUM_BLOCK_HASH);
+        string memory census = vm.readFile("test/fork/fixtures/sticky-jbx-sources.json");
+        context.forkId = _selectPinnedFork({
+            rpcAlias: "ethereum",
+            forkBlock: vm.parseJsonUint(census, ".chains.1.blockNumber"),
+            chainId: 1,
+            expectedHash: vm.parseJsonBytes32(census, ".chains.1.blockHash")
+        });
         string memory manifest = vm.readFile("deployments/ethereum/verified.json");
         assertEq(vm.parseJsonUint(manifest, ".chainId"), block.chainid, "deployment manifest chain");
         context.core = StickyCoreDeployment({

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { constructorArgs, contracts, create2Address, emit, trustedForwarder } from '../../script/artifacts.mjs';
+import { constructorArgs, contracts, create2Address, emit, explorerFetch, trustedForwarder } from '../../script/artifacts.mjs';
 import { destinationChainIds, familyDirectory, networks, suite } from '../../script/deploy.mjs';
 
 const code = '0x6080604052';
@@ -68,7 +68,10 @@ function fixture(group, { revision = 'abc123' } = {}) {
     for (const destination of destinationChainIds(group)) {
       files[`${familyDirectory(folder, destination)}/verified.json`] = JSON.stringify({
         ...addresses, ...familyAddresses(group, destination), revision, chainId,
-        destinationChainId: destination, kind: 'verified',
+        destinationChainId: destination, kind: 'verified', rpcBlockNumber: chainId + 10,
+        rpcBlockHash: '0x' + '77'.repeat(32), sourceCollectorSalt: 'collector-salt',
+        sourceFeePayerSalt: 'fee-salt', sourceCollectorCodehash: 'collector-hash',
+        sourceFeePayerCodehash: 'fee-hash', registryCodehash: 'registry-hash', tokensCodehash: 'tokens-hash',
       });
     }
   }
@@ -146,7 +149,18 @@ for (const group of Object.keys(networks)) {
       }
       // Explicit singleton deployments retain their own creation receipts.
       assert.equal(written[`deployments/${folder}/StickyHook.json`].receipt.transactionHash, '0xtx-StickyHook');
-      assert.ok(!written[`deployments/${folder}/verified.json`], 'canonical singleton manifest is not rewritten');
+      const shared = written[`deployments/${folder}/verified.json`];
+      assert.equal(shared.kind, 'verified');
+      assert.equal(shared.chainId, chainId);
+      assert.equal(shared.revision, 'abc123');
+      assert.equal(shared.deploymentAuthority, addresses.deploymentAuthority);
+      assert.equal(shared.hook, addresses.hook);
+      assert.equal(shared.rpcBlockNumber, chainId + 10);
+      assert.equal(shared.rpcBlockHash, '0x' + '77'.repeat(32));
+      for (const field of ['destinationChainId', 'sourceCollector', 'sourceFeePayer', 'registry', 'tokens',
+        'sourceCollectorSalt', 'sourceFeePayerSalt', 'sourceCollectorCodehash', 'sourceFeePayerCodehash', 'registryCodehash', 'tokensCodehash']) {
+        assert.equal(shared[field], undefined, `shared manifest excludes ${field}`);
+      }
       assert.ok(!written[`deployments/${folder}/StickySourceCollector.json`], 'no flat source-collector artifact');
     }
     assert.equal(verified.length, networks[group].length * (6 + 2 * destinationChainIds(group).length));
@@ -154,7 +168,8 @@ for (const group of Object.keys(networks)) {
       assert.equal(command, 'forge');
       assert.equal(args[0], 'verify-contract');
       assert.equal(args.at(-2), '--constructor-args');
-      assert.ok(args.includes('--via-ir') && args.includes('--skip-is-verified-check'));
+      assert.ok(args.includes('--via-ir') && args.includes('--watch'));
+      assert.ok(!args.includes('--skip-is-verified-check'), 'native verification check makes interrupted runs idempotent');
       assert.ok(!args.includes('--broadcast'));
     }
     const chainIds = new Set(verified.map(({ args }) => args[args.indexOf('--chain-id') + 1]));
@@ -184,6 +199,7 @@ test('creation bytecode that disagrees with the recorded bindings stops the grou
   };
   await assert.rejects(emit('mainnets', options), /creation bytecode of StickyDistributor/);
   assert.ok(!written['deployments/ethereum/StickyDistributor.json']);
+  assert.ok(!Object.keys(written).some(path => path.endsWith('/verified.json')), 'no shared manifest is published for a partial artifact group');
 });
 
 test('explorer verification failure stops the group, but an already verified source does not', async () => {
@@ -198,7 +214,7 @@ test('explorer verification failure stops the group, but an already verified sou
     ? verifiedSpawn(command, args, options) : { status: 1, stderr: 'Contract source code already verified' };
   await emit('testnets', verified.options);
   assert.equal(Object.keys(verified.written).length,
-    networks.testnets.length * (6 + 2 * destinationChainIds('testnets').length));
+    networks.testnets.length * (7 + 2 * destinationChainIds('testnets').length));
 });
 
 test('constructor bindings are encoded from the manifest and rejected when the compiled constructor changes', () => {
@@ -426,3 +442,99 @@ test('missing, duplicate or computed Solidity setup authority is rejected before
     assert.deepEqual(setup.written, {});
   }
 });
+
+
+// These responses reproduce the explorer's NOTOK envelope and temporary empty evidence,
+// without public API traffic or real backoff delays.
+const explorerUrl = action => `https://example.invalid/api?action=${action}&apikey=private-test-key`;
+function explorerResponses(responses) {
+  const delays = [];
+  let calls = 0;
+  return {
+    delays, get calls() { return calls; },
+    options: {
+      fetchResponse: async () => ({ ok: true, status: 200, json: async () => responses[Math.min(calls++, responses.length - 1)] }),
+      wait: async delay => { delays.push(delay); },
+    },
+  };
+}
+
+for (const rate of [
+  { status: '0', message: 'NOTOK', result: 'Max rate limit reached, please use API Key for higher rate limit' },
+  { message: 'NOTOK', error: { message: 'Max calls per sec rate limit reached' } },
+]) {
+  test('rate-limit result/error is retried even when message is NOTOK', async () => {
+    const found = { result: { blockHash: '0x123' } };
+    const run = explorerResponses([rate, found]);
+    assert.deepEqual(await explorerFetch(explorerUrl('eth_getTransactionReceipt'), run.options), found);
+    assert.equal(run.calls, 2);
+    assert.deepEqual(run.delays, [250, 2000, 250]);
+  });
+}
+
+for (const [action, missing, found] of [
+  ['eth_getTransactionReceipt', { jsonrpc: '2.0', result: null }, { result: { blockHash: '0x123' } }],
+  ['getcontractcreation', { status: '0', message: 'No data found', result: [] }, { status: '1', result: [{ txHash: '0x123' }] }],
+]) {
+  test(`${action}: transient missing evidence retries, persistent missing evidence fails closed`, async () => {
+    const recovered = explorerResponses([missing, found]);
+    assert.deepEqual(await explorerFetch(explorerUrl(action), recovered.options), found);
+    assert.equal(recovered.calls, 2);
+    const absent = explorerResponses([missing]);
+    await assert.rejects(explorerFetch(explorerUrl(action), absent.options), /missing creation or receipt evidence persisted after 8 attempts/);
+    assert.equal(absent.calls, 8);
+    assert.ok(absent.delays.every(delay => delay <= 10_000));
+    assert.equal(absent.delays.reduce((a, b) => a + b), 56_000);
+  });
+}
+
+test('persistent rate limits and unretryable API errors identify the action without exposing secrets', async () => {
+  const limited = explorerResponses([{ status: '0', message: 'NOTOK', result: 'Max rate limit reached' }]);
+  await assert.rejects(explorerFetch(explorerUrl('getcontractcreation'), limited.options), /Explorer getcontractcreation: rate limit persisted after 8 attempts/);
+  assert.equal(limited.calls, 8);
+  for (const failure of [
+    { status: '0', message: 'NOTOK', result: 'Invalid API key private-test-key' },
+    { error: { message: 'Invalid method private-test-key' } },
+  ]) {
+    const rejected = explorerResponses([failure]);
+    await assert.rejects(explorerFetch(explorerUrl('getcontractcreation'), rejected.options), error =>
+      /Explorer getcontractcreation: API rejected/.test(error.message) && !/private-test-key|https:/.test(error.message));
+    assert.equal(rejected.calls, 1);
+  }
+});
+
+
+test('Forge native lookup throttling retries before publishing and retains native verification flags', async () => {
+  const setup = fixture('mainnets');
+  const spawn = setup.options.spawn;
+  const delays = [];
+  let calls = 0;
+  setup.options.wait = async delay => { delays.push(delay); };
+  setup.options.spawn = (command, args) => command === 'forge' && ++calls === 1
+    ? { status: 1, stderr: 'Max calls per sec rate limit reached (5/sec)' }
+    : spawn(command, args);
+  await emit('mainnets', setup.options);
+  assert.equal(calls, 57);
+  assert.deepEqual(delays, [2000]);
+  assert.ok(setup.verified.every(({ args }) => args.includes('--watch') && !args.includes('--skip-is-verified-check')));
+});
+
+for (const [output, expectedCalls] of [
+  ['Max calls per sec rate limit reached (5/sec)', 8],
+  ['Invalid API key key at https://example.invalid/?apikey=key', 1],
+]) {
+  test(`Forge failures remain bounded and do not publish artifacts (${expectedCalls} attempts)`, async () => {
+    const setup = fixture('mainnets');
+    const spawn = setup.options.spawn;
+    const delays = [];
+    let calls = 0;
+    setup.options.wait = async delay => { delays.push(delay); };
+    setup.options.spawn = (command, args) => command === 'forge'
+      ? (++calls, { status: 1, stderr: output }) : spawn(command, args);
+    await assert.rejects(emit('mainnets', setup.options), error =>
+      error.message.includes(`after ${expectedCalls} attempt(s)`) && !/https:|apikey=key|API key key/.test(error.message));
+    assert.equal(calls, expectedCalls);
+    assert.deepEqual(setup.written, {});
+    assert.equal(delays.reduce((a, b) => a + b, 0), expectedCalls === 8 ? 54000 : 0);
+  });
+}

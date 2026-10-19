@@ -1,7 +1,8 @@
 // The environments of the Playwright suite's two builds. Both read every chain
 // and indexer answer from the local fixture service
 // (test/browser/fail-fast-service.mjs), so the suite opens no connection off
-// this machine.
+// this machine. Their deployment identities belong to that historical recording,
+// not the current release. Current registry identity and fork lifecycle tests run separately.
 
 export const APP_PORT = Number(process.env.PLAYWRIGHT_APP_PORT ?? 8791)
 export const SIGNA_PORT = Number(process.env.PLAYWRIGHT_SIGNA_PORT ?? 8792)
@@ -21,6 +22,7 @@ const indexers = {
  * and wallets are off. */
 export const deterministicEnv = {
   NEXT_DIST_DIR: '.next-browser',
+  STICKY_HISTORICAL_BROWSER_FIXTURE: 'true',
   NEXT_PUBLIC_SITE_URL: fixtureOrigin,
   ...indexers,
   NEXT_PUBLIC_BROWSER_FIXTURE_ORIGIN: fixtureOrigin,
@@ -34,6 +36,7 @@ export const deterministicEnv = {
  * origin, https://signa.center. */
 export const signaEnv = {
   NEXT_DIST_DIR: '.next-signa',
+  STICKY_HISTORICAL_BROWSER_FIXTURE: 'true',
   NEXT_PUBLIC_SITE_URL: `http://127.0.0.1:${SIGNA_PORT}`,
   ...indexers,
   NEXT_PUBLIC_JBCENTER_URL: fixtureOrigin,

@@ -725,6 +725,36 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         assertEq(count, 1, "exactly one actual collector leaf");
     }
 
+    /// @notice Proves exact principal burn and supply conservation from the actual source ERC-20's mint/burn logs.
+    /// @dev Fee-related issuance is counted separately, so it cannot hide a missing or partial principal burn.
+    /// @param logs The actual source logs emitted during the operation under test.
+    /// @param source The source project whose token supply is checked.
+    /// @param reward The exact principal that must be burned.
+    /// @param supplyBefore The source ERC-20 supply immediately before the operation.
+    function _assertSourceTokenConservation(
+        Vm.Log[] memory logs,
+        Source memory source,
+        uint256 reward,
+        uint256 supplyBefore
+    )
+        internal
+        view
+    {
+        uint256 minted = 0;
+        uint256 burned = 0;
+        for (uint256 i = 0; i < logs.length; ++i) {
+            Vm.Log memory entry = logs[i];
+            if (
+                entry.emitter != address(source.token) || entry.topics.length != 3 || entry.topics[0] != _TOKEN_TRANSFER
+            ) continue;
+            uint256 amount = abi.decode(entry.data, (uint256));
+            if (entry.topics[1] == bytes32(0)) minted += amount;
+            if (entry.topics[2] == bytes32(0)) burned += amount;
+        }
+        assertEq(burned, reward, "exact reserved principal burned by the actual token");
+        assertEq(source.token.totalSupply(), supplyBefore + minted - burned, "fee minting cannot mask principal burn");
+    }
+
     /// @notice Separates principal burn from actual fee-related minting on project 1, without a synthetic supply model.
     /// @param logs The actual source logs emitted during preparation and submission.
     /// @param source The source project and registered delivery route.
@@ -743,8 +773,6 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         internal
         view
     {
-        uint256 minted = 0;
-        uint256 burned = 0;
         uint256 feeReceipt = 0;
         IERC20 feeToken = _feeToken(source);
         address feePayer = address(collector.FEE_PAYER());
@@ -757,21 +785,13 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
             ) {
                 feeReceipt += abi.decode(entry.data, (uint256));
             }
-
-            if (
-                entry.emitter != address(source.token) || entry.topics.length != 3 || entry.topics[0] != _TOKEN_TRANSFER
-            ) continue;
-            uint256 amount = abi.decode(entry.data, (uint256));
-            if (entry.topics[1] == bytes32(0)) minted += amount;
-            if (entry.topics[2] == bytes32(0)) burned += amount;
         }
         assertEq(
             feeToken.balanceOf(_keeper),
             callerFeeTokensBefore + feeReceipt,
             "exact fee receipt reaches the current source caller"
         );
-        assertEq(burned, reward, "exact reserved principal burned by the actual token");
-        assertEq(source.token.totalSupply(), supplyBefore + minted - burned, "fee minting cannot mask principal burn");
+        _assertSourceTokenConservation(logs, source, reward, supplyBefore);
         assertEq(
             source.token.balanceOf(address(collector)),
             collector.pendingOf(source.projectId, address(_sticky), 0),
@@ -1271,15 +1291,17 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         uint256 supplyBefore = source.token.totalSupply();
         uint256 backingBefore = _backing(source);
         uint256 escrowBefore = address(source.sucker).balance;
+        vm.recordLogs();
         vm.startPrank(source.custodian);
         assertTrue(source.token.approve(address(source.sucker), reward));
         source.sucker.prepare(reward, claimData.leaf.beneficiary, 1, JBConstants.NATIVE_TOKEN, claimData.leaf.metadata);
         vm.stopPrank();
+        Vm.Log[] memory logs = vm.getRecordedLogs();
         JBOutboxTree memory afterOutbox = source.sucker.outboxOf(JBConstants.NATIVE_TOKEN);
         claimData.leaf.terminalTokenAmount = afterOutbox.balance - beforeOutbox.balance;
         assertGt(claimData.leaf.terminalTokenAmount, 0, "real backing reclaimed");
         assertEq(source.token.balanceOf(source.custodian), beforeReserved);
-        assertEq(source.token.totalSupply(), supplyBefore - reward, "source reserved tokens actually burned");
+        _assertSourceTokenConservation(logs, source, reward, supplyBefore);
         assertEq(_backing(source), backingBefore - claimData.leaf.terminalTokenAmount);
         assertEq(address(source.sucker).balance, escrowBefore + claimData.leaf.terminalTokenAmount);
         assertEq(afterOutbox.tree.count, beforeOutbox.tree.count + 1);

@@ -1,5 +1,5 @@
 import { expect, test, type BrowserContext, type Locator, type Page } from '@playwright/test'
-import deployments from '../../src/lib/sticky-deployments.json'
+import deployments from '../fixtures/historical-sticky-deployments.json'
 import { expectAxeClean, expectNoDocumentOverflow } from './page-checks'
 import { HOLDER, PROJECT, viewports } from './suite'
 import { blockExternalTraffic, settling } from './traffic'
@@ -256,7 +256,10 @@ for (const viewport of viewports) {
       const send = card(page, 'Send airdrop rewards')
       await send.getByText('Same-chain payout splits').click()
       await send.getByText('Reserved-token rewards', { exact: true }).click()
-      await expect(send).toContainText('No verified collector deployment is configured')
+      // The current release publishes the collector matrix. A recipe still
+      // requires a source project and successful live route validation.
+      await expect(send.getByRole('button', { name: 'Check route' })).toBeVisible()
+      await expect(send.getByLabel('Source project ID or token address')).toHaveValue('')
       await expect(send.locator('[data-reserved-split-recipe]')).toHaveCount(0)
       await send.getByText('Reward address for fee payouts and transfers').click()
       await visit.settled()

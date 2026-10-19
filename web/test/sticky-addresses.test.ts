@@ -11,9 +11,9 @@ describe('Sticky deployments', () => {
   })
   it('returns checksummed addresses and the deployer block', () => {
     const base = stickyDeployment(8453)!
-    expect(base.deployer).toBe('0xdA38Ec48B5b1d186B02BA99F297e95153BEE33a9')
-    expect(base.rewardReceiverFactory).toBe('0x41AEC7AacEa4759F2c8AaBD68D4a4C1574A6A737')
-    expect(base.fromBlock).toBe(51791252n)
+    expect(base.deployer).toBe('0x78D3809db6221b41f72375eb7361b2A43D29b27a')
+    expect(base.rewardReceiverFactory).toBe('0xE7FFA07476F2Ca35CEE3548538541B335eF3A2b7')
+    expect(base.fromBlock).toBe(52786472n)
   })
   it('knows nothing about other chains', () => {
     expect(stickyDeployment(137)).toBeNull()
@@ -24,14 +24,14 @@ describe('Sticky deployments', () => {
   it('returns every contract of a chain', () => {
     expect(stickyDeployment(84532)).toEqual({
       chainId: 84532,
-      deployer: '0xdA38Ec48B5b1d186B02BA99F297e95153BEE33a9',
-      hook: '0xa8DcD735031cf96C4213D9A3f66a1DFFDCdba693',
+      deployer: '0x78D3809db6221b41f72375eb7361b2A43D29b27a',
+      hook: '0x57bb7161afce10a12b1761483bFC61DfCb2c4Df5',
       terminal: '0x130f5Dd2bD8805443Cf41755253D778a75a67f53',
       controller: '0x3Fcec3572e84b624477BcfF4E2CF1f7dEAb648F1',
-      distributor: '0xc62b3fED668Cd8a3879ba34890a67C48a52b1Bb8',
-      rewardReceiverFactory: '0x41AEC7AacEa4759F2c8AaBD68D4a4C1574A6A737',
-      autoStick: '0x9B091e21d25c424De67751F4b6Ae8494351218C5',
-      fromBlock: 47301559n,
+      distributor: '0x489d011Dc34983EB2e219A5010806caa418cB46b',
+      rewardReceiverFactory: '0xE7FFA07476F2Ca35CEE3548538541B335eF3A2b7',
+      autoStick: '0x866e6F89964aFB151eb6F91fc7eB53483689E89c',
+      fromBlock: 48026617n,
     })
   })
 })
