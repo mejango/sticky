@@ -1291,15 +1291,17 @@ contract StickyJbxOmnichainForkTest is StickyJbxDeployedFork, StickyJbxArbitrumT
         uint256 supplyBefore = source.token.totalSupply();
         uint256 backingBefore = _backing(source);
         uint256 escrowBefore = address(source.sucker).balance;
+        vm.recordLogs();
         vm.startPrank(source.custodian);
         assertTrue(source.token.approve(address(source.sucker), reward));
         source.sucker.prepare(reward, claimData.leaf.beneficiary, 1, JBConstants.NATIVE_TOKEN, claimData.leaf.metadata);
         vm.stopPrank();
+        Vm.Log[] memory logs = vm.getRecordedLogs();
         JBOutboxTree memory afterOutbox = source.sucker.outboxOf(JBConstants.NATIVE_TOKEN);
         claimData.leaf.terminalTokenAmount = afterOutbox.balance - beforeOutbox.balance;
         assertGt(claimData.leaf.terminalTokenAmount, 0, "real backing reclaimed");
         assertEq(source.token.balanceOf(source.custodian), beforeReserved);
-        assertEq(source.token.totalSupply(), supplyBefore - reward, "source reserved tokens actually burned");
+        _assertSourceTokenConservation(logs, source, reward, supplyBefore);
         assertEq(_backing(source), backingBefore - claimData.leaf.terminalTokenAmount);
         assertEq(address(source.sucker).balance, escrowBefore + claimData.leaf.terminalTokenAmount);
         assertEq(afterOutbox.tree.count, beforeOutbox.tree.count + 1);
