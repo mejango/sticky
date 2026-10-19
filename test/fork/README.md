@@ -136,14 +136,17 @@ queue rulesets through the operator. No user key or signature is used.
 reserved-token distribution and native routes into Ethereum for projects `1`
 (JBP6) and `3` (REV). The [source fixture](fixtures/sticky-jbx-sources.json)
 records the deployed core/token/sucker runtime identities, implementation
-bindings, current custodians and enabled native mappings.
+bindings, current custodians and enabled native mappings. The checkpoints were
+advanced to the finalized production release blocks; the original census
+metadata is retained, and the tests recheck runtime identities and active routing
+before making fork-local changes.
 
 | Chain | Block | Canonical block hash |
 | --- | --- | --- |
-| Ethereum | `26149188` | `0xaddf5db4175ca8a6c92885cee2619e4012b867f8ff15ff42889de2de1b98784e` |
-| OP | `157940574` | `0x7653b5502773e096dc637685b97fc5c24970bbf61d9831f0739bdbe7180e4a70` |
-| Base | `52345331` | `0x7d3b8898d9c8959201d6c5171b70f6a7bdb56c454e602f19d41d6a0e74cc4d45` |
-| Arbitrum | `512949569` | `0x2b04b520d63191f0d7bb70e9055215e9c9852bc2707c7a3936062f433eb05386` |
+| Ethereum | `26222466` | `0x44086952aeeb0ff5590b1479b3d2274c569c9824d8d291a290e17753c417b69c` |
+| OP | `158382006` | `0xc5bf650d9e7612b8fa2bfcf6f5dd4eb68e22f6aa358d31e9c132558e59e336f8` |
+| Base | `52786721` | `0xe82a63e436affcd513c956c75c1904389e84c947d3b2198810093a36ec59e991` |
+| Arbitrum | `516103499` | `0x55bd31e7ce3d6c7b50044be20ced1b6073562dc3a1906637d1b78fc3c1c8843d` |
 
 Each case verifies the chain, pinned block hash and parent identity before test
 mutations. The Arbitrum RPC block identity is distinct from the EVM's L1-style
