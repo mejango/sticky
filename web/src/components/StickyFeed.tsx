@@ -5,31 +5,13 @@ import { formatUnits, type Address } from 'viem'
 import { ChainIcon } from '@/components/ChainIcon'
 import { ProjectLink } from '@/components/ProjectLink'
 import { AddressLabel } from '@/components/ui/AddressLabel'
-import { Skeleton } from '@/components/ui/Skeleton'
+import { FeedPlaceholder } from '@/components/FeedPlaceholder'
 import { explorerTxUrl } from '@/lib/chainDisplay'
 import type { FeedLine, FeedRow } from '@/lib/sticky-feed'
 import { ago, formatAmount, formatDuration } from '@/lib/sticky-format'
 import { chainName } from '@/lib/urn'
 
 type Who = (address: Address) => ReactNode
-
-/** What a list shows while it is read: pairs of lines where rows will be. */
-export function FeedPlaceholder() {
-  return (
-    <div className="space-y-5 py-3.5" aria-hidden="true">
-      {[
-        ['w-[62%]', 'w-[38%]'],
-        ['w-[70%]', 'w-[30%]'],
-        ['w-[54%]', 'w-[42%]'],
-      ].map(([first, second]) => (
-        <div key={first} className="space-y-2.5">
-          <Skeleton className={`h-2.5 rounded ${first}`} />
-          <Skeleton className={`h-2 rounded ${second}`} />
-        </div>
-      ))}
-    </div>
-  )
-}
 
 const streakStarted = (line: { streak?: 'started' }) => (line.streak ? ' and got sticky' : '')
 
