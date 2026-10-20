@@ -4,6 +4,11 @@ import { describe, expect, it } from 'vitest'
 import { stickFailure } from '@/lib/sticky-stick-failure'
 
 const E = 10n ** 18n
+const paused = encodeErrorResult({
+  abi: [{ type: 'error', name: 'JBTerminalStore_RulesetPaymentPaused', inputs: [{ type: 'uint256' }, { type: 'uint256' }] }],
+  errorName: 'JBTerminalStore_RulesetPaymentPaused',
+  args: [1n, 2n],
+})
 const underMin = (received: bigint, minimum: bigint) =>
   encodeErrorResult({
     abi: [{ type: 'error', name: 'JBMultiTerminal_UnderMin', inputs: [{ type: 'uint256' }, { type: 'uint256' }] }],
@@ -24,14 +29,8 @@ describe('stickFailure', () => {
     expect(stickFailure({ data: raw }, 'stX')).toEqual({ message: line, requote: true })
     expect(stickFailure({ cause: { data: { errorName: 'StickyAutoStick_InsufficientStickyTokens', args: [E, 2n * E] } } }, 'stX')).toEqual({ message: line, requote: true })
   })
-  it('quotes again for a minimum named without amounts, never offers a looser one', () => {
-    expect(stickFailure(new Error('JBMultiTerminal_UnderMin'), 'stX')).toEqual({
-      message: 'This stick would return less than its minimum. Review again for a fresh quote.',
-      requote: true,
-    })
-  })
   it("gives the SDK's line for other known reverts, and null for unknown ones", () => {
-    expect(stickFailure({ data: '0x8dc14446' }, 'stX')).toEqual({ message: 'This project is not accepting payments right now.', requote: false })
+    expect(stickFailure({ data: paused }, 'stX')).toEqual({ message: 'This project is not accepting payments right now.', requote: false })
     expect(stickFailure(new Error('boom'), 'stX')).toBeNull()
     expect(stickFailure({ data: '0xdeadbeef' }, 'stX')).toBeNull()
   })
@@ -48,12 +47,10 @@ describe('stickFailure', () => {
     expect(stickFailure({ cause: { error: { data: raw } } }, 'stX')?.requote).toBe(true)
   })
   it('reads the terminal amounts only as bigints, and names a stick that would return nothing', () => {
-    expect(stickFailure({ errorName: 'JBMultiTerminal_UnderMin', args: [null, null] }, 'stX')).toEqual({
-      message: 'This stick would return less than its minimum. Review again for a fresh quote.',
-      requote: true,
-    })
+    expect(stickFailure({ errorName: 'JBMultiTerminal_UnderMin', args: [null, null] }, 'stX')).toBeNull()
+    expect(stickFailure(new Error('JBMultiTerminal_UnderMin'), 'stX')).toBeNull()
     expect(stickFailure({ data: underMin(0n, 3n * E) }, 'stX')).toEqual({
-      message: 'This stick would return no stX right now. Review again for a fresh quote.',
+      message: 'This stick would return no stX. Review again for a fresh quote.',
       requote: true,
     })
   })

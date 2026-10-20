@@ -164,6 +164,8 @@ export function useSafeTx(chainId: number) {
 
   const [phase, setPhase] = useState<TxPhase>('idle')
   const [error, setError] = useState<string | null>(null)
+  /** The hold settled this flow's write as reverted onchain. */
+  const [reverted, setReverted] = useState(false)
   /** The wallet's reply for the write this flow sent: a transaction, or a Safe proposal. */
   const [sent, setSent] = useState<{ hash: Hex; safe: boolean } | null>(null)
   /** The hold's authenticated success, with its receipt. */
@@ -198,6 +200,7 @@ export function useSafeTx(chainId: number) {
     inFlight.current = false
     setPhase('idle')
     setError(null)
+    setReverted(false)
     setSent(null)
     setResult(null)
   }, [queryClient])
@@ -214,6 +217,7 @@ export function useSafeTx(chainId: number) {
         setPhase('success')
       } else {
         setError(settledLine(settled))
+        setReverted(settled.result === 'failed')
         setPhase('error')
       }
     },
@@ -261,6 +265,7 @@ export function useSafeTx(chainId: number) {
       const attempt = generation.current
       const isCurrent = () => mounted.current && generation.current === attempt && renderedChain.current === chainId
       setError(null)
+      setReverted(false)
       setPhase('simulating')
       setSent(null)
       setResult(null)
@@ -482,6 +487,8 @@ export function useSafeTx(chainId: number) {
     /** Whether the connected writer is a Safe connector. */
     isSafe,
     error: effectivePhase === 'error' ? (error ?? (shown?.line || null)) : error,
+    /** The write was mined and reverted: its receipt says so, not why. */
+    reverted: effectivePhase === 'error' && reverted,
     hash: result?.hash ?? watched ?? null,
     safeProposalHash: awaitingProposal,
     /** The wallet's original reply, retained if its durable handoff needs repair. */

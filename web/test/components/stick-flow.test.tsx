@@ -5,7 +5,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { encodeErrorResult, getAddress, isAddress, zeroAddress, type Hex } from 'viem'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { WRITE_HOLD_REVERTED_LINE } from '@bananapus/nana-sdk-core/review'
+import { HELD_FAILED_LINE } from '@bananapus/nana-sdk-core/review'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import type { StickyPosition } from '@/lib/sticky-holders'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
@@ -38,6 +38,7 @@ type EngineState = {
   phase: Phase
   busy: boolean
   error: string | null
+  reverted: boolean
   hash: Hex | null
   receipt: { blockNumber: bigint } | null
   isSafe: boolean
@@ -107,6 +108,7 @@ const engine = (): EngineState => {
     phase: 'idle',
     busy: false,
     error: null,
+    reverted: false,
     hash: null,
     receipt: null,
     isSafe: false,
@@ -757,7 +759,8 @@ describe('the review', () => {
     await click(confirmButton())
     mocks.tx.phase = 'error'
     mocks.tx.busy = false
-    mocks.tx.error = WRITE_HOLD_REVERTED_LINE
+    mocks.tx.error = HELD_FAILED_LINE
+    mocks.tx.reverted = true
     await rerender()
     expect(dialog()!.textContent).toContain('The stick reverted.')
     expect(confirmButton()!.textContent).toBe('Review again')
@@ -773,7 +776,7 @@ describe('the review', () => {
     await render()
     await review()
     mocks.tx.send.mockImplementationOnce(async (_step: unknown, options: { onFailure?: (error: unknown) => void }) => {
-      options.onFailure?.({ shortMessage: 'Execution reverted.', data: '0x8dc14446' })
+      options.onFailure?.({ shortMessage: 'Execution reverted.', data: `0x8dc14446${'0'.repeat(63)}1${'0'.repeat(63)}2` })
       mocks.tx.phase = 'error'
       mocks.tx.error = 'Execution reverted.'
       return null

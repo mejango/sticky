@@ -46,24 +46,20 @@ function stickyShortfall(error: unknown): { received: bigint; minimum: bigint } 
 
 /**
  * Why a stick reverted, from a simulation or transaction error. A stick that would mint less than its quote (the
- * terminal's minimum, or Sticky's own check after it) says by how much and is quoted again; other known payment
- * reverts give the SDK's line. Unknown reverts return null.
+ * terminal's minimum, or Sticky's own check after it) says by how much and is quoted again, never sent with a looser
+ * minimum; other known payment reverts give the SDK's line. Unknown reverts return null.
  */
 export function stickFailure(error: unknown, stSymbol: string): StickFailure | null {
   const pay = decodePayFailure(error)
   const shortfall = (pay?.reason === 'TERMINAL_UNDER_MIN' ? amounts([pay.received, pay.minimum]) : null) ?? stickyShortfall(error)
   if (shortfall?.received === 0n) {
-    return { message: `This stick would return no ${stSymbol} right now. Review again for a fresh quote.`, requote: true }
+    return { message: `This stick would return no ${stSymbol}. Review again for a fresh quote.`, requote: true }
   }
   if (shortfall) {
     return {
       message: `This stick would return ${formatUnits(shortfall.received, 18)} ${stSymbol}, under its ${formatUnits(shortfall.minimum, 18)} ${stSymbol} minimum. Review again for a fresh quote.`,
       requote: true,
     }
-  }
-  // A stick's minimum is its exact quote: a looser one is never offered, a fresh quote is.
-  if (pay?.reason === 'TERMINAL_UNDER_MIN') {
-    return { message: 'This stick would return less than its minimum. Review again for a fresh quote.', requote: true }
   }
   return pay ? { message: pay.message, requote: false } : null
 }

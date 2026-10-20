@@ -1349,16 +1349,17 @@ describe('useSafeTx', () => {
     expect(recoveryRecords()).toHaveLength(1)
   })
 
-  it('holds a reverted write until finality proves its failure', async () => {
+  it('releases a mined revert at once as reverted, and the next send starts clean', async () => {
+    mocks.writeContract.mockResolvedValueOnce(HASH).mockResolvedValueOnce(EXECUTION_HASH)
     const hook = await renderHook()
     await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
-    mocks.publicClient.getBlock.mockImplementation(async ({ blockNumber }: { blockNumber?: bigint }) => ({
-      number: blockNumber ?? 76n, hash: BLOCK_HASH, timestamp: 1_000n,
-    }))
     mocks.receipt = { data: canonicalReceipt('reverted'), isError: false }
     await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
-    expect(hook.ref.current!.phase).toBe('submitted')
-    expect(recoveryRecords()).toHaveLength(1)
+    await vi.waitFor(() => expect(hook.ref.current).toMatchObject({ phase: 'error', reverted: true, held: null }))
+    expect(recoveryRecords()).toHaveLength(0)
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+    expect(hook.ref.current).toMatchObject({ phase: 'pending', reverted: false })
   })
 
   it.each(['reset', 'unmount'] as const)('does not write after %s closes an outstanding review', async close => {

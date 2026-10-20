@@ -133,3 +133,7 @@ Hosted verification passed at `f6ed26bc8a41d748ef1caa1831dee1efc7eebd05`: all se
 - **Resource budget:** One small PR from origin/main in .worktrees/sticky-2412; no merge.
 
 - [x] Bump core 2.41.2; remove the busy retry and the app waiting line; full gate passes (3842 unit, 54 browser).
+
+### SDK 3.4.1 (2026-10-20)
+- [x] Bump @bananapus/nana-sdk-core 3.3.0 -> 3.4.1. Its write hold releases a direct write's canonical revert at once (settled `failed`, the SDK's held-failed line), so the engine now says `reverted` from that settlement instead of StickSend matching a line.
+- [x] The SDK decodes only canonically encoded reverts with their amounts, so the "minimum without amounts" branch is gone; a stick that would return nothing reads "This stick would return no stX. Review again for a fresh quote."
