@@ -771,6 +771,31 @@ describe('the review', () => {
     expect(mocks.tx.send).toHaveBeenCalledTimes(1)
   })
 
+  it('reads an approval that fails as the approval, with the engine line and Retry, never as the stick', async () => {
+    mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 0n })
+    await render()
+    await review()
+    const underMin = encodeErrorResult({
+      abi: [{ type: 'error', name: 'JBMultiTerminal_UnderMin', inputs: [{ type: 'uint256' }, { type: 'uint256' }] }],
+      errorName: 'JBMultiTerminal_UnderMin',
+      args: [1n, 2n],
+    })
+    mocks.tx.send.mockImplementationOnce(async (_step: unknown, options: { onFailure?: (error: unknown) => void }) => {
+      options.onFailure?.({ shortMessage: 'Execution reverted.', data: underMin })
+      mocks.tx.phase = 'error'
+      mocks.tx.error = HELD_FAILED_LINE
+      mocks.tx.reverted = true
+      return null
+    })
+    await click(confirmButton())
+    await rerender()
+    expect(mocks.tx.send.mock.calls[0][0]).toMatchObject({ functionName: 'approve' })
+    expect(dialog()!.textContent).toContain(HELD_FAILED_LINE)
+    expect(dialog()!.textContent).not.toContain('The stick reverted.')
+    expect(dialog()!.textContent).not.toContain('This stick would return')
+    expect(confirmButton()!.textContent).toBe('Retry')
+  })
+
   it('names a known revert that a fresh quote does not fix, and keeps Retry', async () => {
     mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 5n * CPN })
     await render()

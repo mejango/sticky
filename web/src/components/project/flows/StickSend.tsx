@@ -149,7 +149,8 @@ export function StickSend({
         reviewedAccount: plan.account,
         simulationBlockNumber: confirmedAt,
         reverify: () => verify(plan),
-        onFailure: error => setFailure(stickFailure(error, plan.info.stSymbol)),
+        // Only the stick itself reads as a stick failure; an approval that fails keeps the engine's line and Retry.
+        onFailure: error => setFailure(step === plan.steps[plan.steps.length - 1] ? stickFailure(error, plan.info.stSymbol) : null),
       }),
     )
   }
@@ -181,7 +182,7 @@ export function StickSend({
   if (!plan && !preparing) return null
   // A stick that would now mint less than its quote is quoted again, never sent with a looser minimum. A mined revert's
   // cause is not knowable from its receipt: it is quoted and simulated again, and that simulation says why.
-  const reverted = tx.reverted
+  const reverted = tx.reverted && !!plan && landed === plan.steps.length - 1
   const requote = reverted || (tx.phase === 'error' && !!failure?.requote)
   return (
     <TxConfirmDialog
