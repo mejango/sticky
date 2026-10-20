@@ -172,21 +172,6 @@ export function useSafeTx(chainId: number) {
   const [result, setResult] = useState<{ hash: Hex; receipt: TransactionReceipt | null } | null>(null)
   /** Whether the write this flow sent is a Safe proposal. */
   const [safe, setSafe] = useState(false)
-  // The write this flow sent, as of its last render, for the hold's settlement callback.
-  const waiting = useRef(sent)
-  waiting.current = sent
-  // Failure callbacks belong to the open attempt only: a reset closes it, and a new send marks every settlement
-  // already known (and the write it replaces) as left behind, at once rather than on the next render. Any other
-  // hash, a Safe execution or a speed-up the hold verified, is the open attempt's.
-  const closed = useRef(false)
-  const leftBehind = useRef(new Set<string>())
-  // The settlement the hold's view shows, as of its last render.
-  const viewSettled = useRef<string | null>(null)
-  // A success this attempt's callback already applied: a later "went through while away" never undoes it.
-  const succeeded = useRef(false)
-  const leaveBehind = () => {
-    for (const hash of [viewSettled.current, waiting.current?.hash]) if (hash) leftBehind.current.add(hash.toLowerCase())
-  }
   const publicClient = usePublicClient({ chainId })
   const options = useRef<TxSendOptions | null>(null)
   const inFlight = useRef(false)
@@ -213,8 +198,6 @@ export function useSafeTx(chainId: number) {
     if (follow && handle && client) followDetached(handle, client, () => refreshAfterConfirmedWrite(queryClient, on))
     generation.current += 1
     inFlight.current = false
-    closed.current = true
-    leaveBehind()
     setPhase('idle')
     setError(null)
     setReverted(false)
@@ -229,13 +212,7 @@ export function useSafeTx(chainId: number) {
     pollMs: 15_000,
     onSettled: (settled, receipt) => {
       if (!('hash' in settled)) return
-      // Only the open attempt's write: never one a reset or a newer send left behind.
-      // The hold counts a delivered success as told, so a success always reaches the flow: dropping one would let the
-      // same action be sent again without "went through while away". A failure a reset or a newer send left behind
-      // releases nothing and is dropped.
-      if (settled.result !== 'success' && (closed.current || leftBehind.current.has(settled.hash.toLowerCase()))) return
       if (settled.result === 'success') {
-        succeeded.current = true
         setResult({ hash: settled.hash, receipt })
         setPhase('success')
       } else {
@@ -252,7 +229,6 @@ export function useSafeTx(chainId: number) {
   })
   const latest = useRef(write)
   latest.current = write
-  viewSettled.current = write.settled && 'hash' in write.settled ? write.settled.hash : null
 
   // A direct write's receipt is handed to its hold, which verifies it and settles at once.
   // The transaction a direct write is followed by: the wallet's reply, or the one its hold already tracks.
@@ -288,9 +264,6 @@ export function useSafeTx(chainId: number) {
       inFlight.current = true
       const attempt = generation.current
       const isCurrent = () => mounted.current && generation.current === attempt && renderedChain.current === chainId
-      closed.current = false
-      succeeded.current = false
-      leaveBehind()
       setError(null)
       setReverted(false)
       setPhase('simulating')
@@ -421,22 +394,13 @@ export function useSafeTx(chainId: number) {
         inFlight.current = false
         // Held, or a success that went through while away: the SDK's view shows it, with its exit or its send-again.
         if (e instanceof WriteHeldError || (e instanceof Error && e.message === HELD_AWAY_SUCCESS_LINE)) {
-          // A success this attempt already took stays shown, whatever phase the send moved to since.
-          if (succeeded.current) { setError(null); setPhase('success'); return null }
-          // Resuming the held write a reset left behind: its settlement is this attempt's again.
-          if (e instanceof WriteHeldError) {
-            for (const hash of [e.state.record.hash, e.state.record.executionHash]) if (hash) leftBehind.current.delete(hash.toLowerCase())
-          }
           setPhase('pending')
           void latest.current.check()
           return null
         }
         if (e instanceof WriteHoldStaleReviewError) {
           // Another window sent this intent while the review was open: its result if it settled, else its message.
-          // Its settlement is applied here: its callback may have run while the review was open.
-          if (e.settled && 'hash' in e.settled && e.settled.result === 'success') { setError(null); setResult({ hash: e.settled.hash, receipt: null }); setPhase('success') }
-          else if (e.settled && 'hash' in e.settled) { setError(settledLine(e.settled)); setReverted(e.settled.result === 'failed'); setPhase('error') }
-          else { setError(e.message); setPhase('error') }
+          if (e.settled && 'hash' in e.settled) { setError(null); setPhase('pending'); void latest.current.check() } else { setError(e.message); setPhase('error') }
           return null
         }
         if (e instanceof WriteHoldBusyError || e instanceof WriteHoldNonceError) {
