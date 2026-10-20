@@ -4,6 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProjectTabIcon } from '@/components/project/ProjectTabIcon'
 import { ProjectTabs, replaceProjectTabHash } from '@/components/project/Tabs'
 
+const preload = vi.hoisted(() => vi.fn())
+vi.mock('@/components/project/LazyProjectTabs', () => ({ preloadProjectTabs: preload }))
+
 // JBM's test/components/project-tabs.test.ts and test/project-tab-icon.test.tsx, on jsdom's window with the location
 // stubbed, plus the phone tab's label, which Sticky passes and JBM defaults.
 
@@ -153,6 +156,31 @@ describe('the phone tab', () => {
     window.history.replaceState(null, '', '/base:23#latest')
     await render('Latest')
     expect(selected()).toEqual(['Overview'])
+  })
+})
+
+describe('the lazy tab panels', () => {
+  const render = () =>
+    act(async () =>
+      root.render(<ProjectTabs tabs={[{ label: 'Overview', content: 'overview' }]} sidebar="sidebar" activity="activity" />),
+    )
+
+  it('are fetched once the page is idle, and again when the pointer reaches the tab row', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('requestIdleCallback', undefined)
+    try {
+      preload.mockClear()
+      await render()
+      expect(preload).not.toHaveBeenCalled()
+      await act(async () => vi.advanceTimersByTime(2_000))
+      expect(preload).toHaveBeenCalledTimes(1)
+      act(() => {
+        host.querySelector('[role="tablist"]')!.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }))
+      })
+      expect(preload).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

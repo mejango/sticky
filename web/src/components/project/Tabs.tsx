@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 
+import { preloadProjectTabs } from '@/components/project/LazyProjectTabs'
 import {
   ProjectOverflowIcon,
   ProjectTabIcon,
@@ -198,6 +199,16 @@ export function ProjectTabs({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // The tab panels load on demand; fetch them once the page is idle so a first click rarely waits.
+  useEffect(() => {
+    if (typeof window.requestIdleCallback === 'function') {
+      const id = window.requestIdleCallback(preloadProjectTabs, { timeout: 4_000 })
+      return () => window.cancelIdleCallback(id)
+    }
+    const id = window.setTimeout(preloadProjectTabs, 2_000)
+    return () => window.clearTimeout(id)
+  }, [])
+
   const activate = (nextSlug: string) => {
     const [currentParent, currentChild] = window.location.hash
       .replace('#', '')
@@ -241,6 +252,8 @@ export function ProjectTabs({
               role="tablist"
               aria-label="Project sections"
               className="flex shrink-0 gap-1"
+              onPointerEnter={preloadProjectTabs}
+              onFocus={preloadProjectTabs}
             >
               <button
                 type="button"
