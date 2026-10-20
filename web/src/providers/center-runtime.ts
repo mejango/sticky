@@ -1,5 +1,5 @@
 'use client'
-import { createCenterWalletClient } from '@bananapus/nana-sdk-connect/core'
+import { createCenterWalletClient } from '@me.jango/signa/core'
 import { CENTER_WALLET_CONFIG } from './wallet-config'
 import { centerReturnPath } from './center-callback'
 const returnKey = 'sticky:center:return:v2'
