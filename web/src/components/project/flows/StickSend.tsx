@@ -16,6 +16,7 @@ import { withApprovalParent } from '@/lib/sticky-hold-intent'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { assertCanStickFor, quoteStick } from '@/lib/sticky-quotes'
 import { refreshAfterStick } from '@/lib/sticky-refresh'
+import { stickFailure, type StickFailure } from '@/lib/sticky-stick-failure'
 import { chainName } from '@/lib/urn'
 import { EXTERNAL_WALLET_REQUIRED } from '@/providers/WalletAuthContext'
 
@@ -71,6 +72,8 @@ export function StickSend({
   const client = useQueryClient()
   const [plan, setPlan] = useState<Plan | null>(null)
   const [preparing, setPreparing] = useState(false)
+  /** Why the last send failed, when the revert says. */
+  const [failure, setFailure] = useState<StickFailure | null>(null)
   // The steps confirmed so far, one for each press: the dialog is on the one after them.
   const presses = useStepPresses(tx)
   const { landed } = presses
@@ -89,6 +92,7 @@ export function StickSend({
     reading.current = controller
     const { signal } = controller
     latest.current.tx.reset()
+    setFailure(null)
     setPlan(null)
     latest.current.presses.restart()
     setPreparing(true)
@@ -139,8 +143,15 @@ export function StickSend({
     if (!plan || sending) return
     // The plan is the reviewing account's: its balance, its allowance, its trust check and its quote. Every step is sent
     // as that account, and the engine refuses it, before a review opens, while another is connected.
+    setFailure(null)
     await presses.press(plan.steps, (step, confirmedAt) =>
-      tx.send(step, { reviewedAccount: plan.account, simulationBlockNumber: confirmedAt, reverify: () => verify(plan) }),
+      tx.send(step, {
+        reviewedAccount: plan.account,
+        simulationBlockNumber: confirmedAt,
+        reverify: () => verify(plan),
+        // Only the stick itself reads as a stick failure; an approval that fails keeps the engine's line and Retry.
+        onFailure: error => setFailure(step === plan.steps[plan.steps.length - 1] ? stickFailure(error, plan.info.stSymbol) : null),
+      }),
     )
   }
 
@@ -169,6 +180,10 @@ export function StickSend({
   useEffect(() => () => reading.current?.abort(), [])
 
   if (!plan && !preparing) return null
+  // A stick that would now mint less than its quote is quoted again, never sent with a looser minimum. A mined revert's
+  // cause is not knowable from its receipt: it is quoted and simulated again, and that simulation says why.
+  const reverted = tx.reverted && !!plan && landed === plan.steps.length - 1
+  const requote = reverted || (tx.phase === 'error' && !!failure?.requote)
   return (
     <TxConfirmDialog
       open
@@ -181,11 +196,11 @@ export function StickSend({
       stepsIntro={plan ? stepsIntro(plan.steps.length, landed) : undefined}
       action={confirmAction(
         tx.phase,
-        tx.phase === 'error' ? 'Retry' : plan && landed === plan.steps.length - 1 ? 'Confirm & stick' : 'Confirm & approve',
+        requote ? 'Review again' : tx.phase === 'error' ? 'Retry' : plan && landed === plan.steps.length - 1 ? 'Confirm & stick' : 'Confirm & approve',
       )}
       // Once a step has gone through, closing undoes nothing: what went through stays, and the next review finds it.
       cancelLabel={landed > 0 ? 'Close' : 'Cancel'}
-      onConfirm={() => void confirm()}
+      onConfirm={() => (requote ? onReviewAgain() : void confirm())}
       busy={sending}
       complete={complete}
       settled={tx.phase === 'submitted'}
@@ -198,7 +213,7 @@ export function StickSend({
           (sendingStatus(tx) ?? undefined)
         )
       }
-      error={tx.error}
+      error={reverted ? 'The stick reverted.' : tx.phase === 'error' && failure ? failure.message : tx.error}
     />
   )
 }

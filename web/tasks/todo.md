@@ -1,3 +1,21 @@
+# Stick failure reason and re-quote (2026-10-20)
+
+Ruling (jango): if a payment fails, we should know the reason and let the user adjust. A stick pays Sticky's terminal with no buyback, so its minimum stays the exact quote; a shortfall offers a fresh quote instead of a looser minimum.
+
+- [x] 1. Bump @bananapus/nana-sdk-core 3.1.0 -> 3.3.0 (Node 26, npm 12).
+- [x] 2. useSafeTx gains `onFailure(error)` for a send that fails before the wallet (same option jbm adds).
+- [x] 3. `stickFailure(error, stSymbol)` in lib: decodePayFailure covers the terminal's UnderMin; Sticky's own StickyAutoStick_InsufficientStickyTokens(received, minimum) decodes locally. A shortfall gives one plain line with both amounts; other known pay reverts give the SDK's line.
+- [x] 4. StickSend: on a shortfall the dialog shows that line and "Quote again", which re-plans the same stick.
+- [ ] 5. Tests, full `npm run check`, screenshot of the failure state, PR, two Codex passes, no merge.
+
+## Plan refinement
+- **Objective:** A stick that fails says why in one line; when the price moved past the reviewed minimum, the dialog offers a fresh quote. Happy path and the exact-quote minimum are unchanged.
+- **System fit:** Outcome (understood failure, easy retry) -> capability (SDK decodePayFailure plus Sticky's own error table) -> evidence (the simulation error the engine already catches) -> prepared action (StickSend's existing re-plan via onReviewAgain) -> authority (existing review and held send) -> verified result (receipt). Unstick, transfer, AutoStick and launch flows are unaffected.
+- **Reuse and simplicity:** SDK decodes JB reverts; only Sticky's contract error is decoded here, from its generated ABI. Re-quote reuses onReviewAgain. One small option on useSafeTx, mirroring jbm's.
+- **Evidence and unknowns:** StickyAutoStick.sol 593-608 and JBMultiTerminal UnderMin carry received and minimum; SDK source wt-sdk-paymin executionErrors.ts; published 3.3.0 re-read after install. A mined revert keeps the engine's settled line (the review simulates right before signing).
+- **Verification:** Unit tests for the decoder (terminal UnderMin, Sticky InsufficientStickyTokens, other) and StickSend's shortfall line + Quote again; full `npm run check`; Playwright screenshot of the failure dialog.
+- **Resource budget:** One worktree, one bump, three small edits; replan if 3.3.0 differs from source.
+
 # Sticky client reconciliation
 
 ## Plan refinement
@@ -115,3 +133,14 @@ Hosted verification passed at `f6ed26bc8a41d748ef1caa1831dee1efc7eebd05`: all se
 - **Resource budget:** One small PR from origin/main in .worktrees/sticky-2412; no merge.
 
 - [x] Bump core 2.41.2; remove the busy retry and the app waiting line; full gate passes (3842 unit, 54 browser).
+
+### SDK 3.4.1 (2026-10-20)
+- [x] Bump @bananapus/nana-sdk-core 3.3.0 -> 3.4.1. Its write hold releases a direct write's canonical revert at once (settled `failed`, the SDK's held-failed line), so the engine now says `reverted` from that settlement instead of StickSend matching a line.
+- [x] The SDK decodes only canonically encoded reverts with their amounts, so the "minimum without amounts" branch is gone; a stick that would return nothing reads "This stick would return no stX. Review again for a fresh quote."
+- [x] Codex final pass: `reverted` now also reads the hold's own settled view, so Review again shows while the settlement callback still fetches its receipt; the callback applies only to the write the flow is waiting on (pending, and the same hash for a direct write), so a settlement landing after a reset or under a newer send changes nothing. Both covered by tests that fail without the fix.
+- [x] Codex pass 2: settlement callbacks now belong to the open attempt, decided at once rather than on render: a reset closes the attempt, and a new send leaves every settlement already known (and the write it replaces) behind. A review that went stale because another window's write settled applies that settlement directly instead of waiting on a callback that may already have run. Tests cover a reset in the same batch as the callback and an older failure landing under a newer sent or reply-lost write.
+- [x] Codex pass 3: a settlement is the open attempt's unless a reset or newer send left its hash behind, so a Safe execution or a verified speed-up finishes the flow; resuming a held write after a reset takes its settlement back; a success already applied during review is never turned back into pending by "went through while away". Test: a held write resumed after a reset finishes.
+- [x] Codex pass 4: a success always reaches the flow (the hold counts it as told once delivered, so dropping it would allow a second send without "went through while away"); only failures a reset or newer send left behind are dropped. A success taken during review is restored if the send moved the phase on since. Test: a success landing after a reset is taken.
+- [x] Settlement handling is back to main's, as in jbm: the hold's onSettled carries no record identity and a Safe settlement carries the execution hash, so a client-side guard cannot tell a stale settlement from the current one (jbm's Codex passes showed it dropping a current Safe execution). The engine diff is only `onFailure` and the `reverted` flag. Gap, for one batched SDK fix later: a late failure from an earlier attempt can still overwrite a reset or newer send; needs identity in the SDK's useHeldSend.
+- [x] Codex passes 8-11: Sticky's own shortfall is read by SDK 3.4.1's evidence rules (any revert data outranks a decoded copy, decoded-only evidence needs the ABI item, 0 <= received < minimum <= max uint256, payloads decoded lowercased, a known SDK pay revert outranks Sticky's check), and only the final stick step's failure reads as a stick failure (an approval revert keeps the engine line and Retry). Pass 12: SHIP.
+- [x] follow-redirects 1.16.0 -> 1.16.1 (two new high advisories failed `audit:prod`). `npm run check` on f588be1: 3879 unit, `next build`, budgets, 54 browser.

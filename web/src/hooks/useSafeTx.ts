@@ -74,6 +74,8 @@ export type TxSendOptions = {
   onBeforeWriteAborted?: () => unknown | Promise<unknown>
   /** Called only for a typed, explicit wallet rejection of the write itself. */
   onWriteRejected?: () => unknown | Promise<unknown>
+  /** The error behind a send that failed before reaching the chain (simulation, estimate, wallet), for a flow to decode. */
+  onFailure?: (error: unknown) => void
   /** A domain journal keeps this write's domain data beside the SDK hold, including the returned hash. */
   durableRecovery?: {
     reserve: () => unknown | Promise<unknown>
@@ -162,6 +164,8 @@ export function useSafeTx(chainId: number) {
 
   const [phase, setPhase] = useState<TxPhase>('idle')
   const [error, setError] = useState<string | null>(null)
+  /** The hold settled this flow's write as reverted onchain. */
+  const [reverted, setReverted] = useState(false)
   /** The wallet's reply for the write this flow sent: a transaction, or a Safe proposal. */
   const [sent, setSent] = useState<{ hash: Hex; safe: boolean } | null>(null)
   /** The hold's authenticated success, with its receipt. */
@@ -196,6 +200,7 @@ export function useSafeTx(chainId: number) {
     inFlight.current = false
     setPhase('idle')
     setError(null)
+    setReverted(false)
     setSent(null)
     setResult(null)
   }, [queryClient])
@@ -212,6 +217,7 @@ export function useSafeTx(chainId: number) {
         setPhase('success')
       } else {
         setError(settledLine(settled))
+        setReverted(settled.result === 'failed')
         setPhase('error')
       }
     },
@@ -259,6 +265,7 @@ export function useSafeTx(chainId: number) {
       const attempt = generation.current
       const isCurrent = () => mounted.current && generation.current === attempt && renderedChain.current === chainId
       setError(null)
+      setReverted(false)
       setPhase('simulating')
       setSent(null)
       setResult(null)
@@ -416,6 +423,8 @@ export function useSafeTx(chainId: number) {
           setPhase('idle')
           return null
         }
+        // A flow's reading of the failure never stops the engine from settling it.
+        try { sendOptions.onFailure?.(e) } catch { /* the engine's own line stands */ }
         setError(friendlyTxError(e))
         setPhase('error')
         return null
@@ -478,6 +487,8 @@ export function useSafeTx(chainId: number) {
     /** Whether the connected writer is a Safe connector. */
     isSafe,
     error: effectivePhase === 'error' ? (error ?? (shown?.line || null)) : error,
+    /** The write was mined and reverted: its receipt says so, not why. */
+    reverted: effectivePhase === 'error' && (reverted || shown?.settled?.result === 'failed'),
     hash: result?.hash ?? watched ?? null,
     safeProposalHash: awaitingProposal,
     /** The wallet's original reply, retained if its durable handoff needs repair. */

@@ -754,6 +754,54 @@ describe('useSafeTx', () => {
     } finally { vi.useRealTimers() }
   })
 
+  it('finishes a held write resumed after a reset', async () => {
+    const hook = await renderHook()
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    await act(async () => { hook.ref.current!.reset() })
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
+    mocks.receipt = { data: canonicalReceipt('success'), isError: false }
+    await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
+    await vi.waitFor(() => expect(hook.ref.current).toMatchObject({ phase: 'success', busy: false }))
+  })
+
+  /** Holds the settlement callback's own receipt lookup (the one after the hold settled) until `release` runs. */
+  function delaySettlementLookup() {
+    const gate: { release?: (receipt: unknown) => void } = {}
+    const settledYet = () => Object.keys(localStorage).some(key => key.startsWith('nana-sdk:reviewed-write:') && localStorage.getItem(key)!.includes('"result"'))
+    mocks.publicClient.getTransactionReceipt.mockImplementation(async () => {
+      if (settledYet() && !gate.release) return new Promise(resolve => { gate.release = resolve })
+      return mocks.receipt.data
+    })
+    return gate
+  }
+
+  it('takes a success that lands after a reset, so the same action is not sent twice', async () => {
+    const hook = await renderHook()
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    const gate = delaySettlementLookup()
+    mocks.receipt = { data: canonicalReceipt('success'), isError: false }
+    await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
+    await vi.waitFor(() => expect(gate.release).toBeTypeOf('function'))
+    await act(async () => { hook.ref.current!.reset(); gate.release!(canonicalReceipt('success')) })
+    expect(hook.ref.current).toMatchObject({ phase: 'success' })
+  })
+
+  it('says a write reverted as soon as the hold settles it, before its receipt is fetched again', async () => {
+    const hook = await renderHook()
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    // The settlement callback waits on this lookup; the hold's own view already shows the failure.
+    // Every lookup until the settlement answers; the callback's own lookup after it never does.
+    const settledYet = () => Object.keys(localStorage).some(key => key.startsWith('nana-sdk:reviewed-write:') && localStorage.getItem(key)!.includes('"result"'))
+    mocks.publicClient.getTransactionReceipt.mockImplementation(async () => {
+      if (settledYet()) return new Promise(() => {})
+      return mocks.receipt.data
+    })
+    mocks.receipt = { data: canonicalReceipt('reverted'), isError: false }
+    await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
+    await vi.waitFor(() => expect(hook.ref.current).toMatchObject({ phase: 'error', reverted: true }))
+  })
+
   it('takes a second send of the same action right after the first one confirmed, without refusing it', async () => {
     mocks.writeContract.mockResolvedValueOnce(HASH).mockResolvedValueOnce(EXECUTION_HASH)
     const hook = await renderHook()
@@ -1349,16 +1397,17 @@ describe('useSafeTx', () => {
     expect(recoveryRecords()).toHaveLength(1)
   })
 
-  it('holds a reverted write until finality proves its failure', async () => {
+  it('releases a mined revert at once as reverted, and the next send starts clean', async () => {
+    mocks.writeContract.mockResolvedValueOnce(HASH).mockResolvedValueOnce(EXECUTION_HASH)
     const hook = await renderHook()
     await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
-    mocks.publicClient.getBlock.mockImplementation(async ({ blockNumber }: { blockNumber?: bigint }) => ({
-      number: blockNumber ?? 76n, hash: BLOCK_HASH, timestamp: 1_000n,
-    }))
     mocks.receipt = { data: canonicalReceipt('reverted'), isError: false }
     await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
-    expect(hook.ref.current!.phase).toBe('submitted')
-    expect(recoveryRecords()).toHaveLength(1)
+    await vi.waitFor(() => expect(hook.ref.current).toMatchObject({ phase: 'error', reverted: true, held: null }))
+    expect(recoveryRecords()).toHaveLength(0)
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+    expect(hook.ref.current).toMatchObject({ phase: 'pending', reverted: false })
   })
 
   it.each(['reset', 'unmount'] as const)('does not write after %s closes an outstanding review', async close => {
