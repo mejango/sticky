@@ -51,10 +51,10 @@ function stickyShortfall(error: unknown): { received: bigint; minimum: bigint } 
  */
 export function stickFailure(error: unknown, stSymbol: string): StickFailure | null {
   const pay = decodePayFailure(error)
-  const shortfall =
-    pay?.reason === 'TERMINAL_UNDER_MIN' && pay.received !== undefined && pay.minimum !== undefined
-      ? { received: pay.received, minimum: pay.minimum }
-      : stickyShortfall(error)
+  const shortfall = (pay?.reason === 'TERMINAL_UNDER_MIN' ? amounts([pay.received, pay.minimum]) : null) ?? stickyShortfall(error)
+  if (shortfall?.received === 0n) {
+    return { message: `This stick would return no ${stSymbol} right now. Review again for a fresh quote.`, requote: true }
+  }
   if (shortfall) {
     return {
       message: `This stick would return ${formatUnits(shortfall.received, 18)} ${stSymbol}, under its ${formatUnits(shortfall.minimum, 18)} ${stSymbol} minimum. Review again for a fresh quote.`,

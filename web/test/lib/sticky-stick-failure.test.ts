@@ -47,4 +47,14 @@ describe('stickFailure', () => {
     const raw = encodeErrorResult({ abi: stickyAutoStickAbi, errorName: 'StickyAutoStick_InsufficientStickyTokens', args: [E, 2n * E] })
     expect(stickFailure({ cause: { error: { data: raw } } }, 'stX')?.requote).toBe(true)
   })
+  it('reads the terminal amounts only as bigints, and names a stick that would return nothing', () => {
+    expect(stickFailure({ errorName: 'JBMultiTerminal_UnderMin', args: [null, null] }, 'stX')).toEqual({
+      message: 'This stick would return less than its minimum. Review again for a fresh quote.',
+      requote: true,
+    })
+    expect(stickFailure({ data: underMin(0n, 3n * E) }, 'stX')).toEqual({
+      message: 'This stick would return no stX right now. Review again for a fresh quote.',
+      requote: true,
+    })
+  })
 })
