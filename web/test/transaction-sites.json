@@ -90,7 +90,7 @@
         }
       ]
     },
-    "src/components/project/flows/StickFlow.tsx": {
+    "src/components/project/flows/StickSend.tsx": {
       "hooks": 1,
       "sends": 1,
       "sendSites": [

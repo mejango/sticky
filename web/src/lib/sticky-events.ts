@@ -36,7 +36,7 @@ import {
   untilAborted,
   type ScannedLog,
 } from '@/lib/hook-logs'
-import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
+import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
 import { controllerAbi, projectsAbi, stickyDeployerAbi, stickyHookAbi } from '@/lib/sticky-abis'
 import { deploymentOn, stickyDeployment, type StickyDeployment } from '@/lib/sticky-addresses'
 import {

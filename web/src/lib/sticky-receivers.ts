@@ -7,7 +7,7 @@
 
 import { erc20Abi, isAddressEqual, type Address } from 'viem'
 import { asked } from '@/lib/hook-logs'
-import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
+import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
 import { stickyRewardReceiverFactoryAbi } from '@/lib/sticky-abis'
 import { deploymentOn } from '@/lib/sticky-addresses'
 import type { Answer } from '@/lib/sticky-project'

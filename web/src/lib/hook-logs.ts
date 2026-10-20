@@ -13,7 +13,7 @@ import {
   type Log,
   type PublicClient,
 } from 'viem'
-import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
+import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
 import { stickyHookAbi } from '@/lib/sticky-abis'
 import { deploymentOn } from '@/lib/sticky-addresses'
 import { sleep } from '@/lib/with-timeout'

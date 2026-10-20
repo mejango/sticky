@@ -8,6 +8,8 @@ import {
 } from '@bananapus/nana-sdk-core/bendystraw-operations'
 import registry from '@/lib/bendystraw-operation-registry.json'
 import { resolvePersistedBendystrawRequest } from '@/lib/bendystraw-proxy'
+// Tests write documents of their own; the build registers only the site's.
+vi.mock('@/lib/bendystraw-documents.json', async () => ({ default: (await import('../support/bendystraw-documents')).anyDocument }))
 
 // Two fixed documents stand in for the registry, so the relay is tested whatever the real registry holds.
 const documents = vi.hoisted(() => ({

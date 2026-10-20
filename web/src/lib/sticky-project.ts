@@ -10,7 +10,7 @@ import {
   type Hex,
 } from 'viem'
 import { freshHead, untilAborted } from '@/lib/hook-logs'
-import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
+import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
 import {
   controllerAbi,
   stickyDeployerAbi,

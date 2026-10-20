@@ -1,5 +1,4 @@
-import { mainnet } from '@bananapus/nana-sdk-core/chains'
-import { createPublicClient, http, isAddress, type Address } from 'viem'
+import { isAddress, type Address } from 'viem'
 import { PRODUCTION_CHAINS } from '@/lib/chains'
 
 /**
@@ -8,14 +7,6 @@ import { PRODUCTION_CHAINS } from '@/lib/chains'
  * which is left out of the browser.
  */
 
-const ensClient = createPublicClient({
-  chain: mainnet,
-  // CORS-friendly public RPC (several big providers block browser origins).
-  transport: http('https://ethereum-rpc.publicnode.com'),
-  // No CCIP-Read. The resolver of a name is the account's own choice, and an off-chain lookup would send this
-  // browser to a URL that account picked.
-  ccipRead: false,
-})
 const IS_DETERMINISTIC_BROWSER =
   process.env.NEXT_PUBLIC_DETERMINISTIC_BROWSER === 'true'
 
@@ -39,7 +30,9 @@ export function lookupEnsName(
   }
   let name = nameCache.get(key)
   if (!name) {
-    name = ensClient.getEnsName({ address: key as Address }).catch(() => null)
+    name = import('@/lib/ens-client')
+      .then(({ ensClient }) => ensClient.getEnsName({ address: key as Address }))
+      .catch(() => null)
     nameCache.set(key, name)
   }
   return name

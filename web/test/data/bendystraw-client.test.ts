@@ -3,6 +3,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { bendystraw, normalizeBendystrawUrl } from '@/lib/bendystraw'
 import { bendystrawOperationId } from '@bananapus/nana-sdk-core/bendystraw-operations'
+// Tests write documents of their own; the build registers only the site's.
+vi.mock('@/lib/bendystraw-documents.json', async () => ({ default: (await import('../support/bendystraw-documents')).anyDocument }))
 
 const PROJECT = `query ClientProject($chainId: Int!, $projectId: Int!) {
   project(chainId: $chainId, projectId: $projectId, version: 6) { projectId chainId }

@@ -5,7 +5,7 @@ import type { LaunchPlan } from '@/lib/sticky-launch-plan'
 import { STICKY_LISTING_FORWARDER, buildStickyEnvelope, createStickyCenterClient, listingCapability, publishStickyListing } from '@/lib/sticky-listing'
 
 const rpc = vi.hoisted(() => ({ client: vi.fn() }))
-vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: rpc.client }))
+vi.mock('@/lib/jbcenter-public-client', () => ({ jbCenterPublicClient: rpc.client }))
 const address = (digit: string) => getAddress(`0x${digit.repeat(40)}`)
 const OWNER = address('1')
 const DEPLOYER = address('2')

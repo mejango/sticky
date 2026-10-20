@@ -8,7 +8,7 @@ import { CHAIN, HOLDER, HOOK } from './sticky-log-fixtures'
 // stale page.
 
 const center = vi.hoisted(() => ({ client: vi.fn() }))
-vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: center.client }))
+vi.mock('@/lib/jbcenter-public-client', () => ({ jbCenterPublicClient: center.client }))
 
 type Read = { address: Address; functionName: string; args: readonly bigint[]; blockNumber?: bigint }
 

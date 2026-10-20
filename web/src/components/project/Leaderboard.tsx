@@ -6,7 +6,7 @@ import { AddressLabel } from '@/components/ui/AddressLabel'
 import { Skeleton, SkeletonTable } from '@/components/ui/Skeleton'
 import { useStickyHolders } from '@/hooks/useStickyProject'
 import { useCheckedBalances } from '@/hooks/useStickyTokens'
-import { formatAmount, formatDuration } from '@/lib/sticky-format'
+import { formatAmount, formatDuration, shortAddress } from '@/lib/sticky-format'
 import type { HolderRow } from '@/lib/sticky-holders'
 import { backingOfShares, type StickyProjectInfo } from '@/lib/sticky-project'
 
@@ -21,7 +21,6 @@ const PAGE_SIZE = 20
 const HEADING = 'whitespace-nowrap border-b border-line py-1 pr-2 text-left text-[13px] font-semibold tracking-[1px] text-muted'
 const CELL = 'whitespace-nowrap border-b border-line py-[5px] pr-2'
 
-const short = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`
 const sameAccount = (a: string, b: string | null) => b !== null && a.toLowerCase() === b.toLowerCase()
 
 const byShares = (a: HolderRow, b: HolderRow) => (a.staked === b.staked ? 0 : a.staked > b.staked ? -1 : 1)
@@ -85,7 +84,7 @@ function HolderPie({
   const totalPercent = totalSupply > 0n ? Number((total * 1_000_000n) / totalSupply) / 10_000 : 0
   const gap = rows.length > 1 ? 1.5 : 0
   const percentOf = (row: HolderRow) => Number((row.staked * 1_000_000n) / total) / 10_000
-  const named = (row: HolderRow, suffix: string) => `${short(row.holder)}${sameAccount(row.holder, you) ? suffix : ''}`
+  const named = (row: HolderRow, suffix: string) => `${shortAddress(row.holder)}${sameAccount(row.holder, you) ? suffix : ''}`
 
   const slices: { row: HolderRow; start: number; length: number }[] = []
   let offset = 0

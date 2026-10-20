@@ -22,7 +22,7 @@ import { stickyInfo } from '../home-fixtures'
 import { POSITION_TOPICS, staked, streakEnded, streakStarted, topic, unstaked } from './sticky-log-fixtures'
 
 const center = vi.hoisted(() => ({ client: vi.fn() }))
-vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: center.client }))
+vi.mock('@/lib/jbcenter-public-client', () => ({ jbCenterPublicClient: center.client }))
 
 const CHAIN = 8453
 const deployment = stickyDeployment(CHAIN)!

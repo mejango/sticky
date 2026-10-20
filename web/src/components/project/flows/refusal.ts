@@ -10,3 +10,11 @@ export class Refusal extends Error {}
 export function refusalOf(reason: unknown): unknown {
   return reason instanceof Error && reason.cause === undefined && !(reason instanceof Refusal) ? new Refusal(reason.message) : reason
 }
+
+/** A read's failure as an error the holder is told of. The console is told why as well when the read failed to be made,
+ * which its cause says: a refusal, like a holder who has not trusted the sender, has none. */
+export function told(label: string, about: object, reason: unknown): Error {
+  const error = reason instanceof Error ? reason : new Error(String(reason))
+  if (error.cause !== undefined) console.warn(label, about, error)
+  return error
+}

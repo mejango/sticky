@@ -27,7 +27,7 @@ import { resolveProjectHandle, type HandleReads } from '@/lib/sticky-handles'
 // a handle's record points at.
 
 const center = vi.hoisted(() => ({ client: vi.fn() }))
-vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: center.client }))
+vi.mock('@/lib/jbcenter-public-client', () => ({ jbCenterPublicClient: center.client }))
 
 const PRODUCTION = [1, 10, 8453, 42161]
 const TESTNETS = [11155111, 11155420, 84532, 421614]

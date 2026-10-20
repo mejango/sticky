@@ -11,7 +11,7 @@ vi.mock('@bananapus/nana-sdk-core/safe-service', async importOriginal => ({
   ...await importOriginal<typeof import('@bananapus/nana-sdk-core/safe-service')>(), readSafeAppExecution: safe.read,
 }))
 vi.mock('@/lib/wallet-core', () => ({ publicClient: vi.fn(() => { throw new Error('An explicit proof reader is required') }) }))
-vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: vi.fn(() => { throw new Error('Proof must use its explicit reader') }) }))
+vi.mock('@/lib/jbcenter-public-client', () => ({ jbCenterPublicClient: vi.fn(() => { throw new Error('Proof must use its explicit reader') }) }))
 
 const address = (digit: string) => getAddress(`0x${digit.repeat(40)}`)
 const hash = (digit: string) => `0x${digit.repeat(64)}` as Hex

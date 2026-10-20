@@ -13,7 +13,7 @@
 
 import type { Address } from 'viem'
 import { untilAborted } from '@/lib/hook-logs'
-import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
+import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
 import { controllerAbi, stickyDeployerAbi, tokensAbi } from '@/lib/sticky-abis'
 import { deploymentOn } from '@/lib/sticky-addresses'
 import { withTimeout } from '@/lib/with-timeout'

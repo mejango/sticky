@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider, notifyManager } from '@tanstack/react
 import { act, type AnchorHTMLAttributes, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import type { Address, Hex } from 'viem'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { installQueryPersistence } from '@/lib/query-persist'
 import type { StickyEvent, StickyEventsResult } from '@/lib/sticky-events'
 import { moveKey } from '@/lib/sticky-feed'
@@ -97,6 +97,14 @@ vi.mock('@/lib/sticky-autostick', async importOriginal => ({
 
 import ProjectPage from '@/app/[urn]/page'
 import { ProjectRouteProvider, useResolvedProjectRoute } from '@/providers/ProjectRouteContext'
+
+// The Tokens and Airdrops tabs and the stick review load on demand, as the page fetches them once it is idle; the
+// tests load them first, since a module's load is no step of theirs.
+beforeAll(() => Promise.all([
+  import('@/components/project/TokensTab'),
+  import('@/components/project/AirdropsTab'),
+  import('@/components/project/flows/StickSend'),
+]))
 
 const NOT_FOUND = 'NEXT_HTTP_ERROR_FALLBACK;404'
 const NOW = 1_800_000_000

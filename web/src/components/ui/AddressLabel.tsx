@@ -1,14 +1,11 @@
 'use client'
 
 import { useEnsName } from '@/hooks/useEnsName'
-
-function truncateAddress(address: string): string {
-  return `${address.slice(0, 6)}…${address.slice(-4)}`
-}
+import { shortAddress } from '@/lib/sticky-format'
 
 export function AddressText({ address, chainId }: { address: string; chainId: number }) {
   const { data: ensName } = useEnsName(address, chainId)
-  return <>{ensName ?? truncateAddress(address)}</>
+  return <>{ensName ?? shortAddress(address)}</>
 }
 
 /** Prefer ENS, retain the compact address as the fallback and full-address

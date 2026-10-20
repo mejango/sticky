@@ -4,12 +4,13 @@ import { getAddress, isAddress } from 'viem'
 import { AccountActivity } from '@/components/account/AccountActivity'
 import { AccountHeader } from '@/components/account/AccountHeader'
 import { AccountPositions } from '@/components/account/AccountPositions'
+import { shortAddress } from '@/lib/sticky-format'
 
 export async function generateMetadata({ params }: PageProps<'/account/[address]'>): Promise<Metadata> {
   const { address } = await params
   if (!isAddress(address, { strict: false })) return { title: 'Account' }
   const holder = getAddress(address)
-  return { title: `Account ${holder.slice(0, 6)}…${holder.slice(-4)}` }
+  return { title: `Account ${shortAddress(holder)}` }
 }
 
 /** An account: `/account/0x…` for its Sticky positions and activity on production chains, and

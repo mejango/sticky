@@ -1,15 +1,15 @@
 import { SplitPortion } from '@bananapus/nana-sdk-core'
 import {
+  STICKY_SOURCE_COLLECTOR_DEPLOYMENTS,
   buildStickyReservedSplit, getProjectIdForToken, getStickyCollectorPending,
   stickySourceCollectorDeployment, verifyStickyCollectorRoute,
   type StickyCollectorAllocation, type StickyCollectorRoute, type StickySourceCollectorDeployment,
 } from '@bananapus/nana-sdk-core/v6'
 import type { Address, PublicClient } from 'viem'
-import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
+import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
 import { parseAmount } from '@/lib/sticky-amount'
 import { createStickyBridge, type BridgeRoute } from '@/lib/sticky-bridge'
 import { parseTokenInput } from '@/lib/sticky-launch-plan'
-import { stickySourceCollectors } from '@/lib/sticky-source-collectors'
 
 /** A configured source allocation, with live SDK evidence and its optional direct bridge lane. */
 export type CollectorSource = {
@@ -29,7 +29,7 @@ export function reservedSplitPercent(text: string): number {
 /** UI orchestration only: SDK owns family identity, allocation encoding and route qualification. */
 export function createStickyCollector(
   clientFor: (chainId: number) => PublicClient = jbCenterPublicClient,
-  deployments: readonly StickySourceCollectorDeployment[] = stickySourceCollectors,
+  deployments: readonly StickySourceCollectorDeployment[] = STICKY_SOURCE_COLLECTOR_DEPLOYMENTS,
 ) {
   const bridge = createStickyBridge(clientFor)
   const deployment = (sourceChainId: number, homeChainId: number) =>

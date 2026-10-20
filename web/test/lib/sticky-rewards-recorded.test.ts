@@ -18,7 +18,7 @@ vi.mock('@/lib/sticky-deployments.json', async () => ({
 }))
 
 const center = vi.hoisted(() => ({ client: vi.fn() }))
-vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: center.client }))
+vi.mock('@/lib/jbcenter-public-client', () => ({ jbCenterPublicClient: center.client }))
 
 const CHAIN = recorded.chainId
 /** The block Bendystraw was indexed through, and the head the recording's Center answers at. */

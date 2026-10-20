@@ -46,7 +46,7 @@ vi.mock('@/hooks/useWallet', () => ({
 vi.mock('next/navigation', () => ({ usePathname: () => '/' }))
 vi.mock('next/link', () => ({ default: (props: AnchorHTMLAttributes<HTMLAnchorElement>) => <a {...props} /> }))
 vi.mock('wagmi', () => ({ useEnsName: () => ({ data: undefined }), useBalance: () => ({ data: undefined }) }))
-vi.mock('@/providers/preload-center', () => ({ preloadCenterWallet: vi.fn() }))
+vi.mock('@/providers/preload-center', () => ({ preloadSignIn: vi.fn() }))
 vi.mock('@/providers/Providers', () => ({ IS_DETERMINISTIC_BROWSER: false }))
 vi.mock('@/providers/wallet-config', () => ({
   get CENTER_WALLET_CONFIG() { return mocks.config },

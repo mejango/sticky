@@ -1,7 +1,7 @@
 import { jbControllerAbi } from '@bananapus/nana-sdk-core'
 import { decodeFunctionData, encodeFunctionData, erc20Abi, zeroAddress, type Address, type Hex } from 'viem'
 import { chainsForEnvironment, SUPPORTED_CHAINS, type ChainEnvironment } from '@/lib/chains'
-import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
+import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
 import { projectsAbi, stickyAutoStickAbi, stickyDeployerAbi, tokensAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 

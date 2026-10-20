@@ -33,7 +33,7 @@ function center(start: bigint) {
 }
 
 const load = async () => {
-  const [{ freshHead }, { jbCenterPublicClient }] = await Promise.all([import('@/lib/hook-logs'), import('@/lib/jbcenter-rpc')])
+  const [{ freshHead }, { jbCenterPublicClient }] = await Promise.all([import('@/lib/hook-logs'), import('@/lib/jbcenter-public-client')])
   return { freshHead, jbCenterPublicClient }
 }
 

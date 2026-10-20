@@ -1,4 +1,4 @@
-import { FeedPlaceholder } from '@/components/StickyFeed'
+import { FeedPlaceholder } from '@/components/FeedPlaceholder'
 import { Skeleton } from '@/components/ui/Skeleton'
 
 /** A project page's shape while its route is resolved: the header, the Stick card and Latest, and the tab row. */

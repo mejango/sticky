@@ -3,19 +3,9 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { STICKY_SOURCE_COLLECTOR_DEPLOYMENTS } from '@bananapus/nana-sdk-core/v6'
 import { encodeFunctionData, parseAbi } from 'viem'
 
-const configured = vi.hoisted(() => ({
-  sourceChainId: 1, destinationChainId: 8453,
-  address: '0x4444444444444444444444444444444444444444',
-  feePayer: '0x5555555555555555555555555555555555555555',
-  runtimeCodeHash: `0x${'12'.repeat(32)}`, feePayerRuntimeCodeHash: `0x${'34'.repeat(32)}`,
-  registry: '0x6666666666666666666666666666666666666666',
-  tokens: '0x7777777777777777777777777777777777777777',
-  directory: '0x8888888888888888888888888888888888888888',
-  receiverFactory: '0x9999999999999999999999999999999999999999',
-}))
-vi.mock('@/lib/sticky-source-collectors', () => ({ stickySourceCollectors: [configured] }))
 vi.mock('wagmi', () => ({ useAccount: () => ({ address: undefined, chainId: undefined }) }))
 vi.mock('next/image', () => ({ default: (props: Record<string, unknown>) => createElement('img', { ...props, src: 'asset' }) }))
 
@@ -23,6 +13,8 @@ import { TransactionReviewProvider } from '@/components/TransactionReviewProvide
 import { requireTransactionReview } from '@/lib/transaction-review'
 
 const token = '0x3333333333333333333333333333333333333333'
+// The SDK's table, generated from the verified deployment records, is the one the review reads.
+const configured = STICKY_SOURCE_COLLECTOR_DEPLOYMENTS.find(entry => entry.sourceChainId === 1 && entry.destinationChainId === 8453)!
 const abi = parseAbi([
   'struct Split { uint32 percent; uint64 projectId; address beneficiary; bool preferAddToBalance; uint48 lockedUntil; address hook; }',
   'struct SplitGroup { uint256 groupId; Split[] splits; }',
@@ -40,7 +32,7 @@ afterEach(() => {
   container.remove()
 })
 
-it('uses the generated family record to review a reserved split on its home chain', async () => {
+it("uses the SDK's generated family record to review a reserved split on its home chain", async () => {
   const args = [3n, 123n, [{ groupId: 1n, splits: [{
     percent: 263157895, projectId: 0n, beneficiary: token,
     preferAddToBalance: false, lockedUntil: 0, hook: configured.address as `0x${string}`,

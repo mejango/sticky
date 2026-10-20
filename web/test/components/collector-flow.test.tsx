@@ -25,7 +25,7 @@ vi.mock('@wagmi/core', async original => ({ ...(await original<typeof import('@w
 vi.mock('@/hooks/useSafeTx', async original => ({ ...(await original<typeof import('@/hooks/useSafeTx')>()), useSafeTx: () => mocks.tx }))
 vi.mock('@/lib/sticky-collector-delivery', async original => ({ ...(await original<typeof import('@/lib/sticky-collector-delivery')>()), createStickyCollectorDelivery: () => mocks }))
 vi.mock('@/lib/sticky-bridge', async original => ({ ...(await original<typeof import('@/lib/sticky-bridge')>()), createStickyBridge: () => mocks }))
-vi.mock('@/lib/jbcenter-rpc', async original => ({ ...(await original<typeof import('@/lib/jbcenter-rpc')>()), jbCenterPublicClient: vi.fn() }))
+vi.mock('@/lib/jbcenter-public-client', async original => ({ ...(await original<typeof import('@/lib/jbcenter-public-client')>()), jbCenterPublicClient: vi.fn() }))
 vi.mock('@/lib/sticky-refresh', () => ({ refreshAfterFund: mocks.refresh }))
 vi.mock('@/components/project/flows/BridgeFlow', () => ({ BridgeFlow: (props: unknown) => { mocks.monitor(props); return <span>Existing bridge monitor</span> } }))
 import { CollectorFlow } from '@/components/project/flows/CollectorFlow'

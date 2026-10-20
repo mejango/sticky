@@ -46,7 +46,7 @@ vi.mock('@bananapus/nana-sdk-core/safe-service', async original => ({
 vi.mock('@/lib/sticky-launch-plan', async original => ({
   ...(await original<typeof import('@/lib/sticky-launch-plan')>()), revalidateStickyLaunch: fake.revalidate,
 }))
-vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: vi.fn() }))
+vi.mock('@/lib/jbcenter-public-client', () => ({ jbCenterPublicClient: vi.fn() }))
 vi.mock('@/lib/sticky-launch-proof', async original => ({
   ...(await original<typeof import('@/lib/sticky-launch-proof')>()), verifyStickyLaunchDeployment: fake.verifyDeployment,
   verifyFinalizedStickyLaunchFailure: fake.failure, verifyFinalizedStickyCallFailure: fake.callFailure,

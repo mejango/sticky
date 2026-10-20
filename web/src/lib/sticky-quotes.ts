@@ -8,7 +8,7 @@
 import { cashOutProtocolFee } from '@bananapus/nana-sdk-core/v6'
 import { encodeFunctionData, type Address, type Hex } from 'viem'
 import { asked, freshHead } from '@/lib/hook-logs'
-import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
+import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
 import { feelessAddressesAbi, stickyHookAbi, terminalAbi } from '@/lib/sticky-abis'
 import { deploymentOn } from '@/lib/sticky-addresses'
 import { formatAmount } from '@/lib/sticky-format'

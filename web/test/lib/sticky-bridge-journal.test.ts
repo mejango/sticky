@@ -11,7 +11,7 @@ import {
   type BridgeRecord, type PendingBridgeWrite,
 } from '@/lib/sticky-bridge-journal'
 
-vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: vi.fn() }))
+vi.mock('@/lib/jbcenter-public-client', () => ({ jbCenterPublicClient: vi.fn() }))
 const A = (value: number) => `0x${BigInt(value).toString(16).padStart(40, '0')}` as Address
 const H = (value: number) => `0x${BigInt(value).toString(16).padStart(64, '0')}` as Hex
 const route: BridgeRoute = {

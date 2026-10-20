@@ -4,7 +4,7 @@ import { buildBridgePrepareTx, suckerBranchRoot, suckerLeafHash, suckerLeafProof
 import { createPublicClient, custom, decodeFunctionData, encodeFunctionData, getAddress, keccak256, pad, parseAbi, toEventSelector, zeroHash, type Address, type Hex, type PublicClient } from 'viem'
 import { bridgeCalldata, bridgeMinimumOutput, BRIDGE_NATIVE_TOKEN, createStickyBridge, type BridgeRoute } from '@/lib/sticky-bridge'
 
-vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: vi.fn() }))
+vi.mock('@/lib/jbcenter-public-client', () => ({ jbCenterPublicClient: vi.fn() }))
 
 const A = (value: number) => `0x${BigInt(value).toString(16).padStart(40, '0')}` as Address
 const H = (value: number) => `0x${BigInt(value).toString(16).padStart(64, '0')}` as Hex

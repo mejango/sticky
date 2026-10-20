@@ -20,7 +20,7 @@ import {
 // list of logs.
 
 const center = vi.hoisted(() => ({ client: vi.fn() }))
-vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: center.client }))
+vi.mock('@/lib/jbcenter-public-client', () => ({ jbCenterPublicClient: center.client }))
 const bendystraw = vi.hoisted(() => ({ positions: vi.fn() }))
 vi.mock('@/lib/sticky-indexed', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-indexed')>()),

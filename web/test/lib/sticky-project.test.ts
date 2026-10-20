@@ -23,7 +23,7 @@ import {
 } from '@/lib/sticky-project'
 
 const center = vi.hoisted(() => ({ client: vi.fn() }))
-vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: center.client }))
+vi.mock('@/lib/jbcenter-public-client', () => ({ jbCenterPublicClient: center.client }))
 
 const CHAIN = 84532
 const deployment = stickyDeployment(CHAIN)!

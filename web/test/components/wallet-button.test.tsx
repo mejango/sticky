@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactElement, type ReactNode } from 'react'
 import { renderToString } from 'react-dom/server'
 import TestRenderer, { act, type ReactTestInstance } from 'react-test-renderer'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { clearViewAs, setViewAs } from '@/lib/viewAs'
 
 const ALICE = '0x1111111111111111111111111111111111111111'
@@ -40,10 +40,12 @@ vi.mock('wagmi', () => ({
     return { data: mocks.balance, isError: mocks.balanceError }
   },
 }))
-vi.mock('@/providers/preload-center', () => ({ preloadCenterWallet: mocks.preload }))
+vi.mock('@/providers/preload-center', () => ({ preloadSignIn: mocks.preload }))
 vi.mock('@/providers/Providers', () => ({ IS_DETERMINISTIC_BROWSER: false }))
 
 import { WalletButton } from '@/components/WalletButton'
+// The account's menu loads once there is an account; the tests load it first, since a module's load is no step of theirs.
+beforeAll(() => import('@/components/SignedInWallet'))
 import { ProjectRouteProvider, ProjectRouteSync } from '@/providers/ProjectRouteContext'
 
 let renderer: TestRenderer.ReactTestRenderer | undefined

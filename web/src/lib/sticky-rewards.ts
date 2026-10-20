@@ -34,7 +34,7 @@ import {
   type Hex,
 } from 'viem'
 import { asked, freshHead, inChainOrder, untilAborted, type ScannedLog } from '@/lib/hook-logs'
-import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
+import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
 import { stickyDistributorAbi, stickyHookAbi, stickyTokenAbi } from '@/lib/sticky-abis'
 import { deploymentOn } from '@/lib/sticky-addresses'
 import {
@@ -47,7 +47,7 @@ import {
   tailOrNull,
   type StickyReadDeps,
 } from '@/lib/sticky-events'
-import { formatAmount, formatDuration } from '@/lib/sticky-format'
+import { formatAmount, formatDuration, shortAddress } from '@/lib/sticky-format'
 import { pinnedBlock } from '@/lib/sticky-holders'
 import { indexedStickyFunding } from '@/lib/sticky-indexed'
 import { answered, capped, type Answer } from '@/lib/sticky-project'
@@ -253,7 +253,6 @@ const REWARD_TOKEN_UNREADABLE = 'Could not read a reward token; leaving its rewa
 
 const FUND = toEventSelector(getAbiItem({ abi: stickyDistributorAbi, name: 'Fund' }) as AbiEvent)
 
-const shortAddress = (value: string) => `${value.slice(0, 6)}…${value.slice(-4)}`
 
 /** What one call answered, or why the read cannot go on. */
 export function need<T>(answer: Answer<T>, what: string): T {

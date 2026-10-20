@@ -1,47 +1,42 @@
 'use client'
 
-import { withApprovalParent } from '@/lib/sticky-hold-intent'
-import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query'
+import { skipToken, useQuery } from '@tanstack/react-query'
+import dynamic from 'next/dynamic'
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { formatUnits, getAddress, isAddress, isAddressEqual, zeroAddress, type Address } from 'viem'
+import { told } from '@/components/project/flows/refusal'
 import { reviewGate } from '@/components/project/flows/review-gate'
+import type { StickRequest } from '@/components/project/flows/StickSend'
 import { Revalidating } from '@/components/ui/Revalidating'
-import { TxConfirmDialog, type TxConfirmRow } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
-import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
-import { useSafeTx } from '@/hooks/useSafeTx'
 import { useSettled } from '@/hooks/useSettled'
-import { useStepPresses } from '@/hooks/useStepPresses'
 import { useStickyPosition, useStickyProject } from '@/hooks/useStickyProject'
 import { useWallet } from '@/hooks/useWallet'
 import { isLostRecipient, LOST_RECIPIENT, stickyDeployment } from '@/lib/sticky-addresses'
-import { readBalanceAndAllowance } from '@/lib/sticky-allowance'
 import { parseAmount } from '@/lib/sticky-amount'
-import { approveSteps, stickTx, type TxRequest } from '@/lib/sticky-builders'
 import { asSentence, formatAmount } from '@/lib/sticky-format'
-import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { assertCanStickFor, quoteStick, stickQuoteSentence } from '@/lib/sticky-quotes'
-import { refreshAfterStick } from '@/lib/sticky-refresh'
-import { chainName } from '@/lib/urn'
 import { useViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 import { EXTERNAL_WALLET_REQUIRED } from '@/providers/WalletAuthContext'
+
+// The review and the transaction engine load when Stick is first pressed; the pointer or focus reaching the form fetches
+// them ahead of the press.
+const StickSend = dynamic(() => import('@/components/project/flows/StickSend').then(module => module.StickSend), {
+  ssr: false,
+  loading: () => (
+    <p role="status" className="mt-2 text-[13px] text-muted">
+      Opening the review…
+    </p>
+  ),
+})
+const preloadStickSend = () => void import('@/components/project/flows/StickSend')
 
 /** How long a quote shown under the amount stays fresh. A review asks again. */
 const QUOTE_FRESH_MS = 10_000
 
 const MORE_THAN_HELD = 'That is more than you hold.'
 const INVALID_RECIPIENT = 'Enter a valid recipient address.'
-const REVIEW_UNREADABLE = 'Could not prepare a stick; its review says what could not be read.'
 const QUOTE_UNREADABLE = 'Could not quote a stick; the line under the amount says what could not be read.'
-const BALANCE_UNREADABLE = 'Could not check the balance before sending a step of a stick; the dialog says so.'
-
-/** A read's failure as an error the holder is told of. The console is told why as well when the read failed to be made,
- * which its cause says: a refusal, like a holder who has not trusted the sender, has none. */
-function told(label: string, about: object, reason: unknown): Error {
-  const error = reason instanceof Error ? reason : new Error(String(reason))
-  if (error.cause !== undefined) console.warn(label, about, error)
-  return error
-}
 
 /** What the fields hold: the amount, and who it is for. An amount of 0n is an empty or unusable one; a beneficiary of
  * null is one that is not yet a usable address, or one the tokens would be lost in, which `recipientError` says. */
@@ -52,26 +47,9 @@ type Inputs = { amount: bigint; amountError: string | null; beneficiary: Address
  * checks again. A refusal of the wallet itself, Signa or View as, is no account's: it stands until the wallet can send. */
 type Failure = { message: string; account: string | null }
 
-/** What a review froze: for whom, how much, what it mints at least, and the steps that send it. */
-type Plan = {
-  info: StickyProjectInfo
-  terminal: Address
-  account: Address
-  beneficiary: Address
-  amount: bigint
-  minted: bigint
-  steps: readonly TxRequest[]
-}
-
 /**
  * Sticking an amount of a project's staked token, for the signed-in holder (the Stick card) or for someone else (the
- * Airdrops tab's form): the fields, the quote of what the stick mints at least, and the review.
- *
- * The review is a dialog that opens at once and reads the balance, the allowance and the price again, and, for someone
- * else, whether they trust the sender. It then lists what it will send, an approval reset if the allowance needs one,
- * the approval, and the stick, and sends one on each confirmation through the transaction engine. The steps are planned
- * from what the chain says when the review opens, so an approval that landed before the page was reloaded is found and
- * not sent again. The stick carries the quote the review read as the minimum the chain must keep to.
+ * Airdrops tab's form): the fields, the quote of what the stick mints at least, and the review, which is StickSend's.
  */
 export function StickFlow({
   chainId,
@@ -85,8 +63,6 @@ export function StickFlow({
   const { info, verified, failed } = useStickyProject(chainId, projectId)
   const { viewAs } = useViewAs()
   const { address, isConnected, isCenterWallet, openSignIn } = useWallet()
-  const tx = useSafeTx(chainId)
-  const client = useQueryClient()
   const terminal = stickyDeployment(chainId)?.terminal
 
   const recipientId = useId()
@@ -95,13 +71,10 @@ export function StickFlow({
   const [recipient, setRecipient] = useState('')
   const settledAmount = useSettled(amount)
   const settledRecipient = useSettled(recipient)
-  const [plan, setPlan] = useState<Plan | null>(null)
-  const [preparing, setPreparing] = useState(false)
+  // The last review asked for (StickSend stays mounted from the first), and whether its dialog is open.
+  const [request, setRequest] = useState<StickRequest | null>(null)
+  const [open, setOpen] = useState(false)
   const [failure, setFailure] = useState<Failure | null>(null)
-  // The steps confirmed so far, one for each press: the dialog is on the one after them.
-  const presses = useStepPresses(tx)
-  const { landed } = presses
-  const reading = useRef<AbortController | null>(null)
 
   // The account the page shows, which a visitor without a wallet has none of. A visitor's quote is asked as the zero
   // address, which a stick for oneself accepts.
@@ -170,18 +143,15 @@ export function StickFlow({
       previousQuery?.queryKey[4] === payer && previousQuery?.queryKey[5] === quoted.beneficiary ? previous : undefined,
   })
 
-  const sending = tx.busy || tx.phase === 'review'
-  const complete = plan !== null && landed === plan.steps.length
   const shown = viewer?.toLowerCase() ?? null
   const error = failure && (failure.account === null || failure.account === shown) ? failure.message : null
   const quoteFailed = quote.isError && settledNow
   const closed =
     !verified ||
-    sending ||
-    preparing ||
+    open ||
     (isConnected && (typed.amount <= 0n || typed.beneficiary === null || exceeds(typed.amount) || quoteFailed))
 
-  async function review() {
+  function review() {
     if (!info || !verified || !terminal) return
     const gate = reviewGate({ address, isConnected, isCenterWallet })
     if (!gate) {
@@ -193,82 +163,30 @@ export function StickFlow({
       setFailure({ message: gate.refusal, account: null })
       return
     }
-    const { account } = gate
     if (typed.amount <= 0n || typed.beneficiary === null) return
-    const { beneficiary, amount: value } = typed
-    reading.current?.abort()
-    const controller = new AbortController()
-    reading.current = controller
-    const { signal } = controller
-    tx.reset()
     setFailure(null)
-    setPlan(null)
-    presses.restart()
-    setPreparing(true)
-    try {
-      if (!isAddressEqual(beneficiary, account)) {
-        await assertCanStickFor(chainId, info.projectId, account, beneficiary, { signal })
-      }
-      const { balance, allowance } = await readBalanceAndAllowance(
-        chainId,
-        { token: info.stakedToken, owner: account, spender: terminal },
-        { signal },
-      )
-      if (balance < value) throw new Error(MORE_THAN_HELD)
-      const minted = await quoteStick(chainId, info.projectId, info.stakedToken, value, account, beneficiary, { signal })
-      const steps = withApprovalParent([
-        ...approveSteps(chainId, info.stakedToken, terminal, allowance, value, {
-          symbol: info.symbol,
-          decimals: info.decimals,
-          mode: 'covering',
-        }),
-        stickTx(info, beneficiary, value, minted),
-      ], account)
-      if (signal.aborted) return
-      setPlan({ info, terminal, account, beneficiary, amount: value, minted, steps })
-    } catch (reason) {
-      if (!signal.aborted) {
-        const message = asSentence(told(REVIEW_UNREADABLE, { chainId, projectId }, reason).message)
-        setFailure({ message, account: account.toLowerCase() })
-      }
-    } finally {
-      if (!signal.aborted) setPreparing(false)
-    }
+    setOpen(true)
+    setRequest(last => ({
+      id: (last?.id ?? 0) + 1,
+      info,
+      terminal,
+      account: gate.account,
+      beneficiary: typed.beneficiary!,
+      amount: typed.amount,
+    }))
   }
 
-  /** The balance just before a step is sent: an approval does not fail for want of one, and the stick after it would. A
-   * balance that cannot be read stops the step, and the console is told why. */
-  async function verify({ info: staked, terminal: spender, account: owner, amount: value }: Plan) {
-    const { balance } = await readBalanceAndAllowance(chainId, { token: staked.stakedToken, owner, spender }).catch(reason => {
-      const unreadable = told(BALANCE_UNREADABLE, { chainId, projectId }, reason)
-      throw new Error(asSentence(unreadable.message), { cause: unreadable })
-    })
-    if (balance < value) throw new Error(`Your ${staked.symbol} balance changed. Review the amount.`)
-  }
-
-  async function confirm() {
-    if (!plan || sending) return
-    // The plan is the reviewing account's: its balance, its allowance, its trust check and its quote. Every step is sent
-    // as that account, and the engine refuses it, before a review opens, while another is connected.
-    await presses.press(plan.steps, (step, confirmedAt) =>
-      tx.send(step, { reviewedAccount: plan.account, simulationBlockNumber: confirmedAt, reverify: () => verify(plan) }),
-    )
-  }
-
-  function close() {
-    reading.current?.abort()
-    setPlan(null)
-    setPreparing(false)
+  function closeReview(complete: boolean) {
+    setOpen(false)
     setFailure(null)
     if (complete) setAmount('')
-    if (tx.phase !== 'success') tx.dismiss()
   }
 
   // A refusal for want of an external wallet stands until one connects. The plan it refused was built for the account
-  // that could not send, so it is planned again for the one that connects.
+  // that could not send, so it is planned again for the one that connects. StickSend does the same for the engine's.
   const reviewNow = useRef(review)
   reviewNow.current = review
-  const refused = failure?.message === EXTERNAL_WALLET_REQUIRED || tx.error === EXTERNAL_WALLET_REQUIRED
+  const refused = failure?.message === EXTERNAL_WALLET_REQUIRED
   useEffect(() => {
     if (!refused || !isConnected || isCenterWallet) return
     setFailure(null)
@@ -280,18 +198,11 @@ export function StickFlow({
     if (!viewAs) setFailure(current => (current?.message === VIEW_AS_WRITE_BLOCKED ? null : current))
   }, [viewAs])
 
-  // What a stick changed is read again once its transaction has confirmed.
-  useEffect(() => {
-    if (complete) refreshAfterStick(client, chainId, projectId)
-  }, [complete, client, chainId, projectId])
-
-  useEffect(() => () => reading.current?.abort(), [])
-
   const action = forSomeoneElse ? 'Review stick' : 'Stick'
   const label = verified ? (isConnected ? action : 'Sign in to stick') : failed ? action : 'Checking…'
 
   // What the review said, under the button, while no plan is open. The line under the amount does not say it again.
-  const shownError = plan ? null : error
+  const shownError = open ? null : error
   let hint: ReactNode = null
   if (quoted.amountError) hint = quoted.amountError
   else if (quoted.recipientError) hint = quoted.recipientError
@@ -312,7 +223,7 @@ export function StickFlow({
   }
 
   return (
-    <div>
+    <div onPointerEnter={preloadStickSend} onFocus={preloadStickSend} onTouchStart={preloadStickSend}>
       {forSomeoneElse ? (
         <>
           <label htmlFor={recipientId} className="block text-xs text-muted">
@@ -371,52 +282,23 @@ export function StickFlow({
       <button type="button" disabled={closed} onClick={() => void review()} className="btn-primary mt-3 w-full px-4 py-[9px]">
         {label}
       </button>
-      {plan || preparing ? (
-        <TxConfirmDialog
-          open
-          preparing={!plan}
-          onClose={close}
-          title={complete ? 'Stick confirmed' : forSomeoneElse ? 'Confirm stick for someone else' : 'Confirm stick'}
-          rows={plan ? rowsOf(plan, forSomeoneElse, chainId) : undefined}
-          steps={plan ? plan.steps.map((step, at) => ({ key: String(at), title: step.label ?? step.functionName })) : []}
-          activeIndex={plan ? landed : -1}
-          stepsIntro={plan ? stepsIntro(plan.steps.length, landed) : undefined}
-          action={confirmAction(
-            tx.phase,
-            tx.phase === 'error' ? 'Retry' : plan && landed === plan.steps.length - 1 ? 'Confirm & stick' : 'Confirm & approve',
-          )}
-          // Once a step has gone through, closing undoes nothing: what went through stays, and the next review finds it.
-          cancelLabel={landed > 0 ? 'Close' : 'Cancel'}
-          onConfirm={() => void confirm()}
-          busy={sending}
-          complete={complete}
-          settled={tx.phase === 'submitted'}
-          status={
-            !plan ? (
-              'Reading your balance, allowance and the current price…'
-            ) : tx.phase === 'success' ? (
-              <ViewTransactionLink chainId={chainId} hash={tx.hash} />
-            ) : (
-              (sendingStatus(tx) ?? undefined)
-            )
-          }
-          error={tx.error}
+      {request ? (
+        <StickSend
+          chainId={chainId}
+          projectId={projectId}
+          forSomeoneElse={forSomeoneElse}
+          request={request}
+          onFailure={(message, account) => {
+            setOpen(false)
+            setFailure({ message, account })
+          }}
+          onClose={closeReview}
+          onReviewAgain={() => {
+            setFailure(null)
+            reviewNow.current()
+          }}
         />
       ) : null}
     </div>
   )
-}
-
-/** The review's rows: every figure exact, with all its digits. */
-function rowsOf({ info, beneficiary, amount, minted }: Plan, forSomeoneElse: boolean, chainId: number): TxConfirmRow[] {
-  return [
-    { label: 'Stick', value: `${formatUnits(amount, info.decimals)} ${info.symbol}`, strong: true },
-    ...(forSomeoneElse ? [{ label: 'For', value: beneficiary, mono: true }] : []),
-    {
-      label: forSomeoneElse ? 'They get at least' : 'You get at least',
-      value: `${formatUnits(minted, 18)} ${info.stSymbol}`,
-      strong: true,
-    },
-    { label: 'On', value: chainName(chainId) },
-  ]
 }

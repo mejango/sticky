@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider, notifyManager } from '@tanstack/react
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { getAddress, isAddress, zeroAddress, type Hex } from 'viem'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import type { StickyPosition } from '@/lib/sticky-holders'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
@@ -82,6 +82,9 @@ vi.mock('@/lib/sticky-quotes', async importOriginal => ({
 vi.mock('@/lib/sticky-allowance', () => ({ readBalanceAndAllowance: mocks.funds }))
 
 import { StickFlow } from '@/components/project/flows/StickFlow'
+// The review loads when Stick is first pressed, as the page fetches it when the pointer reaches the form; the tests' fake
+// clock cannot wait for a module to load, so it is loaded before them.
+beforeAll(() => import('@/components/project/flows/StickSend'))
 import { StickCard } from '@/components/project/StickCard'
 
 /** Project 23 sticks CPN, which has 6 decimals, for STICKYCPN. */

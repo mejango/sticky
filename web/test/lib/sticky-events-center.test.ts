@@ -30,7 +30,7 @@ import {
 // receipts and past counts. Each case is about a project of its own, since the session keeps creation blocks.
 
 const center = vi.hoisted(() => ({ client: vi.fn() }))
-vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: center.client }))
+vi.mock('@/lib/jbcenter-public-client', () => ({ jbCenterPublicClient: center.client }))
 const bendystraw = vi.hoisted(() => ({ events: vi.fn(), settings: vi.fn(), createTx: vi.fn() }))
 vi.mock('@/lib/sticky-indexed', () => ({
   indexedStickyEvents: bendystraw.events,

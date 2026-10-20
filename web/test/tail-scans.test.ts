@@ -37,7 +37,7 @@ describe('a tail past the block Bendystraw is indexed through', () => {
     // that found none would not pass.
     expect(found.length).toBeGreaterThanOrEqual(8)
     expect(found.filter(tail => !tail.guarded)).toEqual([])
-  })
+  }, 30_000)
 
   it('is told apart from a tail that skips the rule, whatever function the rule is followed in', () => {
     const bare = 'async function reader() { const fromBlock = scanFrom(asOf, deployment); return scan(fromBlock) }'

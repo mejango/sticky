@@ -4,7 +4,7 @@ import {
 } from '@bananapus/nana-sdk-core/v6'
 import { decodeFunctionData, isAddressEqual, zeroAddress, type Address, type PublicClient } from 'viem'
 import type { TxRequest } from '@/hooks/useSafeTx'
-import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
+import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
 import { bridgeCalldata, createStickyBridge, type BridgeToken } from '@/lib/sticky-bridge'
 import type { PendingBridgeWrite } from '@/lib/sticky-bridge-journal'
 import { createStickyCollector, type CollectorSource } from '@/lib/sticky-collector'

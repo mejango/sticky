@@ -60,3 +60,8 @@ export function asSentence(message: string): string {
   const text = message.charAt(0).toUpperCase() + message.slice(1)
   return /[.!?]$/.test(text) ? text : `${text}.`
 }
+
+/** An address as its first six and last four characters: `0x1234…abcd`. */
+export function shortAddress(address: string): string {
+  return `${address.slice(0, 6)}…${address.slice(-4)}`
+}

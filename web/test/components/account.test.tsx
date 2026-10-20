@@ -52,7 +52,7 @@ vi.mock('@/lib/activity-groups', async importOriginal => {
   const actual = await importOriginal<typeof import('@/lib/activity-groups')>()
   return { ...actual, groupSameTx: vi.fn(actual.groupSameTx) }
 })
-vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: mocks.client }))
+vi.mock('@/lib/jbcenter-public-client', () => ({ jbCenterPublicClient: mocks.client }))
 vi.mock('next/link', () => ({
   default: (props: AnchorHTMLAttributes<HTMLAnchorElement>) => <a {...props} />,
 }))

@@ -1,13 +1,13 @@
-import { jbContractAddress } from '@bananapus/nana-sdk-core'
+import { jbV6ContractAddress } from '@bananapus/nana-sdk-core'
 import { JBCenterClient, isSponsorable, publishSignedIntent, type JBCenterIntentInput } from '@bananapus/nana-sdk-core/jbcenter'
 import { TRUSTED_FORWARDER_ABI } from '@bananapus/nana-sdk-core/review/relayr'
 import { isEip7702DelegatedEoaRuntime } from '@bananapus/nana-sdk-core/safe'
 import type { Hex } from 'viem'
 import { jbCenterBaseUrl } from '@/lib/jbcenter-config'
-import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
+import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
 import { isAddress, requireSingleHomeChain, type LaunchPlan } from '@/lib/sticky-launch-plan'
 
-export const STICKY_LISTING_FORWARDER = jbContractAddress[6].ERC2771Forwarder[1]
+export const STICKY_LISTING_FORWARDER = jbV6ContractAddress.ERC2771Forwarder[1]
 
 /** Reconstruct saved envelopes for recovery too; only publication admits a new single-home launch. */
 export function buildStickyEnvelope(plan: LaunchPlan): JBCenterIntentInput {
