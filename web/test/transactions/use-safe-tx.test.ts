@@ -754,6 +754,17 @@ describe('useSafeTx', () => {
     } finally { vi.useRealTimers() }
   })
 
+  it('finishes a held write resumed after a reset', async () => {
+    const hook = await renderHook()
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    await act(async () => { hook.ref.current!.reset() })
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    expect(mocks.writeContract).toHaveBeenCalledOnce()
+    mocks.receipt = { data: canonicalReceipt('success'), isError: false }
+    await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
+    await vi.waitFor(() => expect(hook.ref.current).toMatchObject({ phase: 'success', busy: false }))
+  })
+
   /** Holds the settlement callback's own receipt lookup (the one after the hold settled) until `release` runs. */
   function delaySettlementLookup() {
     const gate: { release?: (receipt: unknown) => void } = {}

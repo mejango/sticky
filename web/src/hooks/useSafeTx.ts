@@ -176,11 +176,14 @@ export function useSafeTx(chainId: number) {
   const waiting = useRef(sent)
   waiting.current = sent
   // Settlement callbacks belong to the open attempt only: a reset closes it, and a new send marks every settlement
-  // already known (and the write it replaces) as left behind, at once rather than on the next render.
+  // already known (and the write it replaces) as left behind, at once rather than on the next render. Any other
+  // hash, a Safe execution or a speed-up the hold verified, is the open attempt's.
   const closed = useRef(false)
   const leftBehind = useRef(new Set<string>())
   // The settlement the hold's view shows, as of its last render.
   const viewSettled = useRef<string | null>(null)
+  // A success this attempt's callback already applied: a later "went through while away" never undoes it.
+  const succeeded = useRef(false)
   const leaveBehind = () => {
     for (const hash of [viewSettled.current, waiting.current?.hash]) if (hash) leftBehind.current.add(hash.toLowerCase())
   }
@@ -227,11 +230,9 @@ export function useSafeTx(chainId: number) {
     onSettled: (settled, receipt) => {
       if (!('hash' in settled)) return
       // Only the open attempt's write: never one a reset or a newer send left behind.
-      const hash = settled.hash.toLowerCase()
-      if (closed.current || leftBehind.current.has(hash)) return
-      const now = waiting.current
-      if (now && !now.safe && now.hash.toLowerCase() !== hash) return
+      if (closed.current || leftBehind.current.has(settled.hash.toLowerCase())) return
       if (settled.result === 'success') {
+        succeeded.current = true
         setResult({ hash: settled.hash, receipt })
         setPhase('success')
       } else {
@@ -285,6 +286,7 @@ export function useSafeTx(chainId: number) {
       const attempt = generation.current
       const isCurrent = () => mounted.current && generation.current === attempt && renderedChain.current === chainId
       closed.current = false
+      succeeded.current = false
       leaveBehind()
       setError(null)
       setReverted(false)
@@ -416,6 +418,11 @@ export function useSafeTx(chainId: number) {
         inFlight.current = false
         // Held, or a success that went through while away: the SDK's view shows it, with its exit or its send-again.
         if (e instanceof WriteHeldError || (e instanceof Error && e.message === HELD_AWAY_SUCCESS_LINE)) {
+          if (succeeded.current) return null
+          // Resuming the held write a reset left behind: its settlement is this attempt's again.
+          if (e instanceof WriteHeldError) {
+            for (const hash of [e.state.record.hash, e.state.record.executionHash]) if (hash) leftBehind.current.delete(hash.toLowerCase())
+          }
           setPhase('pending')
           void latest.current.check()
           return null
