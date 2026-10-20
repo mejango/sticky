@@ -1,6 +1,6 @@
 import { act, type AnchorHTMLAttributes } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { clearViewAs } from '@/lib/viewAs'
 
 const ALICE = '0x1111111111111111111111111111111111111111'
@@ -31,6 +31,8 @@ vi.mock('@/providers/preload-center', () => ({ preloadSignIn: vi.fn() }))
 vi.mock('@/providers/Providers', () => ({ IS_DETERMINISTIC_BROWSER: false }))
 
 import { WalletButton } from '@/components/WalletButton'
+// The account's menu loads once there is an account; the tests load it first, since a module's load is no step of theirs.
+beforeAll(() => import('@/components/SignedInWallet'))
 
 let host: HTMLDivElement
 let root: Root
