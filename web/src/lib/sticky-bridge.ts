@@ -1,11 +1,11 @@
 import { withApprovalParent } from '@/lib/sticky-hold-intent'
-import { getJBContractAddress, type JBChainId } from '@bananapus/nana-sdk-core'
+import type { JBChainId } from '@bananapus/nana-sdk-core'
 import {
   buildBridgeClaimTx, buildBridgePrepareTx, buildToRemoteTx, cashOutProtocolFee,
   CCIP_SUCKER_TRANSPORT_VALUES, classifySuckerMovement, findSuckerTransportValue,
   insertToSuckerOutboxEvent, jbSuckerV6ViewAbi, suckerBranchRoot, suckerBytes32ToAddress,
   suckerHashPair, suckerLeafHash, suckerLeafProof, suckerZeroHashes,
-  verifySuckerDestinationMint,
+  v6Address, verifySuckerDestinationMint,
   type JBLeaf, type JBLeafProof,
 } from '@bananapus/nana-sdk-core/v6'
 import { readSafeAppExecution, safeExecutionRunsCalls } from '@bananapus/nana-sdk-core/safe-service'
@@ -84,10 +84,10 @@ const count = (value: bigint): number => {
   return Number(value)
 }
 const contracts = (chainId: JBChainId) => ({
-  tokens: getJBContractAddress('JBTokens', 6, chainId),
-  directory: getJBContractAddress('JBDirectory', 6, chainId),
-  registry: getJBContractAddress('JBSuckerRegistry', 6, chainId),
-  terminal: getJBContractAddress('JBMultiTerminal', 6, chainId),
+  tokens: v6Address('JBTokens', chainId),
+  directory: v6Address('JBDirectory', chainId),
+  registry: v6Address('JBSuckerRegistry', chainId),
+  terminal: v6Address('JBMultiTerminal', chainId),
 })
 export const bridgeRouteId = (route: BridgeRoute) =>
   `${route.source.chainId}:${route.destination.chainId}:${route.sourceSucker.toLowerCase()}:${route.backingToken.toLowerCase()}`

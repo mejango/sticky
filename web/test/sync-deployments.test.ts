@@ -190,7 +190,6 @@ describe('deploymentsFromRecords', () => {
     const output = join(root, 'sticky-deployments.json')
     expect(() => syncDeployments({ records: root, output })).toThrow('successful creation receipt')
     expect(existsSync(output)).toBe(false)
-    expect(existsSync(join(root, 'sticky-source-collectors.json'))).toBe(false)
   })
 
   it('refuses two records for one chain', () => {
@@ -221,7 +220,7 @@ describe('syncDeployments', () => {
     expect(readFileSync(output, 'utf8')).toBe(
       `${JSON.stringify(deploymentsFromRecords(root), null, 2)}\n`,
     )
-    expect(syncDeployments({ check: true, records: root, output })).toContain(
+    expect(syncDeployments({ check: true, records: root, output, sdkCollectors: [] })).toContain(
       'matches the deployment records',
     )
   })
@@ -400,16 +399,15 @@ describe('collectorsFromRecords', () => {
     const output = join(root, 'sticky-deployments.json')
     expect(() => syncDeployments({ records: root, output })).toThrow()
     expect(existsSync(output)).toBe(false)
-    expect(existsSync(join(root, 'sticky-source-collectors.json'))).toBe(false)
   })
 
-  it('checks collector configuration independently of the existing singleton records', () => {
+  it("checks the SDK's collector table against the records, independently of the singleton records", () => {
     const output = join(root, 'sticky-deployments.json')
     syncDeployments({ records: root, output })
-    expect(readFileSync(join(root, 'sticky-source-collectors.json'), 'utf8')).toBe('[]\n')
+    expect(syncDeployments({ check: true, records: root, output, sdkCollectors: [] })).toContain('matches')
     family('base', 8453)
-    expect(() => syncDeployments({ check: true, records: root, output })).toThrow('sticky-source-collectors.json is out of date')
-    syncDeployments({ records: root, output })
-    expect(syncDeployments({ check: true, records: root, output })).toContain('matches')
+    expect(() => syncDeployments({ check: true, records: root, output, sdkCollectors: [] })).toThrow("the SDK's Sticky source collector table differs")
+    const collectors = collectorsFromRecords(root)
+    expect(syncDeployments({ check: true, records: root, output, sdkCollectors: collectors })).toContain('matches')
   })
 })

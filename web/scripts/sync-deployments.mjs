@@ -7,17 +7,18 @@ import {
 } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { STICKY_SOURCE_COLLECTOR_DEPLOYMENTS } from '@bananapus/nana-sdk-core/v6'
 import { getAddress, isAddress, isHash, zeroAddress } from 'viem'
 
 // Sticky's contract addresses and scan start blocks come from the repository's
 // verified deployment records. Railway builds from web/ alone, so the result is
 // committed as src/lib/sticky-deployments.json. `--check` fails when a record
-// changed and this script has not been run.
+// changed and this script has not been run, and when the SDK's source collector
+// table (which the site reads, generated from these records) differs from them.
 const webRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const RECORDS = join(webRoot, '..', 'deployments')
 const OUTPUT = join(webRoot, 'src', 'lib', 'sticky-deployments.json')
 const OUTPUT_NAME = 'web/src/lib/sticky-deployments.json'
-const COLLECTOR_OUTPUT_NAME = 'sticky-source-collectors.json'
 
 // The fields of verified.json that sticky-addresses.ts exposes.
 const ADDRESS_FIELDS = [
@@ -223,20 +224,18 @@ export function collectorsFromRecords(root = RECORDS) {
   return records.sort((a, b) => a.sourceChainId - b.sourceChainId || a.destinationChainId - b.destinationChainId)
 }
 
-/** Writes the generated file, or with `check` throws when it is out of date. */
+/** Writes the generated file, or with `check` throws when it or the SDK's collector table is out of date. */
 export function syncDeployments({
   check = false,
   records = RECORDS,
   output = OUTPUT,
-  collectorOutput = join(dirname(output), COLLECTOR_OUTPUT_NAME),
+  sdkCollectors = STICKY_SOURCE_COLLECTOR_DEPLOYMENTS,
 } = {}) {
   const deployments = deploymentsFromRecords(records)
   const collectors = collectorsFromRecords(records)
   const expected = `${JSON.stringify(deployments, null, 2)}\n`
-  const expectedCollectors = `${JSON.stringify(collectors, null, 2)}\n`
   if (!check) {
     writeFileSync(output, expected)
-    writeFileSync(collectorOutput, expectedCollectors)
     const count = Object.keys(deployments).length
     return `${OUTPUT_NAME} written for ${count} chains`
   }
@@ -246,8 +245,8 @@ export function syncDeployments({
       `${OUTPUT_NAME} is out of date; run "npm run deployments:sync" in web/`,
     )
   }
-  if (!existsSync(collectorOutput) || readFileSync(collectorOutput, 'utf8') !== expectedCollectors) {
-    throw new Error(`${COLLECTOR_OUTPUT_NAME} is out of date; run "npm run deployments:sync" in web/`)
+  if (JSON.stringify(sdkCollectors) !== JSON.stringify(collectors)) {
+    throw new Error("the SDK's Sticky source collector table differs from the deployment records; take an SDK release generated from them")
   }
   return `${OUTPUT_NAME} matches the deployment records`
 }
