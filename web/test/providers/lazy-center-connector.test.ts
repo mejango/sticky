@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
   centerWalletClient: vi.fn(),
 }))
 vi.mock('@/providers/wallet-config', () => ({ get CENTER_WALLET_CONFIG() { return mocks.config } }))
-vi.mock('@bananapus/nana-sdk-connect/wagmi', () => ({ centerAccountConnector: mocks.centerAccountConnector }))
+vi.mock('@me.jango/signa/wagmi', () => ({ centerAccountConnector: mocks.centerAccountConnector }))
 vi.mock('@/providers/center-runtime', () => ({ centerWalletClient: mocks.centerWalletClient }))
 
 const savedConnectionKey = () =>
@@ -45,7 +45,7 @@ afterEach(() => {
 describe('the Signa connector', () => {
   it('is the passkey account, under the id the sign-in dialog and the wallet list expect', () => {
     const connector = signa()
-    expect([connector.id, connector.name, connector.type]).toEqual(['juicebox-center', 'Juicebox account', 'juicebox-center'])
+    expect([connector.id, connector.name, connector.type]).toEqual(['juicebox-center', 'Signa account', 'juicebox-center'])
   })
 
   it('keeps the Signa SDK unloaded for a visitor with no saved sign-in', async () => {

@@ -13,7 +13,7 @@ async function complete(): Promise<string | null> {
   if (!callbackResolved && callback && new URL(callback.url).search) {
     // Framed by a Sticky page (a sign-in or payment review shown inline) or opened as a popup: that page finishes
     // the sign-in or payment and removes the frame or closes the window.
-    const { deliverCenterCallback } = await import('@bananapus/nana-sdk-connect/core')
+    const { deliverCenterCallback } = await import('@me.jango/signa/core')
     if (await deliverCenterCallback(callback.url, { window })) { callbackResolved = true; return null }
   }
   const wallet = centerWalletClient()
