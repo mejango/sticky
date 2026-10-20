@@ -172,9 +172,17 @@ export function useSafeTx(chainId: number) {
   const [result, setResult] = useState<{ hash: Hex; receipt: TransactionReceipt | null } | null>(null)
   /** Whether the write this flow sent is a Safe proposal. */
   const [safe, setSafe] = useState(false)
-  // What the flow is waiting on as of its last render, for the hold's settlement callback.
-  const waiting = useRef({ phase, sent })
-  waiting.current = { phase, sent }
+  // The write this flow sent, as of its last render, for the hold's settlement callback.
+  const waiting = useRef(sent)
+  waiting.current = sent
+  // Settlement callbacks belong to the open attempt only: a reset closes it, and a new send marks every settlement
+  // already known (and the write it replaces) as left behind, at once rather than on the next render.
+  const closed = useRef(false)
+  const leftBehind = useRef(new Set<string>())
+  const leaveBehind = () => {
+    const known = [latest.current.settled, waiting.current]
+    for (const each of known) if (each && 'hash' in each && each.hash) leftBehind.current.add(each.hash.toLowerCase())
+  }
   const publicClient = usePublicClient({ chainId })
   const options = useRef<TxSendOptions | null>(null)
   const inFlight = useRef(false)
@@ -201,6 +209,8 @@ export function useSafeTx(chainId: number) {
     if (follow && handle && client) followDetached(handle, client, () => refreshAfterConfirmedWrite(queryClient, on))
     generation.current += 1
     inFlight.current = false
+    closed.current = true
+    leaveBehind()
     setPhase('idle')
     setError(null)
     setReverted(false)
@@ -215,10 +225,11 @@ export function useSafeTx(chainId: number) {
     pollMs: 15_000,
     onSettled: (settled, receipt) => {
       if (!('hash' in settled)) return
-      // Only the write this flow waits on: never one a reset or a newer send left behind.
+      // Only the open attempt's write: never one a reset or a newer send left behind.
+      const hash = settled.hash.toLowerCase()
+      if (closed.current || leftBehind.current.has(hash)) return
       const now = waiting.current
-      if (now.phase !== 'pending') return
-      if (now.sent && !now.sent.safe && now.sent.hash.toLowerCase() !== settled.hash.toLowerCase()) return
+      if (now && !now.safe && now.hash.toLowerCase() !== hash) return
       if (settled.result === 'success') {
         setResult({ hash: settled.hash, receipt })
         setPhase('success')
@@ -271,6 +282,8 @@ export function useSafeTx(chainId: number) {
       inFlight.current = true
       const attempt = generation.current
       const isCurrent = () => mounted.current && generation.current === attempt && renderedChain.current === chainId
+      closed.current = false
+      leaveBehind()
       setError(null)
       setReverted(false)
       setPhase('simulating')
@@ -407,7 +420,10 @@ export function useSafeTx(chainId: number) {
         }
         if (e instanceof WriteHoldStaleReviewError) {
           // Another window sent this intent while the review was open: its result if it settled, else its message.
-          if (e.settled && 'hash' in e.settled) { setError(null); setPhase('pending'); void latest.current.check() } else { setError(e.message); setPhase('error') }
+          // Its settlement is applied here: its callback may have run while the review was open.
+          if (e.settled && 'hash' in e.settled && e.settled.result === 'success') { setError(null); setResult({ hash: e.settled.hash, receipt: null }); setPhase('success') }
+          else if (e.settled && 'hash' in e.settled) { setError(settledLine(e.settled)); setReverted(e.settled.result === 'failed'); setPhase('error') }
+          else { setError(e.message); setPhase('error') }
           return null
         }
         if (e instanceof WriteHoldBusyError || e instanceof WriteHoldNonceError) {
