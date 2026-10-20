@@ -54,7 +54,7 @@ function stickyShortfall(error: unknown): Shortfall | null {
   visit(error, 0)
   for (const raw of payloads) {
     if (!raw.toLowerCase().startsWith(SHORTFALL_SELECTOR) || !SHORTFALL_DATA.test(raw)) continue
-    const found = amounts(decodeErrorResult({ abi: [SHORTFALL_ITEM], data: raw as `0x${string}` }).args)
+    const found = amounts(decodeErrorResult({ abi: [SHORTFALL_ITEM], data: raw.toLowerCase() as `0x${string}` }).args)
     if (found) return found
   }
   if (payloads.length) return null

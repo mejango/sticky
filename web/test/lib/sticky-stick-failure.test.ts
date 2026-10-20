@@ -70,6 +70,12 @@ describe('stickFailure', () => {
     const equal = encodeErrorResult({ abi: stickyAutoStickAbi, errorName: 'StickyAutoStick_InsufficientStickyTokens', args: [E, E] })
     expect(stickFailure({ data: equal }, 'stX')).toBeNull()
   })
+  it('reads uppercase and mixed-case revert data as the SDK does', () => {
+    const raw = encodeErrorResult({ abi: stickyAutoStickAbi, errorName: 'StickyAutoStick_InsufficientStickyTokens', args: [E, 2n * E] })
+    const line = { message: 'This stick would return 1 stX, under its 2 stX minimum. Review again for a fresh quote.', requote: true }
+    expect(stickFailure({ data: '0x' + raw.slice(2).toUpperCase() }, 'stX')).toEqual(line)
+    expect(stickFailure({ data: raw.slice(0, 6) + raw.slice(6, 40).toUpperCase() + raw.slice(40) }, 'stX')).toEqual(line)
+  })
   it('finds it inside a wallet error wrapper', () => {
     const raw = encodeErrorResult({ abi: stickyAutoStickAbi, errorName: 'StickyAutoStick_InsufficientStickyTokens', args: [E, 2n * E] })
     expect(stickFailure({ cause: { error: { data: raw } } }, 'stX')?.requote).toBe(true)
