@@ -1,7 +1,7 @@
 import { BaseError, ContractFunctionRevertedError, type Address } from 'viem'
 import type { TxRequest } from '@/hooks/useSafeTx'
 import { untilAborted } from '@/lib/hook-logs'
-import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
+import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
 
 /** Why the chain refuses a call, in the words of its revert when it has any. */
 export function reasonOf(error: unknown): string {

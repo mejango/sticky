@@ -34,7 +34,7 @@ import {
   type Hex,
 } from 'viem'
 import { asked, freshHead, inChainOrder, untilAborted, type ScannedLog } from '@/lib/hook-logs'
-import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
+import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
 import { stickyDistributorAbi, stickyHookAbi, stickyTokenAbi } from '@/lib/sticky-abis'
 import { deploymentOn } from '@/lib/sticky-addresses'
 import {

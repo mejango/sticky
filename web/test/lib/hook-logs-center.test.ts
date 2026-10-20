@@ -98,7 +98,7 @@ function rateLimited(perMinute: number, latency: number) {
 // The Center reader is made once per chain, so each test loads its own copy.
 async function load() {
   vi.resetModules()
-  const [{ scanLogs }, { jbCenterPublicClient }] = await Promise.all([import('@/lib/hook-logs'), import('@/lib/jbcenter-rpc')])
+  const [{ scanLogs }, { jbCenterPublicClient }] = await Promise.all([import('@/lib/hook-logs'), import('@/lib/jbcenter-public-client')])
   type Options = { maxInFlight?: number; maxRequests?: number; signal?: AbortSignal }
   /** A scan that has begun, for a test that acts while it is under way. */
   const begin = (fromBlock: bigint, toBlock: bigint, options?: Options) =>

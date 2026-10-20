@@ -7,7 +7,7 @@ import { STICKY_LAUNCH_KEY, createStickyLaunchController, createStickyLaunchStor
   type StickyLaunchPorts } from '@/lib/sticky-launch-session'
 import { memoryStorage } from '../memory-storage'
 
-vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: vi.fn() }))
+vi.mock('@/lib/jbcenter-public-client', () => ({ jbCenterPublicClient: vi.fn() }))
 const address = (digit: string) => `0x${digit.repeat(40)}` as Address
 const hash = (digit: string) => `0x${digit.repeat(64)}` as Hex
 const OWNER = address('1'), TOKEN = address('2'), DEPLOYER = address('3'), CONTROLLER = address('4'), PROJECTS = address('5')

@@ -10,7 +10,8 @@ import {
 } from 'viem'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SUPPORTED_CHAINS } from '@/lib/chains'
-import { jbCenterPublicClient, jbCenterRpcTransport } from '@/lib/jbcenter-rpc'
+import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
+import { jbCenterRpcTransport } from '@/lib/jbcenter-rpc'
 
 afterEach(() => {
   vi.unstubAllGlobals()

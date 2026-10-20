@@ -42,7 +42,7 @@ describe('the browser\'s Center reader', () => {
         return answered(id, numberToHex(100n))
       }),
     )
-    const { jbCenterPublicClient } = await import('@/lib/jbcenter-rpc')
+    const { jbCenterPublicClient } = await import('@/lib/jbcenter-public-client')
     // Three chains' heads, and a log scan's request with its signal.
     const reads = [8453, 10, 1].map(chainId => jbCenterPublicClient(chainId).getBlockNumber({ cacheTime: 0 }))
     const scan = jbCenterPublicClient(8453).request({ method: 'eth_chainId' }, { signal: new AbortController().signal })
@@ -73,7 +73,7 @@ describe('the browser\'s Center reader', () => {
         return answered(id, numberToHex(100n))
       }),
     )
-    const { jbCenterPublicClient, jbCenterRpcTransport } = await import('@/lib/jbcenter-rpc')
+    const [{ jbCenterPublicClient }, { jbCenterRpcTransport }] = await Promise.all([import('@/lib/jbcenter-public-client'), import('@/lib/jbcenter-rpc')])
     // wagmi's client for a chain is built on the same transport, and the Center wallet asks through it directly.
     const wagmi = createPublicClient({ chain: optimism, transport: jbCenterRpcTransport(optimism.id) })
     const wallet = jbCenterRpcTransport(8453)({ chain: base })
@@ -109,7 +109,7 @@ describe('the browser\'s Center reader', () => {
         )
       }),
     )
-    const { jbCenterPublicClient } = await import('@/lib/jbcenter-rpc')
+    const { jbCenterPublicClient } = await import('@/lib/jbcenter-public-client')
     const page = new AbortController()
     const logs = { method: 'eth_getLogs', params: [{ fromBlock: '0x1', toBlock: '0x1f4' }] } as never
     const scans = [8453, 10].map(chainId =>
@@ -139,7 +139,7 @@ describe('the browser\'s Center reader', () => {
         return answered(id, numberToHex(100n))
       }),
     )
-    const [{ jbCenterPublicClient }, { freshHead }] = await Promise.all([import('@/lib/jbcenter-rpc'), import('@/lib/hook-logs')])
+    const [{ jbCenterPublicClient }, { freshHead }] = await Promise.all([import('@/lib/jbcenter-public-client'), import('@/lib/hook-logs')])
     // Another page's first read starts; the next waits for its paced start.
     const others = [10, 1].map(chainId => jbCenterPublicClient(chainId).getBlockNumber({ cacheTime: 0 }))
     await vi.advanceTimersByTimeAsync(0)
@@ -174,7 +174,7 @@ describe('the browser\'s Center reader', () => {
         return answered(id, numberToHex(BigInt(100 + sent.length)))
       }),
     )
-    const { jbCenterPublicClient } = await import('@/lib/jbcenter-rpc')
+    const { jbCenterPublicClient } = await import('@/lib/jbcenter-public-client')
     const reader = jbCenterPublicClient(8453, new AbortController().signal)
 
     const shared = Promise.all([reader.getBlockNumber(), reader.getBlockNumber()])
@@ -204,7 +204,7 @@ describe('the browser\'s Center reader', () => {
         return answered(id, numberToHex(100n))
       }),
     )
-    const { jbCenterPublicClient } = await import('@/lib/jbcenter-rpc')
+    const { jbCenterPublicClient } = await import('@/lib/jbcenter-public-client')
     const pinned = jbCenterPublicClient(8453).request({ method: 'eth_call', params: [{ to: `0x${'a'.repeat(40)}`, data: '0x' }, '0x64'] } as never)
     await vi.advanceTimersByTimeAsync(0)
     expect(sent).toEqual(['8453 eth_call'])
@@ -239,7 +239,7 @@ describe('the browser\'s Center reader', () => {
         }))
       }),
     )
-    const { jbCenterPublicClient, jbCenterRpcTransport } = await import('@/lib/jbcenter-rpc')
+    const [{ jbCenterPublicClient }, { jbCenterRpcTransport }] = await Promise.all([import('@/lib/jbcenter-public-client'), import('@/lib/jbcenter-rpc')])
     const page = new AbortController()
     const logs = { method: 'eth_getLogs', params: [{ fromBlock: '0x1', toBlock: '0x1f4' }] } as never
     const scans = [8453, 10].map(chainId => jbCenterPublicClient(chainId, page.signal).request(logs).catch((error: unknown) => error))
@@ -267,7 +267,7 @@ describe('the browser\'s Center reader', () => {
         return sent.length === 1 ? refusal('60') : answered(id, numberToHex(100n))
       }),
     )
-    const { jbCenterPublicClient } = await import('@/lib/jbcenter-rpc')
+    const { jbCenterPublicClient } = await import('@/lib/jbcenter-public-client')
     const refused = jbCenterPublicClient(8453).getBlockNumber({ cacheTime: 0 })
     await vi.advanceTimersByTimeAsync(0)
     const other = jbCenterPublicClient(10).getBlockNumber({ cacheTime: 0 })
@@ -303,7 +303,7 @@ describe('the browser\'s Center reader', () => {
         }
       }),
     )
-    const { jbCenterPublicClient } = await import('@/lib/jbcenter-rpc')
+    const { jbCenterPublicClient } = await import('@/lib/jbcenter-public-client')
     // Four chains' heads start 125 ms apart even while their responses remain pending.
     const heads = [84_532, 11_155_420, 11_155_111, 421_614].map(chainId =>
       jbCenterPublicClient(chainId).getBlockNumber({ cacheTime: 0 }),
@@ -365,7 +365,7 @@ describe('the browser\'s Center reader', () => {
         }
       }),
     )
-    const [{ scanLogs }, { jbCenterPublicClient }] = await Promise.all([import('@/lib/hook-logs'), import('@/lib/jbcenter-rpc')])
+    const [{ scanLogs }, { jbCenterPublicClient }] = await Promise.all([import('@/lib/hook-logs'), import('@/lib/jbcenter-public-client')])
     const address = `0x${'a'.repeat(40)}` as const
     // Each chain's scan is 12 windows of 500 blocks; Base's is a page that is left after 3 s.
     const left = new AbortController()

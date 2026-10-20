@@ -4,7 +4,7 @@ import { TRUSTED_FORWARDER_ABI } from '@bananapus/nana-sdk-core/review/relayr'
 import { isEip7702DelegatedEoaRuntime } from '@bananapus/nana-sdk-core/safe'
 import type { Hex } from 'viem'
 import { jbCenterBaseUrl } from '@/lib/jbcenter-config'
-import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
+import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
 import { isAddress, requireSingleHomeChain, type LaunchPlan } from '@/lib/sticky-launch-plan'
 
 export const STICKY_LISTING_FORWARDER = jbContractAddress[6].ERC2771Forwarder[1]

@@ -17,7 +17,7 @@ import {
 import type { TxRequest } from '@/hooks/useSafeTx'
 import { environmentForChainIds, SUPPORTED_CHAINS } from '@/lib/chains'
 import { scanLogs } from '@/lib/hook-logs'
-import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
+import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
 import { feelessAddressesAbi, terminalAbi, tokensAbi } from '@/lib/sticky-abis'
 import { approveSteps } from '@/lib/sticky-builders'
 

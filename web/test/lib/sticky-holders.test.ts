@@ -37,7 +37,7 @@ import {
 // is a fake client here. The default reads have tests of their own in sticky-holders-center.test.ts.
 
 const center = vi.hoisted(() => ({ client: vi.fn() }))
-vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: center.client }))
+vi.mock('@/lib/jbcenter-public-client', () => ({ jbCenterPublicClient: center.client }))
 
 beforeEach(() => {
   center.client.mockReset()

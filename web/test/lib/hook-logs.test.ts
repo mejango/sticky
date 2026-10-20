@@ -4,7 +4,7 @@ import { HistoryTooLongError, keptLogs, keptLogsOf, projectHookLogs, scanLogs, s
 import { stickyDeployment } from '@/lib/sticky-addresses'
 
 const center = vi.hoisted(() => ({ client: vi.fn() }))
-vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: center.client }))
+vi.mock('@/lib/jbcenter-public-client', () => ({ jbCenterPublicClient: center.client }))
 
 type Topics = (Hex | Hex[] | null)[]
 type Filter = { address: Address; topics: Topics; fromBlock: Hex; toBlock: Hex }

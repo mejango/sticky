@@ -11,7 +11,7 @@ vi.mock('@bananapus/nana-sdk-core/v6', async original => ({
   verifyStickyCollectorRoute: mocks.verify, getProjectIdForToken: mocks.project, getStickyCollectorPending: mocks.pending,
 }))
 vi.mock('@/lib/sticky-bridge', () => ({ createStickyBridge: () => ({ discover: mocks.routes, validateRoute: mocks.route }) }))
-vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: vi.fn() }))
+vi.mock('@/lib/jbcenter-public-client', () => ({ jbCenterPublicClient: vi.fn() }))
 
 const address = (n: number) => `0x${n.toString(16).padStart(40, '0')}` as Address
 const hash = `0x${'1'.repeat(64)}` as Hex

@@ -5,7 +5,7 @@ import {
   type StickyCollectorAllocation, type StickyCollectorRoute, type StickySourceCollectorDeployment,
 } from '@bananapus/nana-sdk-core/v6'
 import type { Address, PublicClient } from 'viem'
-import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
+import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
 import { parseAmount } from '@/lib/sticky-amount'
 import { createStickyBridge, type BridgeRoute } from '@/lib/sticky-bridge'
 import { parseTokenInput } from '@/lib/sticky-launch-plan'

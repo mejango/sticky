@@ -21,7 +21,7 @@
 
 import type { JBChainId } from '@bananapus/nana-sdk-core'
 import { BaseError, ContractFunctionRevertedError, toFunctionSelector, type Address } from 'viem'
-import { jbCenterPublicClient } from '@/lib/jbcenter-rpc'
+import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
 import {
   PROJECT_HANDLES_CHAIN_ID,
   normalizeProjectHandle,

@@ -8,7 +8,7 @@ import {
 } from '@/lib/sticky-launch-plan'
 
 const rpc = vi.hoisted(() => ({ client: vi.fn() }))
-vi.mock('@/lib/jbcenter-rpc', () => ({ jbCenterPublicClient: rpc.client }))
+vi.mock('@/lib/jbcenter-public-client', () => ({ jbCenterPublicClient: rpc.client }))
 const address = (digit: string) => getAddress(`0x${digit.repeat(40)}`)
 const OWNER = address('1')
 const TOKEN = address('2')
