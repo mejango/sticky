@@ -1,9 +1,11 @@
 import { stickyAutoStickAbi } from '@bananapus/nana-sdk-core'
-import { encodeErrorResult } from 'viem'
+import { encodeErrorResult, getAbiItem, maxUint256 } from 'viem'
 import { describe, expect, it } from 'vitest'
 import { stickFailure } from '@/lib/sticky-stick-failure'
 
 const E = 10n ** 18n
+const abiItem = getAbiItem({ abi: stickyAutoStickAbi, name: 'StickyAutoStick_InsufficientStickyTokens' })
+const decoded = (args: unknown[]) => ({ errorName: 'StickyAutoStick_InsufficientStickyTokens', abiItem, args })
 const paused = encodeErrorResult({
   abi: [{ type: 'error', name: 'JBTerminalStore_RulesetPaymentPaused', inputs: [{ type: 'uint256' }, { type: 'uint256' }] }],
   errorName: 'JBTerminalStore_RulesetPaymentPaused',
@@ -27,7 +29,7 @@ describe('stickFailure', () => {
     const raw = encodeErrorResult({ abi: stickyAutoStickAbi, errorName: 'StickyAutoStick_InsufficientStickyTokens', args: [E, 2n * E] })
     const line = 'This stick would return 1 stX, under its 2 stX minimum. Review again for a fresh quote.'
     expect(stickFailure({ data: raw }, 'stX')).toEqual({ message: line, requote: true })
-    expect(stickFailure({ cause: { data: { errorName: 'StickyAutoStick_InsufficientStickyTokens', args: [E, 2n * E] } } }, 'stX')).toEqual({ message: line, requote: true })
+    expect(stickFailure({ cause: { data: decoded([E, 2n * E]) } }, 'stX')).toEqual({ message: line, requote: true })
   })
   it("gives the SDK's line for other known reverts, and null for unknown ones", () => {
     expect(stickFailure({ data: paused }, 'stX')).toEqual({ message: 'This project is not accepting payments right now.', requote: false })
@@ -38,9 +40,20 @@ describe('stickFailure', () => {
     const raw = encodeErrorResult({ abi: stickyAutoStickAbi, errorName: 'StickyAutoStick_InsufficientStickyTokens', args: [E, 2n * E] })
     expect(stickFailure({ data: raw + 'deadbeef' }, 'stX')).toBeNull()
     expect(stickFailure({ data: raw.slice(0, -2) }, 'stX')).toBeNull()
-    expect(stickFailure({ errorName: 'StickyAutoStick_InsufficientStickyTokens', args: [] }, 'stX')).toBeNull()
-    expect(stickFailure({ errorName: 'StickyAutoStick_InsufficientStickyTokens', args: [null, null] }, 'stX')).toBeNull()
-    expect(stickFailure({ errorName: 'StickyAutoStick_InsufficientStickyTokens', args: ['1', '2'] }, 'stX')).toBeNull()
+    expect(stickFailure(decoded([]), 'stX')).toBeNull()
+    expect(stickFailure(decoded([null, null]), 'stX')).toBeNull()
+    expect(stickFailure(decoded(['1', '2']), 'stX')).toBeNull()
+    // A decoded error without this error's ABI item is not evidence.
+    expect(stickFailure({ errorName: 'StickyAutoStick_InsufficientStickyTokens', args: [E, 2n * E] }, 'stX')).toBeNull()
+    // Raw data decides on its own: padded bytes beside a decoded copy explain nothing (viem's ContractFunctionRevertedError shape).
+    expect(stickFailure({ raw: raw + 'deadbeef', data: decoded([E, 2n * E]) }, 'stX')).toBeNull()
+  })
+  it('reads only a real shortfall: received under its minimum, both within uint256', () => {
+    expect(stickFailure(decoded([2n * E, 2n * E]), 'stX')).toBeNull()
+    expect(stickFailure(decoded([3n * E, 2n * E]), 'stX')).toBeNull()
+    expect(stickFailure(decoded([E, maxUint256 + 1n]), 'stX')).toBeNull()
+    const equal = encodeErrorResult({ abi: stickyAutoStickAbi, errorName: 'StickyAutoStick_InsufficientStickyTokens', args: [E, E] })
+    expect(stickFailure({ data: equal }, 'stX')).toBeNull()
   })
   it('finds it inside a wallet error wrapper', () => {
     const raw = encodeErrorResult({ abi: stickyAutoStickAbi, errorName: 'StickyAutoStick_InsufficientStickyTokens', args: [E, 2n * E] })
