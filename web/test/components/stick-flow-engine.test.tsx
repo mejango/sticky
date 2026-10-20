@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider, notifyManager } from '@tanstack/react
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { encodeFunctionData, getAddress, toHex, UserRejectedRequestError, type Address, type Hex, type TransactionReceipt } from 'viem'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { REVIEWED_ACCOUNT_CHANGED } from '@/lib/contract-write'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import { TOKEN, stickyInfo } from '../home-fixtures'
@@ -83,6 +83,8 @@ vi.mock('@/lib/sticky-quotes', async importOriginal => ({
 vi.mock('@/lib/sticky-allowance', () => ({ readBalanceAndAllowance: mocks.funds }))
 
 import { StickFlow } from '@/components/project/flows/StickFlow'
+// The review loads when Stick is first pressed; the tests' fake clock cannot wait for a module to load.
+beforeAll(() => import('@/components/project/flows/StickSend'))
 
 let host: HTMLDivElement
 let root: Root
