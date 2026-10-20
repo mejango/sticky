@@ -15,14 +15,15 @@ import { referencedChunks } from './lib/referenced-chunks.mjs'
 const KIB = 1024
 const dist = resolve(process.env.NEXT_DIST_DIR || '.next')
 
-// First-load JavaScript, gzip. Measured on a clean production build with the
-// pinned Node and npm; ratchet down when a change makes a route smaller.
+// First-load JavaScript, gzip, rounded up to the next KiB of the measurement on a clean production build with the pinned
+// Node and npm. Lower a ceiling when a change makes its route smaller. Origin/main 82f6e3d measured home 355.8, project
+// 480.3, account 346.7, callback 312.4 and not-found 314.8 KiB before the load-size changes.
 const budgets = {
-  '/': 356 * KIB,
-  '/base:23': 481 * KIB,
-  '/account/0x0000000000000000000000000000000000000001': 347 * KIB,
-  '/center/callback': 313 * KIB,
-  '/zz-not-a-route': 315 * KIB,
+  '/': 323 * KIB,
+  '/base:23': 339 * KIB,
+  '/account/0x0000000000000000000000000000000000000001': 314 * KIB,
+  '/center/callback': 213 * KIB,
+  '/zz-not-a-route': 211 * KIB,
 }
 
 function freePort() {
