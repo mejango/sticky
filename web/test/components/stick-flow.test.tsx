@@ -738,7 +738,10 @@ describe('the review', () => {
     mocks.quote.mockResolvedValue(9_800_000_000_000_000_000n)
     const quotes = mocks.quote.mock.calls.length
     await click(confirmButton())
+    // Review again sends nothing: it plans the stick again and waits for its own confirmation.
+    expect(mocks.tx.send).toHaveBeenCalledTimes(1)
     await settled()
+    expect(mocks.tx.send).toHaveBeenCalledTimes(1)
     expect(mocks.quote).toHaveBeenCalledTimes(quotes + 1)
     expect(confirmButton()!.textContent).toBe('Confirm & stick')
     await click(confirmButton())

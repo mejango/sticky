@@ -6,6 +6,13 @@ import { stickyAutoStickAbi } from '@/lib/sticky-abis'
 export type StickFailure = { message: string; requote: boolean }
 
 const SHORTFALL_ERROR = 'StickyAutoStick_InsufficientStickyTokens'
+/** Its revert data: the selector and exactly two uint256 words. */
+const SHORTFALL_DATA = /^0x[0-9a-f]{8}[0-9a-f]{128}$/i
+
+const amounts = (args: unknown): { received: bigint; minimum: bigint } | null =>
+  Array.isArray(args) && args.length === 2 && typeof args[0] === 'bigint' && typeof args[1] === 'bigint' && args[0] >= 0n && args[1] >= 0n
+    ? { received: args[0], minimum: args[1] }
+    : null
 
 /** Sticky's own shortfall revert, found anywhere in a viem or wallet error, decoded or as revert data. */
 function stickyShortfall(error: unknown): { received: bigint; minimum: bigint } | null {
@@ -13,21 +20,22 @@ function stickyShortfall(error: unknown): { received: bigint; minimum: bigint } 
   const visit = (value: unknown, depth: number): { received: bigint; minimum: bigint } | null => {
     if (depth > 8 || value === null || value === undefined || seen.has(value)) return null
     if (typeof value === 'string') {
-      if (!/^0x[0-9a-f]{8}/i.test(value)) return null
+      if (!SHORTFALL_DATA.test(value)) return null
       try {
         const decoded = decodeErrorResult({ abi: stickyAutoStickAbi, data: value as `0x${string}` })
-        return decoded.errorName === SHORTFALL_ERROR ? { received: decoded.args[0], minimum: decoded.args[1] } : null
+        return decoded.errorName === SHORTFALL_ERROR ? amounts(decoded.args) : null
       } catch {
         return null
       }
     }
     if (typeof value !== 'object') return null
     seen.add(value)
-    const record = value as { errorName?: unknown; args?: unknown; raw?: unknown; data?: unknown; cause?: unknown }
-    if (record.errorName === SHORTFALL_ERROR && Array.isArray(record.args)) {
-      return { received: record.args[0] as bigint, minimum: record.args[1] as bigint }
+    const record = value as { errorName?: unknown; args?: unknown; raw?: unknown; data?: unknown; cause?: unknown; error?: unknown }
+    if (record.errorName === SHORTFALL_ERROR) {
+      const found = amounts(record.args)
+      if (found) return found
     }
-    for (const next of [record.raw, record.data, record.cause]) {
+    for (const next of [record.raw, record.data, record.cause, record.error]) {
       const found = visit(next, depth + 1)
       if (found) return found
     }

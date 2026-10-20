@@ -418,7 +418,8 @@ export function useSafeTx(chainId: number) {
           setPhase('idle')
           return null
         }
-        sendOptions.onFailure?.(e)
+        // A flow's reading of the failure never stops the engine from settling it.
+        try { sendOptions.onFailure?.(e) } catch { /* the engine's own line stands */ }
         setError(friendlyTxError(e))
         setPhase('error')
         return null

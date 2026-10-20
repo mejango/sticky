@@ -35,4 +35,16 @@ describe('stickFailure', () => {
     expect(stickFailure(new Error('boom'), 'stX')).toBeNull()
     expect(stickFailure({ data: '0xdeadbeef' }, 'stX')).toBeNull()
   })
+  it('ignores malformed or padded Sticky revert data and arguments', () => {
+    const raw = encodeErrorResult({ abi: stickyAutoStickAbi, errorName: 'StickyAutoStick_InsufficientStickyTokens', args: [E, 2n * E] })
+    expect(stickFailure({ data: raw + 'deadbeef' }, 'stX')).toBeNull()
+    expect(stickFailure({ data: raw.slice(0, -2) }, 'stX')).toBeNull()
+    expect(stickFailure({ errorName: 'StickyAutoStick_InsufficientStickyTokens', args: [] }, 'stX')).toBeNull()
+    expect(stickFailure({ errorName: 'StickyAutoStick_InsufficientStickyTokens', args: [null, null] }, 'stX')).toBeNull()
+    expect(stickFailure({ errorName: 'StickyAutoStick_InsufficientStickyTokens', args: ['1', '2'] }, 'stX')).toBeNull()
+  })
+  it('finds it inside a wallet error wrapper', () => {
+    const raw = encodeErrorResult({ abi: stickyAutoStickAbi, errorName: 'StickyAutoStick_InsufficientStickyTokens', args: [E, 2n * E] })
+    expect(stickFailure({ cause: { error: { data: raw } } }, 'stX')?.requote).toBe(true)
+  })
 })

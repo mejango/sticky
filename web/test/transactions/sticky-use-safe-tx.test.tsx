@@ -125,6 +125,13 @@ describe('useSafeTx in Sticky', () => {
     expect(onFailure).toHaveBeenCalledWith(refusal)
     expect(tx.current).toMatchObject({ phase: 'error' })
     expect(mocks.writeContract).not.toHaveBeenCalled()
+
+    // A flow whose reading throws still leaves the engine settled on the error.
+    mocks.publicClient.simulateContract.mockRejectedValueOnce(refusal)
+    await act(async () => {
+      await tx.current!.send(request, { reviewedAccount: ALICE, onFailure: () => { throw new Error('bad decode') } })
+    })
+    expect(tx.current).toMatchObject({ phase: 'error' })
   })
 
   it('stops when the wallet will not move to the request’s chain', async () => {
