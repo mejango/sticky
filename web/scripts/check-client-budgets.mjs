@@ -25,6 +25,10 @@ const budgets = {
   '/center/callback': 214 * KIB,
   '/zz-not-a-route': 212 * KIB,
 }
+// The one route measured as the not-found page. Next streams it with 200 under a loading boundary, so it is told apart by
+// the not-found marker in its HTML: a route that rendered not-found instead of its page would otherwise pass as small.
+const NOT_FOUND = '/zz-not-a-route'
+const NOT_FOUND_MARKER = 'NEXT_HTTP_ERROR_FALLBACK;404'
 
 function freePort() {
   return new Promise((done, fail) => {
@@ -59,7 +63,12 @@ async function main() {
     for (const [route, ceiling] of Object.entries(budgets)) {
       const response = await fetch(origin + route)
       const html = await response.text()
-      if (response.status !== 200 && response.status !== 404) throw new Error(`${route} answered ${response.status}`)
+      if (response.status !== 200 && !(route === NOT_FOUND && response.status === 404)) {
+        throw new Error(`${route} answered ${response.status}`)
+      }
+      if (html.includes(NOT_FOUND_MARKER) !== (route === NOT_FOUND)) {
+        throw new Error(route === NOT_FOUND ? `${route} did not render not-found` : `${route} rendered not-found`)
+      }
       const files = referencedChunks(html)
       if (files.length === 0) throw new Error(`${route} references no scripts`)
       let total = 0

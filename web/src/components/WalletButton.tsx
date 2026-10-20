@@ -67,6 +67,10 @@ export function WalletButton() {
   const viewing = mounted ? viewAs : null
   // The account the button and its menu speak for: the viewed one wins.
   const account = viewing ?? (connected ? address : undefined)
+  // A queued press is for the account it was made for; signing out drops it.
+  useEffect(() => {
+    if (!account) setPressed(false)
+  }, [account])
 
   if (account) {
     return (

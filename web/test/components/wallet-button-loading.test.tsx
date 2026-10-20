@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 const ALICE = '0x1111111111111111111111111111111111111111'
 
+const wallet = vi.hoisted(() => ({ connected: true }))
 const gate = vi.hoisted(() => {
   let open = () => {}
   const loaded = new Promise<void>(resolve => (open = resolve))
@@ -11,7 +12,12 @@ const gate = vi.hoisted(() => {
 })
 
 vi.mock('@/hooks/useWallet', () => ({
-  useWallet: () => ({ address: ALICE, isConnected: true, isCenterWallet: false, openSignIn: vi.fn() }),
+  useWallet: () => ({
+    address: wallet.connected ? ALICE : undefined,
+    isConnected: wallet.connected,
+    isCenterWallet: false,
+    openSignIn: vi.fn(),
+  }),
 }))
 vi.mock('@/lib/viewAs', () => ({ useViewAs: () => ({ viewAs: null }) }))
 vi.mock('@/providers/preload-center', () => ({ preloadSignIn: vi.fn() }))
@@ -41,5 +47,12 @@ describe('the account button while its menu loads', () => {
       await gate.loaded
     })
     expect(renderer.root.findByProps({ id: 'menu' }).children).toEqual(['open'])
+
+    // Signing out drops the press: the next sign-in shows the menu closed.
+    wallet.connected = false
+    act(() => renderer.update(createElement(WalletButton)))
+    wallet.connected = true
+    act(() => renderer.update(createElement(WalletButton)))
+    expect(renderer.root.findByProps({ id: 'menu' }).children).toEqual(['closed'])
   })
 })
