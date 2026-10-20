@@ -11,7 +11,7 @@ import { act, Profiler, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { encodeAbiParameters, encodeFunctionData, erc20Abi, getAddress, toEventSelector, toHex, UserRejectedRequestError, zeroAddress, type Abi, type Address, type Hex, type TransactionReceipt } from 'viem'
 import { SAFE_EXEC_ABI } from '@bananapus/nana-sdk-core/safe-service'
-import { HELD_EXIT_LABEL, WRITE_HOLD_REVERTED_LINE, writeExitMessage, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
+import { HELD_EXIT_LABEL, HELD_FAILED_LINE, writeExitMessage, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { REVIEWED_ACCOUNT_CHANGED } from '@/lib/contract-write'
 import { feelessAddressesAbi, stickyAutoStickAbi, stickyHookAbi, terminalAbi } from '@/lib/sticky-abis'
@@ -875,7 +875,8 @@ describe('a send that stops halfway', () => {
     await press('Remove auto-stick permission', confirm()!)
     await until(() => nameOf(confirm()!).includes('Retry'), 'the revert')
 
-    expect(confirm()!.textContent).toContain(WRITE_HOLD_REVERTED_LINE)
+    // A canonical revert settles at once, with the settled line.
+    expect(confirm()!.textContent).toContain(HELD_FAILED_LINE)
     expect(confirm()!.textContent).toContain(
       "Went through: Turn off auto-stick. Did not go through: Stop the auto-stick contract from sticking ART for you. Not sent yet: Remove the auto-stick contract's ART allowance; Unstick.",
     )
