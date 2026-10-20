@@ -48,6 +48,21 @@ describe('stickFailure', () => {
     // Raw data decides on its own: padded bytes beside a decoded copy explain nothing (viem's ContractFunctionRevertedError shape).
     expect(stickFailure({ raw: raw + 'deadbeef', data: decoded([E, 2n * E]) }, 'stX')).toBeNull()
   })
+  it('lets any revert data outrank a decoded copy, and a known pay revert outrank Sticky\'s check', () => {
+    const raw = encodeErrorResult({ abi: stickyAutoStickAbi, errorName: 'StickyAutoStick_InsufficientStickyTokens', args: [E, 2n * E] })
+    expect(stickFailure({ raw: paused, data: decoded([E, 2n * E]) }, 'stX')).toEqual({ message: 'This project is not accepting payments right now.', requote: false })
+    expect(stickFailure({ raw: '0xdeadbeef', data: decoded([E, 2n * E]) }, 'stX')).toBeNull()
+    expect(stickFailure({ raw: '0x12', data: decoded([E, 2n * E]) }, 'stX')).toBeNull()
+    expect(stickFailure({ raw: paused, cause: { data: raw } }, 'stX')?.requote).toBe(false)
+  })
+  it('checks both ABI inputs, and never throws on a malformed one', () => {
+    const raw = encodeErrorResult({ abi: stickyAutoStickAbi, errorName: 'StickyAutoStick_InsufficientStickyTokens', args: [E, 2n * E] })
+    const holes = { errorName: 'StickyAutoStick_InsufficientStickyTokens', abiItem: { ...abiItem, inputs: new Array(2) }, args: [E, 2n * E] }
+    const nulls = { errorName: 'StickyAutoStick_InsufficientStickyTokens', abiItem: { ...abiItem, inputs: [null, null] }, args: [E, 2n * E] }
+    expect(stickFailure(holes, 'stX')).toBeNull()
+    expect(stickFailure(nulls, 'stX')).toBeNull()
+    expect(stickFailure({ raw, data: nulls }, 'stX')?.requote).toBe(true)
+  })
   it('reads only a real shortfall: received under its minimum, both within uint256', () => {
     expect(stickFailure(decoded([2n * E, 2n * E]), 'stX')).toBeNull()
     expect(stickFailure(decoded([3n * E, 2n * E]), 'stX')).toBeNull()

@@ -21,24 +21,28 @@ const amounts = (args: unknown): Shortfall | null =>
     : null
 
 const sameInputs = (item: unknown): boolean => {
-  const inputs = (item as { type?: unknown; name?: unknown; inputs?: { type?: unknown }[] } | null)
-  return !!inputs && inputs.type === 'error' && inputs.name === SHORTFALL_ERROR && Array.isArray(inputs.inputs)
-    && inputs.inputs.length === 2 && inputs.inputs.every(input => input.type === 'uint256')
+  const abi = item as { type?: unknown; name?: unknown; inputs?: unknown } | null
+  const inputs = abi?.inputs
+  return !!abi && abi.type === 'error' && abi.name === SHORTFALL_ERROR && Array.isArray(inputs) && inputs.length === 2
+    && [0, 1].every(i => (inputs[i] as { type?: unknown } | null | undefined)?.type === 'uint256')
 }
 
+/** Nonempty hex: revert data, well formed or not (the SDK's rule). */
+const REVERT_DATA = /^0x[0-9a-f]+$/i
+
 /**
- * Sticky's own shortfall revert, found anywhere in a viem or wallet error, by the SDK's evidence rules: revert data
- * carrying its selector decides on its own and must be exactly canonical; without such data, a decoded error counts
- * only when typed against this error's ABI item.
+ * Sticky's own shortfall revert, found anywhere in a viem or wallet error, by the SDK 3.4.1 evidence rules: when the
+ * error carries any revert data, only exactly canonical Sticky data counts; without revert data, a decoded error
+ * counts only when typed against this error's ABI item.
  */
 function stickyShortfall(error: unknown): Shortfall | null {
-  const raws: string[] = []
+  const payloads: string[] = []
   const decoded: unknown[] = []
   const seen = new Set<unknown>()
   const visit = (value: unknown, depth: number) => {
     if (depth > 8 || value === null || value === undefined || seen.has(value)) return
     if (typeof value === 'string') {
-      if (value.toLowerCase().startsWith(SHORTFALL_SELECTOR)) raws.push(value)
+      if (REVERT_DATA.test(value)) payloads.push(value)
       return
     }
     if (typeof value !== 'object') return
@@ -48,16 +52,12 @@ function stickyShortfall(error: unknown): Shortfall | null {
     for (const next of [record.raw, record.data, record.cause, record.error]) visit(next, depth + 1)
   }
   visit(error, 0)
-  if (raws.length) {
-    for (const raw of raws) {
-      if (!SHORTFALL_DATA.test(raw)) return null
-      try {
-        const found = amounts(decodeErrorResult({ abi: [SHORTFALL_ITEM], data: raw as `0x${string}` }).args)
-        if (found) return found
-      } catch { /* not this error */ }
-    }
-    return null
+  for (const raw of payloads) {
+    if (!raw.toLowerCase().startsWith(SHORTFALL_SELECTOR) || !SHORTFALL_DATA.test(raw)) continue
+    const found = amounts(decodeErrorResult({ abi: [SHORTFALL_ITEM], data: raw as `0x${string}` }).args)
+    if (found) return found
   }
+  if (payloads.length) return null
   for (const args of decoded) {
     const found = amounts(args)
     if (found) return found
@@ -72,7 +72,8 @@ function stickyShortfall(error: unknown): Shortfall | null {
  */
 export function stickFailure(error: unknown, stSymbol: string): StickFailure | null {
   const pay = decodePayFailure(error)
-  const shortfall = (pay?.reason === 'TERMINAL_UNDER_MIN' ? amounts([pay.received, pay.minimum]) : null) ?? stickyShortfall(error)
+  // A known pay revert decides; Sticky's own check is read only when the SDK found none.
+  const shortfall = pay ? (pay.reason === 'TERMINAL_UNDER_MIN' ? amounts([pay.received, pay.minimum]) : null) : stickyShortfall(error)
   if (shortfall?.received === 0n) {
     return { message: `This stick would return no ${stSymbol}. Review again for a fresh quote.`, requote: true }
   }
