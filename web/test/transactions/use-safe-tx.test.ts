@@ -754,6 +754,39 @@ describe('useSafeTx', () => {
     } finally { vi.useRealTimers() }
   })
 
+  it('says a write reverted as soon as the hold settles it, before its receipt is fetched again', async () => {
+    const hook = await renderHook()
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    // The settlement callback waits on this lookup; the hold's own view already shows the failure.
+    // Every lookup until the settlement answers; the callback's own lookup after it never does.
+    const settledYet = () => Object.keys(localStorage).some(key => key.startsWith('nana-sdk:reviewed-write:') && localStorage.getItem(key)!.includes('"result"'))
+    mocks.publicClient.getTransactionReceipt.mockImplementation(async () => {
+      if (settledYet()) return new Promise(() => {})
+      return mocks.receipt.data
+    })
+    mocks.receipt = { data: canonicalReceipt('reverted'), isError: false }
+    await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
+    await vi.waitFor(() => expect(hook.ref.current).toMatchObject({ phase: 'error', reverted: true }))
+  })
+
+  it('ignores a settlement that lands after the flow was reset', async () => {
+    const hook = await renderHook()
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    // The settlement's callback waits on its receipt lookup until after the reset.
+    let lookup: ((receipt: unknown) => void) | undefined
+    const settledYet = () => Object.keys(localStorage).some(key => key.startsWith('nana-sdk:reviewed-write:') && localStorage.getItem(key)!.includes('"result"'))
+    mocks.publicClient.getTransactionReceipt.mockImplementation(async () => {
+      if (settledYet()) return new Promise(resolve => { lookup = resolve })
+      return mocks.receipt.data
+    })
+    mocks.receipt = { data: canonicalReceipt('reverted'), isError: false }
+    await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
+    await vi.waitFor(() => expect(lookup).toBeTypeOf('function'))
+    await act(async () => { hook.ref.current!.reset() })
+    await act(async () => { lookup!(canonicalReceipt('reverted')) })
+    expect(hook.ref.current).toMatchObject({ phase: 'idle', error: null, reverted: false })
+  })
+
   it('takes a second send of the same action right after the first one confirmed, without refusing it', async () => {
     mocks.writeContract.mockResolvedValueOnce(HASH).mockResolvedValueOnce(EXECUTION_HASH)
     const hook = await renderHook()

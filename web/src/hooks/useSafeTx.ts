@@ -172,6 +172,9 @@ export function useSafeTx(chainId: number) {
   const [result, setResult] = useState<{ hash: Hex; receipt: TransactionReceipt | null } | null>(null)
   /** Whether the write this flow sent is a Safe proposal. */
   const [safe, setSafe] = useState(false)
+  // What the flow is waiting on as of its last render, for the hold's settlement callback.
+  const waiting = useRef({ phase, sent })
+  waiting.current = { phase, sent }
   const publicClient = usePublicClient({ chainId })
   const options = useRef<TxSendOptions | null>(null)
   const inFlight = useRef(false)
@@ -212,6 +215,10 @@ export function useSafeTx(chainId: number) {
     pollMs: 15_000,
     onSettled: (settled, receipt) => {
       if (!('hash' in settled)) return
+      // Only the write this flow waits on: never one a reset or a newer send left behind.
+      const now = waiting.current
+      if (now.phase !== 'pending') return
+      if (now.sent && !now.sent.safe && now.sent.hash.toLowerCase() !== settled.hash.toLowerCase()) return
       if (settled.result === 'success') {
         setResult({ hash: settled.hash, receipt })
         setPhase('success')
@@ -488,7 +495,7 @@ export function useSafeTx(chainId: number) {
     isSafe,
     error: effectivePhase === 'error' ? (error ?? (shown?.line || null)) : error,
     /** The write was mined and reverted: its receipt says so, not why. */
-    reverted: effectivePhase === 'error' && reverted,
+    reverted: effectivePhase === 'error' && (reverted || shown?.settled?.result === 'failed'),
     hash: result?.hash ?? watched ?? null,
     safeProposalHash: awaitingProposal,
     /** The wallet's original reply, retained if its durable handoff needs repair. */
