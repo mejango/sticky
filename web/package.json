@@ -20,8 +20,9 @@
     "transaction:check": "node scripts/check-transaction-inventory.mjs",
     "deployments:sync": "node scripts/sync-deployments.mjs",
     "deployments:check": "node scripts/sync-deployments.mjs --check",
+    "budget": "node scripts/check-client-budgets.mjs",
     "audit:prod": "npm audit --omit=dev --audit-level=high",
-    "check": "npm run audit:prod && npm run lint && npm run ts:check && npm run deployments:check && npm run schema:check:offline && npm run transaction:check && npm run test:ci && npm run build && npm run test:browser"
+    "check": "npm run audit:prod && npm run lint && npm run ts:check && npm run deployments:check && npm run schema:check:offline && npm run transaction:check && npm run test:ci && npm run build && npm run budget && npm run test:browser"
   },
   "dependencies": {
     "@bananapus/nana-sdk-connect": "^0.5.6",

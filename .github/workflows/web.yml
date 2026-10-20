@@ -64,6 +64,10 @@ jobs:
         run: npm run test:ci
       - name: Build production application
         run: npm run build
+      # Serves the build and gzips each route's first-load scripts, read from
+      # the rendered HTML, against its ceiling.
+      - name: Check route first-load budgets
+        run: npm run budget
 
   browser:
     name: Browser smoke
