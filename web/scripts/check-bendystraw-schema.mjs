@@ -17,6 +17,8 @@ const writeRegistry = process.argv.includes('--write-registry')
 // without depending on a third party being up.
 const offline = process.argv.includes('--offline')
 const registryPath = path.resolve('src/lib/bendystraw-operation-registry.json')
+// Each document parsed at build time, so the browser does not bundle the GraphQL parser (bendystraw.ts).
+const documentsPath = path.resolve('src/lib/bendystraw-documents.json')
 const sourceRoot = path.resolve('src')
 const extensions = new Set(['.js', '.jsx', '.mjs', '.ts', '.tsx'])
 let declarations = new Map()
@@ -152,14 +154,18 @@ const expectedRegistry = Object.fromEntries(
     .sort(([left], [right]) => left.localeCompare(right)),
 )
 const expectedRegistryJson = `${JSON.stringify(expectedRegistry, null, 2)}\n`
+const expectedDocumentsJson = `${JSON.stringify(
+  Object.fromEntries(Object.values(expectedRegistry).map(document => [document, parse(document, { noLocation: true })])),
+)}\n`
 if (writeRegistry) {
   fs.writeFileSync(registryPath, expectedRegistryJson)
+  fs.writeFileSync(documentsPath, expectedDocumentsJson)
   console.log(`Wrote ${documents.size} persisted Bendystraw operations to ${path.relative(process.cwd(), registryPath)}.`)
 } else {
-  if (!fs.existsSync(registryPath)) {
+  if (!fs.existsSync(registryPath) || !fs.existsSync(documentsPath)) {
     throw new Error('Missing persisted Bendystraw operation registry; run npm run bendystraw:registry')
   }
-  if (fs.readFileSync(registryPath, 'utf8') !== expectedRegistryJson) {
+  if (fs.readFileSync(registryPath, 'utf8') !== expectedRegistryJson || fs.readFileSync(documentsPath, 'utf8') !== expectedDocumentsJson) {
     throw new Error('Persisted Bendystraw operation registry is stale; run npm run bendystraw:registry')
   }
 }

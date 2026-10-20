@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { POST } from '@/app/api/bendystraw/[net]/query/route'
 import { bendystraw } from '@/lib/bendystraw'
 import { bendystrawOperationId } from '@bananapus/nana-sdk-core/bendystraw-operations'
+// Tests write documents of their own; the build registers only the site's.
+vi.mock('@/lib/bendystraw-documents.json', async () => ({ default: (await import('../support/bendystraw-documents')).anyDocument }))
 
 // A fixed document stands in for the registry, so the relay is tested whatever the real registry holds.
 const query = vi.hoisted(

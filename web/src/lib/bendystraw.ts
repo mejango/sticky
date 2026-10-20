@@ -17,9 +17,15 @@ import {
   type BendystrawNetwork,
 } from '@bananapus/nana-sdk-core'
 import {
-  compileBendystrawOperation,
+  compileBendystrawDocument,
   requestPersistedBendystraw,
 } from '@bananapus/nana-sdk-core/bendystraw-operations'
+import type { DocumentNode } from 'graphql'
+import parsedDocuments from '@/lib/bendystraw-documents.json'
+
+// Every document parsed at build time by `npm run bendystraw:registry`, so the browser does not bundle the GraphQL
+// parser; `npm run schema:check:offline` fails when one is missing or stale.
+const DOCUMENTS = parsedDocuments as unknown as Record<string, DocumentNode>
 
 export function normalizeBendystrawUrl(value: string): string {
   return normalizeBendystrawEndpoint(value.trim())
@@ -51,7 +57,9 @@ export async function bendystraw<T>(
     signal?: AbortSignal
   } = {},
 ): Promise<T> {
-  const contract = compileBendystrawOperation(query)
+  const document = Object.hasOwn(DOCUMENTS, query) ? DOCUMENTS[query] : undefined
+  if (!document) throw new Error('This Bendystraw document is not registered; run npm run bendystraw:registry')
+  const contract = compileBendystrawDocument(document)
   const network = resolveBendystrawNetwork({
     chainId: opts.chainId,
     defaultNetwork: 'mainnet',
