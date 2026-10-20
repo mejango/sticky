@@ -1,3 +1,21 @@
+# Stick failure reason and re-quote (2026-10-20)
+
+Ruling (jango): if a payment fails, we should know the reason and let the user adjust. A stick pays Sticky's terminal with no buyback, so its minimum stays the exact quote; a shortfall offers a fresh quote instead of a looser minimum.
+
+- [x] 1. Bump @bananapus/nana-sdk-core 3.1.0 -> 3.3.0 (Node 26, npm 12).
+- [x] 2. useSafeTx gains `onFailure(error)` for a send that fails before the wallet (same option jbm adds).
+- [x] 3. `stickFailure(error, stSymbol)` in lib: decodePayFailure covers the terminal's UnderMin; Sticky's own StickyAutoStick_InsufficientStickyTokens(received, minimum) decodes locally. A shortfall gives one plain line with both amounts; other known pay reverts give the SDK's line.
+- [x] 4. StickSend: on a shortfall the dialog shows that line and "Quote again", which re-plans the same stick.
+- [ ] 5. Tests, full `npm run check`, screenshot of the failure state, PR, two Codex passes, no merge.
+
+## Plan refinement
+- **Objective:** A stick that fails says why in one line; when the price moved past the reviewed minimum, the dialog offers a fresh quote. Happy path and the exact-quote minimum are unchanged.
+- **System fit:** Outcome (understood failure, easy retry) -> capability (SDK decodePayFailure plus Sticky's own error table) -> evidence (the simulation error the engine already catches) -> prepared action (StickSend's existing re-plan via onReviewAgain) -> authority (existing review and held send) -> verified result (receipt). Unstick, transfer, AutoStick and launch flows are unaffected.
+- **Reuse and simplicity:** SDK decodes JB reverts; only Sticky's contract error is decoded here, from its generated ABI. Re-quote reuses onReviewAgain. One small option on useSafeTx, mirroring jbm's.
+- **Evidence and unknowns:** StickyAutoStick.sol 593-608 and JBMultiTerminal UnderMin carry received and minimum; SDK source wt-sdk-paymin executionErrors.ts; published 3.3.0 re-read after install. A mined revert keeps the engine's settled line (the review simulates right before signing).
+- **Verification:** Unit tests for the decoder (terminal UnderMin, Sticky InsufficientStickyTokens, other) and StickSend's shortfall line + Quote again; full `npm run check`; Playwright screenshot of the failure dialog.
+- **Resource budget:** One worktree, one bump, three small edits; replan if 3.3.0 differs from source.
+
 # Sticky client reconciliation
 
 ## Plan refinement

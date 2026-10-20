@@ -115,6 +115,18 @@ describe('useSafeTx in Sticky', () => {
     expect(tx.current).toMatchObject({ phase: 'pending', hash: HASH })
   })
 
+  it('hands a flow the error behind a refused simulation, and asks the wallet nothing', async () => {
+    const refusal = Object.assign(new Error('Execution reverted.'), { data: '0x6b2bb382' })
+    mocks.publicClient.simulateContract.mockRejectedValueOnce(refusal)
+    const onFailure = vi.fn()
+    await act(async () => {
+      await tx.current!.send(request, { reviewedAccount: ALICE, onFailure })
+    })
+    expect(onFailure).toHaveBeenCalledWith(refusal)
+    expect(tx.current).toMatchObject({ phase: 'error' })
+    expect(mocks.writeContract).not.toHaveBeenCalled()
+  })
+
   it('stops when the wallet will not move to the request’s chain', async () => {
     mocks.switchChain.mockRejectedValueOnce(new Error('User rejected the request.'))
     await act(async () => {

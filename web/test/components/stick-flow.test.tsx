@@ -3,7 +3,7 @@
 import { QueryClient, QueryClientProvider, notifyManager } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { getAddress, isAddress, zeroAddress, type Hex } from 'viem'
+import { encodeErrorResult, getAddress, isAddress, zeroAddress, type Hex } from 'viem'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import type { StickyPosition } from '@/lib/sticky-holders'
@@ -707,6 +707,59 @@ describe('the review', () => {
     await click(confirmButton())
     expect(mocks.tx.send).toHaveBeenCalledTimes(2)
     expect(mocks.tx.send.mock.calls[1][0]).toMatchObject({ functionName: 'pay' })
+  })
+
+  it('says how far a stick fell under its quote, and quotes it again on Review again', async () => {
+    mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 5n * CPN })
+    await render()
+    await review()
+    // The terminal refuses the stick below its minimum: JBMultiTerminal_UnderMin(9.8, 9.87) as revert data.
+    const underMin = encodeErrorResult({
+      abi: [{ type: 'error', name: 'JBMultiTerminal_UnderMin', inputs: [{ type: 'uint256' }, { type: 'uint256' }] }],
+      errorName: 'JBMultiTerminal_UnderMin',
+      args: [9_800_000_000_000_000_000n, MINTED],
+    })
+    mocks.tx.send.mockImplementationOnce(async (_step: unknown, options: { onFailure?: (error: unknown) => void }) => {
+      options.onFailure?.({ shortMessage: 'Execution reverted.', data: underMin })
+      mocks.tx.phase = 'error'
+      mocks.tx.error = 'Execution reverted.'
+      return null
+    })
+    await click(confirmButton())
+    await rerender()
+
+    expect(dialog()!.textContent).toContain(
+      'This stick would return 9.8 STICKYCPN, under its 9.87 STICKYCPN minimum. Review again for a fresh quote.',
+    )
+    expect(dialog()!.textContent).not.toContain('Execution reverted.')
+    expect(confirmButton()!.textContent).toBe('Review again')
+
+    // A fresh quote, never a looser minimum: the stick is planned again and sent with the new quote as its minimum.
+    mocks.quote.mockResolvedValue(9_800_000_000_000_000_000n)
+    const quotes = mocks.quote.mock.calls.length
+    await click(confirmButton())
+    await settled()
+    expect(mocks.quote).toHaveBeenCalledTimes(quotes + 1)
+    expect(confirmButton()!.textContent).toBe('Confirm & stick')
+    await click(confirmButton())
+    expect(mocks.tx.send).toHaveBeenCalledTimes(2)
+    expect(mocks.tx.send.mock.calls[1][0].args[4]).toBe(9_800_000_000_000_000_000n)
+  })
+
+  it('names a known revert that a fresh quote does not fix, and keeps Retry', async () => {
+    mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 5n * CPN })
+    await render()
+    await review()
+    mocks.tx.send.mockImplementationOnce(async (_step: unknown, options: { onFailure?: (error: unknown) => void }) => {
+      options.onFailure?.({ shortMessage: 'Execution reverted.', data: '0x8dc14446' })
+      mocks.tx.phase = 'error'
+      mocks.tx.error = 'Execution reverted.'
+      return null
+    })
+    await click(confirmButton())
+    await rerender()
+    expect(dialog()!.textContent).toContain('This project is not accepting payments right now.')
+    expect(confirmButton()!.textContent).toBe('Retry')
   })
 
   it('says what the engine is doing while it sends a step, from its check to the wallet to the chain', async () => {

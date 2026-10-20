@@ -74,6 +74,8 @@ export type TxSendOptions = {
   onBeforeWriteAborted?: () => unknown | Promise<unknown>
   /** Called only for a typed, explicit wallet rejection of the write itself. */
   onWriteRejected?: () => unknown | Promise<unknown>
+  /** The error behind a send that failed before reaching the chain (simulation, estimate, wallet), for a flow to decode. */
+  onFailure?: (error: unknown) => void
   /** A domain journal keeps this write's domain data beside the SDK hold, including the returned hash. */
   durableRecovery?: {
     reserve: () => unknown | Promise<unknown>
@@ -416,6 +418,7 @@ export function useSafeTx(chainId: number) {
           setPhase('idle')
           return null
         }
+        sendOptions.onFailure?.(e)
         setError(friendlyTxError(e))
         setPhase('error')
         return null
