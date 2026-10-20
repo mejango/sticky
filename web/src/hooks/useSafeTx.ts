@@ -175,7 +175,7 @@ export function useSafeTx(chainId: number) {
   // The write this flow sent, as of its last render, for the hold's settlement callback.
   const waiting = useRef(sent)
   waiting.current = sent
-  // Settlement callbacks belong to the open attempt only: a reset closes it, and a new send marks every settlement
+  // Failure callbacks belong to the open attempt only: a reset closes it, and a new send marks every settlement
   // already known (and the write it replaces) as left behind, at once rather than on the next render. Any other
   // hash, a Safe execution or a speed-up the hold verified, is the open attempt's.
   const closed = useRef(false)
@@ -230,7 +230,10 @@ export function useSafeTx(chainId: number) {
     onSettled: (settled, receipt) => {
       if (!('hash' in settled)) return
       // Only the open attempt's write: never one a reset or a newer send left behind.
-      if (closed.current || leftBehind.current.has(settled.hash.toLowerCase())) return
+      // The hold counts a delivered success as told, so a success always reaches the flow: dropping one would let the
+      // same action be sent again without "went through while away". A failure a reset or a newer send left behind
+      // releases nothing and is dropped.
+      if (settled.result !== 'success' && (closed.current || leftBehind.current.has(settled.hash.toLowerCase()))) return
       if (settled.result === 'success') {
         succeeded.current = true
         setResult({ hash: settled.hash, receipt })
@@ -418,7 +421,8 @@ export function useSafeTx(chainId: number) {
         inFlight.current = false
         // Held, or a success that went through while away: the SDK's view shows it, with its exit or its send-again.
         if (e instanceof WriteHeldError || (e instanceof Error && e.message === HELD_AWAY_SUCCESS_LINE)) {
-          if (succeeded.current) return null
+          // A success this attempt already took stays shown, whatever phase the send moved to since.
+          if (succeeded.current) { setError(null); setPhase('success'); return null }
           // Resuming the held write a reset left behind: its settlement is this attempt's again.
           if (e instanceof WriteHeldError) {
             for (const hash of [e.state.record.hash, e.state.record.executionHash]) if (hash) leftBehind.current.delete(hash.toLowerCase())

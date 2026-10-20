@@ -776,6 +776,17 @@ describe('useSafeTx', () => {
     return gate
   }
 
+  it('takes a success that lands after a reset, so the same action is not sent twice', async () => {
+    const hook = await renderHook()
+    await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
+    const gate = delaySettlementLookup()
+    mocks.receipt = { data: canonicalReceipt('success'), isError: false }
+    await act(async () => { hook.renderer.update(createElement(Harness, { ref: hook.ref })) })
+    await vi.waitFor(() => expect(gate.release).toBeTypeOf('function'))
+    await act(async () => { hook.ref.current!.reset(); gate.release!(canonicalReceipt('success')) })
+    expect(hook.ref.current).toMatchObject({ phase: 'success' })
+  })
+
   it('ignores a settlement resolved in the same batch as a reset', async () => {
     const hook = await renderHook()
     await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
