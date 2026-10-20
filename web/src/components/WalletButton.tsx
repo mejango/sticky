@@ -12,7 +12,7 @@ import { useWallet } from '@/hooks/useWallet'
 import { displayChainName } from '@/lib/chainDisplay'
 import { formatAmount } from '@/lib/sticky-format'
 import { useViewAs } from '@/lib/viewAs'
-import { preloadCenterWallet } from '@/providers/preload-center'
+import { preloadSignIn } from '@/providers/preload-center'
 
 const CONNECT_BUTTON =
   'max-w-full whitespace-nowrap rounded-sm border px-3 py-[5px] font-bold tracking-[1px] text-ink max-[520px]:px-2.5 max-[520px]:text-[13px] max-[520px]:tracking-[.5px]'
@@ -194,9 +194,9 @@ export function WalletButton() {
           onClick={() => void openSignIn()}
           // Fetch the Signa runtime as the pointer arrives, so the click has
           // nothing left to wait for.
-          onMouseEnter={preloadCenterWallet}
-          onFocus={preloadCenterWallet}
-          onTouchStart={preloadCenterWallet}
+          onMouseEnter={preloadSignIn}
+          onFocus={preloadSignIn}
+          onTouchStart={preloadSignIn}
           className={`${CONNECT_BUTTON} border-ink bg-transparent hover:bg-card`}
         >
           Sign in

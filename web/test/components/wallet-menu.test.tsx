@@ -27,7 +27,7 @@ vi.mock('wagmi', () => ({
   useEnsName: () => ({ data: undefined }),
   useBalance: () => ({ data: mocks.balance }),
 }))
-vi.mock('@/providers/preload-center', () => ({ preloadCenterWallet: vi.fn() }))
+vi.mock('@/providers/preload-center', () => ({ preloadSignIn: vi.fn() }))
 vi.mock('@/providers/Providers', () => ({ IS_DETERMINISTIC_BROWSER: false }))
 
 import { WalletButton } from '@/components/WalletButton'

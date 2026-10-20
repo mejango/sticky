@@ -3,6 +3,7 @@
 // Clear callback data before loading a wallet SDK or rendering.
 import './center-callback'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import dynamic from 'next/dynamic'
 import { type PropsWithChildren, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createConfig, injected, WagmiProvider } from 'wagmi'
 import { TransactionReviewProvider } from '@/components/TransactionReviewProvider'
@@ -14,9 +15,13 @@ import { WalletAuthContext, type SignInOptions } from './WalletAuthContext'
 import { lazyCenterConnector } from './lazy-center-connector'
 import { externalWalletConnectors } from './wallet-connectors'
 import { CENTER_WALLET_ENABLED } from './wallet-config'
-import { ExternalWalletDialog } from './ExternalWalletDialog'
 import { ProjectRouteProvider } from './ProjectRouteContext'
 import { arbitrum, arbitrumSepolia, base, baseSepolia, mainnet, optimism, optimismSepolia, sepolia } from '@bananapus/nana-sdk-core/chains'
+
+// The sign-in dialog loads when it is first opened; the wallet button fetches it as the pointer arrives (preload-center).
+const ExternalWalletDialog = dynamic(() => import('./ExternalWalletDialog').then(module => module.ExternalWalletDialog), {
+  ssr: false,
+})
 
 export const IS_DETERMINISTIC_BROWSER = process.env.NEXT_PUBLIC_DETERMINISTIC_BROWSER === 'true'
 export { SUPPORTED_CHAINS } from '@/lib/chains'
