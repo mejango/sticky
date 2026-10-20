@@ -56,6 +56,8 @@ export function WalletButton() {
   const { isConnected, address, isCenterWallet, openSignIn } = useWallet()
   const { viewAs } = useViewAs()
   const [mounted, setMounted] = useState(false)
+  // A press of the button before the menu has loaded opens it once it has.
+  const [pressed, setPressed] = useState(false)
 
   // Wallet state only exists client-side; render the signed-out shell on the
   // server so hydration always matches.
@@ -71,11 +73,17 @@ export function WalletButton() {
       <Suspense
         fallback={
           <div className={WALLET_WRAPPER}>
-            <AccountTrigger viewing={viewing} address={address} isCenterWallet={isCenterWallet} label={shortAddress(account)} />
+            <AccountTrigger
+              viewing={viewing}
+              address={address}
+              isCenterWallet={isCenterWallet}
+              label={shortAddress(account)}
+              onClick={() => setPressed(true)}
+            />
           </div>
         }
       >
-        <SignedInWallet account={account} viewing={viewing} connected={connected} />
+        <SignedInWallet account={account} viewing={viewing} connected={connected} openOnLoad={pressed} />
       </Suspense>
     )
   }

@@ -23,6 +23,11 @@ import { EXTERNAL_WALLET_REQUIRED } from '@/providers/WalletAuthContext'
 // them ahead of the press.
 const StickSend = dynamic(() => import('@/components/project/flows/StickSend').then(module => module.StickSend), {
   ssr: false,
+  loading: () => (
+    <p role="status" className="mt-2 text-[13px] text-muted">
+      Opening the review…
+    </p>
+  ),
 })
 const preloadStickSend = () => void import('@/components/project/flows/StickSend')
 

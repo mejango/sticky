@@ -19,8 +19,14 @@ import { ProjectRouteProvider } from './ProjectRouteContext'
 import { arbitrum, arbitrumSepolia, base, baseSepolia, mainnet, optimism, optimismSepolia, sepolia } from '@bananapus/nana-sdk-core/chains'
 
 // The sign-in dialog loads when it is first opened; the wallet button fetches it as the pointer arrives (preload-center).
+// A sign-in asked for by a flow, not the button, can arrive before it has: a status says it is on its way.
 const ExternalWalletDialog = dynamic(() => import('./ExternalWalletDialog').then(module => module.ExternalWalletDialog), {
   ssr: false,
+  loading: () => (
+    <p role="status" className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-sm border border-line bg-card px-3 py-2 text-[13px] text-muted">
+      Opening sign-in…
+    </p>
+  ),
 })
 
 export const IS_DETERMINISTIC_BROWSER = process.env.NEXT_PUBLIC_DETERMINISTIC_BROWSER === 'true'

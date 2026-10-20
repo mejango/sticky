@@ -105,14 +105,17 @@ export function SignedInWallet({
   account,
   viewing,
   connected,
+  openOnLoad = false,
 }: {
   account: Address
   viewing: Address | null
   connected: boolean
+  /** Whether the button was pressed while this loaded. */
+  openOnLoad?: boolean
 }) {
   const { address, isCenterWallet, disconnect } = useWallet()
   const { clearViewAs } = useViewAs()
-  const [menuOpen, setMenuOpen] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(openOnLoad)
   const [viewAsOpen, setViewAsOpen] = useState(false)
   const wrapperRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
