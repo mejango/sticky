@@ -5,6 +5,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { encodeErrorResult, getAddress, isAddress, zeroAddress, type Hex } from 'viem'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { WRITE_HOLD_REVERTED_LINE } from '@bananapus/nana-sdk-core/review'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import type { StickyPosition } from '@/lib/sticky-holders'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
@@ -747,6 +748,24 @@ describe('the review', () => {
     await click(confirmButton())
     expect(mocks.tx.send).toHaveBeenCalledTimes(2)
     expect(mocks.tx.send.mock.calls[1][0].args[4]).toBe(9_800_000_000_000_000_000n)
+  })
+
+  it('says a mined stick reverted, and Review again quotes it afresh', async () => {
+    mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 5n * CPN })
+    await render()
+    await review()
+    await click(confirmButton())
+    mocks.tx.phase = 'error'
+    mocks.tx.busy = false
+    mocks.tx.error = WRITE_HOLD_REVERTED_LINE
+    await rerender()
+    expect(dialog()!.textContent).toContain('The stick reverted.')
+    expect(confirmButton()!.textContent).toBe('Review again')
+    const quotes = mocks.quote.mock.calls.length
+    await click(confirmButton())
+    await settled()
+    expect(mocks.quote).toHaveBeenCalledTimes(quotes + 1)
+    expect(mocks.tx.send).toHaveBeenCalledTimes(1)
   })
 
   it('names a known revert that a fresh quote does not fix, and keeps Retry', async () => {

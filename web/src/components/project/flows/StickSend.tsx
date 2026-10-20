@@ -1,5 +1,6 @@
 'use client'
 
+import { WRITE_HOLD_REVERTED_LINE } from '@bananapus/nana-sdk-core/review'
 import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { formatUnits, isAddressEqual, type Address } from 'viem'
@@ -179,8 +180,10 @@ export function StickSend({
   useEffect(() => () => reading.current?.abort(), [])
 
   if (!plan && !preparing) return null
-  // A stick that would now mint less than its quote is quoted again, never sent with a looser minimum.
-  const requote = tx.phase === 'error' && !!failure?.requote
+  // A stick that would now mint less than its quote is quoted again, never sent with a looser minimum. A mined revert's
+  // cause is not knowable from its receipt: it is quoted and simulated again, and that simulation says why.
+  const reverted = tx.phase === 'error' && tx.error === WRITE_HOLD_REVERTED_LINE
+  const requote = reverted || (tx.phase === 'error' && !!failure?.requote)
   return (
     <TxConfirmDialog
       open
@@ -210,7 +213,7 @@ export function StickSend({
           (sendingStatus(tx) ?? undefined)
         )
       }
-      error={tx.phase === 'error' && failure ? failure.message : tx.error}
+      error={reverted ? 'The stick reverted.' : tx.phase === 'error' && failure ? failure.message : tx.error}
     />
   )
 }
