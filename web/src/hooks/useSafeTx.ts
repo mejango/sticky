@@ -179,9 +179,10 @@ export function useSafeTx(chainId: number) {
   // already known (and the write it replaces) as left behind, at once rather than on the next render.
   const closed = useRef(false)
   const leftBehind = useRef(new Set<string>())
+  // The settlement the hold's view shows, as of its last render.
+  const viewSettled = useRef<string | null>(null)
   const leaveBehind = () => {
-    const known = [latest.current.settled, waiting.current]
-    for (const each of known) if (each && 'hash' in each && each.hash) leftBehind.current.add(each.hash.toLowerCase())
+    for (const hash of [viewSettled.current, waiting.current?.hash]) if (hash) leftBehind.current.add(hash.toLowerCase())
   }
   const publicClient = usePublicClient({ chainId })
   const options = useRef<TxSendOptions | null>(null)
@@ -247,6 +248,7 @@ export function useSafeTx(chainId: number) {
   })
   const latest = useRef(write)
   latest.current = write
+  viewSettled.current = write.settled && 'hash' in write.settled ? write.settled.hash : null
 
   // A direct write's receipt is handed to its hold, which verifies it and settles at once.
   // The transaction a direct write is followed by: the wallet's reply, or the one its hold already tracks.
