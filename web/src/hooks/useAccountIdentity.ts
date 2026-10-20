@@ -2,6 +2,7 @@
 
 import type { Address } from 'viem'
 import { useEnsName } from 'wagmi'
+import { shortAddress } from '@/lib/sticky-format'
 import { IS_DETERMINISTIC_BROWSER } from '@/providers/Providers'
 
 /** ENS identities always resolve on Ethereum, independent of the selected project chain. */
@@ -17,6 +18,6 @@ export function useAccountIdentity(address?: Address) {
   })
   return {
     name,
-    label: name || (address ? `${address.slice(0, 6)}…${address.slice(-4)}` : ''),
+    label: name || (address ? shortAddress(address) : ''),
   }
 }
