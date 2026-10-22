@@ -85,12 +85,6 @@ export type TxSendOptions = {
     released?: () => unknown | Promise<unknown>
   }
   /**
-   * The exact request was already rendered in a parent confirmation surface.
-   * This skips only the second app-owned review; account checks, revalidation,
-   * simulation, duplicate protection, and the wallet confirmation still run.
-   */
-  reviewedInParent?: boolean
-  /**
    * Simulate against a confirmed prerequisite block instead of a load
    * balancer's potentially lagging `latest` view. This is required when the
    * reviewed write immediately follows an ERC-20 or Permit2 approval.
@@ -307,8 +301,6 @@ export function useSafeTx(chainId: number) {
           request,
           expectedAccount: account,
           review: async reviewed => {
-            // A review notice always opens the review, even where the caller already rendered the payload.
-            if (sendOptions.reviewedInParent && !sendOptions.reviewNotice && !holds.reviewLine()) return
             const description = [sendOptions.reviewNotice, holds.reviewLine(), viaSafe ? SAFE_NONCE_GUIDANCE : null].filter(Boolean).join('\n\n')
             const approved = await requestContractTransactionReview(
               // A Safe app signs the sent gas as safeTxGas; 0 makes a failed call revert.

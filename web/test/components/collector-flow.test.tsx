@@ -60,7 +60,12 @@ beforeEach(() => {
   host = document.createElement('div'); document.body.append(host); root = createRoot(host)
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 })
-afterEach(async () => { await act(async () => root.unmount()); host.remove(); client.clear() })
+afterEach(async () => {
+  try {
+    // Every write and step opens the SDK's decoded review: no send may skip it.
+    for (const [, options] of (mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls) expect(options).not.toHaveProperty('reviewedInParent')
+  } finally { await act(async () => root.unmount()); host.remove(); client.clear() }
+})
 async function render(source = SOURCE, info = INFO) {
   await act(async () => root.render(<QueryClientProvider client={client}><WalletAuthContext.Provider value={{ requestSignIn: vi.fn() }}><CollectorFlow source={source} info={info} onSettled={onSettled} /></WalletAuthContext.Provider></QueryClientProvider>))
 }

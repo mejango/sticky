@@ -1,3 +1,20 @@
+# Bridge and Collector writes open the SDK's decoded review (2026-10-22)
+
+Survey H1: BridgeFlow and CollectorFlow passed `reviewedInParent`, so useSafeTx skipped the SDK's decoded review; the user confirmed only app-built rows (no function, no args, no amount on flush/claim) on cross-chain fund moves.
+
+- [x] 1. Failing tests first: useSafeTx opens the decoded review even for a caller that asks to skip it; every Bridge/Collector send in the flow suites carries no skip.
+- [x] 2. Remove `reviewedInParent` from TxSendOptions, its early return in useSafeTx and both flow call sites. The TxConfirmDialog rows stay as the multi-step summary, as jbm's MoveFlow does (summary dialog, then the SDK review per step).
+- [x] 3. Render test: the SDK review decodes prepare, toRemote, claim, collector send and settle (function, args, native value, destination, chain).
+- [x] 4. Full `npm run check` gates green (audit:prod retried after a registry 503; sticky-rewards 5 s timeouts under load average 40 also fail on origin/main and pass alone), two Codex passes (Low fixed, then Approve), PR, no merge.
+
+## Plan refinement
+- **Objective:** Every Bridge and Collector write and step shows the SDK's decoded review and its calldata-unchanged check, as every other Sticky write does; no SDK bump, no other behavior change.
+- **System fit:** Outcome (user signs what they read) -> capability (SDK requestContractTransactionReview, already wired in useSafeTx) -> evidence (decoded calldata of the exact request) -> prepared action (the flows' existing requests and reverify) -> authority (held send, wallet) -> verified result (journal recovery, unchanged). Only the review step changes; journals, holds and reverify are untouched.
+- **Reuse and simplicity:** Deletion only: the bypass flag and its branch go; the shared review path already exists. No new gate script: removing the option makes tsc reject it, and the flow suites assert it.
+- **Evidence and unknowns:** useSafeTx.ts:311, BridgeFlow.tsx:239, CollectorFlow.tsx:129 at cefbe01; SDK 3.4.1 submitReviewedContractWrite and requestContractTransactionReview (data-changed check) read from node_modules; jbm MoveFlow sends each step without the flag.
+- **Verification:** New/changed vitest cases fail on cefbe01 and pass after; full `npm run check` in web/.
+- **Resource budget:** One worktree, three source edits, focused tests then one full gate run; replan if the SDK review cannot decode a step.
+
 # Stick failure reason and re-quote (2026-10-20)
 
 Ruling (jango): if a payment fails, we should know the reason and let the user adjust. A stick pays Sticky's terminal with no buyback, so its minimum stays the exact quote; a shortfall offers a fresh quote instead of a looser minimum.

@@ -126,7 +126,7 @@ export function CollectorFlow({ source, info, onSettled }: {
       // useSafeTx can adopt an existing Safe proposal without invoking beforeWrite.
       if (source.bridgeRoute) saveWatchedBridgeRoute(info.chainId, info.stToken, groupId, source.bridgeRoute)
       await tx.send(current.delivery.request, {
-        reviewedAccount: current.owner, reviewedInParent: true,
+        reviewedAccount: current.owner,
         reverify: async () => { assertCurrent(current.identity); await delivery.reverify(current.delivery, current.owner); assertCurrent(current.identity) },
         durableRecovery: {
           reserve: async () => {

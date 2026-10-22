@@ -236,7 +236,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
       let reserved = false
       const undo = () => endPendingBridgeAttempt(current.owner, held.id)
       await tx.send(current.request, {
-        reviewedAccount: current.owner, reviewedInParent: true, simulationBlockNumber: current.confirmedAt,
+        reviewedAccount: current.owner, simulationBlockNumber: current.confirmedAt,
         reverify: () => verifyReview(current),
         durableRecovery: {
           reserve: async () => {

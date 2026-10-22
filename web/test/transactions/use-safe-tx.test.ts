@@ -82,7 +82,7 @@ vi.mock('@/lib/safe-connector', async importOriginal => ({
   findPendingSafeAppProposal: async () => null,
 }))
 
-import { useSafeTx } from '@/hooks/useSafeTx'
+import { useSafeTx, type TxSendOptions } from '@/hooks/useSafeTx'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 
 type TxRequestOf = object
@@ -403,14 +403,18 @@ describe('useSafeTx', () => {
     )
   })
 
-  it('skips only the duplicate app review when the parent already showed the exact call', async () => {
+  it('opens the decoded review for every write, even one a parent panel summarized', async () => {
     const hook = await renderHook()
 
     await act(async () => {
-      await hook.ref.current!.send(request, { ...reviewedByAlice, reviewedInParent: true })
+      // A caller cannot skip the SDK's decoded review: no option names that skip.
+      await hook.ref.current!.send(request, { ...reviewedByAlice, reviewedInParent: true } as TxSendOptions)
     })
 
-    expect(mocks.requestReview).not.toHaveBeenCalled()
+    expect(mocks.requestReview).toHaveBeenCalledWith(
+      expect.objectContaining({ address: BOB, functionName: request.functionName, args: request.args, account: ALICE }),
+      expect.anything(),
+    )
     expect(mocks.switchChain).toHaveBeenCalledWith({ chainId: 10 })
     expect(mocks.publicClient.simulateContract).toHaveBeenCalledWith(
       expect.objectContaining({ address: BOB, account: ALICE }),
@@ -454,7 +458,6 @@ describe('useSafeTx', () => {
 
   it.each([
     ['its own review', {}],
-    ['a review its parent showed', { reviewedInParent: true }],
   ])(
     'refuses, before %s opens, a request reviewed for another account',
     async (_, options) => {
@@ -1260,10 +1263,10 @@ describe('useSafeTx', () => {
       expect(hook.ref.current).toMatchObject({ phase: 'pending', holdNotice: WRITE_HOLD_IN_TAB_LINE })
     })
 
-    it('still opens the review line in a parent review when holds last only in this tab', async () => {
+    it('opens the review line when holds last only in this tab', async () => {
       vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Storage unavailable') })
       const hook = await renderHook()
-      await act(async () => { await hook.ref.current!.send(request, { ...reviewedByAlice, reviewedInParent: true }) })
+      await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
       expect(mocks.requestReview).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ description: expect.stringContaining(WRITE_HOLD_IN_TAB_LINE) }))
     })
 
