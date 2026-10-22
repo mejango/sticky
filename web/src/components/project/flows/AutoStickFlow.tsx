@@ -8,12 +8,13 @@ import { Refusal, refusalOf } from '@/components/project/flows/refusal'
 import { reviewGate } from '@/components/project/flows/review-gate'
 import { FIELD_INPUT, FIELD_LABEL } from '@/components/project/StakeAgeFields'
 import { ModalShell } from '@/components/ui/ModalShell'
-import { TxConfirmDialog, type TxConfirmRow } from '@/components/ui/TxConfirmDialog'
+import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
 import { useStepPresses } from '@/hooks/useStepPresses'
 import { useWallet } from '@/hooks/useWallet'
+import type { TransactionReviewRow } from '@/lib/transaction-review'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import { parseAmount } from '@/lib/sticky-amount'
 import {
@@ -82,7 +83,7 @@ type Plan = {
   steps: readonly TxRequest[]
   from: Consent
   needs: bigint | null
-  rows: TxConfirmRow[]
+  rows: TransactionReviewRow[]
   title: string
   doneTitle: string
 }
@@ -235,23 +236,6 @@ function consentAfter(from: Consent, steps: readonly TxRequest[]): Consent {
   )
 }
 
-/** What the button that sends a step says: approvals and trust that a teardown takes back say so. */
-function actionOf(step: TxRequest | undefined, action: Action): string {
-  const takesBack = action === 'off' || action === 'cleanup'
-  switch (step?.functionName) {
-    case 'setConfigFor':
-      return step.args[1] === false ? 'Confirm & turn off' : action === 'settings' ? 'Confirm & save' : 'Confirm & turn on'
-    case 'approve':
-      return takesBack ? 'Confirm & remove allowance' : 'Confirm & approve'
-    case 'setTrustedSenderFor':
-      return step.args[2] === false ? 'Confirm & remove permission' : 'Confirm & trust'
-    case 'beginVestingFor':
-      return 'Confirm & start unlocking'
-    default:
-      return 'Confirm & stick'
-  }
-}
-
 /** A choice among a few, each a button that says whether it is the one chosen. `name` marks the group. */
 function Choices<T>({
   name,
@@ -373,7 +357,10 @@ export function AutoStickFlow({
       const next = await planAutoStick(action, { info, groups, account, form, signal })
       if (signal.aborted) return
       if (next === 'renew') openForm('enable')
-      else setPlan(next)
+      else {
+        setPlan(next)
+        presses.arm()
+      }
     } catch (reason) {
       if (signal.aborted) return
       const told = refusalOf(reason)
@@ -415,19 +402,32 @@ export function AutoStickFlow({
   async function confirm() {
     if (!plan || sending) return
     // Every step is sent as the account that reviewed the change, and the engine refuses it while another is connected.
-    await presses.press(plan.steps, (step, confirmedAt) =>
-      tx.send(step, {
-        reviewedAccount: plan.account,
-        simulationBlockNumber: confirmedAt,
-        reverify: () => verify(plan, step, confirmedAt),
-      }),
+    const outcome = await presses.press(
+      plan.steps,
+      (step, confirmedAt, reviewed) =>
+        tx.send(step, {
+          reviewedAccount: plan.account,
+          reviewed,
+          simulationBlockNumber: confirmedAt,
+          reverify: () => verify(plan, step, confirmedAt),
+        }),
+      { account: plan.account, title: plan.title, rows: plan.rows },
     )
+    if (outcome === 'cancelled') closeReview()
   }
+
+  // The change's one decoded review opens once it is planned, and each step it showed is sent as the one before confirms.
+  useEffect(() => {
+    if (presses.due && plan && !sending) void confirm()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presses.due, plan, sending])
 
   /** Closes the review, and the form with it once the change is done. A review closed after a step went through reads
    * auto-stick again, so the card says where it stands. */
   function closeReview() {
     reading.current?.abort()
+    // Closed at once: a step already due for this action is not sent.
+    presses.restart()
     if (plan && !complete && landed > 0) refreshAfterAutoStick(client, chainId, projectId, plan.account)
     if (complete) setForm(null)
     setPlan(null)
@@ -480,7 +480,7 @@ export function AutoStickFlow({
         steps={plan ? plan.steps.map((step, at) => ({ key: String(at), title: step.label ?? step.functionName })) : []}
         activeIndex={plan ? landed : -1}
         stepsIntro={plan ? stepsIntro(plan.steps.length, landed) : undefined}
-        action={confirmAction(tx.phase, tx.phase === 'error' ? 'Retry' : plan ? actionOf(plan.steps[landed], plan.action) : 'Confirm')}
+        action={confirmAction(tx.phase, tx.phase === 'error' ? 'Retry' : 'Review again')}
         cancelLabel={landed > 0 ? 'Close' : 'Cancel'}
         onConfirm={() => void confirm()}
         busy={sending}

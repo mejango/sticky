@@ -25,6 +25,8 @@ const mocks = vi.hoisted(() => ({
   publicClient: { getBlockNumber: vi.fn(async () => 100n), getTransactionCount: vi.fn(async () => 7), simulateContract: vi.fn(), estimateContractGas: vi.fn(), getChainId: vi.fn(), getTransaction: vi.fn(), getTransactionReceipt: vi.fn(), getBlock: vi.fn() },
   getAccount: vi.fn(),
   requestReview: vi.fn(),
+  /** An action's one decoded review of every step. */
+  requireReview: vi.fn(),
   writeContract: vi.fn(),
   receipts: {} as Record<string, TransactionReceipt>,
   transactions: {} as Record<string, unknown>,
@@ -43,6 +45,7 @@ vi.mock('@/hooks/useWallet', () => ({ useWallet: () => ({ isConnected: true, add
 vi.mock('@/lib/transaction-review', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/transaction-review')>()),
   requestContractTransactionReview: mocks.requestReview,
+  requireTransactionReview: mocks.requireReview,
 }))
 vi.mock('@/providers/Providers', () => ({ wagmiConfig: {} }))
 vi.mock('@/lib/safe-connector', async importOriginal => ({
@@ -85,7 +88,8 @@ beforeEach(() => {
   notifyManager.setScheduler(callback => queueMicrotask(callback))
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   mocks.getAccount.mockImplementation(() => ({ address: ALICE, chainId: CHAIN }))
-  mocks.requestReview.mockResolvedValue(true)
+  mocks.requestReview.mockReset().mockResolvedValue(true)
+  mocks.requireReview.mockReset().mockResolvedValue(undefined)
   mocks.publicClient.simulateContract.mockImplementation(async (request: object) => ({ request: { ...request } }))
   mocks.publicClient.estimateContractGas.mockResolvedValue(50_000n)
   mocks.publicClient.getChainId.mockResolvedValue(CHAIN)
@@ -167,34 +171,28 @@ async function mined(hash: Hex, block: bigint, functionName: string, render: () 
 }
 
 describe('the normal path adds no click, notice or wait', () => {
-  it('a stick (pay): approve, then stick, two confirms and only the waiting line and the transaction link', async () => {
+  it('a stick (pay): approve, then stick, one review of both and only the waiting line and the transaction link', async () => {
     const tree = () => root.render(<QueryClientProvider client={client}><StickFlow chainId={CHAIN} projectId={PROJECT} /></QueryClientProvider>)
     mocks.writeContract.mockResolvedValueOnce(APPROVAL).mockResolvedValueOnce(STICK)
     await act(async () => tree())
     await until(() => host.querySelector('input'), 'the Stick card')
     await type('Amount of underlying tokens to stick', '5')
     await until(() => button('Stick') && !button('Stick').disabled, 'the Stick button')
+    // Stick is the only click: its one review shows both steps, and each is sent as the one before confirms.
     await click(button('Stick'))
-    await until(() => confirmButton() && !confirmButton()!.disabled, 'the review')
-    const seen: string[][] = [notices()]
-
-    await click(confirmButton()!)
     await until(() => mocks.writeContract.mock.calls.length === 1 && confirmButton()?.textContent === 'Confirming…', 'the approval to be sent')
-    seen.push(notices())
+    const seen: string[][] = [notices()]
     await mined(APPROVAL, 4_001n, 'approve', tree)
-    await until(() => confirmButton()?.textContent === 'Confirm & stick', 'the approval to be counted')
-    seen.push(notices())
-
-    await click(confirmButton()!)
     await until(() => mocks.writeContract.mock.calls.length === 2 && confirmButton()?.textContent === 'Confirming…', 'the stick to be sent')
     seen.push(notices())
     await mined(STICK, 4_005n, 'pay', tree)
     await until(() => title() === 'Stick confirmed', 'the stick to be counted')
     seen.push(notices())
 
-    expect(clicks).toBe(3)
-    expect(mocks.requestReview).toHaveBeenCalledTimes(2)
-    expect(seen).toEqual([[], ['Waiting for confirmation…'], ['View transaction ↗'], ['Waiting for confirmation…'], ['View transaction ↗']])
+    expect(clicks).toBe(1)
+    expect(mocks.requireReview).toHaveBeenCalledOnce()
+    expect(mocks.requestReview).not.toHaveBeenCalled()
+    expect(seen).toEqual([['Waiting for confirmation…'], ['Waiting for confirmation…'], ['View transaction ↗']])
   })
 
   it('an unstick (cash-out): one confirm and only the waiting line and the transaction link', async () => {

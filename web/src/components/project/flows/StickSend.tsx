@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { formatUnits, isAddressEqual, type Address } from 'viem'
 import { told } from '@/components/project/flows/refusal'
-import { TxConfirmDialog, type TxConfirmRow } from '@/components/ui/TxConfirmDialog'
+import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { useSafeTx } from '@/hooks/useSafeTx'
 import { useStepPresses } from '@/hooks/useStepPresses'
@@ -16,6 +16,7 @@ import { withApprovalParent } from '@/lib/sticky-hold-intent'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { assertCanStickFor, quoteStick } from '@/lib/sticky-quotes'
 import { refreshAfterStick } from '@/lib/sticky-refresh'
+import type { TransactionReviewRow } from '@/lib/transaction-review'
 import { stickFailure, type StickFailure } from '@/lib/sticky-stick-failure'
 import { chainName } from '@/lib/urn'
 import { EXTERNAL_WALLET_REQUIRED } from '@/providers/WalletAuthContext'
@@ -43,7 +44,7 @@ type Plan = Omit<StickRequest, 'id'> & { minted: bigint; steps: readonly TxReque
  *
  * The review is a dialog that opens at once and reads the balance, the allowance and the price again, and, for someone
  * else, whether they trust the sender. It then lists what it will send, an approval reset if the allowance needs one,
- * the approval, and the stick, and sends one on each confirmation through the transaction engine. The steps are planned
+ * the approval, and the stick, all in one decoded review, then sends each as the one before confirms. The steps are planned
  * from what the chain says when the review opens, so an approval that landed before the page was reloaded is found and
  * not sent again. The stick carries the quote the review read as the minimum the chain must keep to.
  */
@@ -118,6 +119,7 @@ export function StickSend({
         ], account)
         if (signal.aborted) return
         setPlan({ info, terminal, account, beneficiary, amount: value, minted, steps })
+        latest.current.presses.arm()
       } catch (reason) {
         if (!signal.aborted) {
           const message = asSentence(told(REVIEW_UNREADABLE, { chainId, projectId }, reason).message)
@@ -144,19 +146,32 @@ export function StickSend({
     // The plan is the reviewing account's: its balance, its allowance, its trust check and its quote. Every step is sent
     // as that account, and the engine refuses it, before a review opens, while another is connected.
     setFailure(null)
-    await presses.press(plan.steps, (step, confirmedAt) =>
-      tx.send(step, {
-        reviewedAccount: plan.account,
-        simulationBlockNumber: confirmedAt,
-        reverify: () => verify(plan),
-        // Only the stick itself reads as a stick failure; an approval that fails keeps the engine's line and Retry.
-        onFailure: error => setFailure(step === plan.steps[plan.steps.length - 1] ? stickFailure(error, plan.info.stSymbol) : null),
-      }),
+    const outcome = await presses.press(
+      plan.steps,
+      (step, confirmedAt, reviewed) =>
+        tx.send(step, {
+          reviewedAccount: plan.account,
+          reviewed,
+          simulationBlockNumber: confirmedAt,
+          reverify: () => verify(plan),
+          // Only the stick itself reads as a stick failure; an approval that fails keeps the engine's line and Retry.
+          onFailure: error => setFailure(step === plan.steps[plan.steps.length - 1] ? stickFailure(error, plan.info.stSymbol) : null),
+        }),
+      { account: plan.account, title: forSomeoneElse ? 'Stick for someone else' : 'Stick', rows: rowsOf(plan, forSomeoneElse, chainId) },
     )
+    if (outcome === 'cancelled') close()
   }
+
+  // The stick's one decoded review opens once it is planned, and each step it showed is sent as the one before confirms.
+  useEffect(() => {
+    if (presses.due && plan && !sending) void confirm()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presses.due, plan, sending])
 
   function close() {
     reading.current?.abort()
+    // Closed at once: a step already due for this action is not sent.
+    presses.restart()
     setPlan(null)
     setPreparing(false)
     if (tx.phase !== 'success') tx.dismiss()
@@ -194,10 +209,7 @@ export function StickSend({
       steps={plan ? plan.steps.map((step, at) => ({ key: String(at), title: step.label ?? step.functionName })) : []}
       activeIndex={plan ? landed : -1}
       stepsIntro={plan ? stepsIntro(plan.steps.length, landed) : undefined}
-      action={confirmAction(
-        tx.phase,
-        requote ? 'Review again' : tx.phase === 'error' ? 'Retry' : plan && landed === plan.steps.length - 1 ? 'Confirm & stick' : 'Confirm & approve',
-      )}
+      action={confirmAction(tx.phase, tx.phase === 'error' && !requote ? 'Retry' : 'Review again')}
       // Once a step has gone through, closing undoes nothing: what went through stays, and the next review finds it.
       cancelLabel={landed > 0 ? 'Close' : 'Cancel'}
       onConfirm={() => (requote ? onReviewAgain() : void confirm())}
@@ -219,7 +231,7 @@ export function StickSend({
 }
 
 /** The review's rows: every figure exact, with all its digits. */
-function rowsOf({ info, beneficiary, amount, minted }: Plan, forSomeoneElse: boolean, chainId: number): TxConfirmRow[] {
+function rowsOf({ info, beneficiary, amount, minted }: Plan, forSomeoneElse: boolean, chainId: number): TransactionReviewRow[] {
   return [
     { label: 'Stick', value: `${formatUnits(amount, info.decimals)} ${info.symbol}`, strong: true },
     ...(forSomeoneElse ? [{ label: 'For', value: beneficiary, mono: true }] : []),

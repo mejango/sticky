@@ -7,6 +7,7 @@ import { erc20Abi, getAddress, type Abi, type Address, type Hex } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stickyAutoStickAbi, stickyDistributorAbi, stickyHookAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
+import { TransactionReviewCancelledError } from '@/lib/transaction-review'
 import type { RewardCard } from '@/lib/sticky-rewards'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 import { EXTERNAL_WALLET_REQUIRED, WalletAuthContext } from '@/providers/WalletAuthContext'
@@ -56,6 +57,7 @@ type EngineState = {
   safeProposalHash: null
   safeNonceGuidance: null
   send: ReturnType<typeof vi.fn>
+  review: ReturnType<typeof vi.fn>
   reset: ReturnType<typeof vi.fn<() => void>>
   dismiss: ReturnType<typeof vi.fn>
 }
@@ -111,6 +113,8 @@ const engine = (): EngineState => {
       state.receipt = null
       return HASH
     }),
+    // The claim's one decoded review: what it returns is the proof each step is sent with.
+    review: vi.fn(async () => ({})),
     dismiss: vi.fn(() => state.reset()),
     reset: vi.fn(() => {
       state.phase = 'idle'
@@ -208,7 +212,6 @@ const press = async (within: ParentNode | null, name: string) => {
 const errorText = () => host.querySelector('p.wrap-anywhere')?.textContent ?? null
 const steps = () =>
   [...(confirm()?.querySelectorAll('ol li') ?? [])].map(item => item.textContent!.replace(/^(?:\d+|✓)Step \d+ of \d+: /, ''))
-const primary = () => confirm()!.querySelector<HTMLButtonElement>('footer button.btn-primary')!
 const rowsOf = () =>
   Object.fromEntries(
     [...confirm()!.querySelectorAll('.grid > span')].reduce<string[][]>((pairs, cell, at) => {
@@ -218,7 +221,7 @@ const rowsOf = () =>
     }, []),
   )
 type Sent = { chainId: number; address: Address; abi: Abi; functionName: string; args: readonly unknown[] }
-const sent = (at: number) => mocks.tx.send.mock.calls[at] as [Sent, { reviewedAccount: Address; simulationBlockNumber?: bigint; reverify?: () => Promise<unknown> }]
+const sent = (at: number) => mocks.tx.send.mock.calls[at] as [Sent, { reviewedAccount: Address; simulationBlockNumber?: bigint; reviewed?: unknown; reverify?: () => Promise<unknown> }]
 async function confirmed(block: bigint) {
   mocks.tx.phase = 'success'
   mocks.tx.busy = false
@@ -262,7 +265,6 @@ describe('collecting', () => {
     expect(account).toBe(ALICE)
     expect(tried).toMatchObject({ address: DISTRIBUTOR, functionName: 'collectVestedRewards' })
 
-    await press(confirm(), 'Confirm & collect')
     const [request, options] = sent(0)
     expect(request).toMatchObject({
       chainId: CHAIN,
@@ -273,6 +275,7 @@ describe('collecting', () => {
     expect(request).toBe(tried)
     expect(options.reviewedAccount).toBe(ALICE)
     expect(mocks.tx.send).toHaveBeenCalledOnce()
+    expect(mocks.tx.review).toHaveBeenCalledExactlyOnceWith([tried], expect.objectContaining({ account: ALICE, title: 'Claim USDC rewards' }))
   })
 
   it('wallet-action:collect-rewards-or-start-vesting starts vesting with the same call when nothing has unlocked, after asking whether finished rounds earned any', async () => {
@@ -282,7 +285,6 @@ describe('collecting', () => {
     expect(mocks.vest).toHaveBeenCalledWith(CHAIN, INFO.stToken, ALICE, ART.toLowerCase(), 0n, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(steps()).toEqual(['Start unlocking eligible rewards'])
     expect(rowsOf().Ready).toBe('0 ART')
-    await press(confirm(), 'Confirm & start vesting')
     expect(sent(0)[0]).toMatchObject({ functionName: 'collectVestedRewards', args: [INFO.stToken, 0n, [BigInt(ALICE)], [ART.toLowerCase()], ALICE] })
   })
 
@@ -305,7 +307,6 @@ describe('collecting', () => {
       Who: 'Staked 4–8 weeks',
       Forfeit: 'Stake-age rewards pay only stake you still hold. Unstick before claiming and they stay in the pot.',
     })
-    await press(confirm(), 'Confirm & collect')
     expect(sent(0)[0].args[1]).toBe(4008n)
   })
 
@@ -321,7 +322,6 @@ describe('collecting', () => {
     const invalidate = vi.spyOn(client, 'invalidateQueries')
     await render()
     await press(host, 'Collect only')
-    await press(confirm(), 'Confirm & collect')
     await confirmed(10n)
     expect(confirm()!.textContent).toContain('Rewards collected')
     expect(confirm()!.querySelector('a')?.getAttribute('href')).toBe(`https://sepolia.basescan.org/tx/${HASH}`)
@@ -340,7 +340,6 @@ describe('a review whose pot changes under it', () => {
     chain.collectable = 0n
     await render({ card: pot({ position: { ...nothing, earned: 5n } }) })
     await press(host, 'Start vesting')
-    await press(confirm(), 'Confirm & start vesting')
     // The pot is read again: what was earned is vesting now, and the pot offers nothing.
     shown = { ...shown, card: pot({ position: { ...nothing, vesting: 5n, nextUnlockAt: 1n } }) }
     await confirmed(10n)
@@ -362,10 +361,15 @@ describe('a review whose pot changes under it', () => {
     )
     await settled()
     expect(reviewing).toHaveBeenLastCalledWith(false)
+    let cancel = () => {}
+    mocks.tx.review.mockImplementationOnce(() => new Promise((_, reject) => (cancel = () => reject(new TransactionReviewCancelledError()))))
     await press(host, 'Collect only')
     expect(reviewing).toHaveBeenLastCalledWith(true)
-    await press(confirm(), 'Cancel')
+    // Closing the decoded review closes the claim: nothing is sent.
+    await act(async () => cancel())
+    await settled()
     expect(reviewing).toHaveBeenLastCalledWith(false)
+    expect(mocks.tx.send).not.toHaveBeenCalled()
   })
 })
 
@@ -390,20 +394,25 @@ describe('claiming and sticking', () => {
       'Allow the auto-stick contract to stick ART for you',
       'Claim & stick',
     ])
-    expect(primary().textContent).toBe('Confirm & approve')
-
-    await press(confirm(), 'Confirm & approve')
+    // One decoded review shows all three steps, and each is then sent as the one before confirms.
+    expect(mocks.tx.review).toHaveBeenCalledExactlyOnceWith(
+      [
+        expect.objectContaining({ functionName: 'approve' }),
+        expect.objectContaining({ functionName: 'setTrustedSenderFor' }),
+        expect.objectContaining({ functionName: 'stickRewardsFor' }),
+      ],
+      { account: ALICE, title: 'Claim & stick ART rewards', rows: expect.arrayContaining([{ label: 'Claim', value: '0.7 ART', strong: true }]) },
+    )
+    const proof = await mocks.tx.review.mock.results[0].value
     expect(sent(0)[0]).toMatchObject({ address: ART, functionName: 'approve', args: [ADAPTER, 700_000n] })
+    expect(sent(0)[1].reviewed).toBe(proof)
     await confirmed(10n)
-    expect(primary().textContent).toBe('Confirm & trust')
-    await press(confirm(), 'Confirm & trust')
     expect(sent(1)[0]).toMatchObject({ address: HOOK, functionName: 'setTrustedSenderFor', args: [12n, ADAPTER, true] })
     expect(sent(1)[1].simulationBlockNumber).toBe(10n)
     await confirmed(11n)
-    expect(primary().textContent).toBe('Confirm & stick')
-    await press(confirm(), 'Confirm & stick')
     expect(sent(2)[0]).toMatchObject({ address: ADAPTER, abi: stickyAutoStickAbi, functionName: 'stickRewardsFor', args: [12n, [0n, 4000n]] })
-    expect(sent(2)[1]).toMatchObject({ reviewedAccount: ALICE, simulationBlockNumber: 11n })
+    expect(sent(2)[1]).toMatchObject({ reviewedAccount: ALICE, simulationBlockNumber: 11n, reviewed: proof })
+    expect(mocks.tx.review).toHaveBeenCalledOnce()
   })
 
   it('wallet-action:claim-and-stick-rewards auto-stick status, compounding, and vesting pass the groups holding underlying rewards', async () => {
@@ -414,7 +423,6 @@ describe('claiming and sticking', () => {
     expect(mocks.groups.mock.calls[0][3]).toEqual([0n, 4000n, 4008n])
     expect(steps()).toEqual(['Claim & stick'])
     expect(rowsOf().Claim).toBe('0.0005 ART')
-    await press(confirm(), 'Confirm & stick')
     expect(sent(0)[0].args).toEqual([12n, [4000n, 4008n]])
   })
 
@@ -426,6 +434,7 @@ describe('claiming and sticking', () => {
 
     await act(async () => root.unmount())
     root = createRoot(host)
+    mocks.tx = engine()
     mocks.quote.mockClear()
     chain.trusted = false
     await render()
@@ -485,7 +494,6 @@ describe('claiming and sticking', () => {
   it('reads the claim again before each step, and stops one whose rewards changed', async () => {
     await render()
     await press(host, 'Claim & stick')
-    await press(confirm(), 'Confirm & approve')
     const { reverify } = sent(0)[1]
     mocks.groups.mockClear()
     await expect(reverify!()).resolves.toBeUndefined()
@@ -505,7 +513,6 @@ describe('claiming and sticking', () => {
     chain.allowance = 10n ** 30n
     await render()
     await press(host, 'Claim & stick')
-    await press(confirm(), 'Confirm & stick')
     await confirmed(10n)
     expect(confirm()!.textContent).toContain('Rewards claimed and stuck')
     const keys = invalidate.mock.calls.map(([filters]) => filters!.queryKey as QueryKey)
@@ -550,10 +557,13 @@ describe('a wallet that cannot send', () => {
 
   it('names the account that reviewed the claim on every step, whichever account is connected by then', async () => {
     await render()
+    let approve = () => {}
+    mocks.tx.review.mockImplementationOnce(() => new Promise(resolve => (approve = () => resolve({}))))
     await press(host, 'Collect only')
     mocks.wallet = { ...mocks.wallet, address: CAROL }
     await render()
-    await press(confirm(), 'Confirm & collect')
+    await act(async () => approve())
+    await settled()
     expect(sent(0)[1].reviewedAccount).toBe(ALICE)
   })
 })

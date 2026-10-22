@@ -11,11 +11,12 @@ import { CopyAddress } from '@/components/ui/CopyAddress'
 import { DETAIL_LABEL, DETAIL_LIST, DETAIL_VALUE } from '@/components/ui/detail-list'
 import { Disclosure } from '@/components/ui/Disclosure'
 import { Skeleton } from '@/components/ui/Skeleton'
-import { TxConfirmDialog, type TxConfirmRow } from '@/components/ui/TxConfirmDialog'
+import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
 import { useStepPresses } from '@/hooks/useStepPresses'
+import type { TransactionReviewRow } from '@/lib/transaction-review'
 import { useWallet } from '@/hooks/useWallet'
 import { preflight } from '@/lib/preflight'
 import { FRESH_MS, warned } from '@/lib/query-reads'
@@ -46,7 +47,12 @@ type Plan = {
   /** The token a settle settles, in lowercase. */
   token: Address | null
   steps: readonly TxRequest[]
-  rows: TxConfirmRow[]
+  rows: TransactionReviewRow[]
+}
+
+/** What a reward address step is called, in its review and while it is sent. */
+function titleOf(kind: Plan['kind'] | undefined): string {
+  return kind === 'create' ? 'Create reward address' : 'Settle into airdrops'
 }
 
 /** What a reward address holds of `token`, for the panel, with the token's symbol and decimals; or, for an address that
@@ -225,7 +231,10 @@ export function ReceiverFlow({
         kind === 'create'
           ? await planCreate(info, group, account, signal)
           : await planSettle(info, group, tokenText, account, signal)
-      if (!signal.aborted) setPlan(next)
+      if (!signal.aborted) {
+        setPlan(next)
+        presses.arm()
+      }
     } catch (reason) {
       if (signal.aborted) return
       const told = refusalOf(reason)
@@ -239,11 +248,24 @@ export function ReceiverFlow({
   async function confirm() {
     if (!plan || sending) return
     // The step is sent as the account that reviewed it, and the engine refuses it while another is connected.
-    await presses.press(plan.steps, step => tx.send(step, { reviewedAccount: plan.account }))
+    const outcome = await presses.press(
+      plan.steps,
+      (step, _confirmedAt, reviewed) => tx.send(step, { reviewedAccount: plan.account, reviewed }),
+      { account: plan.account, title: titleOf(plan.kind), rows: plan.rows },
+    )
+    if (outcome === 'cancelled') close()
   }
+
+  // The step's one decoded review opens once it is planned.
+  useEffect(() => {
+    if (presses.due && plan && !sending) void confirm()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presses.due, plan, sending])
 
   function close() {
     reading.current?.abort()
+    // Closed at once: a step already due for this action is not sent.
+    presses.restart()
     setPlan(null)
     setPreparing(false)
     if (tx.phase !== 'success') tx.dismiss()
@@ -361,18 +383,13 @@ export function ReceiverFlow({
               ? plan!.kind === 'create'
                 ? 'Reward address created'
                 : 'Arrivals settled into rewards'
-              : plan?.kind === 'create'
-                ? 'Create reward address'
-                : 'Settle into airdrops'
+              : titleOf(plan?.kind)
           }
           rows={plan?.rows}
           steps={plan ? plan.steps.map((step, index) => ({ key: String(index), title: step.label ?? step.functionName })) : []}
           activeIndex={plan ? landed : -1}
           stepsIntro={plan ? stepsIntro(plan.steps.length, landed) : undefined}
-          action={confirmAction(
-            tx.phase,
-            tx.phase === 'error' ? 'Retry' : plan?.kind === 'create' ? 'Confirm & create' : 'Confirm & settle',
-          )}
+          action={confirmAction(tx.phase, tx.phase === 'error' ? 'Retry' : 'Review again')}
           cancelLabel={landed > 0 ? 'Close' : 'Cancel'}
           onConfirm={() => void confirm()}
           busy={sending}

@@ -1,3 +1,20 @@
+# Fund, Claim, Stick, AutoStick, Receiver: one decoded review per user action (2026-10-22)
+
+Follow-up to #70 (stacks on it). jango: one confirmation per user action; the SDK decoded review is it, with the summary rows inside; multi-step actions are reviewed once and sent without re-asking.
+
+- [x] 1. `useStepPresses`: `press(steps, send, review?)` opens one `tx.review` of the steps left, sends each with its proof, and makes the next step due once the one before confirms; `arm()` makes the first press due when a plan is ready. Cancel returns 'cancelled'; a send the engine did not take drops the proof, so Retry reviews the steps left again; a press while a step is out sends nothing.
+- [x] 2. Fund, Claim, Stick, AutoStick, Receiver: plan -> arm -> one review with rows -> sends from an effect; the summary dialog is progress only ("Review again" / "Retry"); cancelling the review closes the action.
+- [x] 3. Tests: exactly one review per flow (fund, claim, stick, stick on the real engine, autostick, receiver, happy path), cancel, retry re-review, stale press; COPIED.md updated.
+- [x] 4. Full `npm run check` green except test:ci timeouts in unstick-flow and sticky-rewards at load 40+ (130/130 alone; sticky-rewards fixed at the root in the companion PR); four Codex passes (1 High + 2 Medium, then 2 Medium, then 1 Medium, all fixed with tests; then Approve); PR stacked on #70, no merge.
+
+## Plan refinement
+- **Objective:** The five Airdrops/Stick flows have exactly one in-app confirmation per action, the SDK decoded review of every step with its summary rows. No SDK bump.
+- **System fit:** Same chain as #70: the flows' existing plans, reverify and simulation blocks are kept; only who triggers each send changes (an effect after confirmation instead of a press). Trust, Transfer and Unstick still confirm in the summary dialog, then in the per-call review; flagged as the next follow-up.
+- **Reuse and simplicity:** One hook change serves all five flows; #70's `review` + `rows` reused unchanged.
+- **Evidence and unknowns:** The real-engine stick test, run outside act() as a browser schedules it, shows the auto-sent step finds the engine's lock released.
+- **Verification:** Focused suites per flow, step-presses mutation check of the stale-press guard, full `npm run check`.
+- **Resource budget:** One worktree, one branch; replan if the engine's lock refuses auto-sent steps.
+
 # Bridge and Collector: one decoded review per user action (2026-10-22)
 
 Survey H1: BridgeFlow and CollectorFlow passed `reviewedInParent`, so useSafeTx skipped the SDK's decoded review; the user confirmed only app-built rows (no function, no args, no amount on flush/claim) on cross-chain fund moves. jango (2026-10-22): one confirmation per user action, and the SDK decoded review is that confirmation, with the summary rows inside it.
