@@ -11,7 +11,7 @@ import { holdIntent } from '@/lib/sticky-hold-intent'
 import { SavedWriteRecovery } from '@/components/ui/SavedWriteRecovery'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, ViewTransactionLink } from '@/components/ui/TxProgress'
-import { useSafeTx, type ReviewedCalls } from '@/hooks/useSafeTx'
+import { reviewedCall, useReviewedAction } from '@/hooks/useReviewedAction'
 import { useWallet } from '@/hooks/useWallet'
 import { parseAmount } from '@/lib/sticky-amount'
 import { createStickyBridge } from '@/lib/sticky-bridge'
@@ -24,7 +24,7 @@ import { collectorWriteKind, createStickyCollectorDelivery, type CollectorDelive
 import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { refreshAfterFund } from '@/lib/sticky-refresh'
 import { groupLabel } from '@/lib/sticky-rewards'
-import { TransactionReviewCancelledError, type TransactionReviewRow } from '@/lib/transaction-review'
+import type { TransactionReviewRow } from '@/lib/transaction-review'
 import { chainName } from '@/lib/urn'
 
 const delivery = createStickyCollectorDelivery()
@@ -51,7 +51,7 @@ export function CollectorFlow({ source, info, onSettled }: {
   const [error, setError] = useState<string | null>(null)
   const [monitor, setMonitor] = useState(false)
   const [result, setResult] = useState<'submitted' | 'settled' | null>(null)
-  const tx = useSafeTx(deployment.sourceChainId)
+  const tx = useReviewedAction()
   const identity = JSON.stringify({
     homeChainId: info.chainId, projectId: String(info.projectId), token: info.stToken, owner: wallet.address,
     deployment, sourceProjectId: String(sourceProjectId), stickyToken, groupId: String(groupId),
@@ -120,43 +120,37 @@ export function CollectorFlow({ source, info, onSettled }: {
     await run(async () => {
       assertCurrent(current.identity)
       if (readPendingBridgeWrite(current.owner)) throw new Error('Recover the pending transaction before sending again.')
-      let reviewed: ReviewedCalls
-      try {
-        reviewed = await tx.review([current.delivery.request], { account: current.owner, title: current.delivery.request.label ?? 'Deliver queued rewards', rows: current.rows })
-      } catch (reason) {
-        if (reason instanceof TransactionReviewCancelledError) { closeReview(); return }
-        throw reason
-      }
-      assertCurrent(current.identity)
       const held = createPendingBridgeWrite({ owner: current.owner, request: storeBridgeWrite(current.delivery.request), intent: holdIntent(current.delivery.request, current.owner) })
       setReview({ ...current, attempt: held })
       let reserved = false
       const undo = () => endPendingBridgeAttempt(current.owner, held.id)
-      assertCurrent(current.identity)
-      // useSafeTx can adopt an existing Safe proposal without invoking beforeWrite.
+      // The engine can adopt an existing Safe proposal without reaching beforeWallet.
       if (source.bridgeRoute) saveWatchedBridgeRoute(info.chainId, info.stToken, groupId, source.bridgeRoute)
-      await tx.send(current.delivery.request, {
-        reviewedAccount: current.owner, reviewed,
+      await tx.run({
+        account: current.owner,
+        calls: [reviewedCall(current.delivery.request, current.owner)],
+        title: current.delivery.request.label ?? 'Deliver queued rewards',
+        context: current.rows,
         reverify: async () => { assertCurrent(current.identity); await delivery.reverify(current.delivery, current.owner); assertCurrent(current.identity) },
-        durableRecovery: {
-          reserve: async () => {
-            assertCurrent(current.identity)
-            try {
-              savePendingBridgeWrite(current.owner, held)
-              reserved = true
-            } catch (reason) {
-              try { if (readPendingBridgeWrite(current.owner)) await undo() } catch { /* Preserve another attempt or unreadable storage. */ }
-              throw reason
-            }
-          },
-          releaseUnsubmitted: undo,
-          // The user's exit released the SDK hold: the reservation goes, the saved transfer stays.
-          released: async () => { await endPendingBridgeAttempt(current.owner, held.id); setPending(null) },
-          submitted: (hash, safeProposal) => {
-            if (!reserved && !readPendingBridgeWrite(current.owner)) { savePendingBridgeWrite(current.owner, held); reserved = true }
-            savePendingBridgeSubmission(held, hash, safeProposal)
-          },
+        beforeWallet: async () => {
+          assertCurrent(current.identity)
+          try {
+            savePendingBridgeWrite(current.owner, held)
+            reserved = true
+          } catch (reason) {
+            try { if (readPendingBridgeWrite(current.owner)) await undo() } catch { /* Preserve another attempt or unreadable storage. */ }
+            throw reason
+          }
         },
+        // Only a reservation this send made is ended: one it found is another attempt's.
+        onUnsent: async () => { if (reserved) await undo() },
+        onSubmitted: (_call, _step, hash, { safe }) => {
+          if (!reserved && !readPendingBridgeWrite(current.owner)) { savePendingBridgeWrite(current.owner, held); reserved = true }
+          savePendingBridgeSubmission(held, hash, safe)
+        },
+        // The user's exit released the SDK hold: the reservation goes, the saved transfer stays.
+        onReleased: async () => { await endPendingBridgeAttempt(current.owner, held.id); setPending(null) },
+        onCancelled: closeReview,
       })
       setPending(readPendingBridgeWrite(current.owner))
     })

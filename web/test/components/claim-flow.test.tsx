@@ -3,7 +3,7 @@
 import { QueryClient, QueryClientProvider, notifyManager, type QueryKey } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { erc20Abi, getAddress, type Abi, type Address, type Hex } from 'viem'
+import { erc20Abi, getAddress, type Address, type Hex } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stickyAutoStickAbi, stickyDistributorAbi, stickyHookAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
@@ -12,6 +12,7 @@ import type { RewardCard } from '@/lib/sticky-rewards'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 import { EXTERNAL_WALLET_REQUIRED, WalletAuthContext } from '@/providers/WalletAuthContext'
 import { stickyInfo } from '../home-fixtures'
+import { confirmedBlock, reviewedActionFake, type ReviewedActionFake } from '../support/reviewed-action'
 
 // A pot's actions: collecting what has unlocked, starting what finished rounds earned vesting, and claiming and sticking
 // the staked token's rewards through the auto-stick adapter. The reads and the engine are mocks: the builders, the reads
@@ -46,26 +47,10 @@ const pot = (extra: Partial<RewardCard> = {}): RewardCard => ({
   ...extra,
 })
 
-type Phase = 'idle' | 'review' | 'simulating' | 'signing' | 'pending' | 'submitted' | 'success' | 'error'
-type EngineState = {
-  phase: Phase
-  busy: boolean
-  error: string | null
-  hash: Hex | null
-  receipt: { blockNumber: bigint } | null
-  isSafe: boolean
-  safeProposalHash: null
-  safeNonceGuidance: null
-  send: ReturnType<typeof vi.fn>
-  review: ReturnType<typeof vi.fn>
-  reset: ReturnType<typeof vi.fn<() => void>>
-  dismiss: ReturnType<typeof vi.fn>
-}
-
 const mocks = vi.hoisted(() => ({
   wallet: {} as { address: string | undefined; isConnected: boolean; isCenterWallet: boolean; openSignIn: ReturnType<typeof vi.fn> },
   requestSignIn: vi.fn(),
-  tx: {} as EngineState,
+  tx: {} as ReviewedActionFake,
   read: vi.fn(),
   vest: vi.fn(),
   groups: vi.fn(),
@@ -74,9 +59,9 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/hooks/useWallet', () => ({ useWallet: () => mocks.wallet }))
-vi.mock('@/hooks/useSafeTx', async importOriginal => ({
-  ...(await importOriginal<typeof import('@/hooks/useSafeTx')>()),
-  useSafeTx: () => mocks.tx,
+vi.mock('@/hooks/useReviewedAction', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/hooks/useReviewedAction')>()),
+  useReviewedAction: () => mocks.tx,
 }))
 vi.mock('@/lib/sticky-rewards', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-rewards')>()),
@@ -95,35 +80,10 @@ vi.mock('@/lib/preflight', () => ({ preflight: mocks.preflight }))
 
 import { ClaimFlow } from '@/components/project/flows/ClaimFlow'
 
-const engine = (): EngineState => {
-  const state: EngineState = {
-    phase: 'idle',
-    busy: false,
-    error: null,
-    hash: null,
-    receipt: null,
-    isSafe: false,
-    safeProposalHash: null,
-    safeNonceGuidance: null,
-    send: vi.fn(async () => {
-      state.phase = 'pending'
-      state.busy = true
-      state.error = null
-      state.hash = null
-      state.receipt = null
-      return HASH
-    }),
-    // The claim's one decoded review: what it returns is the proof each step is sent with.
-    review: vi.fn(async () => ({})),
-    dismiss: vi.fn(() => state.reset()),
-    reset: vi.fn(() => {
-      state.phase = 'idle'
-      state.busy = false
-      state.error = null
-      state.hash = null
-      state.receipt = null
-    }),
-  }
+const engine = () => {
+  const state = reviewedActionFake(HASH)
+  state.reset.mockImplementation(() => Object.assign(state, { phase: 'idle', busy: false, error: null, hash: null, receipt: null, landed: 0 }))
+  state.dismiss.mockImplementation(() => state.reset())
   return state
 }
 
@@ -220,13 +180,15 @@ const rowsOf = () =>
       return pairs
     }, []),
   )
-type Sent = { chainId: number; address: Address; abi: Abi; functionName: string; args: readonly unknown[] }
-const sent = (at: number) => mocks.tx.send.mock.calls[at] as [Sent, { reviewedAccount: Address; simulationBlockNumber?: bigint; reviewed?: unknown; reverify?: () => Promise<unknown> }]
+/** The call the wallet was asked for `at`, and its run: the account it was reviewed for, and its check before the step. */
+const sent = (at: number) => {
+  const [call, step] = mocks.tx.send.mock.calls[at]
+  const action = mocks.tx.run.mock.calls.at(-1)![0]
+  return [call, { account: action.account, reverify: () => action.reverify!(call, step, step ? confirmedBlock(step - 1) : undefined) }] as const
+}
+/** The engine's answer once every step of the run confirmed, the last in block `block`. */
 async function confirmed(block: bigint) {
-  mocks.tx.phase = 'success'
-  mocks.tx.busy = false
-  mocks.tx.hash = HASH
-  mocks.tx.receipt = { blockNumber: block }
+  Object.assign(mocks.tx, { phase: 'success', busy: false, hash: HASH, receipt: { blockNumber: block }, landed: mocks.tx.run.mock.calls.at(-1)![0].calls.length })
   await render()
 }
 
@@ -265,17 +227,18 @@ describe('collecting', () => {
     expect(account).toBe(ALICE)
     expect(tried).toMatchObject({ address: DISTRIBUTOR, functionName: 'collectVestedRewards' })
 
-    const [request, options] = sent(0)
-    expect(request).toMatchObject({
+    const [call, { account: sender }] = sent(0)
+    expect(call).toMatchObject({
       chainId: CHAIN,
-      address: DISTRIBUTOR,
+      to: DISTRIBUTOR,
       functionName: 'collectVestedRewards',
       args: [INFO.stToken, 0n, [BigInt(ALICE)], [USDC.toLowerCase()], ALICE],
     })
-    expect(request).toBe(tried)
-    expect(options.reviewedAccount).toBe(ALICE)
+    expect(call.args).toBe(tried.args)
+    expect(sender).toBe(ALICE)
     expect(mocks.tx.send).toHaveBeenCalledOnce()
-    expect(mocks.tx.review).toHaveBeenCalledExactlyOnceWith([tried], expect.objectContaining({ account: ALICE, title: 'Claim USDC rewards' }))
+    expect(mocks.tx.review).toHaveBeenCalledOnce()
+    expect(mocks.tx.run).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ account: ALICE, title: 'Claim USDC rewards', calls: [call] }))
   })
 
   it('wallet-action:collect-rewards-or-start-vesting starts vesting with the same call when nothing has unlocked, after asking whether finished rounds earned any', async () => {
@@ -307,7 +270,7 @@ describe('collecting', () => {
       Who: 'Staked 4–8 weeks',
       Forfeit: 'Stake-age rewards pay only stake you still hold. Unstick before claiming and they stay in the pot.',
     })
-    expect(sent(0)[0].args[1]).toBe(4008n)
+    expect(sent(0)[0].args![1]).toBe(4008n)
   })
 
   it('refuses a collect the chain would refuse, in its words, and opens no review', async () => {
@@ -394,25 +357,23 @@ describe('claiming and sticking', () => {
       'Allow the auto-stick contract to stick ART for you',
       'Claim & stick',
     ])
-    // One decoded review shows all three steps, and each is then sent as the one before confirms.
-    expect(mocks.tx.review).toHaveBeenCalledExactlyOnceWith(
-      [
+    // One review shows all three steps, and one run sends each, simulated where the one before it confirmed.
+    expect(mocks.tx.review).toHaveBeenCalledOnce()
+    expect(mocks.tx.run).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      account: ALICE,
+      title: 'Claim & stick ART rewards',
+      calls: [
         expect.objectContaining({ functionName: 'approve' }),
         expect.objectContaining({ functionName: 'setTrustedSenderFor' }),
         expect.objectContaining({ functionName: 'stickRewardsFor' }),
       ],
-      { account: ALICE, title: 'Claim & stick ART rewards', rows: expect.arrayContaining([{ label: 'Claim', value: '0.7 ART', strong: true }]) },
-    )
-    const proof = await mocks.tx.review.mock.results[0].value
-    expect(sent(0)[0]).toMatchObject({ address: ART, functionName: 'approve', args: [ADAPTER, 700_000n] })
-    expect(sent(0)[1].reviewed).toBe(proof)
-    await confirmed(10n)
-    expect(sent(1)[0]).toMatchObject({ address: HOOK, functionName: 'setTrustedSenderFor', args: [12n, ADAPTER, true] })
-    expect(sent(1)[1].simulationBlockNumber).toBe(10n)
-    await confirmed(11n)
-    expect(sent(2)[0]).toMatchObject({ address: ADAPTER, abi: stickyAutoStickAbi, functionName: 'stickRewardsFor', args: [12n, [0n, 4000n]] })
-    expect(sent(2)[1]).toMatchObject({ reviewedAccount: ALICE, simulationBlockNumber: 11n, reviewed: proof })
-    expect(mocks.tx.review).toHaveBeenCalledOnce()
+      context: expect.arrayContaining([{ label: 'Claim', value: '0.7 ART', strong: true }]),
+    }))
+    expect(sent(0)[0]).toMatchObject({ to: ART, functionName: 'approve', args: [ADAPTER, 700_000n] })
+    expect(sent(0)[0].dependsOnPrior).toBeUndefined()
+    expect(sent(1)[0]).toMatchObject({ to: HOOK, functionName: 'setTrustedSenderFor', args: [12n, ADAPTER, true], dependsOnPrior: true })
+    expect(sent(2)[0]).toMatchObject({ to: ADAPTER, abi: stickyAutoStickAbi, functionName: 'stickRewardsFor', args: [12n, [0n, 4000n]], dependsOnPrior: true })
+    expect(sent(2)[1].account).toBe(ALICE)
   })
 
   it('wallet-action:claim-and-stick-rewards auto-stick status, compounding, and vesting pass the groups holding underlying rewards', async () => {
@@ -558,12 +519,12 @@ describe('a wallet that cannot send', () => {
   it('names the account that reviewed the claim on every step, whichever account is connected by then', async () => {
     await render()
     let approve = () => {}
-    mocks.tx.review.mockImplementationOnce(() => new Promise(resolve => (approve = () => resolve({}))))
+    mocks.tx.review.mockImplementationOnce(() => new Promise(resolve => (approve = () => resolve())))
     await press(host, 'Collect only')
     mocks.wallet = { ...mocks.wallet, address: CAROL }
     await render()
     await act(async () => approve())
     await settled()
-    expect(sent(0)[1].reviewedAccount).toBe(ALICE)
+    expect(sent(0)[1].account).toBe(ALICE)
   })
 })

@@ -14,7 +14,7 @@ import {
   toEventSelector, zeroAddress, zeroHash,
   type Address, type Hex, type Log, type PublicClient,
 } from 'viem'
-import type { TxRequest } from '@/hooks/useSafeTx'
+import type { TxRequest } from '@/hooks/useReviewedAction'
 import { environmentForChainIds, SUPPORTED_CHAINS } from '@/lib/chains'
 import { scanLogs } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'

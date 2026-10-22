@@ -5,15 +5,22 @@
  * legacy hold namespaces.
  */
 
+import { QueryClient } from '@tanstack/react-query'
 import { createElement, createRef, forwardRef, useImperativeHandle } from 'react'
 import TestRenderer, { act } from 'react-test-renderer'
 import { decodeFunctionData, numberToHex, type Abi, type Address, type Hex } from 'viem'
 import { jbMultiTerminalAbi } from '@bananapus/nana-sdk-core'
-import { registerReviewHandler } from '@bananapus/nana-sdk-core/review'
+import { registerReviewHandler, type ReviewedCall } from '@bananapus/nana-sdk-core/review'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import baseline from './fixtures/use-safe-tx-calldata.json'
 
 const ALICE = '0x2222222222222222222222222222222222222222' as Address
+
+const displayQueries = new QueryClient()
+vi.mock('@tanstack/react-query', async importOriginal => ({
+  ...(await importOriginal<typeof import('@tanstack/react-query')>()),
+  useQueryClient: () => displayQueries,
+}))
 
 /** One chain whose sends are mined in the next block; eth_call always succeeds. */
 const chain = vi.hoisted(() => {
@@ -95,6 +102,7 @@ vi.mock('@/lib/safe-connector', async importOriginal => ({
 import { useReviewedAction } from '@/hooks/useReviewedAction'
 import { holdIntent } from '@/lib/sticky-hold-intent'
 import { holds } from '@/lib/write-holds'
+import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 
 type Action = ReturnType<typeof useReviewedAction>
 const Harness = forwardRef<Action>(function Harness(_, ref) {
@@ -107,6 +115,8 @@ const unregister: (() => void)[] = []
 afterEach(() => {
   while (unregister.length) unregister.pop()!()
   walletSends.length = 0
+  walletClient.sendTransaction.mockClear()
+  clearViewAs()
 })
 
 /** The review UI confirms every prompt. */
@@ -114,6 +124,15 @@ function confirmEveryReview() {
   unregister.push(registerReviewHandler(async prompt => prompt.confirmation))
 }
 
+
+async function mount() {
+  const ref = createRef<Action>()
+  let renderer!: TestRenderer.ReactTestRenderer
+  await act(async () => {
+    renderer = TestRenderer.create(createElement(Harness, { ref }))
+  })
+  return { ref, unmount: () => act(async () => renderer.unmount()) }
+}
 
 async function runOnce(call: Parameters<Action['run']>[0]) {
   const ref = createRef<Action>()
@@ -133,7 +152,7 @@ describe('useReviewedAction', () => {
   it('sends the same calldata as useSafeTx for a stick, an unstick, a transfer, a trust, an airdrop and a settle', async () => {
     confirmEveryReview()
     for (const [name, sent] of Object.entries(baseline)) {
-      const result = await runOnce({ calls: [{ chainId: sent.chainId, to: sent.to as Address, data: sent.data as Hex, value: BigInt(sent.value) }] })
+      const result = await runOnce({ account: ALICE, calls: [{ chainId: sent.chainId, to: sent.to as Address, data: sent.data as Hex, value: BigInt(sent.value) }] })
       expect(result?.status, name).toBe('done')
       const wallet = walletSends.at(-1)!
       expect({ chainId: wallet.chainId, to: wallet.to.toLowerCase(), data: wallet.data, value: String(wallet.value) }, name).toEqual({
@@ -152,7 +171,7 @@ describe('useReviewedAction', () => {
     const intent = holdIntent({ chainId: stick.chainId, address: stick.to as Address, functionName: decoded.functionName, args: decoded.args ?? [] }, ALICE)!
     const legacy = ['sticky-stick-legacy-key']
     const call = { chainId: stick.chainId, to: stick.to as Address, data: stick.data as Hex, value: 0n, intent, legacy }
-    expect((await runOnce({ calls: [call] }))?.status).toBe('done')
+    expect((await runOnce({ account: ALICE, calls: [call] }))?.status).toBe('done')
     // The send was held under its intent: the same intent, with another call, sees its settlement.
     const byIntent = holds.open(
       { chainId: stick.chainId, account: ALICE, safe: false, namespace: intent, call: { to: stick.to as Address, data: '0x', value: 0n } },
@@ -160,5 +179,82 @@ describe('useReviewedAction', () => {
     )
     const state = byIntent.peek()
     expect(state.status === 'clear' && state.settled?.result).toBe('success')
+  })
+
+  it('runs every step under one review: each reverified at the block the one before confirmed in, journaled around its send, and counted', async () => {
+    confirmEveryReview()
+    const { stick, unstick } = baseline
+    const calls = [stick, unstick].map((sent, at) => ({ chainId: sent.chainId, to: sent.to as Address, data: sent.data as Hex, value: BigInt(sent.value), ...(at ? { dependsOnPrior: true } : {}) }))
+    const seen: string[] = []
+    const reverify = vi.fn(async (_call: ReviewedCall, _index: number, _confirmedAt?: bigint) => {})
+    const { ref, unmount } = await mount()
+    let result: Awaited<ReturnType<Action['run']>> = null
+    await act(async () => {
+      result = await ref.current!.run({
+        account: ALICE,
+        calls,
+        reverify,
+        beforeWallet: async (_call, step) => void seen.push(`before ${step}`),
+        onUnsent: async (_call, step) => void seen.push(`unsent ${step}`),
+        onSubmitted: async (_call, step, hash) => void seen.push(`submitted ${step} ${hash}`),
+      })
+    })
+    expect(result!.status).toBe('done')
+    const hashes = (result as unknown as { hashes: Hex[] }).hashes
+    expect(seen).toEqual([`before 0`, `submitted 0 ${hashes[0]}`, `before 1`, `submitted 1 ${hashes[1]}`])
+    expect(reverify.mock.calls.map(([, index, confirmedAt]) => [index, confirmedAt])).toEqual([
+      [0, undefined],
+      [1, chain.state.mined.get(hashes[0])],
+    ])
+    expect(ref.current!.landed).toBe(2)
+    expect(ref.current!.phase).toBe('success')
+    expect(ref.current!.hash).toBe(hashes[1])
+    await unmount()
+  })
+
+  it('calls onCancelled, and sends nothing, when the review is closed', async () => {
+    unregister.push(registerReviewHandler(async () => null))
+    const onCancelled = vi.fn()
+    const { stick } = baseline
+    const { ref, unmount } = await mount()
+    await act(async () => {
+      expect(await ref.current!.run({ account: ALICE, calls: [{ chainId: stick.chainId, to: stick.to as Address, data: stick.data as Hex }], onCancelled })).toBeNull()
+    })
+    expect(onCancelled).toHaveBeenCalledOnce()
+    expect(walletSends).toEqual([])
+    expect(ref.current!.phase).toBe('idle')
+    expect(ref.current!.error).toBeNull()
+    await unmount()
+  })
+
+  it('frees a step the wallet refused (4001) through onUnsent, and reads it as a cancel', async () => {
+    confirmEveryReview()
+    walletClient.sendTransaction.mockRejectedValueOnce(Object.assign(new Error('User rejected the request.'), { code: 4001 }))
+    const onUnsent = vi.fn(async () => {})
+    const onCancelled = vi.fn()
+    const { stick } = baseline
+    const { ref, unmount } = await mount()
+    await act(async () => {
+      expect(await ref.current!.run({ account: ALICE, calls: [{ chainId: stick.chainId, to: stick.to as Address, data: stick.data as Hex }], onUnsent, onCancelled })).toBeNull()
+    })
+    expect(onUnsent).toHaveBeenCalledOnce()
+    expect(onCancelled).toHaveBeenCalledOnce()
+    await unmount()
+  })
+
+  it('refuses a write in View as before its review, with the reason and no cancel', async () => {
+    const review = vi.fn(async () => null)
+    unregister.push(registerReviewHandler(review))
+    setViewAs(`0x${'b2'.repeat(20)}`)
+    const onCancelled = vi.fn()
+    const { stick } = baseline
+    const { ref, unmount } = await mount()
+    await act(async () => {
+      expect(await ref.current!.run({ account: ALICE, calls: [{ chainId: stick.chainId, to: stick.to as Address, data: stick.data as Hex }], onCancelled })).toBeNull()
+    })
+    expect(review).not.toHaveBeenCalled()
+    expect(ref.current!.error).toBe(VIEW_AS_WRITE_BLOCKED)
+    expect(onCancelled).not.toHaveBeenCalled()
+    await unmount()
   })
 })

@@ -1,6 +1,6 @@
 import { approvalIntent, bridgeIntent, cashOutIntent, payIntent, writeIntentKey, intent } from '@bananapus/nana-sdk-core/review'
 import type { Address } from 'viem'
-import type { TxRequest } from '@/hooks/useSafeTx'
+import type { TxRequest } from '@/hooks/useReviewedAction'
 
 /**
  * The one home for a Sticky write's hold key, built only from the SDK's intent builders so every web client keys the same

@@ -14,7 +14,7 @@ import { ModalShell } from '@/components/ui/ModalShell'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
-import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
+import { reviewedSteps, useReviewedAction, type TxRequest } from '@/hooks/useReviewedAction'
 import { useStepPresses } from '@/hooks/useStepPresses'
 import { useWallet } from '@/hooks/useWallet'
 import { asked } from '@/lib/hook-logs'
@@ -181,9 +181,9 @@ function SameChainFundFlow({
 }) {
   const { address, isConnected, isCenterWallet, openSignIn } = useWallet()
   const { viewAs } = useViewAs()
-  const tx = useSafeTx(chainId)
-  const presses = useStepPresses(tx)
-  const { landed } = presses
+  const tx = useReviewedAction()
+  const presses = useStepPresses(tx, closeReview)
+  const { landed } = tx
   const client = useQueryClient()
   const ids = { from: useId(), token: useId(), amount: useId() }
   const [token, setToken] = useState('')
@@ -246,11 +246,9 @@ function SameChainFundFlow({
   async function confirm() {
     if (!plan || sending) return
     // Every step is sent as the account that reviewed the airdrop, and the engine refuses it while another is connected.
-    const outcome = await presses.press(plan.steps, (step, confirmedAt, reviewed) =>
-      tx.send(step, { reviewedAccount: plan.account, reviewed, simulationBlockNumber: confirmedAt, reverify: () => verify(plan) }),
-      { account: plan.account, title: 'Airdrop', rows: rowsOf(plan, info) },
+    await presses.press(
+      { account: plan.account, calls: reviewedSteps(plan.steps, plan.account), title: 'Airdrop', context: rowsOf(plan, info), reverify: () => verify(plan) },
     )
-    if (outcome === 'cancelled') closeReview()
   }
 
   // The airdrop's one decoded review opens once it is planned, and each step it showed is sent as the one before confirms.

@@ -25,7 +25,7 @@ function ControlledDialog({ pending, onFinish }: TransactionReviewDialogProps) {
     return () => { unmounted(pending.id) }
   }, [pending, onFinish])
   return createElement('div', { 'data-loaded-review': pending.id },
-    createElement('p', null, pending.kind === 'review' ? pending.request.title : 'Funding choice'),
+    createElement('p', null, pending.kind === 'review' ? (pending.request?.title ?? pending.model?.title) : 'Funding choice'),
     createElement('button', { onClick: () => onFinish(pending.kind === 'review' ? true : 8453) },
       pending.kind === 'review' ? 'Approve review' : 'Choose Base'),
     createElement('button', { onClick: () => onFinish(null) }, 'Cancel loaded review'),
@@ -66,7 +66,7 @@ function requestReview(title: string) {
 }
 
 function requestFunding() {
-  return api.requireFundingChainSelection([{ chainId: 8453, label: 'Base · 0.001 ETH' }])
+  return api.requireFundingChainSelection([{ chainId: 8453, label: 'Base, 0.001 ETH' }])
 }
 
 function button(label: string) {

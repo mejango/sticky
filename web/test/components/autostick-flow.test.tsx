@@ -3,7 +3,7 @@
 import { QueryClient, QueryClientProvider, notifyManager, type QueryKey } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { getAddress, maxUint256, type Abi, type Address, type Hex } from 'viem'
+import { getAddress, maxUint256, type Hex } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stickyAutoStickAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
@@ -11,6 +11,7 @@ import { AS_STATUS, type AutoStickState } from '@/lib/sticky-autostick'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 import { EXTERNAL_WALLET_REQUIRED, WalletAuthContext } from '@/providers/WalletAuthContext'
 import { stickyInfo } from '../home-fixtures'
+import { confirmedBlock, reviewedActionFake, type ReviewedActionFake } from '../support/reviewed-action'
 
 // The auto-stick card's actions: turning auto-stick on, renewing its allowance, changing its settings, turning it off,
 // repairing its permission, sticking ready rewards now and starting finished rounds unlocking. The reads and the engine
@@ -65,26 +66,10 @@ const on = (extra: Partial<AutoStickState> = {}): AutoStickState =>
 /** What a state of auto-stick rests on: whether it is on, the holder's trust in the adapter, and their allowance. */
 const standing = ({ enabled, personallyTrusted, allowance }: AutoStickState) => ({ enabled, personallyTrusted, allowance })
 
-type Phase = 'idle' | 'review' | 'simulating' | 'signing' | 'pending' | 'submitted' | 'success' | 'error'
-type EngineState = {
-  phase: Phase
-  busy: boolean
-  error: string | null
-  hash: Hex | null
-  receipt: { blockNumber: bigint } | null
-  isSafe: boolean
-  safeProposalHash: null
-  safeNonceGuidance: null
-  send: ReturnType<typeof vi.fn>
-  review: ReturnType<typeof vi.fn>
-  reset: ReturnType<typeof vi.fn<() => void>>
-  dismiss: ReturnType<typeof vi.fn>
-}
-
 const mocks = vi.hoisted(() => ({
   wallet: {} as { address: string | undefined; isConnected: boolean; isCenterWallet: boolean; openSignIn: ReturnType<typeof vi.fn> },
   requestSignIn: vi.fn(),
-  tx: {} as EngineState,
+  tx: {} as ReviewedActionFake,
   read: vi.fn(),
   standing: vi.fn(),
   vestable: vi.fn(),
@@ -93,9 +78,9 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/hooks/useWallet', () => ({ useWallet: () => mocks.wallet }))
-vi.mock('@/hooks/useSafeTx', async importOriginal => ({
-  ...(await importOriginal<typeof import('@/hooks/useSafeTx')>()),
-  useSafeTx: () => mocks.tx,
+vi.mock('@/hooks/useReviewedAction', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/hooks/useReviewedAction')>()),
+  useReviewedAction: () => mocks.tx,
 }))
 vi.mock('@/lib/sticky-autostick', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-autostick')>()),
@@ -114,35 +99,11 @@ vi.mock('@/lib/sticky-rewards', async importOriginal => ({
 
 import { AutoStickFlow } from '@/components/project/flows/AutoStickFlow'
 
-const engine = (): EngineState => {
-  const state: EngineState = {
-    phase: 'idle',
-    busy: false,
-    error: null,
-    hash: null,
-    receipt: null,
-    isSafe: false,
-    safeProposalHash: null,
-    safeNonceGuidance: null,
-    send: vi.fn(async () => {
-      state.phase = 'pending'
-      state.busy = true
-      state.error = null
-      state.hash = null
-      state.receipt = null
-      return HASH
-    }),
-    // The change's one decoded review: what it returns is the proof each step is sent with.
-    review: vi.fn(async () => ({})),
-    dismiss: vi.fn(() => state.reset()),
-    reset: vi.fn(() => {
-      state.phase = 'idle'
-      state.busy = false
-      state.error = null
-      state.hash = null
-      state.receipt = null
-    }),
-  }
+const engine = () => {
+  // The checks before each step are the tests' own (`reverify`): the reads here do not move as steps confirm.
+  const state = reviewedActionFake(HASH, { checks: false })
+  state.reset.mockImplementation(() => Object.assign(state, { phase: 'idle', busy: false, error: null, hash: null, receipt: null, landed: 0 }))
+  state.dismiss.mockImplementation(() => state.reset())
   return state
 }
 
@@ -240,32 +201,29 @@ const rowsOf = () =>
       return pairs
     }, []),
   )
-type Sent = { chainId: number; address: Address; abi: Abi; functionName: string; args: readonly unknown[] }
-const sent = (at: number) =>
-  mocks.tx.send.mock.calls[at] as [
-    Sent,
-    { reviewedAccount: Address; simulationBlockNumber?: bigint; reverify?: (request: Sent) => Promise<unknown> },
-  ]
-/** The engine's check just before it sends step `at`. */
-const reverify = (at: number) => sent(at)[1].reverify!(sent(at)[0])
-const calls = () => mocks.tx.send.mock.calls.map(([request]) => [(request as Sent).address, (request as Sent).functionName, (request as Sent).args])
+/** The call the wallet was asked for `at`, and the run it was in. */
+const sent = (at: number) => [mocks.tx.send.mock.calls[at][0], mocks.tx.run.mock.calls.at(-1)![0]] as const
+/** The engine's check just before it sends step `at`, at the block the step before it confirmed in. */
+const reverify = (at: number) => {
+  const [call, step] = mocks.tx.send.mock.calls[at]
+  return sent(at)[1].reverify!(call, step, step ? confirmedBlock(step - 1) : undefined)
+}
+const calls = () => mocks.tx.send.mock.calls.map(([call]) => [call.to, call.functionName, call.args])
+/** The engine's answer once every step of the run confirmed, the last in block `block`. */
 async function confirmed(block: bigint) {
-  mocks.tx.phase = 'success'
-  mocks.tx.busy = false
-  mocks.tx.hash = HASH
-  mocks.tx.receipt = { blockNumber: block }
+  Object.assign(mocks.tx, { phase: 'success', busy: false, hash: HASH, receipt: { blockNumber: block }, landed: mocks.tx.run.mock.calls.at(-1)![0].calls.length })
   await rerender()
 }
-/** Confirms every step of the open review, each in a block of its own: the one decoded review showed them all, and each
- * is sent, without asking again, once the one before it confirms. */
+/** Confirms every step of the open review: the one review showed them all, and one run sent each without asking again. */
 async function sendAll() {
-  for (let block = 10n; confirm() && !confirm()!.textContent!.includes('All transactions confirmed.'); block += 1n) await confirmed(block)
-  const proof = await mocks.tx.review.mock.results[0].value
-  expect(mocks.tx.review).toHaveBeenCalledExactlyOnceWith(
-    mocks.tx.send.mock.calls.map(([request]) => request),
-    expect.objectContaining({ account: ALICE, title: expect.any(String), rows: expect.any(Array) }),
-  )
-  expect(mocks.tx.send.mock.calls.every(([, options]) => options.reviewed === proof)).toBe(true)
+  await confirmed(10n)
+  expect(mocks.tx.review).toHaveBeenCalledOnce()
+  expect(mocks.tx.run).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+    calls: mocks.tx.send.mock.calls.map(([call]) => call),
+    account: ALICE,
+    title: expect.any(String),
+    context: expect.any(Array),
+  }))
 }
 
 describe('the actions', () => {
@@ -338,7 +296,8 @@ describe('turning it on', () => {
       [HOOK, 'setTrustedSenderFor', [12n, ADAPTER, true]],
       [ADAPTER, 'setConfigFor', [12n, true, 2_500_000n, MONTH]],
     ])
-    expect(sent(2)[1]).toMatchObject({ reviewedAccount: ALICE, simulationBlockNumber: 11n })
+    expect(sent(2)[1].account).toBe(ALICE)
+    expect(sent(2)[0].dependsOnPrior).toBe(true)
     expect(confirm()!.textContent).toContain('Auto-stick is on')
   })
 
@@ -569,11 +528,13 @@ describe('the other actions', () => {
     await render(on({ allowance: 9n }))
     await press(card(), 'Turn off auto-stick')
     // The first step goes through; the wallet turns down the second, and the review is closed there.
-    mocks.tx.send.mockImplementationOnce(async () => {
-      Object.assign(mocks.tx, { phase: 'error', busy: false, error: 'Transaction cancelled.' })
-      return null
+    expect(mocks.tx.run.mock.calls[0][0].calls.length).toBeGreaterThan(1)
+    mocks.tx.send.mockReset().mockResolvedValueOnce(HASH).mockImplementationOnce(async () => {
+      Object.assign(mocks.tx, { phase: 'error', busy: false, error: 'Transaction cancelled.', landed: 1 })
+      throw new Error('Transaction cancelled.')
     })
-    await confirmed(10n)
+    await act(async () => void (await mocks.tx.run(mocks.tx.run.mock.calls[0][0])))
+    await rerender()
     expect(invalidate).not.toHaveBeenCalled()
     await press(confirm(), 'Close')
     expect(invalidate.mock.calls.map(([filters]) => filters!.queryKey as QueryKey)).toEqual([
@@ -607,7 +568,7 @@ describe('leftover permissions', () => {
       [HOOK, 'setTrustedSenderFor', [12n, ADAPTER, false]],
       [ART, 'approve', [ADAPTER, 0n]],
     ])
-    expect(sent(1)[1].reviewedAccount).toBe(ALICE)
+    expect(sent(1)[1].account).toBe(ALICE)
     expect(confirm()!.textContent).toContain('Permissions removed')
   })
 
@@ -672,12 +633,11 @@ describe('a step, read again before it is sent', () => {
     reads({ ...standing(off()), enabled: true })
     await expect(reverify(0)).rejects.toThrow(CHANGED)
 
-    // The approval confirms in block 10, and the trust step reads where it landed. The allowance after the plan's own
+    // The approval confirms, and the trust step reads at the block it landed in. The allowance after the plan's own
     // approval is not compared: a token may store less than it was asked to.
-    await confirmed(10n)
     reads({ ...standing(off()), allowance: 0n })
     await expect(reverify(1)).resolves.toBeUndefined()
-    expect(mocks.standing).toHaveBeenLastCalledWith(CHAIN, 12n, ALICE, { stakedToken: ART, block: 10n })
+    expect(mocks.standing).toHaveBeenLastCalledWith(CHAIN, 12n, ALICE, { stakedToken: ART, block: confirmedBlock(0) })
     reads({ ...standing(off()), enabled: true, allowance: maxUint256 })
     await expect(reverify(1)).rejects.toThrow(CHANGED)
     expect(console.warn).not.toHaveBeenCalled()
@@ -829,12 +789,12 @@ describe('a wallet that cannot send', () => {
   it('names the account that reviewed the change on every step, whichever account is connected by then', async () => {
     await render(on())
     let approve = () => {}
-    mocks.tx.review.mockImplementationOnce(() => new Promise(resolve => (approve = () => resolve({}))))
+    mocks.tx.review.mockImplementationOnce(() => new Promise(resolve => (approve = () => resolve())))
     await press(card(), 'Turn off auto-stick')
     mocks.wallet = { ...mocks.wallet, address: CAROL }
     await rerender()
     await act(async () => approve())
     await settled()
-    expect(sent(0)[1].reviewedAccount).toBe(ALICE)
+    expect(sent(0)[1].account).toBe(ALICE)
   })
 })

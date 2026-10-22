@@ -12,6 +12,7 @@ import type { StickyPosition } from '@/lib/sticky-holders'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 import { EXTERNAL_WALLET_REQUIRED } from '@/providers/WalletAuthContext'
 import { TOKEN, stickyInfo } from '../home-fixtures'
+import { reviewedActionFake, type ReviewedActionFake } from '../support/reviewed-action'
 
 // The stick flow: an amount typed into the Stick card or the Airdrops tab's form, what a stick will mint at least, and
 // the review that reads the balance, the allowance and the price again, lists the steps, shows them all in one decoded
@@ -34,21 +35,6 @@ const STICK_HASH = `0x${'b2'.repeat(32)}` as Hex
 const MINTED = 9_870_000_000_000_000_000n
 const CPN = 10n ** 6n
 
-type Phase = 'idle' | 'review' | 'simulating' | 'signing' | 'pending' | 'submitted' | 'success' | 'error'
-type EngineState = {
-  phase: Phase
-  busy: boolean
-  error: string | null
-  reverted: boolean
-  hash: Hex | null
-  receipt: { blockNumber: bigint } | null
-  isSafe: boolean
-  send: ReturnType<typeof vi.fn>
-  review: ReturnType<typeof vi.fn>
-  reset: ReturnType<typeof vi.fn<() => void>>
-  dismiss: ReturnType<typeof vi.fn>
-}
-
 const mocks = vi.hoisted(() => ({
   project: vi.fn(),
   position: vi.fn(),
@@ -61,14 +47,14 @@ const mocks = vi.hoisted(() => ({
     isCenterWallet: boolean
     openSignIn: ReturnType<typeof vi.fn>
   },
-  tx: {} as EngineState,
+  tx: {} as ReviewedActionFake,
 }))
 
 vi.mock('@/hooks/useWallet', () => ({ useWallet: () => mocks.wallet }))
 // The engine's hook is a mock; its labels for the phases it reports are its own.
-vi.mock('@/hooks/useSafeTx', async importOriginal => ({
-  ...(await importOriginal<typeof import('@/hooks/useSafeTx')>()),
-  useSafeTx: () => mocks.tx,
+vi.mock('@/hooks/useReviewedAction', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/hooks/useReviewedAction')>()),
+  useReviewedAction: () => mocks.tx,
 }))
 vi.mock('@/lib/sticky-project', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-project')>()),
@@ -105,35 +91,10 @@ const positionOf = (wallet: bigint): StickyPosition => ({
   timestamp: 1_790_000_000,
 })
 
-const engine = (): EngineState => {
-  const state: EngineState = {
-    phase: 'idle',
-    busy: false,
-    error: null,
-    reverted: false,
-    hash: null,
-    receipt: null,
-    isSafe: false,
-    // A send takes the engine out of whatever it was in, as the real one does.
-    send: vi.fn(async () => {
-      state.phase = 'pending'
-      state.busy = true
-      state.error = null
-      state.hash = null
-      state.receipt = null
-      return STICK_HASH
-    }),
-    // The stick's one decoded review: what it returns is the proof each step is sent with.
-    review: vi.fn(async () => ({})),
-    dismiss: vi.fn(() => state.reset()),
-    reset: vi.fn(() => {
-      state.phase = 'idle'
-      state.busy = false
-      state.error = null
-      state.hash = null
-      state.receipt = null
-    }),
-  }
+const engine = () => {
+  const state = reviewedActionFake(STICK_HASH)
+  state.reset.mockImplementation(() => Object.assign(state, { phase: 'idle', busy: false, error: null, hash: null, receipt: null, landed: 0 }))
+  state.dismiss.mockImplementation(() => state.reset())
   return state
 }
 
@@ -245,21 +206,20 @@ async function review(amount = '5', label = 'Stick') {
   await settled()
 }
 
-/** The engine refuses the next send: it answers null and shows `error`, as it does for a wallet that turns it down. */
+/** The engine fails the next send and shows `error`: the run ends there, with the steps before it confirmed. */
 const refuseNext = (error = 'Transaction cancelled.') =>
-  mocks.tx.send.mockImplementationOnce(async () => {
-    Object.assign(mocks.tx, { phase: 'error', busy: false, error })
-    return null
+  mocks.tx.send.mockImplementationOnce(async (_call, step) => {
+    Object.assign(mocks.tx, { phase: 'error', busy: false, error, landed: step })
+    throw new Error(error)
   })
+/** How often a review planned, reading the balance and allowance under its signal: the engine's checks before each step read them too. */
+const plannings = () => mocks.funds.mock.calls.filter(call => call.length > 2).length
 /** The calls each review showed, by function name. */
-const reviews = () => mocks.tx.review.mock.calls.map(([calls]) => (calls as { functionName: string }[]).map(call => call.functionName))
+const reviews = () => mocks.tx.review.mock.calls.map(([action]) => action.calls.map(call => call.functionName))
 
-/** The engine's answer once its transaction is confirmed in block `block`. */
+/** The engine's answer once every step of the run confirmed, the last in block `block`. */
 async function confirmed(hash: Hex, block: bigint) {
-  mocks.tx.phase = 'success'
-  mocks.tx.busy = false
-  mocks.tx.hash = hash
-  mocks.tx.receipt = { blockNumber: block }
+  Object.assign(mocks.tx, { phase: 'success', busy: false, hash, receipt: { blockNumber: block }, landed: mocks.tx.run.mock.calls.at(-1)![0].calls.length })
   await rerender()
 }
 
@@ -500,23 +460,21 @@ describe('the review', () => {
     ])
     // The one decoded review of the whole stick opened with the plan, its summary above the calls, and the first step
     // went out once it was approved.
-    expect(mocks.tx.review).toHaveBeenCalledExactlyOnceWith(
-      [
+    expect(mocks.tx.review).toHaveBeenCalledOnce()
+    expect(mocks.tx.run).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      calls: [
         expect.objectContaining({ functionName: 'approve', args: [TERMINAL, 0n] }),
         expect.objectContaining({ functionName: 'approve', args: [TERMINAL, 5n * CPN] }),
         expect.objectContaining({ functionName: 'pay' }),
       ],
-      {
-        account: ALICE,
-        title: 'Stick',
-        rows: [
-          { label: 'Stick', value: '5 CPN', strong: true },
-          { label: 'You get at least', value: '9.87 STICKYCPN', strong: true },
-          { label: 'On', value: 'Base Sepolia' },
-        ],
-      },
-    )
-    expect(mocks.tx.send).toHaveBeenCalledOnce()
+      account: ALICE,
+      title: 'Stick',
+      context: [
+        { label: 'Stick', value: '5 CPN', strong: true },
+        { label: 'You get at least', value: '9.87 STICKYCPN', strong: true },
+        { label: 'On', value: 'Base Sepolia' },
+      ],
+    }))
   })
 
   it('plans the approval and the stick when nothing is approved yet', async () => {
@@ -542,16 +500,16 @@ describe('the review', () => {
     expect(dialog()!.textContent).toContain('1 transaction left.')
 
     expect(mocks.tx.send).toHaveBeenCalledTimes(1)
-    const [request, options] = mocks.tx.send.mock.calls[0]
-    expect(request).toMatchObject({
+    const [call] = mocks.tx.send.mock.calls[0]
+    expect(call).toMatchObject({
       chainId: CHAIN,
-      address: TERMINAL,
+      to: TERMINAL,
       functionName: 'pay',
       args: [BigInt(PROJECT), TOKEN, 5n * CPN, ALICE, MINTED, '', '0x'],
     })
-    expect(options.simulationBlockNumber).toBeUndefined()
+    expect(call.dependsOnPrior).toBeUndefined()
     // The stick is the account's that reviewed it, and the engine sends it only from that account.
-    expect(options.reviewedAccount).toBe(ALICE)
+    expect(mocks.tx.run.mock.calls[0][0].account).toBe(ALICE)
   })
 
   it('does not approve again for an allowance that already covers the amount', async () => {
@@ -561,105 +519,84 @@ describe('the review', () => {
     expect(steps()).toEqual(['Stick'])
   })
 
-  it('wallet-action:approve-the-staked-token-for-a-stick sends the steps in order, one for each confirmation, and simulates each after the block of the one before', async () => {
+  it('wallet-action:approve-the-staked-token-for-a-stick sends the steps in order in one run, and simulates each after the block of the one before', async () => {
     mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 3n * CPN })
     await render()
     await review()
 
-    // The engine has taken the step, as its own state says, and the flow renders again.
+    // One confirmation for the whole stick: one review of all three steps, and one run that sends them in order.
+    expect(reviews()).toEqual([['approve', 'approve', 'pay']])
+    expect(mocks.tx.run).toHaveBeenCalledOnce()
+    expect(mocks.tx.run.mock.calls[0][0]).toMatchObject({ account: ALICE, title: 'Stick', context: expect.any(Array) })
+    const calls = mocks.tx.send.mock.calls.map(([call]) => call)
+    expect(calls[0]).toMatchObject({ to: TOKEN, functionName: 'approve', args: [TERMINAL, 0n] })
+    expect(calls[0].dependsOnPrior).toBeUndefined()
+    expect(calls[1]).toMatchObject({ to: TOKEN, functionName: 'approve', args: [TERMINAL, 5n * CPN], dependsOnPrior: true })
+    expect(calls[2]).toMatchObject({ to: TERMINAL, functionName: 'pay', dependsOnPrior: true })
+
+    // The engine reports the run as it goes: the step it is on, and the ones confirmed before it.
+    Object.assign(mocks.tx, { phase: 'pending', busy: true })
     await rerender()
-    expect(mocks.tx.send).toHaveBeenCalledTimes(1)
-    expect(mocks.tx.send.mock.calls[0][0]).toMatchObject({ address: TOKEN, functionName: 'approve', args: [TERMINAL, 0n] })
-    expect(mocks.tx.send.mock.calls[0][1].simulationBlockNumber).toBeUndefined()
     expect(stepStates()).toEqual(['active', 'pending', 'pending'])
     expect(confirmButton()!.disabled).toBe(true)
     expect(dialog()!.textContent).toContain('Waiting for confirmation…')
-
-    await confirmed(APPROVAL_HASH, 4_001n)
+    mocks.tx.landed = 1
+    await rerender()
     expect(stepStates()).toEqual(['complete', 'active', 'pending'])
     expect(dialog()!.textContent).toContain('2 transactions left.')
-    expect(mocks.tx.send).toHaveBeenCalledTimes(2)
-    expect(mocks.tx.send.mock.calls[1][0]).toMatchObject({ address: TOKEN, functionName: 'approve', args: [TERMINAL, 5n * CPN] })
-    expect(mocks.tx.send.mock.calls[1][1].simulationBlockNumber).toBe(4_001n)
-    await confirmed(APPROVAL_HASH, 4_005n)
-    expect(mocks.tx.send).toHaveBeenCalledTimes(3)
-    expect(mocks.tx.send.mock.calls[2][0]).toMatchObject({ address: TERMINAL, functionName: 'pay' })
-    expect(mocks.tx.send.mock.calls[2][1].simulationBlockNumber).toBe(4_005n)
-    // Every step, the approvals included, is sent only from the account that reviewed the plan.
-    expect(mocks.tx.send.mock.calls.map(([, options]) => options.reviewedAccount)).toEqual([ALICE, ALICE, ALICE])
-    // One confirmation for the whole stick: one review of all three steps, and each step sent with its proof.
-    expect(reviews()).toEqual([['approve', 'approve', 'pay']])
-    expect(mocks.tx.review.mock.calls[0][1]).toMatchObject({ account: ALICE, title: 'Stick', rows: expect.any(Array) })
-    const proof = await mocks.tx.review.mock.results[0].value
-    expect(mocks.tx.send.mock.calls.every(([, options]) => options.reviewed === proof)).toBe(true)
+    await confirmed(STICK_HASH, 4_010n)
+    expect(stepStates()).toEqual(['complete', 'complete', 'complete'])
+    expect(mocks.tx.review).toHaveBeenCalledOnce()
   })
 
-  it('counts nothing for a send the engine did not take, skips no step, and reviews the steps left again', async () => {
+  it('counts the steps a failed run confirmed, and Retry runs the same steps again, which the engine finishes from where it stopped', async () => {
     mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 3n * CPN })
     const invalidate = vi.spyOn(client, 'invalidateQueries')
     await render()
+    refuseNext()
+    mocks.tx.send.mockImplementationOnce(async () => STICK_HASH)
     await review()
+    await rerender()
+    expect(stepStates()).toEqual(['active', 'pending', 'pending'])
+    expect(footer()).toEqual(['Cancel', 'Retry'])
 
-    // The engine answers null and changes nothing for a send it will not take, as it does while it still holds its lock
-    // for the step that has just confirmed. The dialog is where it was, and the review that send carried is dropped.
-    mocks.tx.send.mockImplementationOnce(async () => null)
-    await confirmed(APPROVAL_HASH, 4_001n)
-    expect(mocks.tx.send).toHaveBeenCalledTimes(2)
-    expect(mocks.tx.send.mock.calls[1][0]).toMatchObject({ functionName: 'approve', args: [TERMINAL, 5n * CPN] })
+    mocks.tx.send.mockReset().mockResolvedValueOnce(APPROVAL_HASH).mockImplementationOnce(async (_call, step) => {
+      Object.assign(mocks.tx, { phase: 'error', busy: false, error: 'Transaction cancelled.', landed: step })
+      throw new Error('Transaction cancelled.')
+    })
+    await click(confirmButton())
+    await rerender()
     expect(stepStates()).toEqual(['complete', 'active', 'pending'])
     expect(dialog()!.querySelector('h2')!.textContent).toBe('Confirm stick')
     expect(dialog()!.textContent).toContain('2 transactions left.')
-    expect(footer()).toEqual(['Close', 'Review again'])
-
-    // The engine still says the last step confirmed, and says it again, as when its watcher and its poll both answer.
-    // That confirmation is the last step's and is not counted for the next.
-    mocks.tx.receipt = { blockNumber: 4_001n }
-    await rerender()
-    expect(stepStates()).toEqual(['complete', 'active', 'pending'])
-    expect(mocks.tx.send).toHaveBeenCalledTimes(2)
-
-    // The next press reviews the steps left, and sends the one that is next, the approval.
-    await click(confirmButton())
-    expect(reviews()).toEqual([['approve', 'approve', 'pay'], ['approve', 'pay']])
-    expect(mocks.tx.send.mock.calls[2][0]).toMatchObject({ functionName: 'approve', args: [TERMINAL, 5n * CPN] })
-
-    // And the same for the stick: a refused send neither completes the dialog nor counts a stick that was never sent.
-    mocks.tx.send.mockImplementationOnce(async () => null)
-    await confirmed(APPROVAL_HASH, 4_005n)
-    expect(mocks.tx.send.mock.calls[3][0]).toMatchObject({ functionName: 'pay' })
-    expect(stepStates()).toEqual(['complete', 'complete', 'active'])
-    expect(dialog()!.querySelector('h2')!.textContent).toBe('Confirm stick')
-    expect(dialog()!.textContent).toContain('1 transaction left.')
-    expect(footer()).toEqual(['Close', 'Review again'])
+    expect(footer()).toEqual(['Close', 'Retry'])
     expect(invalidate).not.toHaveBeenCalled()
 
+    // Retry is the same steps: the engine resumes its saved run past the ones that confirmed, under a review of their own.
     await click(confirmButton())
-    expect(reviews().at(-1)).toEqual(['pay'])
-    expect(mocks.tx.send.mock.calls[4][0]).toMatchObject({ functionName: 'pay' })
+    expect(mocks.tx.run).toHaveBeenCalledTimes(3)
+    expect(mocks.tx.run.mock.calls[2][0].calls).toEqual(mocks.tx.run.mock.calls[0][0].calls)
     await confirmed(STICK_HASH, 4_010n)
     expect(dialog()!.querySelector('h2')!.textContent).toBe('Stick confirmed')
     expect(invalidate).toHaveBeenCalled()
   })
 
-  it('sends nothing already sent for a press that a render behind handles', async () => {
+  it('sends nothing for a press that a render behind handles while its run is out', async () => {
     mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 3n * CPN })
+    const out = Promise.withResolvers<void>()
+    mocks.tx.review.mockReturnValueOnce(out.promise)
     await render()
     await review()
-    // What a press runs as of the render that showed the reset going out: the confirmation below is counted first.
     const behind = handlerOf(confirmButton()!)
-    await confirmed(APPROVAL_HASH, 4_001n)
-    expect(stepStates()).toEqual(['complete', 'active', 'pending'])
-
-    // The engine holds its lock while a step it took is out, and takes no other send, as the real one does.
-    const take = mocks.tx.send.getMockImplementation() as (...args: unknown[]) => Promise<Hex | null>
-    mocks.tx.send.mockImplementation(async (...args: unknown[]) => (mocks.tx.busy ? null : take(...args)))
     await act(async () => behind())
-    const taken = mocks.tx.send.mock.calls.filter((_, at) => mocks.tx.send.mock.settledResults[at]?.value !== null)
-    expect(taken.map(([request]) => [request.functionName, request.args[1]])).toEqual([
+    await act(async () => out.resolve())
+    await settled()
+    expect(mocks.tx.run).toHaveBeenCalledOnce()
+    expect(mocks.tx.send.mock.calls.map(([call]) => [call.functionName, call.args?.[1]])).toEqual([
       ['approve', 0n],
       ['approve', 5n * CPN],
+      ['pay', TOKEN],
     ])
-    expect(mocks.tx.review).toHaveBeenCalledOnce()
   })
 
   it('sends nothing for a press that a render behind handles once every step has been counted', async () => {
@@ -722,10 +659,8 @@ describe('the review', () => {
   it('shows what went wrong in the dialog, and sends the same step again on Retry', async () => {
     mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 5n * CPN })
     await render()
+    refuseNext()
     await review()
-    mocks.tx.phase = 'error'
-    mocks.tx.busy = false
-    mocks.tx.error = 'Transaction cancelled.'
     await rerender()
 
     expect(dialog()!.textContent).toContain('Transaction cancelled.')
@@ -744,11 +679,9 @@ describe('the review', () => {
       errorName: 'JBMultiTerminal_UnderMin',
       args: [9_800_000_000_000_000_000n, MINTED],
     })
-    mocks.tx.send.mockImplementationOnce(async (_step: unknown, options: { onFailure?: (error: unknown) => void }) => {
-      options.onFailure?.({ shortMessage: 'Execution reverted.', data: underMin })
-      mocks.tx.phase = 'error'
-      mocks.tx.error = 'Execution reverted.'
-      return null
+    mocks.tx.send.mockImplementationOnce(async () => {
+      Object.assign(mocks.tx, { phase: 'error', error: 'Execution reverted.', failure: { shortMessage: 'Execution reverted.', data: underMin } })
+      throw new Error('Execution reverted.')
     })
     await review()
     await rerender()
@@ -767,9 +700,9 @@ describe('the review', () => {
     // Review again plans the stick afresh, and its own review shows the new minimum before it is sent.
     expect(mocks.quote).toHaveBeenCalledTimes(quotes + 1)
     expect(mocks.tx.review).toHaveBeenCalledTimes(2)
-    expect(mocks.tx.review.mock.calls[1][0][0].args[4]).toBe(9_800_000_000_000_000_000n)
+    expect(mocks.tx.review.mock.calls[1][0].calls[0].args![4]).toBe(9_800_000_000_000_000_000n)
     expect(mocks.tx.send).toHaveBeenCalledTimes(2)
-    expect(mocks.tx.send.mock.calls[1][0].args[4]).toBe(9_800_000_000_000_000_000n)
+    expect(mocks.tx.send.mock.calls[1][0].args![4]).toBe(9_800_000_000_000_000_000n)
   })
 
   it('says a mined stick reverted, and Review again quotes it afresh', async () => {
@@ -800,12 +733,9 @@ describe('the review', () => {
       errorName: 'JBMultiTerminal_UnderMin',
       args: [1n, 2n],
     })
-    mocks.tx.send.mockImplementationOnce(async (_step: unknown, options: { onFailure?: (error: unknown) => void }) => {
-      options.onFailure?.({ shortMessage: 'Execution reverted.', data: underMin })
-      mocks.tx.phase = 'error'
-      mocks.tx.error = HELD_FAILED_LINE
-      mocks.tx.reverted = true
-      return null
+    mocks.tx.send.mockImplementationOnce(async () => {
+      Object.assign(mocks.tx, { phase: 'error', error: HELD_FAILED_LINE, reverted: true, failure: { shortMessage: 'Execution reverted.', data: underMin } })
+      throw new Error(HELD_FAILED_LINE)
     })
     await review()
     await rerender()
@@ -819,11 +749,9 @@ describe('the review', () => {
   it('names a known revert that a fresh quote does not fix, and keeps Retry', async () => {
     mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 5n * CPN })
     await render()
-    mocks.tx.send.mockImplementationOnce(async (_step: unknown, options: { onFailure?: (error: unknown) => void }) => {
-      options.onFailure?.({ shortMessage: 'Execution reverted.', data: `0x8dc14446${'0'.repeat(63)}1${'0'.repeat(63)}2` })
-      mocks.tx.phase = 'error'
-      mocks.tx.error = 'Execution reverted.'
-      return null
+    mocks.tx.send.mockImplementationOnce(async () => {
+      Object.assign(mocks.tx, { phase: 'error', error: 'Execution reverted.', failure: { shortMessage: 'Execution reverted.', data: `0x8dc14446${'0'.repeat(63)}1${'0'.repeat(63)}2` } })
+      throw new Error('Execution reverted.')
     })
     await review()
     await rerender()
@@ -836,6 +764,7 @@ describe('the review', () => {
     await review()
 
     // The engine takes the approval, and goes through its phases.
+    mocks.tx.busy = true
     for (const [phase, line, button] of [
       ['simulating', 'Double-checking the transaction…', 'Double-checking the transaction…'],
       ['signing', 'Confirm in your wallet…', 'Confirm in your wallet…'],
@@ -849,9 +778,11 @@ describe('the review', () => {
       expect(stepStates()).toEqual(['active', 'pending'])
     }
 
-    // The approval confirms, and the stick goes out without asking again.
-    await confirmed(APPROVAL_HASH, 4_001n)
+    // The approval confirms, and the stick goes out in the same run without asking again.
+    mocks.tx.landed = 1
+    await rerender()
     expect(mocks.tx.send.mock.calls[1][0]).toMatchObject({ functionName: 'pay' })
+    expect(mocks.tx.review).toHaveBeenCalledOnce()
     expect(statusLine()).toBe('Waiting for confirmation…')
     expect(stepStates()).toEqual(['complete', 'active'])
   })
@@ -861,7 +792,8 @@ describe('the review', () => {
     await review()
     expect(footer()[0]).toBe('Cancel')
 
-    await confirmed(APPROVAL_HASH, 4_001n)
+    Object.assign(mocks.tx, { phase: 'pending', busy: true, landed: 1 })
+    await rerender()
     expect(footer()[0]).toBe('Close')
 
     // The stick fails: the approval stays, and so does Close.
@@ -873,43 +805,42 @@ describe('the review', () => {
     expect(stepStates()).toEqual(['complete', 'active'])
   })
 
-  it('simulates a retried stick after the block of the approval that came before it', async () => {
+  it('retries the same stick, which the engine resumes past the approval that confirmed', async () => {
     await render()
+    mocks.tx.send.mockResolvedValueOnce(APPROVAL_HASH)
+    refuseNext()
     await review()
-    await confirmed(APPROVAL_HASH, 4_001n)
-    mocks.tx.phase = 'error'
-    mocks.tx.busy = false
-    mocks.tx.error = 'Transaction cancelled.'
     await rerender()
+    expect(stepStates()).toEqual(['complete', 'active'])
 
     await click(confirmButton())
-    expect(mocks.tx.send).toHaveBeenCalledTimes(3)
-    expect(mocks.tx.send.mock.calls[2][0]).toMatchObject({ functionName: 'pay' })
-    expect(mocks.tx.send.mock.calls[2][1].simulationBlockNumber).toBe(4_001n)
+    expect(mocks.tx.run).toHaveBeenCalledTimes(2)
+    expect(mocks.tx.run.mock.calls[1][0].calls).toEqual(mocks.tx.run.mock.calls[0][0].calls)
+    expect(mocks.tx.run.mock.calls[1][0].calls[1]).toMatchObject({ functionName: 'pay', dependsOnPrior: true })
   })
 
   it('reads the balance again just before each send, and stops when it no longer covers the amount', async () => {
     await render()
     await review()
-    const [request, { reverify }] = mocks.tx.send.mock.calls[0]
+    const { calls: [call], reverify } = mocks.tx.run.mock.calls[0][0]
 
     mocks.funds.mockClear()
-    await expect(reverify(request)).resolves.toBeUndefined()
+    await expect(reverify!(call, 0, undefined)).resolves.toBeUndefined()
     expect(mocks.funds).toHaveBeenCalledWith(CHAIN, { token: TOKEN, owner: ALICE, spender: TERMINAL })
 
     mocks.funds.mockResolvedValue({ balance: 4n * CPN, allowance: 0n })
-    await expect(reverify(request)).rejects.toThrow('Your CPN balance changed. Review the amount.')
+    await expect(reverify!(call, 0, undefined)).rejects.toThrow('Your CPN balance changed. Review the amount.')
   })
 
   it('tells the console why the balance could not be checked before a send, and keeps the cause', async () => {
     await render()
     await review()
-    const [request, { reverify }] = mocks.tx.send.mock.calls[0]
+    const { calls: [call], reverify } = mocks.tx.run.mock.calls[0][0]
 
     const cause = new Error('429')
     const unreadable = new Error('the balance and the allowance could not be read.', { cause })
     mocks.funds.mockRejectedValue(unreadable)
-    await expect(reverify(request)).rejects.toMatchObject({
+    await expect(reverify!(call, 0, undefined)).rejects.toMatchObject({
       message: 'The balance and the allowance could not be read.',
       cause: unreadable,
     })
@@ -977,7 +908,7 @@ describe('the review', () => {
 
   it('hands the engine the plan\'s account whichever account is shown', async () => {
     let approve = () => {}
-    mocks.tx.review.mockImplementationOnce(() => new Promise(resolve => (approve = () => resolve({}))))
+    mocks.tx.review.mockImplementationOnce(() => new Promise(resolve => (approve = () => resolve())))
     await render()
     await review()
     expect(steps()).toEqual(['Approve 5 CPN', 'Stick'])
@@ -988,9 +919,9 @@ describe('the review', () => {
     await settled()
 
     // The plan was made for ALICE: its balance, allowance and quote are hers. The engine is told whose it is, and it is
-    // the engine that refuses a send while another account is connected (test/transactions/use-safe-tx.test.ts).
-    expect(mocks.tx.send).toHaveBeenCalledTimes(1)
-    expect(mocks.tx.send.mock.calls[0][1].reviewedAccount).toBe(ALICE)
+    // the engine that refuses a send while another account is connected.
+    expect(mocks.tx.run).toHaveBeenCalledOnce()
+    expect(mocks.tx.run.mock.calls[0][0].account).toBe(ALICE)
     expect(alerts()).toEqual([])
   })
 
@@ -999,8 +930,8 @@ describe('the review', () => {
     await render()
     await review()
     // The approval lands, and the wallet turns down the stick that follows it.
-    refuseNext()
-    await confirmed(APPROVAL_HASH, 4_001n)
+    Object.assign(mocks.tx, { phase: 'error', busy: false, error: 'Transaction cancelled.', landed: 1 })
+    await rerender()
     await click(buttonIn(dialog()!, 'Close'))
     expect(dialog()).toBeNull()
 
@@ -1044,12 +975,11 @@ describe('a wallet that cannot send', () => {
     await rerender()
 
     expect(alerts()).toEqual([])
-    expect(mocks.funds).toHaveBeenCalledOnce()
+    expect(plannings()).toBe(1)
     expect(mocks.funds).toHaveBeenCalledWith(CHAIN, { token: TOKEN, owner: BOB, spender: TERMINAL }, expect.anything())
     expect(steps()).toEqual(['Approve 5 CPN', 'Stick'])
     // The stick was asked for, so its one review opens for the account that connected.
-    expect(mocks.tx.review).toHaveBeenCalledExactlyOnceWith(expect.any(Array), expect.objectContaining({ account: BOB }))
-    expect(mocks.tx.send.mock.calls.map(([, options]) => options.reviewedAccount)).toEqual([BOB])
+    expect(mocks.tx.run).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ account: BOB }))
   })
 
   it('passes the engine\'s own refusal through, and plans again once an external wallet connects, for its account', async () => {
@@ -1064,7 +994,7 @@ describe('a wallet that cannot send', () => {
     await rerender()
     expect(dialog()!.textContent).toContain(`${EXTERNAL_WALLET_REQUIRED} Connect a wallet`)
     expect(buttonIn(dialog()!, 'Connect a wallet')).toBeDefined()
-    expect(mocks.funds).toHaveBeenCalledTimes(1)
+    expect(plannings()).toBe(1)
 
     // An external wallet connects: the refusal is cleared, and the plan made for the account that could not send is
     // made again for this one.
@@ -1072,12 +1002,11 @@ describe('a wallet that cannot send', () => {
     await rerender()
     expect(mocks.tx.reset).toHaveBeenCalled()
     expect(dialog()!.textContent).not.toContain(EXTERNAL_WALLET_REQUIRED)
-    expect(mocks.funds).toHaveBeenCalledTimes(2)
-    expect(mocks.funds).toHaveBeenLastCalledWith(CHAIN, { token: TOKEN, owner: BOB, spender: TERMINAL }, expect.anything())
+    expect(plannings()).toBe(2)
+    expect(mocks.funds.mock.calls.filter(call => call.length > 2).at(-1)).toEqual([CHAIN, { token: TOKEN, owner: BOB, spender: TERMINAL }, expect.anything()])
     expect(steps()).toEqual(['Approve 5 CPN', 'Stick'])
     expect(mocks.tx.review).toHaveBeenCalledTimes(2)
-    expect(mocks.tx.review.mock.calls[1][1]).toMatchObject({ account: BOB })
-    expect(mocks.tx.send.mock.calls.at(-1)![1].reviewedAccount).toBe(BOB)
+    expect(mocks.tx.run.mock.calls[1][0]).toMatchObject({ account: BOB })
   })
 
   it('does not review on its own for an external wallet that connects when nothing was refused', async () => {
@@ -1179,16 +1108,17 @@ describe('sticking for someone else', () => {
       ['On', 'Base Sepolia'],
     ])
 
-    expect(mocks.tx.review).toHaveBeenCalledExactlyOnceWith(
-      [expect.objectContaining({ functionName: 'pay' })],
-      expect.objectContaining({ account: ALICE, title: 'Stick for someone else' }),
-    )
+    expect(mocks.tx.run).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      calls: [expect.objectContaining({ functionName: 'pay' })],
+      account: ALICE,
+      title: 'Stick for someone else',
+    }))
     expect(mocks.tx.send.mock.calls[0][0]).toMatchObject({
       functionName: 'pay',
       args: [BigInt(PROJECT), TOKEN, 5n * CPN, FRIEND, MINTED, '', '0x'],
     })
     // The sender is the account the review was made for (its trust check and its quote were that sender's), not the recipient.
-    expect(mocks.tx.send.mock.calls[0][1].reviewedAccount).toBe(ALICE)
+    expect(mocks.tx.run.mock.calls[0][0].account).toBe(ALICE)
   })
 
   it('needs no one\'s trust to stick for the sender itself', async () => {
@@ -1198,7 +1128,7 @@ describe('sticking for someone else', () => {
     await click(flowButton('Review stick'))
     await settled()
     expect(steps()).toEqual(['Stick'])
-    expect(mocks.tx.send.mock.calls[0][0].args[3]).toBe(ALICE)
+    expect(mocks.tx.send.mock.calls[0][0].args![3]).toBe(ALICE)
   })
 
   const REFUSAL = 'This holder must trust your address before you can stick for them.'

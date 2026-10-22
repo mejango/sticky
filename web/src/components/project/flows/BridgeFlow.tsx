@@ -12,7 +12,7 @@ import { holdIntent } from '@/lib/sticky-hold-intent'
 import { SavedWriteRecovery } from '@/components/ui/SavedWriteRecovery'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, ViewTransactionLink } from '@/components/ui/TxProgress'
-import { useSafeTx, type ReviewedCalls, type TxRequest } from '@/hooks/useSafeTx'
+import { reviewedSteps, useReviewedAction, type TxRequest } from '@/hooks/useReviewedAction'
 import { useWallet } from '@/hooks/useWallet'
 import { parseAmount } from '@/lib/sticky-amount'
 import { bridgeCalldata, bridgeRouteId, bridgeWriteHasUniqueReference, createStickyBridge, type BridgeMovement, type BridgeRoute } from '@/lib/sticky-bridge'
@@ -25,7 +25,7 @@ import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { readReceiver } from '@/lib/sticky-receivers'
 import { refreshAfterFund } from '@/lib/sticky-refresh'
 import { groupIdFromWeeks, groupLabel } from '@/lib/sticky-rewards'
-import { TransactionReviewCancelledError, type TransactionReviewRow } from '@/lib/transaction-review'
+import type { TransactionReviewRow } from '@/lib/transaction-review'
 import { chainName } from '@/lib/urn'
 import type { JBChainId } from '@bananapus/nana-sdk-core'
 
@@ -41,9 +41,7 @@ type Review = {
   record?: BridgeRecord
   movement?: BridgeMovement
   rows: TransactionReviewRow[]
-  /** The action's one decoded review: each step it showed is sent without asking again. */
-  reviewed?: ReviewedCalls
-  /** Send this step once it renders: the action was just chosen, or its review already showed this next step. */
+  /** Send the action once it renders: it was just chosen. */
   autoSend?: boolean
   confirmedAt?: bigint
   attempt?: PendingBridgeWrite
@@ -83,7 +81,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
   const [working, setWorking] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [settle, setSettle] = useState<{ token: Address; groupId: bigint; identity: string } | null>(null)
-  const tx = useSafeTx(review?.request.chainId ?? sourceChainId)
+  const tx = useReviewedAction()
   const generation = useRef(0)
   const handledHash = useRef<Hex | null>(null)
   /** Bumped when the person closes the review: an action they closed sends nothing more. */
@@ -236,52 +234,58 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
     }
     assertCurrent(current.identity)
   }
-  /** Sends the review's current step. Without the action's review proof, every step left is reviewed together first. */
+  /** Reviews every step left of the action once, and sends them in order, each saved as the transfer's attempt while it is out. */
   async function confirm(chosen: Review) {
     const current = { ...chosen, autoSend: false }
     await run(async () => {
       assertCurrent(current.identity)
       if (readPendingBridgeWrite(current.owner)) throw new Error('Recover the pending bridge transaction before sending it again.')
-      let reviewed = current.reviewed
-      if (!reviewed) {
-        const steps = current.record ? [current.request, ...current.record.steps.slice(1).map(restoreBridgeWrite)] : [current.request]
-        try {
-          reviewed = await tx.review(steps, { account: current.owner, title: current.record ? 'Airdrop across chains' : current.request.label ?? 'Confirm bridge step', rows: reviewRows(current) })
-        } catch (reason) {
-          if (reason instanceof TransactionReviewCancelledError) { closeReview(); return }
-          throw reason
-        }
-        assertCurrent(current.identity)
-      }
-      const held = createPendingBridgeWrite({ owner: current.owner, request: storeBridgeWrite(current.request), intent: holdIntent(current.request, current.owner), ...(current.record ? { metadata: current.record.metadata, recordKey: current.key } : {}) })
-      setReview({ ...current, reviewed, attempt: held })
-      let reserved = false
-      const undo = () => endPendingBridgeAttempt(current.owner, held.id)
-      await tx.send(current.request, {
-        reviewedAccount: current.owner, reviewed, simulationBlockNumber: current.confirmedAt,
-        reverify: () => verifyReview(current),
-        durableRecovery: {
-          reserve: async () => {
-            assertCurrent(current.identity)
-            try { savePendingBridgeWrite(current.owner, held); reserved = true } catch (reason) {
-              // This callback has not reached the wallet; undo a partial local write.
-              try { if (readPendingBridgeWrite(current.owner)) await undo() } catch { /* Preserve another attempt or unreadable storage. */ }
-              throw reason
-            }
-          },
-          releaseUnsubmitted: undo,
-          // The user's exit released the SDK hold: the reservation goes, the saved transfer stays.
-          released: async () => { await endPendingBridgeAttempt(current.owner, held.id); setPending(null) },
-          submitted: async (hash, safeProposal) => {
-            // A queued Safe proposal can be adopted without reserving a new write.
-            if (!reserved && !readPendingBridgeWrite(current.owner)) { savePendingBridgeWrite(current.owner, held); reserved = true }
-            const submitted = savePendingBridgeSubmission(held, hash, safeProposal)
-            if (current.record && current.request.functionName === 'prepare') await updateBridgeRecord(current.key, current.record.metadata, record => {
-              assertPendingBridgeWrite(submitted)
-              return { ...record, submission: { hash, safeProposal } }
-            })
-          },
+      const steps = current.record ? [current.request, ...current.record.steps.slice(1).map(restoreBridgeWrite)] : [current.request]
+      /** Each step's saved attempt, made when its wallet is about to open. */
+      const attempts: PendingBridgeWrite[] = []
+      /** The steps whose reservation this run saved. */
+      const reserved = new Set<number>()
+      const undo = (step: number) => endPendingBridgeAttempt(current.owner, attempts[step]?.id)
+      await tx.run({
+        account: current.owner,
+        calls: reviewedSteps(steps, current.owner, current.confirmedAt),
+        title: current.record ? 'Airdrop across chains' : current.request.label ?? 'Confirm bridge step',
+        context: reviewRows(current),
+        reverify: (_call, index) => verifyReview({ ...current, request: steps[index] }),
+        beforeWallet: async (_call, step) => {
+          assertCurrent(current.identity)
+          // The step before this one confirmed in this run: its saved attempt is recovered first.
+          const before = step > 0 ? readPendingBridgeWrite(current.owner) : null
+          if (before?.hash) await recover(before.hash, before)
+          const held = createPendingBridgeWrite({ owner: current.owner, request: storeBridgeWrite(steps[step]), intent: holdIntent(steps[step], current.owner), ...(current.record ? { metadata: current.record.metadata, recordKey: current.key } : {}) })
+          attempts[step] = held
+          setReview({ ...current, request: steps[step], attempt: held })
+          try { savePendingBridgeWrite(current.owner, held); reserved.add(step) } catch (reason) {
+            // This callback has not reached the wallet; undo a partial local write.
+            try { if (readPendingBridgeWrite(current.owner)) await undo(step) } catch { /* Preserve another attempt or unreadable storage. */ }
+            throw reason
+          }
         },
+        // Only a reservation this run saved is ended: one it found is another attempt's.
+        onUnsent: async (_call, step) => { if (reserved.has(step)) await undo(step) },
+        onSubmitted: async (_call, step, hash, { safe }) => {
+          // A queued Safe proposal can be adopted without reserving a new write.
+          const held = attempts[step] ?? createPendingBridgeWrite({ owner: current.owner, request: storeBridgeWrite(steps[step]), intent: holdIntent(steps[step], current.owner), ...(current.record ? { metadata: current.record.metadata, recordKey: current.key } : {}) })
+          if (!attempts[step]) { attempts[step] = held; setReview({ ...current, request: steps[step], attempt: held }) }
+          if (!reserved.has(step) && !readPendingBridgeWrite(current.owner)) { savePendingBridgeWrite(current.owner, held); reserved.add(step) }
+          const submitted = savePendingBridgeSubmission(held, hash, safe)
+          if (current.record && steps[step].functionName === 'prepare') await updateBridgeRecord(current.key, current.record.metadata, record => {
+            assertPendingBridgeWrite(submitted)
+            return { ...record, submission: { hash, safeProposal: safe } }
+          })
+        },
+        // The user's exit released the SDK hold: the reservation goes, the saved transfer stays.
+        onReleased: async () => {
+          const held = readPendingBridgeWrite(current.owner)
+          if (held) await endPendingBridgeAttempt(current.owner, held.id)
+          setPending(null)
+        },
+        onCancelled: closeReview,
       })
       setPending(readPendingBridgeWrite(current.owner))
     })
@@ -341,14 +345,13 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
       assertCurrent(current.identity)
       const record = current.record && readBridgeRecords(current.key).find(item => item.metadata === current.record!.metadata)
       const next: Review | null = record?.steps.length
-        ? { ...current, record: { ...current.record!, steps: record.steps }, confirmedAt, request: restoreBridgeWrite(record.steps[0]), autoSend: !!current.reviewed }
+        ? { ...current, record: { ...current.record!, steps: record.steps }, confirmedAt, request: restoreBridgeWrite(record.steps[0]), autoSend: false }
         : null
       if (!next) { if (epoch === action.current) setReview(null); tx.reset() }
       await refresh()
       return next
     }, true).then(next => {
-      // Published once the lock is free, so its send can take it. The transfer's next step was in its one review:
-      // it is sent without asking again, unless the review was closed or the wallet, project or bridge changed.
+      // Published once the lock is free: a step left over is reviewed again from its own confirm.
       if (!next || epoch !== action.current || currentIdentity.current !== next.identity) return
       tx.reset(); handledHash.current = null
       setReview(next)
@@ -421,7 +424,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
         {settle?.identity === identity ? <ReceiverFlow key={`${settle.token}:${settle.groupId}`} info={info} chainId={info.chainId} projectId={Number(info.projectId)} initialToken={settle.token} initialGroupId={settle.groupId} initiallyOpen onSettled={onFunded} /> : null}
         <TxError error={error} />
       </div>
-      {active ? <TxConfirmDialog open title={active.request.label ?? 'Confirm bridge step'} rows={reviewRows(active)} steps={(active.record?.steps ?? [storeBridgeWrite(active.request)]).map(step => ({ title: step.label }))} activeIndex={0} onClose={closeReview} onConfirm={() => void confirm({ ...active, reviewed: undefined })} busy={busy} settled={tx.phase === 'submitted'} complete={false} action={confirmAction(tx.phase, 'Review again')} status={sendingStatus(tx) ?? undefined} error={tx.error} /> : null}
+      {active ? <TxConfirmDialog open title={active.request.label ?? 'Confirm bridge step'} rows={reviewRows(active)} steps={(active.record?.steps ?? [storeBridgeWrite(active.request)]).map(step => ({ title: step.label }))} activeIndex={0} onClose={closeReview} onConfirm={() => void confirm(active)} busy={busy} settled={tx.phase === 'submitted'} complete={false} action={confirmAction(tx.phase, 'Review again')} status={sendingStatus(tx) ?? undefined} error={tx.error} /> : null}
     </ModalShell>
   )
 }

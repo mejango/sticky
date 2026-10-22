@@ -2,7 +2,7 @@
 
 import { withApprovalParent } from '@/lib/sticky-hold-intent'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { erc20Abi, formatUnits, type Address } from 'viem'
 import { Refusal } from '@/components/project/flows/refusal'
 import { reviewGate } from '@/components/project/flows/review-gate'
@@ -11,7 +11,8 @@ import { Revalidating } from '@/components/ui/Revalidating'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
-import { useSafeTx, type ReviewedCalls, type TxRequest } from '@/hooks/useSafeTx'
+import { reviewedSteps, useReviewedAction, type TxRequest } from '@/hooks/useReviewedAction'
+import { useStepPresses } from '@/hooks/useStepPresses'
 import { useSettled } from '@/hooks/useSettled'
 import { useWallet } from '@/hooks/useWallet'
 import { preflight } from '@/lib/preflight'
@@ -24,7 +25,7 @@ import type { Answer, StickyProjectInfo } from '@/lib/sticky-project'
 import { quoteUnstick, unstickQuoteSentence, type UnstickQuote } from '@/lib/sticky-quotes'
 import { refreshAfterAutoStick, refreshAfterUnstick } from '@/lib/sticky-refresh'
 import { need, readAt } from '@/lib/sticky-rewards'
-import { TransactionReviewCancelledError, type TransactionReviewRow } from '@/lib/transaction-review'
+import type { TransactionReviewRow } from '@/lib/transaction-review'
 import { chainName } from '@/lib/urn'
 import { EXTERNAL_WALLET_REQUIRED } from '@/providers/WalletAuthContext'
 
@@ -218,32 +219,24 @@ export function UnstickFlow({
   onClose: () => void
 }) {
   const { address, isConnected, isCenterWallet, openSignIn } = useWallet()
-  const tx = useSafeTx(chainId)
+  const tx = useReviewedAction()
+  const presses = useStepPresses(tx, closeReview)
   const client = useQueryClient()
   const [amount, setAmount] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [plan, setPlan] = useState<Plan | null>(null)
   const [sent, setSent] = useState<Sent>(NOTHING_SENT)
-  const [accepted, setAccepted] = useState<{ step: TxRequest; holder: Address } | null>(null)
   const [preparing, setPreparing] = useState(false)
   const preparation = useRef<AbortController | null>(null)
   const waiting = useRef(false)
   const reviewAgain = useRef<() => void>(() => undefined)
-  // The plan's one decoded review: the proof its steps are sent with, and whether the next step is due to be sent. `live`
-  // is the plan being open, and `generation` counts the plans made and closed, so a send scheduled for a plan that is
-  // gone is not made.
-  const reviewed = useRef<ReviewedCalls | undefined>(undefined)
-  const live = useRef(false)
-  const generation = useRef(0)
-  /** A send is under way (its review open, or the engine not yet answered): another press waits for it. */
-  const pressing = useRef(false)
-  const [due, setDue] = useState(false)
+  /** The plan the engine is running, and how many of its steps are counted as gone through. */
+  const running = useRef<{ plan: Plan; counted: number } | null>(null)
 
   const who = address?.toLowerCase()
   // What went through is the plan's account's while there is a plan, and the connected account's otherwise.
   const landed = sent.holder === (plan?.holder ?? address)?.toLowerCase() ? sent.steps : NOTHING
-  // A step the engine has taken and the chain has confirmed is busy until it is counted.
-  const sending = tx.busy || tx.phase === 'review' || (tx.phase === 'success' && accepted !== null)
+  const sending = tx.busy || tx.phase === 'review'
   const complete = plan !== null && plan.steps.length === 0
 
   const count = parseShares(amount)
@@ -277,30 +270,23 @@ export function UnstickFlow({
     [],
   )
 
-  // A step is counted once the engine has taken it and the chain has confirmed it; the next send is for the next step.
+  // Each step of the run is counted once the chain has confirmed it: it leaves the plan for what went through.
   useEffect(() => {
-    if (tx.phase !== 'success' || accepted === null) return
-    const { step, holder } = accepted
+    const run = running.current
+    if (!run || tx.landed <= run.counted) return
+    const went = run.plan.steps.slice(run.counted, tx.landed)
+    const holder = run.plan.holder
     const key = holder.toLowerCase()
-    setAccepted(null)
-    setSent(record => ({ holder: key, steps: record.holder === key ? [...record.steps, step] : [step] }))
-    setPlan(current => current && { ...current, steps: current.steps.slice(1) })
+    run.counted = tx.landed
+    setSent(record => ({ holder: key, steps: record.holder === key ? [...record.steps, ...went] : went }))
+    setPlan(current => current && { ...current, steps: current.steps.slice(went.length) })
     setError(null)
-    // The next step the review showed is sent without asking again.
-    if (reviewed.current) setDue(true)
     // What the step changed is read again: a step of the teardown changes only the holder's auto-stick and trust.
-    if (isTeardown(step)) refreshAfterAutoStick(client, chainId, projectId, holder)
-    else refreshAfterUnstick(client, chainId, projectId, holder)
-  }, [tx.phase, accepted, client, chainId, projectId])
-
-  // A step that fails after the engine took it, or that the engine lets go of without a result (a released hold), drops
-  // the review, so whatever is sent next is reviewed again; a released step is no longer out. This runs before the
-  // commit that shows it can be clicked.
-  useLayoutEffect(() => {
-    if (accepted === null || (tx.phase !== 'error' && tx.phase !== 'idle')) return
-    reviewed.current = undefined
-    if (tx.phase === 'idle') setAccepted(null)
-  }, [tx.phase, accepted])
+    for (const step of went) {
+      if (isTeardown(step)) refreshAfterAutoStick(client, chainId, projectId, holder)
+      else refreshAfterUnstick(client, chainId, projectId, holder)
+    }
+  }, [tx.landed, client, chainId, projectId])
 
   // A plan is for one account. One whose account has gone is dropped, unless its send is on its way.
   useEffect(() => {
@@ -327,19 +313,14 @@ export function UnstickFlow({
     preparation.current?.abort()
     const controller = new AbortController()
     preparation.current = controller
-    generation.current += 1
-    live.current = false
-    pressing.current = false
-    reviewed.current = undefined
-    setDue(false)
+    presses.restart()
     setPreparing(true)
     try {
       const next = await planUnstick(info, address, shares, landed, controller.signal)
       if (controller.signal.aborted) return
       setPlan(next)
       setError(null)
-      live.current = true
-      setDue(true)
+      presses.arm()
     } catch (reason) {
       if (controller.signal.aborted) return
       if (!(reason instanceof Refusal)) console.warn(PLAN_UNREADABLE, { chainId, projectId }, reason)
@@ -383,45 +364,27 @@ export function UnstickFlow({
   }
 
   async function sendNext() {
-    if (!plan || sending || preparing || !live.current || pressing.current || plan.steps.length === 0) return
-    const mine = generation.current
-    pressing.current = true
-    try {
-      await reviewAndSend(plan, mine)
-    } finally {
-      if (generation.current === mine) pressing.current = false
-    }
-  }
-
-  async function reviewAndSend(plan: Plan, mine: number) {
-    setDue(false)
-    const [step] = plan.steps
+    if (!plan || sending || preparing || plan.steps.length === 0) return
     setError(null)
-    // One decoded review shows every step left, with the summary rows; each is then sent under it.
-    if (!reviewed.current) {
-      try {
-        reviewed.current = await tx.review(plan.steps, { account: plan.holder, title: `Unstick ${info.symbol}`, rows: reviewRows(info, plan) })
-      } catch (reason) {
-        if (!(reason instanceof TransactionReviewCancelledError)) throw reason
-        if (generation.current === mine) closeReview()
-        return
-      }
-      if (generation.current !== mine) return
-    }
-    // Every step is sent as the holder the plan was made for, and the engine refuses it, before a review opens, while
-    // another account is connected. Its send answers nothing while its lock is held, and a step it did not answer has
-    // not been taken: the review is dropped, so the next press reviews what is left again.
-    const hash = await tx.send(step, { reviewedAccount: plan.holder, reviewed: reviewed.current, reverify: () => stillFits(info, plan, step) })
-    if (generation.current !== mine) return
-    if (hash !== null) setAccepted({ step, holder: plan.holder })
-    else reviewed.current = undefined
+    running.current = { plan, counted: 0 }
+    // Every step left is reviewed once, with the summary rows, and sent as the holder the plan was made for: the engine
+    // refuses the run, before its review opens, while another account is connected.
+    await presses.press(
+      {
+        account: plan.holder,
+        calls: reviewedSteps(plan.steps, plan.holder),
+        title: `Unstick ${info.symbol}`,
+        context: reviewRows(info, plan),
+        reverify: (_call, index) => stillFits(info, plan, plan.steps[index]),
+      },
+    )
   }
 
-  // The plan's one review opens once it is planned, and each step it showed is sent as the one before is counted.
+  // The plan's one review opens once it is planned.
   useEffect(() => {
-    if (due && plan && !sending && !preparing) void sendNext()
+    if (presses.due && plan && !sending && !preparing) void sendNext()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [due, plan, sending, preparing])
+  }, [presses.due, plan, sending, preparing])
 
   function retry() {
     if (!plan || sending) return
@@ -433,11 +396,7 @@ export function UnstickFlow({
   function closeReview() {
     if (sending) return
     // Closed at once: a step already due for this plan is not sent.
-    generation.current += 1
-    live.current = false
-    pressing.current = false
-    reviewed.current = undefined
-    setDue(false)
+    presses.restart()
     if (complete) {
       setSent(NOTHING_SENT)
       return onClose()

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "useSafeTx": {
+  "reviewedActions": {
     "src/components/project/flows/AutoStickFlow.tsx": {
       "hooks": 1,
       "sends": 1,
@@ -145,25 +145,13 @@
     }
   },
   "authorityCalls": {},
-  "reviewedDirectWrites": {
+  "reviewedSends": {
     "src/lib/sticky-launch-adapter.ts": {
-      "calls": 2,
+      "calls": 3,
       "actions": [
         "Create a Sticky token",
         "Pay for a multichain Sticky launch",
         "Authorize Sticky listing"
-      ]
-    },
-    "src/hooks/useSafeTx.ts": {
-      "calls": 1,
-      "actions": [
-        "Submit a reviewed direct write"
-      ]
-    },
-    "src/lib/contract-write.ts": {
-      "calls": 1,
-      "actions": [
-        "Submit a reviewed direct write"
       ]
     }
   }

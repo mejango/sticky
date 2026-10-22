@@ -14,7 +14,7 @@ vi.mock('@/providers/ProjectRouteContext', () => ({ useProjectReviewScope: () =>
 vi.mock('@/providers/ProjectRouteBlockedContext', () => ({ useProjectRouteBlocked: () => mocks.blocked }))
 vi.mock('@/components/TransactionReviewDialog', () => ({
   TransactionReviewDialog: ({ pending, onFinish, checkingProject }: TransactionReviewDialogProps) => <div data-review={pending.id}>
-    <p>{pending.kind === 'review' ? pending.request.title : 'Choose funding'}</p>
+    <p>{pending.kind === 'review' ? (pending.request?.title ?? pending.model?.title) : 'Choose funding'}</p>
     <button data-approve disabled={checkingProject} onClick={() => onFinish(pending.kind === 'review' ? true : 8453)}>Approve</button>
     <button data-cancel onClick={() => onFinish(null)}>Cancel</button>
     {checkingProject && <span>Checking project</span>}

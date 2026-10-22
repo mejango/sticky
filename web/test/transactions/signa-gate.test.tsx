@@ -2,7 +2,7 @@
 
 /**
  * Review Focus #5: Signa signs in, and an external wallet sends. With Signa as the connected wallet a write is
- * refused before anything reaches it (Homerun's gate in useSafeTx), the flow says "This action needs an external
+ * refused before anything reaches it (Homerun's gate, in useReviewedAction's guard), the flow says "This action needs an external
  * wallet." and offers "Connect a wallet", which opens the chooser with the external wallets alone. The wallet here is
  * a real wagmi connection whose provider records every request made of it.
  */
@@ -10,13 +10,14 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { parseAbi, type Address } from 'viem'
+import { encodeFunctionData, parseAbi, type Address } from 'viem'
 import { connect } from '@wagmi/core'
 import { createConfig, createConnector, http, WagmiProvider, type Config } from 'wagmi'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { baseSepolia } from '@bananapus/nana-sdk-core/chains'
+import { registerReviewHandler } from '@bananapus/nana-sdk-core/review'
 
-const state = vi.hoisted(() => ({ config: undefined as unknown, requestReview: vi.fn() }))
+const state = vi.hoisted(() => ({ config: undefined as unknown, review: vi.fn() }))
 
 vi.mock('@/providers/Providers', () => ({
   IS_DETERMINISTIC_BROWSER: false,
@@ -24,24 +25,23 @@ vi.mock('@/providers/Providers', () => ({
     return state.config
   },
 }))
-vi.mock('@/lib/transaction-review', async importOriginal => ({
-  ...(await importOriginal<typeof import('@/lib/transaction-review')>()),
-  requestContractTransactionReview: state.requestReview,
-}))
 
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
-import { useSafeTx } from '@/hooks/useSafeTx'
+import { useReviewedAction } from '@/hooks/useReviewedAction'
 import { EXTERNAL_WALLET_REQUIRED, WalletAuthContext } from '@/providers/WalletAuthContext'
 
 const ALICE = '0x1111111111111111111111111111111111111111' as Address
 const HOOK = '0x2222222222222222222222222222222222222222' as Address
-const request = {
+const abi = parseAbi(['function setTrustedSenderFor(uint256 projectId, address sender, bool trusted)'])
+const args = [23n, ALICE, true] as const
+const call = {
   chainId: baseSepolia.id,
-  address: HOOK,
-  abi: parseAbi(['function setTrustedSenderFor(uint256 projectId, address sender, bool trusted)']),
+  to: HOOK,
+  data: encodeFunctionData({ abi, functionName: 'setTrustedSenderFor', args }),
+  abi,
   functionName: 'setTrustedSenderFor',
-  args: [23n, ALICE, true] as const,
+  args,
   label: 'Trust a sender',
 }
 
@@ -80,16 +80,20 @@ function wallet(id: string) {
 let host: HTMLDivElement
 let root: Root
 const requestSignIn = vi.fn()
+let unregister = () => {}
 
 beforeEach(() => {
   requestSignIn.mockResolvedValue(undefined)
-  state.requestReview.mockResolvedValue(false)
+  // The review is closed: nothing is sent.
+  state.review.mockReset()
+  unregister = registerReviewHandler(async prompt => { state.review(prompt.model); return null })
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
 })
 
 afterEach(async () => {
+  unregister()
   await act(async () => root.unmount())
   host.remove()
 })
@@ -110,7 +114,7 @@ async function connected(id: string) {
 }
 
 function TrustFlow() {
-  const tx = useSafeTx(baseSepolia.id)
+  const tx = useReviewedAction()
   return (
     <TxConfirmDialog
       open
@@ -120,7 +124,7 @@ function TrustFlow() {
       activeIndex={tx.busy ? 0 : -1}
       busy={tx.busy}
       action="Confirm & trust"
-      onConfirm={() => void tx.send(request, { reviewedAccount: ALICE })}
+      onConfirm={() => void tx.run({ account: ALICE, calls: [call] })}
       error={tx.error}
     />
   )
@@ -151,7 +155,7 @@ describe('a write while Signa is the connected wallet', () => {
     expect(dialog().textContent).toContain('This action needs an external wallet.')
     expect(button('Connect a wallet')).toBeDefined()
     expect(asked).not.toHaveBeenCalled()
-    expect(state.requestReview).not.toHaveBeenCalled()
+    expect(state.review).not.toHaveBeenCalled()
 
     await act(async () => button('Connect a wallet')!.click())
     expect(requestSignIn).toHaveBeenCalledWith({ walletsOnly: true })
@@ -164,7 +168,7 @@ describe('a write while Signa is the connected wallet', () => {
 
     await act(async () => button('Confirm & trust')!.click())
 
-    expect(state.requestReview).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(state.review).toHaveBeenCalledOnce())
     expect(dialog().textContent).not.toContain(EXTERNAL_WALLET_REQUIRED)
     expect(button('Connect a wallet')).toBeUndefined()
   })

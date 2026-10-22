@@ -22,30 +22,24 @@ vi.mock('@tanstack/react-query', async importOriginal => ({
 }))
 
 const mocks = vi.hoisted(() => ({
-  publicClient: { getBlockNumber: vi.fn(async () => 100n), getTransactionCount: vi.fn(async () => 7), simulateContract: vi.fn(), estimateContractGas: vi.fn(), getChainId: vi.fn(), getTransaction: vi.fn(), getTransactionReceipt: vi.fn(), getBlock: vi.fn() },
-  receipt: { data: undefined, isError: false } as {
-    data?: { status: 'success' | 'reverted'; transactionHash: string }
-    isError: boolean
+  publicClient: {
+    chain: { id: 8453 }, getBlockNumber: vi.fn(async () => 100n), getTransactionCount: vi.fn(async () => 7), getChainId: vi.fn(), getTransaction: vi.fn(),
+    getTransactionReceipt: vi.fn(), waitForTransactionReceipt: vi.fn(), getBlock: vi.fn(), estimateGas: vi.fn(async () => 50_000n), getGasPrice: vi.fn(async () => 1n),
+    readContract: vi.fn(async () => { throw new Error('no reads here') }),
+    request: vi.fn(async ({ method }: { method: string }) => { if (method === 'eth_call') return '0x'; throw new Error(`unexpected ${method}`) }),
   },
+  /** The transaction's receipt, once the chain has it. */
+  receipt: undefined as undefined | { status: 'success' | 'reverted'; transactionHash: string },
   getAccount: vi.fn(),
-  requestReview: vi.fn(),
-  switchChain: vi.fn(),
-  writeContract: vi.fn(),
+  sendTransaction: vi.fn(),
 }))
 
-vi.mock('@wagmi/core', () => ({ getAccount: mocks.getAccount }))
-vi.mock('wagmi', () => ({
-  usePublicClient: () => mocks.publicClient,
-  useSwitchChain: () => ({ switchChainAsync: mocks.switchChain }),
-  useWaitForTransactionReceipt: () => mocks.receipt,
-  useWriteContract: () => ({ writeContractAsync: mocks.writeContract }),
+vi.mock('@wagmi/core', () => ({
+  getAccount: mocks.getAccount, getPublicClient: () => mocks.publicClient, switchChain: vi.fn(),
+  getWalletClient: async () => ({ chain: { id: 8453 }, sendTransaction: mocks.sendTransaction }),
 }))
 vi.mock('@/hooks/useWallet', () => ({
   useWallet: () => ({ isConnected: true, address: ALICE, isCenterWallet: false }),
-}))
-vi.mock('@/lib/transaction-review', async importOriginal => ({
-  ...(await importOriginal<typeof import('@/lib/transaction-review')>()),
-  requestContractTransactionReview: mocks.requestReview,
 }))
 vi.mock('@/providers/Providers', () => ({ wagmiConfig: {} }))
 vi.mock('@/lib/safe-connector', () => ({
@@ -57,18 +51,22 @@ vi.mock('@/lib/safe-connector', () => ({
 
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { stepsIntro, transactionsLeft, ViewTransactionLink } from '@/components/ui/TxProgress'
-import { useSafeTx } from '@/hooks/useSafeTx'
+import { registerReviewHandler } from '@bananapus/nana-sdk-core/review'
+import { useReviewedAction } from '@/hooks/useReviewedAction'
 
 const ALICE = '0x1111111111111111111111111111111111111111' as Address
 const HOOK = '0x2222222222222222222222222222222222222222' as Address
 const ADAPTER = '0x9B091e21d25c424De67751F4b6Ae8494351218C5'
 const HASH = `0x${'a'.repeat(64)}` as const
-const request = {
+const abi = parseAbi(['function setTrustedSenderFor(uint256 projectId, address sender, bool trusted)'])
+const args = [23n, ALICE, true] as const
+const call = {
   chainId: 8453,
-  address: HOOK,
-  abi: parseAbi(['function setTrustedSenderFor(uint256 projectId, address sender, bool trusted)']),
-  functionName: 'setTrustedSenderFor' as const,
-  args: [23n, ALICE, true] as const,
+  to: HOOK,
+  data: encodeFunctionData({ abi, functionName: 'setTrustedSenderFor', args }),
+  abi,
+  functionName: 'setTrustedSenderFor',
+  args,
   label: 'Trust a sender',
 }
 const BLOCK_HASH = `0x${'ed'.repeat(32)}` as const
@@ -77,33 +75,40 @@ const STEPS = [{ title: 'Trust the sender' }]
 
 let host: HTMLDivElement
 let root: Root
+let unregister = () => {}
 
 beforeEach(() => {
   displayQueries.clear()
-  mocks.receipt = { data: undefined, isError: false }
+  mocks.receipt = undefined
   mocks.getAccount.mockImplementation(() => ({ address: ALICE, chainId: 8453 }))
-  mocks.requestReview.mockResolvedValue(true)
-  mocks.switchChain.mockResolvedValue(undefined)
-  mocks.publicClient.simulateContract.mockResolvedValue({ request: { address: HOOK, functionName: 'setTrustedSenderFor' } })
-  mocks.publicClient.estimateContractGas.mockResolvedValue(50_000n)
+  unregister = registerReviewHandler(async prompt => prompt.confirmation)
   mocks.publicClient.getChainId.mockResolvedValue(8453)
-  mocks.publicClient.getTransactionReceipt.mockImplementation(async () => mocks.receipt.data)
-  mocks.publicClient.getTransaction.mockImplementation(async () => ({ ...walletReceipt(), hash: HASH, input: encodeFunctionData(request) }))
+  mocks.publicClient.getTransactionReceipt.mockImplementation(async () => {
+    if (!mocks.receipt) throw new Error('Receipt not found')
+    return mocks.receipt
+  })
+  mocks.publicClient.waitForTransactionReceipt.mockImplementation(async () => {
+    while (!mocks.receipt) await new Promise(resolve => setTimeout(resolve, 5))
+    return mocks.receipt
+  })
+  mocks.publicClient.getTransaction.mockImplementation(async () => ({ ...walletReceipt(), hash: HASH, chainId: 8453, input: call.data, value: 0n }))
   mocks.publicClient.getBlock.mockResolvedValue({ number: 12n, hash: BLOCK_HASH })
-  mocks.writeContract.mockResolvedValue(HASH)
+  mocks.sendTransaction.mockReset().mockResolvedValue(HASH)
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
 })
 
 afterEach(async () => {
+  unregister()
+  vi.useRealTimers()
   await act(async () => root.unmount())
   host.remove()
 })
 
 /** A flow as the write flows build theirs: the plan, then the send, then the confirmed transaction. */
 function TrustFlow({ onDone }: { onDone: () => void }) {
-  const tx = useSafeTx(8453)
+  const tx = useReviewedAction()
   const [open, setOpen] = useState(true)
   if (!open) return null
   const complete = tx.phase === 'success'
@@ -122,7 +127,7 @@ function TrustFlow({ onDone }: { onDone: () => void }) {
       complete={complete}
       busy={tx.busy}
       action="Confirm & trust"
-      onConfirm={() => void tx.send(request, { reviewedAccount: ALICE })}
+      onConfirm={() => void tx.run({ account: ALICE, calls: [call] })}
       status={complete ? <ViewTransactionLink chainId={8453} hash={tx.hash} /> : undefined}
       error={tx.error}
     />
@@ -135,15 +140,18 @@ const button = (name: string) =>
 
 describe('a confirmed send', () => {
   it('links its transaction on the chain’s explorer and stays open until Done', async () => {
-    vi.useFakeTimers()
     const onDone = vi.fn()
     await act(async () => root.render(<TrustFlow onDone={onDone} />))
     await act(async () => button('Confirm & trust')!.click())
-    expect(mocks.writeContract).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(mocks.sendTransaction).toHaveBeenCalledOnce())
     expect(dialog()!.querySelector('a')).toBeNull()
 
-    mocks.receipt = { data: walletReceipt(), isError: false }
-    await act(async () => root.render(<TrustFlow onDone={onDone} />))
+    mocks.receipt = walletReceipt()
+    await vi.waitFor(async () => {
+      await act(async () => {})
+      expect(dialog()!.querySelector('a')).not.toBeNull()
+    })
+    vi.useFakeTimers()
 
     const link = dialog()!.querySelector('a')!
     expect(link.textContent).toBe('View transaction ↗')

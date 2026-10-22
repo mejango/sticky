@@ -9,7 +9,7 @@ import { reviewGate } from '@/components/project/flows/review-gate'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
-import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
+import { reviewedSteps, useReviewedAction, type TxRequest } from '@/hooks/useReviewedAction'
 import { useStepPresses } from '@/hooks/useStepPresses'
 import { useWallet } from '@/hooks/useWallet'
 import { asked } from '@/lib/hook-logs'
@@ -187,9 +187,9 @@ export function ClaimFlow({
 }) {
   const { address, isConnected, isCenterWallet, openSignIn } = useWallet()
   const { viewAs } = useViewAs()
-  const tx = useSafeTx(chainId)
-  const presses = useStepPresses(tx)
-  const { landed } = presses
+  const tx = useReviewedAction()
+  const presses = useStepPresses(tx, close)
+  const { landed } = tx
   const client = useQueryClient()
   const [plan, setPlan] = useState<Plan | null>(null)
   const [preparing, setPreparing] = useState(false)
@@ -252,13 +252,9 @@ export function ClaimFlow({
     if (!plan || sending) return
     // Every step is sent as the account that reviewed the claim, and the engine refuses it while another is connected.
     const symbol = plan.kind === 'stick' ? info.symbol : card.meta.symbol
-    const outcome = await presses.press(
-      plan.steps,
-      (step, confirmedAt, reviewed) =>
-        tx.send(step, { reviewedAccount: plan.account, reviewed, simulationBlockNumber: confirmedAt, reverify: () => verify(plan) }),
-      { account: plan.account, title: titleOf(plan, symbol), rows: rowsOf(plan, info, card) },
+    await presses.press(
+      { account: plan.account, calls: reviewedSteps(plan.steps, plan.account), title: titleOf(plan, symbol), context: rowsOf(plan, info, card), reverify: () => verify(plan) },
     )
-    if (outcome === 'cancelled') close()
   }
 
   function close() {

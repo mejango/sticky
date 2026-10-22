@@ -44,10 +44,12 @@ function calledName(expression) {
 }
 
 const actual = {
-  useSafeTx: {},
+  reviewedActions: {},
   authorityCalls: {},
-  reviewedDirectWrites: {},
+  reviewedSends: {},
 }
+/** Core's reviewed boundaries a module may call directly: each one is a review, so each is inventoried. */
+const reviewedSendNames = new Set(['sendReviewed', 'signReviewed', 'payRelayrReviewed'])
 
 for (const path of sourceFiles(sourceRoot)) {
   const file = repositoryPath(path)
@@ -58,11 +60,13 @@ for (const path of sourceFiles(sourceRoot)) {
     true,
     extname(path) === '.tsx' ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   )
-  const safeTxVariables = new Set()
+  /** A flow's useReviewedAction, and the presses that run it: each `run` or `press` is one reviewed action. */
+  const actionVariables = new Set()
   const monitoredNames = new Set([
-    'useSafeTx',
+    'useReviewedAction',
+    'useStepPresses',
     'runAuthorityCalls',
-    'submitReviewedContractWrite',
+    ...reviewedSendNames,
   ])
   const aliases = new Map()
 
@@ -91,11 +95,13 @@ for (const path of sourceFiles(sourceRoot)) {
       ts.isIdentifier(node.name) &&
       node.initializer &&
       ts.isCallExpression(node.initializer) &&
-      canonicalCalledName(node.initializer.expression) === 'useSafeTx'
+      ['useReviewedAction', 'useStepPresses'].includes(canonicalCalledName(node.initializer.expression))
     ) {
-      safeTxVariables.add(node.name.text)
-      actual.useSafeTx[file] ??= { hooks: 0, sends: 0 }
-      actual.useSafeTx[file].hooks += 1
+      actionVariables.add(node.name.text)
+      if (canonicalCalledName(node.initializer.expression) === 'useReviewedAction') {
+        actual.reviewedActions[file] ??= { hooks: 0, sends: 0 }
+        actual.reviewedActions[file].hooks += 1
+      }
     }
     ts.forEachChild(node, collectBindings)
   }
@@ -105,19 +111,19 @@ for (const path of sourceFiles(sourceRoot)) {
     if (ts.isCallExpression(node)) {
       const name = canonicalCalledName(node.expression)
       if (
-        name === 'send' &&
+        (name === 'run' || name === 'press') &&
         ts.isPropertyAccessExpression(node.expression) &&
         ts.isIdentifier(node.expression.expression) &&
-        safeTxVariables.has(node.expression.expression.text)
+        actionVariables.has(node.expression.expression.text)
       ) {
-        actual.useSafeTx[file] ??= { hooks: 0, sends: 0 }
-        actual.useSafeTx[file].sends += 1
+        actual.reviewedActions[file] ??= { hooks: 0, sends: 0 }
+        actual.reviewedActions[file].sends += 1
       }
       if (name === 'runAuthorityCalls') {
         increment(actual.authorityCalls, file)
       }
-      if (name === 'submitReviewedContractWrite') {
-        increment(actual.reviewedDirectWrites, file)
+      if (reviewedSendNames.has(name)) {
+        increment(actual.reviewedSends, file)
       }
     }
 
@@ -149,14 +155,14 @@ function checkMap(label, expected, observed) {
 }
 
 checkMap(
-  'useSafeTx call sites',
+  'useReviewedAction call sites',
   Object.fromEntries(
-    Object.entries(manifest.useSafeTx).map(([file, entry]) => [
+    Object.entries(manifest.reviewedActions).map(([file, entry]) => [
       file,
       { hooks: entry.hooks, sends: entry.sends },
     ]),
   ),
-  actual.useSafeTx,
+  actual.reviewedActions,
 )
 checkMap(
   'runAuthorityCalls call sites',
@@ -169,14 +175,14 @@ checkMap(
   actual.authorityCalls,
 )
 checkMap(
-  'submitReviewedContractWrite call sites',
+  'sendReviewed, signReviewed and payRelayrReviewed call sites',
   Object.fromEntries(
-    Object.entries(manifest.reviewedDirectWrites).map(([file, entry]) => [
+    Object.entries(manifest.reviewedSends).map(([file, entry]) => [
       file,
       entry.calls,
     ]),
   ),
-  actual.reviewedDirectWrites,
+  actual.reviewedSends,
 )
 
 const coverageRows = new Map()
@@ -227,9 +233,9 @@ function checkActionReference(file, action, { requireExact = false } = {}) {
   for (const test of missingTests) {
     failures.push(`${file} action ${action} references missing test/${test}`)
   }
-  if (row.tests.every(test => test === 'transactions/use-safe-tx.test.ts')) {
+  if (row.tests.every(test => test === 'reviewed-action.test.ts')) {
     failures.push(
-      `${file} action ${action} only references the shared useSafeTx wrapper test`,
+      `${file} action ${action} only references the shared useReviewedAction test`,
     )
   }
   // A listed test must say which of its tests proves the action, so a broad
@@ -249,7 +255,7 @@ const markedTests = new Set()
 
 const sendSiteIds = new Set()
 let mappedSendCount = 0
-for (const [file, entry] of Object.entries(manifest.useSafeTx)) {
+for (const [file, entry] of Object.entries(manifest.reviewedActions)) {
   if (!Array.isArray(entry.sendSites) || entry.sendSites.length !== entry.sends) {
     failures.push(
       `${file} inventories ${entry.sends} sends but has ${entry.sendSites?.length ?? 0} per-send action records`,
@@ -273,7 +279,7 @@ for (const [file, entry] of Object.entries(manifest.useSafeTx)) {
   }
 }
 
-for (const section of [manifest.authorityCalls, manifest.reviewedDirectWrites]) {
+for (const section of [manifest.authorityCalls, manifest.reviewedSends]) {
   for (const [file, entry] of Object.entries(section)) {
     if (!entry.actions?.length) {
       failures.push(`${file} has no transaction coverage action assigned`)
@@ -293,7 +299,7 @@ if (failures.length) {
   process.exit(1)
 }
 
-const safeSendCount = Object.values(actual.useSafeTx).reduce(
+const actionCount = Object.values(actual.reviewedActions).reduce(
   (sum, entry) => sum + entry.sends,
   0,
 )
@@ -301,10 +307,10 @@ const authorityCount = Object.values(actual.authorityCalls).reduce(
   (sum, count) => sum + count,
   0,
 )
-const directCount = Object.values(actual.reviewedDirectWrites).reduce(
+const directCount = Object.values(actual.reviewedSends).reduce(
   (sum, count) => sum + count,
   0,
 )
 console.log(
-  `Transaction inventory verified: ${safeSendCount} useSafeTx sends (${mappedSendCount} individually action-mapped), ${authorityCount} authority entry points, ${directCount} reviewed direct-write entry points. Raw wallet sites are checked by npm run wallet:check.`,
+  `Transaction inventory verified: ${actionCount} reviewed actions (${mappedSendCount} individually action-mapped), ${authorityCount} authority entry points, ${directCount} direct reviewed sends. Raw wallet sites are checked by npm run wallet:check.`,
 )

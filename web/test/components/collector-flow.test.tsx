@@ -5,7 +5,7 @@ import { buildStickyCollectorSendTx, buildStickyCollectorSettleTx } from '@banan
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ReviewedCalls, TxRequest, TxSendOptions } from '@/hooks/useSafeTx'
+import type { TxRequest } from '@/hooks/useReviewedAction'
 import { TransactionReviewCancelledError } from '@/lib/transaction-review'
 import { bridgeCalldata } from '@/lib/sticky-bridge'
 import { createPendingBridgeWrite, readPendingBridgeWrite, readWatchedBridgeRoutes, savePendingBridgeWrite, storeBridgeWrite } from '@/lib/sticky-bridge-journal'
@@ -14,16 +14,17 @@ import { checkedItLabel, HELD_EXIT_LABEL, WRITE_HOLD_PENDING_LINE } from '@banan
 import { holds } from '@/lib/write-holds'
 import { holdIntent } from '@/lib/sticky-hold-intent'
 import { heldChain, heldWrite } from '../support/held-chain'
+import { reviewedActionFake, type ReviewedActionFake } from '../support/reviewed-action'
 import { WalletAuthContext } from '@/providers/WalletAuthContext'
 import {
   COLLECTOR_SOURCE as SOURCE, COLLECTOR_OWNER as OWNER, COLLECTOR_ROUTE as ROUTE, COLLECTOR_HASH as HASH,
   COLLECTOR_INFO as INFO, collectorAddress as A, collectorHash as H, localCollectorSource,
 } from '../collector-fixtures'
 
-const mocks = vi.hoisted(() => ({ wallet: {} as Record<string, unknown>, tx: {} as Record<string, unknown>, read: vi.fn(), prepare: vi.fn(), reverify: vi.fn(), verifyWrite: vi.fn(), walletWrite: vi.fn(), refresh: vi.fn(), monitor: vi.fn() }))
+const mocks = vi.hoisted(() => ({ wallet: {} as Record<string, unknown>, tx: {} as ReviewedActionFake, read: vi.fn(), prepare: vi.fn(), reverify: vi.fn(), verifyWrite: vi.fn(), walletWrite: vi.fn(), refresh: vi.fn(), monitor: vi.fn() }))
 vi.mock('@/hooks/useWallet', () => ({ useWallet: () => mocks.wallet }))
 vi.mock('@wagmi/core', async original => ({ ...(await original<typeof import('@wagmi/core')>()), getPublicClient: (_config: unknown, { chainId }: { chainId: number }) => (chainId === 1 ? chain : home).client }))
-vi.mock('@/hooks/useSafeTx', async original => ({ ...(await original<typeof import('@/hooks/useSafeTx')>()), useSafeTx: () => mocks.tx }))
+vi.mock('@/hooks/useReviewedAction', async original => ({ ...(await original<typeof import('@/hooks/useReviewedAction')>()), useReviewedAction: () => mocks.tx }))
 vi.mock('@/lib/sticky-collector-delivery', async original => ({ ...(await original<typeof import('@/lib/sticky-collector-delivery')>()), createStickyCollectorDelivery: () => mocks }))
 vi.mock('@/lib/sticky-bridge', async original => ({ ...(await original<typeof import('@/lib/sticky-bridge')>()), createStickyBridge: () => mocks }))
 vi.mock('@/lib/jbcenter-public-client', async original => ({ ...(await original<typeof import('@/lib/jbcenter-public-client')>()), jbCenterPublicClient: vi.fn() }))
@@ -36,7 +37,6 @@ const requestOf = (source = SOURCE, amount = UNIT): TxRequest => source.bridgeRo
   ? { ...buildStickyCollectorSendTx({ ...source.allocation, amount, sucker: source.bridgeRoute.sourceSucker, backingToken: source.bridgeRoute.backingToken, value: 77n }), label: 'Deliver queued rewards' }
   : { ...buildStickyCollectorSettleTx({ ...source.allocation, amount }), label: 'Settle queued rewards' }
 let root: Root, host: HTMLDivElement, client: QueryClient
-let proofs: ReviewedCalls[] = []
 let chain = heldChain(1), home = heldChain(10)
 const onSettled = vi.fn()
 beforeEach(() => {
@@ -45,17 +45,11 @@ beforeEach(() => {
   home = heldChain(10)
   vi.stubGlobal('navigator', { locks: { request: async (_name: string, _options: unknown, work: (lock: object) => unknown) => work({}) } })
   mocks.wallet = { address: OWNER, isConnected: true, isCenterWallet: false, openSignIn: vi.fn() }
-  proofs = []
-  mocks.tx = { phase: 'idle', busy: false, error: null, notice: null, hash: null, isSafe: false,
-    // The proof useSafeTx's one decoded review returns for exactly these calls.
-    review: vi.fn(async () => { const proof = {} as ReviewedCalls; proofs.push(proof); return proof }),
-    reset: vi.fn(() => Object.assign(mocks.tx, { phase: 'idle', hash: null, busy: false, error: null })),
-    dismiss: vi.fn(() => Object.assign(mocks.tx, { phase: 'idle', hash: null, busy: false })),
-    send: vi.fn(async (request: TxRequest, options: TxSendOptions) => {
-      try { await options.reverify?.(request); await options.durableRecovery?.reserve(); await mocks.walletWrite(request); await options.durableRecovery?.submitted(HASH, !!mocks.tx.isSafe); return HASH }
-      catch (reason) { mocks.tx.error = (reason as Error).message; return null }
-    }),
-  }
+  mocks.tx = reviewedActionFake(HASH)
+  // The wallet: what it is asked to send, and the hash it answers.
+  mocks.tx.send.mockImplementation(async call => { await mocks.walletWrite(call); return HASH })
+  mocks.tx.reset.mockImplementation(() => Object.assign(mocks.tx, { phase: 'idle', hash: null, busy: false, error: null }))
+  mocks.tx.dismiss.mockImplementation(() => Object.assign(mocks.tx, { phase: 'idle', hash: null, busy: false }))
   mocks.read.mockReset().mockResolvedValue({ pending: 10n * UNIT, meta: ROUTE.sourceMeta })
   mocks.prepare.mockReset().mockImplementation(async (source: CollectorSource, _owner: unknown, amount: bigint) => ({ source, amount, pending: 10n * UNIT, meta: ROUTE.sourceMeta, verified: source.verified, request: requestOf(source, amount) }))
   mocks.reverify.mockReset().mockResolvedValue(undefined)
@@ -67,11 +61,8 @@ beforeEach(() => {
 })
 afterEach(async () => {
   try {
-    // Every write carries its action's one decoded review: no send skips it.
-    for (const [, options] of (mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls) {
-      expect(options).not.toHaveProperty('reviewedInParent')
-      expect(proofs).toContain(options.reviewed)
-    }
+    // Every wallet call is a step of a run its one review confirmed: no send skips it.
+    expect(mocks.tx.review).toHaveBeenCalledTimes(mocks.tx.run.mock.calls.length)
   } finally { await act(async () => root.unmount()); host.remove(); client.clear() }
 })
 async function render(source = SOURCE, info = INFO) {
@@ -100,11 +91,10 @@ function failReturnedHashSave(failure: 'write' | 'read' = 'write') {
     if (key.startsWith('sticky:bridge:pending:') && JSON.parse(value)?.hash) { failures++; throw new Error('Hash storage unavailable') }
     setItem.call(this, key, value)
   })
-  mocks.tx.send = vi.fn(async (request: TxRequest, options: TxSendOptions) => {
-    await options.reverify?.(request); await options.durableRecovery?.reserve(); await mocks.walletWrite(request)
+  mocks.tx.send.mockImplementation(async call => {
+    await mocks.walletWrite(call)
     Object.assign(mocks.tx, { submissionHash: HASH, submissionIsSafe: false })
     replied = true
-    try { await options.durableRecovery?.submitted(HASH, false) } catch (reason) { mocks.tx.error = (reason as Error).message }
     return HASH
   })
   return Object.assign(spy, { failures: () => failures })
@@ -177,23 +167,23 @@ describe('permissionless collector delivery', () => {
   it('wallet-action:deliver-queued-rewards reviews one partial allocation and persists its exact call and route before the wallet', async () => {
     await review()
     expect(text()).toContain('Queued on Ethereum: 10 SRC')
-    mocks.walletWrite.mockImplementation(async (request: TxRequest) => {
-      expect(readPendingBridgeWrite(OWNER)?.request.data).toBe(bridgeCalldata(request))
+    mocks.walletWrite.mockImplementation(async (call: { data: string }) => {
+      expect(readPendingBridgeWrite(OWNER)?.request.data).toBe(call.data)
       expect(readWatchedBridgeRoutes(10, INFO.stToken, 4000n)).toEqual([expect.objectContaining({ sourceSucker: ROUTE.sourceSucker, canPrepare: false })])
-      expect(request).toMatchObject({ chainId: 1, address: SOURCE.allocation.deployment.address, functionName: 'send', args: [3n, INFO.stToken, 4000n, UNIT, ROUTE.sourceSucker, ROUTE.backingToken], value: 77n })
+      expect(call).toMatchObject({ chainId: 1, to: SOURCE.allocation.deployment.address, functionName: 'send', args: [3n, INFO.stToken, 4000n, UNIT, ROUTE.sourceSucker, ROUTE.backingToken], value: 77n })
     })
     await press('Review delivery')
     expect(mocks.walletWrite).toHaveBeenCalledTimes(1)
     // One user action, one decoded review, with the delivery's summary above the call.
     expect(mocks.tx.review).toHaveBeenCalledOnce()
-    expect(mocks.tx.review).toHaveBeenCalledWith([expect.objectContaining({ functionName: 'send' })], expect.objectContaining({ account: OWNER, rows: expect.arrayContaining([{ label: 'Home chain', value: 'Optimism' }, expect.objectContaining({ label: 'Reward address' })]) }))
+    expect(mocks.tx.run).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ calls: [expect.objectContaining({ functionName: 'send' })], account: OWNER, context: expect.arrayContaining([{ label: 'Home chain', value: 'Optimism' }, expect.objectContaining({ label: 'Reward address' })]) }))
     expect(mocks.reverify).toHaveBeenCalledWith(expect.objectContaining({ amount: UNIT }), OWNER)
     expect(readPendingBridgeWrite(OWNER)).toMatchObject({ hash: HASH, safeProposal: false })
     expect(onSettled).not.toHaveBeenCalled()
   })
 
   it('closes the delivery and sends nothing when its one review is closed', async () => {
-    ;(mocks.tx.review as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new TransactionReviewCancelledError())
+    mocks.tx.review.mockRejectedValueOnce(new TransactionReviewCancelledError())
     await review(); await press('Review delivery')
     expect(mocks.tx.send).not.toHaveBeenCalled()
     expect(readPendingBridgeWrite(OWNER)).toBeNull()
@@ -224,7 +214,8 @@ describe('permissionless collector delivery', () => {
   })
 
   it('keeps a hashless unknown attempt locked through dismissal, reload and a matching historical hash', async () => {
-    mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => { await options.durableRecovery?.reserve(); return null })
+    // The wallet's reply never comes back: the send may have gone out.
+    mocks.tx.send.mockRejectedValue(new Error('The request took too long to respond.'))
     await review(); await press('Review delivery'); await press('Cancel')
     await act(async () => root.unmount()); root = createRoot(host); await render()
     expect(button('Review delivery').disabled).toBe(true)
@@ -282,8 +273,7 @@ describe('permissionless collector delivery', () => {
   })
 
   it('brings a hashless delivery reservation the SDK never held to the one explicit check after reload, which clears it, keeps the watched route, and allows exactly one more send', async () => {
-    const normalSend = mocks.tx.send as (request: TxRequest, options: TxSendOptions) => Promise<string | null>
-    mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => { await options.durableRecovery?.reserve(); return null })
+    mocks.tx.send.mockRejectedValueOnce(new Error('The request took too long to respond.'))
     await review(); await press('Review delivery')
     const route = readWatchedBridgeRoutes(10, INFO.stToken, 4000n)
     expect(route).toHaveLength(1)
@@ -298,21 +288,16 @@ describe('permissionless collector delivery', () => {
     await vi.waitFor(() => expect(readPendingBridgeWrite(OWNER)).toBeNull())
     expect(readWatchedBridgeRoutes(10, INFO.stToken, 4000n)).toEqual(route)
 
-    mocks.tx.send = vi.fn(normalSend)
+    mocks.tx.send.mockClear()
     await review()
     await press('Review delivery')
     expect(mocks.tx.send).toHaveBeenCalledOnce()
   })
+  /** A delivery the wallet answered with HASH, whose transaction the chain then never shows. */
   async function hashedThenDropped() {
-    const normalSend = mocks.tx.send as (request: TxRequest, options: TxSendOptions) => Promise<string | null>
-    let options!: TxSendOptions
-    mocks.tx.send = vi.fn(async (_request: TxRequest, given: TxSendOptions) => {
-      options = given
-      await given.durableRecovery?.reserve(); await given.durableRecovery?.submitted(HASH, false)
-      return null
-    })
     await review(); await press('Review delivery')
-    return { normalSend, released: () => options.durableRecovery!.released!() }
+    const action = mocks.tx.run.mock.calls[0][0]
+    return { released: () => action.onReleased!() }
   }
   /** The delivery the review sends, as the chain sees it. */
   const deliveryCall = () => {
@@ -322,13 +307,13 @@ describe('permissionless collector delivery', () => {
   /** Time passes: the SDK's own clock reads it. */
   const later = (ms: number) => { const now = Date.now() + ms; vi.spyOn(Date, 'now').mockReturnValue(now) }
   it('clears the reservation of a delivery whose hash was saved when the SDK exit releases it, and allows exactly one more send', async () => {
-    const { normalSend, released } = await hashedThenDropped()
+    const { released } = await hashedThenDropped()
     const route = readWatchedBridgeRoutes(10, INFO.stToken, 4000n)
     expect(readPendingBridgeWrite(OWNER)?.hash).toBe(HASH)
     await act(async () => { await released() })
     expect(readPendingBridgeWrite(OWNER)).toBeNull()
     expect(readWatchedBridgeRoutes(10, INFO.stToken, 4000n)).toEqual(route)
-    mocks.tx.send = vi.fn(normalSend)
+    mocks.tx.send.mockClear()
     await press('Cancel'); await review(); await press('Review delivery')
     expect(mocks.tx.send).toHaveBeenCalledOnce()
   })
@@ -359,7 +344,7 @@ describe('permissionless collector delivery', () => {
     const save = failReturnedHashSave()
     await press('Review delivery')
     save.mockRestore()
-    const sent = (mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls.length
+    const sent = mocks.tx.send.mock.calls.length
     await act(async () => root.unmount()); root = createRoot(host)
     // The SDK held the hash the wallet returned, and the chain shows it mined.
     await heldWrite({ chainId: 1, account: OWNER, namespace: readPendingBridgeWrite(OWNER)!.intent!, call: deliveryCall(), client: chain.client, hash: HASH })
@@ -367,7 +352,7 @@ describe('permissionless collector delivery', () => {
     await render()
     await vi.waitFor(() => expect(readPendingBridgeWrite(OWNER)).toBeNull())
     expect(mocks.verifyWrite).toHaveBeenCalledWith({ chainId: 1 }, OWNER, HASH, expect.anything(), { hash: HASH, safeProposal: false })
-    expect((mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls.length).toBe(sent)
+    expect(mocks.tx.send.mock.calls.length).toBe(sent)
   })
   it('records the delivery the SDK settled in place of the saved hash (a speed-up), and sends nothing again', async () => {
     const SPED_UP = H(91)
@@ -443,12 +428,13 @@ describe('permissionless collector delivery', () => {
     expect(readPendingBridgeWrite(OWNER)).toBeNull()
   })
 
-  it('persists the route when useSafeTx adopts an already queued Safe proposal without beforeWrite', async () => {
+  it('persists the route when the engine adopts an already queued Safe proposal without beforeWallet', async () => {
     await review(); mocks.tx.isSafe = true
-    mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => {
+    mocks.tx.run.mockImplementationOnce(async action => {
+      await mocks.tx.review(action)
       expect(readWatchedBridgeRoutes(10, INFO.stToken, 4000n)).toHaveLength(1)
-      await options.durableRecovery?.submitted(HASH, true)
-      return HASH
+      await action.onSubmitted!(action.calls[0], 0, HASH, { safe: true, adopted: true })
+      return { status: 'proposed', step: 0, safeTxHash: HASH, signatures: [] }
     })
     await press('Review delivery')
     expect(readPendingBridgeWrite(OWNER)).toMatchObject({ hash: HASH, safeProposal: true })
@@ -456,9 +442,7 @@ describe('permissionless collector delivery', () => {
   })
 
   it('clears pre-wallet intent after an explicit wallet refusal without reporting success', async () => {
-    mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => {
-      await options.durableRecovery?.reserve(); await options.durableRecovery?.releaseUnsubmitted(); return null
-    })
+    mocks.tx.send.mockRejectedValueOnce(Object.assign(new Error('User rejected the request.'), { code: 4001 }))
     await review(); await press('Review delivery')
     expect(readPendingBridgeWrite(OWNER)).toBeNull()
     expect(onSettled).not.toHaveBeenCalled()

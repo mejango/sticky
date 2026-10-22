@@ -3,24 +3,10 @@
   "sites": [
     {
       "file": "src/components/TransactionReviewProvider.tsx",
-      "line": 136,
+      "line": 141,
       "api": "registerTransactionReviewHandler",
-      "boundary": "Old-review handler: the provider queues the SDK's boolean review requests (useSafeTx, bridge, collector and launch reviews) into the one review dialog. Removed when those paths move to core (K4).",
+      "boundary": "Old-review handler: the provider queues the SDK's remaining boolean review requests into the one review dialog. Every Sticky send now reviews through core's registerReviewHandler; removed in K4.",
       "test": "test/components/transaction-review-decoded.test.tsx"
-    },
-    {
-      "file": "src/hooks/useSafeTx.ts",
-      "line": 172,
-      "api": "useWriteContract",
-      "boundary": "Creates the wagmi write useSafeTx sends with; the write below runs only inside submitReviewedContractWrite after the review and simulation. Deleted with useSafeTx in K3.",
-      "test": "test/transactions/use-safe-tx.test.ts"
-    },
-    {
-      "file": "src/hooks/useSafeTx.ts",
-      "line": 388,
-      "api": "writeContractAsync",
-      "boundary": "useSafeTx's one wallet write: submitReviewedContractWrite's write callback, sent from the simulated request after the review, the reviewed-wallet check and the write hold. Moves to sendReviewed in K3.",
-      "test": "test/transactions/use-safe-tx.test.ts"
     },
     {
       "file": "src/lib/hook-logs.ts",
@@ -73,28 +59,7 @@
     },
     {
       "file": "src/lib/sticky-launch-adapter.ts",
-      "line": 336,
-      "api": "writeContract",
-      "boundary": "The launch's deployStickyFor: submitReviewedContractWrite's write callback, sent from the simulated request after the launch's one review and the reviewed-wallet check. Moves to sendReviewed in K3.",
-      "test": "test/lib/sticky-launch-adapter.test.ts"
-    },
-    {
-      "file": "src/lib/sticky-launch-adapter.ts",
-      "line": 393,
-      "api": "sendTransaction",
-      "boundary": "The legacy Relayr execution payment: submitReviewedContractWrite's write callback, sent after its review, the reviewed-wallet check and the payment snapshot check. Moves to runRelayrReviewed in K3.",
-      "test": "test/lib/sticky-launch-adapter.test.ts"
-    },
-    {
-      "file": "src/lib/sticky-launch-adapter.ts",
-      "line": 497,
-      "api": "signMessage",
-      "boundary": "The Juicebox Center listing message, signed by the wallet that prepared the launch after the reviewed-wallet check. Moves to signReviewed in K3.",
-      "test": "test/lib/sticky-launch-adapter.test.ts"
-    },
-    {
-      "file": "src/lib/sticky-launch-adapter.ts",
-      "line": 532,
+      "line": 488,
       "api": "request",
       "boundary": "navigator.locks.request on the sticky-launch-write lock: cross-tab launch coordination, never a wallet RPC.",
       "test": "test/lib/sticky-launch-adapter.test.ts"

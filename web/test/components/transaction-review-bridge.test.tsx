@@ -26,7 +26,7 @@ afterEach(() => {
 })
 
 const leaf = { index: 0n, beneficiary: pad(RECEIVER), projectTokenCount: 10n ** 18n, terminalTokenAmount: 965n, metadata: zeroHash }
-// The requests BridgeFlow and CollectorFlow hand to useSafeTx, which now always opens this review.
+// The requests BridgeFlow and CollectorFlow review through core's reviewed run, as this review shows them.
 const steps = [
   ['prepare(uint256, bytes32, uint256, address, bytes32)', '965', buildBridgePrepareTx({ chainId: 1, sucker: ROUTE.sourceSucker, projectTokenCount: 10n ** 18n, beneficiary: RECEIVER, minTokensReclaimed: 965n, token: ROUTE.backingToken, metadata: zeroHash })],
   ['toRemote(address)', '123 wei', buildToRemoteTx({ chainId: 1, sucker: ROUTE.sourceSucker, token: ROUTE.backingToken, value: 123n })],

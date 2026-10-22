@@ -4,7 +4,7 @@ import { NATIVE_TOKEN } from '@bananapus/nana-sdk-core'
 import { QueryClient, QueryClientProvider, notifyManager, type QueryKey } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { erc20Abi, getAddress, type Abi, type Address, type Hex } from 'viem'
+import { erc20Abi, getAddress, type Address, type Hex } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stickyDistributorAbi } from '@/lib/sticky-abis'
 import { TransactionReviewCancelledError } from '@/lib/transaction-review'
@@ -13,6 +13,7 @@ import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 import { EXTERNAL_WALLET_REQUIRED, WalletAuthContext } from '@/providers/WalletAuthContext'
 import { stickyInfo } from '../home-fixtures'
 import { returning, rewardChain } from '../lib/sticky-reward-fixtures'
+import { confirmedBlock, reviewedActionFake, type ReviewedActionFake } from '../support/reviewed-action'
 
 // Sending an airdrop: the form, the review that reads the token, the distributor and the wallet again, and the steps it
 // sends one press at a time. The reads and the engine are mocks: the builder, the reads and the engine have tests of
@@ -26,33 +27,15 @@ const ALICE = getAddress(`0x${'a1'.repeat(20)}`)
 const CAROL = getAddress(`0x${'c4'.repeat(20)}`)
 const ART = getAddress(`0x${'2'.repeat(40)}`)
 const USDC = getAddress(`0x${'6b'.repeat(20)}`)
-const APPROVAL_HASH = `0x${'a1'.repeat(32)}` as Hex
 const FUND_HASH = `0x${'f2'.repeat(32)}` as Hex
 const E6 = 10n ** 6n
 /** Project 12 on Base Sepolia sticks ART, of 6 decimals, for STICKYART. */
 const INFO = stickyInfo(CHAIN, BigInt(PROJECT), { stakedToken: ART, symbol: 'ART', decimals: 6, stSymbol: 'STICKYART' })
 
-type Phase = 'idle' | 'review' | 'simulating' | 'signing' | 'pending' | 'submitted' | 'success' | 'error'
-type EngineState = {
-  phase: Phase
-  busy: boolean
-  notice: string | null
-  error: string | null
-  hash: Hex | null
-  receipt: { blockNumber: bigint } | null
-  isSafe: boolean
-  safeProposalHash: null
-  safeNonceGuidance: null
-  send: ReturnType<typeof vi.fn>
-  review: ReturnType<typeof vi.fn>
-  reset: ReturnType<typeof vi.fn<() => void>>
-  dismiss: ReturnType<typeof vi.fn>
-}
-
 const mocks = vi.hoisted(() => ({
   wallet: {} as { address: string | undefined; isConnected: boolean; isCenterWallet: boolean; openSignIn: ReturnType<typeof vi.fn> },
   requestSignIn: vi.fn(),
-  tx: {} as EngineState,
+  tx: {} as ReviewedActionFake,
   read: vi.fn(),
   meta: vi.fn(),
   funds: vi.fn(),
@@ -61,9 +44,9 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@/hooks/useWallet', () => ({ useWallet: () => mocks.wallet }))
 // The engine's hook is a mock; its labels for the phases it reports are its own.
-vi.mock('@/hooks/useSafeTx', async importOriginal => ({
-  ...(await importOriginal<typeof import('@/hooks/useSafeTx')>()),
-  useSafeTx: () => mocks.tx,
+vi.mock('@/hooks/useReviewedAction', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/hooks/useReviewedAction')>()),
+  useReviewedAction: () => mocks.tx,
 }))
 vi.mock('@/lib/sticky-rewards', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-rewards')>()),
@@ -74,37 +57,10 @@ vi.mock('@/lib/sticky-allowance', () => ({ readBalanceAndAllowance: mocks.funds,
 
 import { FundFlow } from '@/components/project/flows/FundFlow'
 
-const engine = (): EngineState => {
-  const state: EngineState = {
-    phase: 'idle',
-    notice: null,
-    busy: false,
-    error: null,
-    hash: null,
-    receipt: null,
-    isSafe: false,
-    safeProposalHash: null,
-    safeNonceGuidance: null,
-    // A send takes the engine out of whatever it was in, as the real one does.
-    send: vi.fn(async () => {
-      state.phase = 'pending'
-      state.busy = true
-      state.error = null
-      state.hash = null
-      state.receipt = null
-      return FUND_HASH
-    }),
-    // The action's one decoded review: what it returns is the proof each step is sent with.
-    review: vi.fn(async () => ({})),
-    dismiss: vi.fn(() => state.reset()),
-    reset: vi.fn(() => {
-      state.phase = 'idle'
-      state.busy = false
-      state.error = null
-      state.hash = null
-      state.receipt = null
-    }),
-  }
+const engine = () => {
+  const state = reviewedActionFake(FUND_HASH)
+  state.reset.mockImplementation(() => Object.assign(state, { phase: 'idle', busy: false, error: null, hash: null, receipt: null, landed: 0 }))
+  state.dismiss.mockImplementation(() => state.reset())
   return state
 }
 
@@ -207,8 +163,12 @@ const rowsOf = () =>
       return pairs
     }, []),
   )
-type Sent = { chainId: number; address: Address; abi: Abi; functionName: string; args: readonly unknown[]; value?: bigint; label?: string }
-const sent = (at: number) => mocks.tx.send.mock.calls[at] as [Sent, { reviewedAccount: Address; simulationBlockNumber?: bigint; reverify: () => Promise<unknown> }]
+/** The call the wallet was asked for `at`, and its run: the account it was reviewed for, and its check before the step. */
+const sent = (at: number) => {
+  const [call, step] = mocks.tx.send.mock.calls[at]
+  const action = mocks.tx.run.mock.calls.at(-1)![0]
+  return [call, { account: action.account, reverify: () => action.reverify!(call, step, step ? confirmedBlock(step - 1) : undefined) }] as const
+}
 
 /** An airdrop of `amount` of `token`, for the group the weeks name, up to its review. */
 async function review({ token = ART as string, amount = '5', min = '', max = '' } = {}) {
@@ -220,12 +180,9 @@ async function review({ token = ART as string, amount = '5', min = '', max = '' 
   await press(modal(), 'Send')
 }
 
-/** The engine's answer once its transaction is confirmed in block `block`. */
+/** The engine's answer once every step confirmed, the last in block `block`. */
 async function confirmed(hash: Hex, block: bigint) {
-  mocks.tx.phase = 'success'
-  mocks.tx.busy = false
-  mocks.tx.hash = hash
-  mocks.tx.receipt = { blockNumber: block }
+  Object.assign(mocks.tx, { phase: 'success', busy: false, hash, receipt: { blockNumber: block }, landed: mocks.tx.run.mock.calls.at(-1)![0].calls.length })
   await render()
 }
 
@@ -269,25 +226,25 @@ describe('the review', () => {
     expect(stepStates()).toEqual(['active', 'pending'])
     expect(confirm()!.textContent).toContain('2 transactions left.')
 
-    // One decoded review for the whole airdrop, with its summary, then each step without asking again.
-    expect(mocks.tx.review).toHaveBeenCalledExactlyOnceWith(
-      [expect.objectContaining({ functionName: 'approve' }), expect.objectContaining({ functionName: 'fund' })],
-      { account: ALICE, title: 'Airdrop', rows: expect.arrayContaining([{ label: 'Send', value: '5 ART', strong: true }]) },
-    )
-    const proof = await mocks.tx.review.mock.results[0].value
-    const [approval, approvalOptions] = sent(0)
-    expect(approval).toMatchObject({ chainId: CHAIN, address: ART, functionName: 'approve', args: [DISTRIBUTOR, 5n * E6] })
-    expect(approvalOptions).toMatchObject({ reviewedAccount: ALICE, simulationBlockNumber: undefined, reviewed: proof })
-
-    await confirmed(APPROVAL_HASH, 100n)
-    expect(stepStates()).toEqual(['complete', 'active'])
+    // One review for the whole airdrop, with its summary, and one run that sends each step without asking again.
     expect(mocks.tx.review).toHaveBeenCalledOnce()
-    const [fund, fundOptions] = sent(1)
-    expect(fund).toMatchObject({ chainId: CHAIN, address: DISTRIBUTOR, abi: stickyDistributorAbi, functionName: 'fund', args: [INFO.stToken, ART, 5n * E6, 0n] })
-    expect(fund.value).toBeUndefined()
-    expect(Object.isFrozen(fund)).toBe(true)
+    expect(mocks.tx.run).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      account: ALICE,
+      title: 'Airdrop',
+      calls: [expect.objectContaining({ functionName: 'approve' }), expect.objectContaining({ functionName: 'fund' })],
+      context: expect.arrayContaining([{ label: 'Send', value: '5 ART', strong: true }]),
+    }))
+    const [approval] = sent(0)
+    expect(approval).toMatchObject({ chainId: CHAIN, to: ART, functionName: 'approve', args: [DISTRIBUTOR, 5n * E6] })
+    expect(approval.dependsOnPrior).toBeUndefined()
+
+    mocks.tx.landed = 1
+    await render()
+    expect(stepStates()).toEqual(['complete', 'active'])
+    const [fund] = sent(1)
+    expect(fund).toMatchObject({ chainId: CHAIN, to: DISTRIBUTOR, abi: stickyDistributorAbi, functionName: 'fund', args: [INFO.stToken, ART, 5n * E6, 0n], value: 0n })
     // The airdrop is simulated where its approval is.
-    expect(fundOptions).toMatchObject({ reviewedAccount: ALICE, simulationBlockNumber: 100n, reviewed: proof })
+    expect(fund.dependsOnPrior).toBe(true)
   })
 
   it('wallet-action:send-an-airdrop native ETH reward funding attaches exact value and never approves a sentinel', async () => {
@@ -299,7 +256,7 @@ describe('the review', () => {
     expect(rowsOf().Send).toBe('0.000000000000000001 ETH')
 
     const [fund] = sent(0)
-    expect(fund).toMatchObject({ address: DISTRIBUTOR, functionName: 'fund', args: [INFO.stToken, NATIVE_TOKEN, 1n, 0n], value: 1n })
+    expect(fund).toMatchObject({ to: DISTRIBUTOR, functionName: 'fund', args: [INFO.stToken, NATIVE_TOKEN, 1n, 0n], value: 1n })
     expect(mocks.tx.send).toHaveBeenCalledOnce()
   })
 
@@ -318,7 +275,6 @@ describe('the review', () => {
       Project: 'STICKYART #12',
       On: 'Base Sepolia',
     })
-    await confirmed(APPROVAL_HASH, 100n)
     expect(sent(1)[0].args).toEqual([INFO.stToken, ART, 5n * E6, 4008n])
   })
 
@@ -460,7 +416,6 @@ describe('the send', () => {
     expect(primary().textContent).toBe('Done')
     expect(primary().disabled).toBe(false)
     expect(confirm()!.textContent).not.toContain('All transactions confirmed.')
-    expect(mocks.tx.send).toHaveBeenCalledOnce()
     expect(onFunded).not.toHaveBeenCalled()
     expect(invalidate).not.toHaveBeenCalled()
 
@@ -475,9 +430,8 @@ describe('the send', () => {
     // The review stays for the account it was made for, and the engine refuses another.
     mocks.wallet = { ...mocks.wallet, address: CAROL }
     await render()
-    expect(sent(0)[1].reviewedAccount).toBe(ALICE)
-    await confirmed(APPROVAL_HASH, 100n)
-    expect(sent(1)[1].reviewedAccount).toBe(ALICE)
+    expect(sent(0)[1].account).toBe(ALICE)
+    expect(sent(1)[1].account).toBe(ALICE)
   })
 
   it('reads the balance again before each step, and stops one that no longer fits', async () => {
@@ -506,15 +460,15 @@ describe('the send', () => {
     // The engine takes nothing it fails: it answers null and shows its error.
     mocks.tx.send.mockImplementationOnce(async () => {
       Object.assign(mocks.tx, { phase: 'error', busy: false, error: 'Transaction cancelled.' })
-      return null
+      throw new Error('Transaction cancelled.')
     })
     await review()
     await render()
     expect(confirm()!.textContent).toContain('Transaction cancelled.')
     await press(confirm(), 'Retry')
-    // The failed send dropped the review: the retry is its own decoded review.
-    expect(sent(1)[0].functionName).toBe('approve')
+    // The failed run dropped the review: the retry is its own review of the whole airdrop.
     expect(mocks.tx.review).toHaveBeenCalledTimes(2)
+    expect(mocks.tx.run.mock.calls[1][0].calls.map(call => call.functionName)).toEqual(['approve', 'fund'])
   })
 
   it('says it went through, links it, reads the pots again, checks the token and stays open until Done', async () => {

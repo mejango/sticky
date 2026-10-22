@@ -1,6 +1,6 @@
 import { isAddress, isHash, type Hex } from 'viem'
 import type { RelayrPayment, RelayrQuote } from '@bananapus/nana-sdk-core/review/relayr'
-import { writeIntentKey, type SavedAttempt } from '@bananapus/nana-sdk-core/review'
+import { TransactionReviewCancelledError, writeIntentKey, type SavedAttempt } from '@bananapus/nana-sdk-core/review'
 import { requireSingleHomeChain, validateLaunchCall, type LaunchPlan, type LaunchTarget } from '@/lib/sticky-launch-plan'
 
 export const STICKY_LAUNCH_KEY = 'sticky-launch-pending-v1'
@@ -137,7 +137,8 @@ export function sponsorUnresolved(session: StickyLaunchSession, now = Date.now()
 
 /** A launch's saved attempt, for the SDK's recovery: which submission it is and what the journal saved of it. */
 export type SavedLaunch = { kind: 'direct' | 'payment' | 'sponsor'; attempt: SavedAttempt<true> }
-type LaunchCall = { chainId: number; call: { to: `0x${string}`; data: Hex; value: bigint }; namespace: string }
+/** Where a launch submission is held: `namespace` now, and `earlier` keys an older deploy held it under. */
+type LaunchCall = { chainId: number; call: { to: `0x${string}`; data: Hex; value: bigint }; namespace: string; earlier?: string[] }
 
 /**
  * The saved attempt of a launch, from what its journal saved and nothing fresh: the started direct or payment
@@ -165,12 +166,12 @@ export function launchAttempt(session: StickyLaunchSession, deps: {
   const kind = session.payment?.started ? 'payment' : session.direct?.started ? 'direct' : null
   if (kind) {
     const submitted = session[kind]!
-    const { chainId, call, namespace } = deps.key(session, kind)
+    const { chainId, call, namespace, earlier = [] } = deps.key(session, kind)
     const history = (kind === 'direct' ? session.directAttempts : session.paymentAttempts) ?? []
     const before = history.flatMap(attempt => [attempt.hash, attempt.proposalHash]).filter((hash): hash is Hex => !!hash)
     const hash = submitted.hash && submitted.hash !== submitted.proposalHash ? submitted.hash : undefined
     return { kind, attempt: {
-      chainId, account: plan.owner, safe: !!submitted.proposalHash || deps.safe(), namespaces: [namespace], call,
+      chainId, account: plan.owner, safe: !!submitted.proposalHash || deps.safe(), namespaces: [namespace, ...earlier], call,
       saved: { started: true, ...(submitted.proposalHash ? { safeTxHash: submitted.proposalHash } : {}), ...(hash ? { hash } : {}), ...(before.length ? { before } : {}) },
       confirmRetirable,
       authenticate: async found => ((found ? await deps.verify(kind, found) : proven()) ? { result: 'proven', value: true } : { result: 'unknown' }),
@@ -193,23 +194,29 @@ export type SubmissionCallbacks = {
   submitted: (hash: Hex, proposalHash?: Hex) => void
 }
 
+/** What became of a listing signed with the creation: published under its id, or not, and why. */
+export type ListingCallbacks = { published: (intentId: string) => void; failed: (message: string) => void }
+
 /** The hold's authenticated result for a launch submission. */
 export type LaunchSettlement = { hash: Hex; result: 'success' | 'failed' }
 
 export type StickyLaunchPorts = {
   store: ReturnType<typeof createStickyLaunchStore>
   guard: (owner: `0x${string}`) => void
-  /** The launch's one decoded review. Its result names the reviewed calls: listing and creation in the same run skip their own review only for exactly those calls. */
-  review: (plan: LaunchPlan, sponsored: boolean) => Promise<string>
   quote: (plan: LaunchPlan, rememberUuid: (uuid: string) => void, beforePublish: () => void) => Promise<RelayrQuote>
   status: (session: StickyLaunchSession) => Promise<Record<number, Hex[]>>
   choosePayment: (session: StickyLaunchSession) => Promise<RelayrPayment>
-  sendDirect: (session: StickyLaunchSession, callbacks: SubmissionCallbacks, reviewed?: string) => Promise<void>
+  /**
+   * The wallet's creation, under one review: with `listing`, the listing message is signed in the same review and
+   * published once the creation is sent.
+   */
+  sendDirect: (session: StickyLaunchSession, callbacks: SubmissionCallbacks, listing?: ListingCallbacks) => Promise<void>
   sendPayment: (session: StickyLaunchSession, callbacks: SubmissionCallbacks) => Promise<void>
   verifyPayment: (session: StickyLaunchSession) => Promise<boolean>
   requireRetry: (session: StickyLaunchSession, kind: 'direct' | 'payment', purpose: 'retry' | 'retire') => Promise<void>
   verifyDeployment: (session: StickyLaunchSession, target: LaunchTarget, hash: Hex) => Promise<LaunchResult | null>
-  publishListing: (plan: LaunchPlan, reviewed?: string) => Promise<string>
+  /** Signs the listing under its own review and publishes it: its id. */
+  publishListing: (plan: LaunchPlan) => Promise<string>
   sponsor: (session: StickyLaunchSession, beforeRequest: () => void) => Promise<void>
   record: (session: StickyLaunchSession, chainId: number, result: LaunchResult) => Promise<boolean>
   /** Whether the SDK lets the saved attempt of this launch be discarded (its followed success retired first). */
@@ -235,16 +242,24 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     busy = true
     try { return await run() } finally { busy = false }
   }
-  async function listing(session: StickyLaunchSession, reviewed?: string) {
+  /** Whether the launch still has a listing to publish. */
+  const unlisted = (session: StickyLaunchSession) => !session.listing.intentId && session.listing.state !== 'unavailable'
+  const listed: ListingCallbacks = {
+    published: intentId => { const session = load(); save({ ...session, listing: { ...session.listing, state: 'published', intentId, error: undefined } }) },
+    failed: message => { const session = load(); save({ ...session, listing: { ...session.listing, state: 'unlisted', error: message } }) },
+  }
+  async function listing(session: StickyLaunchSession) {
     requireSingleHomeChain(session.plan.targets)
-    if (session.listing.intentId || session.listing.state === 'unavailable') return session
+    if (!unlisted(session)) return session
     try {
       ports.guard(session.plan.owner)
-      const intentId = await ports.publishListing(session.plan, reviewed)
-      return save({ ...session, listing: { ...session.listing, state: 'published', intentId, error: undefined } })
+      listed.published(await ports.publishListing(session.plan))
     } catch (error) {
-      return save({ ...session, listing: { ...session.listing, state: 'unlisted', error: error instanceof Error ? error.message : 'Listing unavailable.' } })
+      // Closing its review is no failure of the listing: the launch stops there, as it was.
+      if (error instanceof TransactionReviewCancelledError) throw error
+      listed.failed(error instanceof Error ? error.message : 'Listing unavailable.')
     }
+    return load()
   }
   async function refreshSession(session: StickyLaunchSession) {
     // Authenticated results of an older journal join `proven` before the display results are cleared.
@@ -352,11 +367,9 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
       if (launchComplete(session)) return session
       ports.guard(session.plan.owner)
       if (session.direct?.started || session.payment?.started || (session.listing.requested && !session.listing.selfPaid)) return session
-      const reviewed = await ports.review(session.plan, session.mode === 'center')
-      ports.guard(session.plan.owner)
-      requireSingleHomeChain(session.plan.targets)
-      session = await listing(session, reviewed)
       if (session.mode === 'center') {
+        // A sponsored launch is its signed listing: one review of the message, then the sponsor's request.
+        session = await listing(session)
         if (!session.listing.intentId) {
           session = save({ ...session, mode: 'direct' })
         } else {
@@ -372,7 +385,7 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
         }
       }
       if (session.mode === 'direct') {
-        await ports.sendDirect(session, callbacks('direct'), reviewed)
+        await ports.sendDirect(session, callbacks('direct'), unlisted(session) ? listed : undefined)
         return refreshSession(load())
       }
       if (!session.published) {
@@ -445,7 +458,13 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
       return save({ ...session, mode: 'direct',
         listing: { ...session.listing, selfPaid: true } })
     }),
-    list: () => exclusively(async () => refreshSession(await listing(load()))),
+    list: () => exclusively(async () => {
+      const listed = await listing(load()).catch(error => {
+        if (error instanceof TransactionReviewCancelledError) return load()
+        throw error
+      })
+      return refreshSession(listed)
+    }),
     addHash: (chainId: number, hash: Hex) => exclusively(async () => {
       const session = load()
       if (!isHash(hash) || !session.candidates[chainId]) throw new Error('Enter a transaction hash for one of this launch’s chains.')

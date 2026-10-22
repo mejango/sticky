@@ -14,7 +14,7 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
-import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
+import { reviewedSteps, useReviewedAction, type TxRequest } from '@/hooks/useReviewedAction'
 import { useStepPresses } from '@/hooks/useStepPresses'
 import type { TransactionReviewRow } from '@/lib/transaction-review'
 import { useWallet } from '@/hooks/useWallet'
@@ -170,9 +170,9 @@ export function ReceiverFlow({
 }) {
   const { address, isConnected, isCenterWallet, openSignIn } = useWallet()
   const { viewAs } = useViewAs()
-  const tx = useSafeTx(chainId)
-  const presses = useStepPresses(tx)
-  const { landed } = presses
+  const tx = useReviewedAction()
+  const presses = useStepPresses(tx, close)
+  const { landed } = tx
   const client = useQueryClient()
   const tokenId = useId()
   const [opened, setOpened] = useState(initiallyOpen)
@@ -248,12 +248,7 @@ export function ReceiverFlow({
   async function confirm() {
     if (!plan || sending) return
     // The step is sent as the account that reviewed it, and the engine refuses it while another is connected.
-    const outcome = await presses.press(
-      plan.steps,
-      (step, _confirmedAt, reviewed) => tx.send(step, { reviewedAccount: plan.account, reviewed }),
-      { account: plan.account, title: titleOf(plan.kind), rows: plan.rows },
-    )
-    if (outcome === 'cancelled') close()
+    await presses.press({ account: plan.account, calls: reviewedSteps(plan.steps, plan.account), title: titleOf(plan.kind), context: plan.rows })
   }
 
   // The step's one decoded review opens once it is planned.

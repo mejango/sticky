@@ -1,6 +1,6 @@
 import { decodeFunctionData, isAddress, isHash, maxUint256, parseAbi, zeroAddress, type Address, type Hex } from 'viem'
 import { jbSuckerV6Abi, validateStickyGroupId } from '@bananapus/nana-sdk-core/v6'
-import type { TxRequest } from '@/hooks/useSafeTx'
+import type { TxRequest } from '@/hooks/useReviewedAction'
 import { environmentForChainIds, SUPPORTED_CHAINS } from '@/lib/chains'
 import { bridgeCalldata, bridgeRouteId, type BridgeMovement, type BridgeRoute, type createStickyBridge } from '@/lib/sticky-bridge'
 

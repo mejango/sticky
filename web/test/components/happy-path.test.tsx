@@ -3,7 +3,7 @@
 import { QueryClient, QueryClientProvider, notifyManager } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { encodeFunctionData, getAddress, toHex, type Hex, type TransactionReceipt } from 'viem'
+import { getAddress, toHex, type Hex, type TransactionReceipt } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import { TOKEN, stickyInfo } from '../home-fixtures'
@@ -22,31 +22,30 @@ const STICK = `0x${'b2'.repeat(32)}` as Hex
 const UNSTICK = `0x${'c3'.repeat(32)}` as Hex
 
 const mocks = vi.hoisted(() => ({
-  publicClient: { getBlockNumber: vi.fn(async () => 100n), getTransactionCount: vi.fn(async () => 7), simulateContract: vi.fn(), estimateContractGas: vi.fn(), getChainId: vi.fn(), getTransaction: vi.fn(), getTransactionReceipt: vi.fn(), getBlock: vi.fn() },
+  publicClient: {
+    chain: { id: 84532 }, getBlockNumber: vi.fn(async () => 100n), getTransactionCount: vi.fn(async () => 7), simulateContract: vi.fn(), estimateContractGas: vi.fn(),
+    estimateGas: vi.fn(async () => 50_000n), getGasPrice: vi.fn(async () => 1n), getChainId: vi.fn(), getTransaction: vi.fn(), getTransactionReceipt: vi.fn(), getBlock: vi.fn(),
+    waitForTransactionReceipt: vi.fn(), readContract: vi.fn(async () => { throw new Error('no reads here') }),
+    request: vi.fn(async ({ method }: { method: string }) => { if (method === 'eth_call') return '0x'; throw new Error(`unexpected ${method}`) }),
+  },
   getAccount: vi.fn(),
-  requestReview: vi.fn(),
   /** An action's one decoded review of every step. */
-  requireReview: vi.fn(),
-  writeContract: vi.fn(),
+  review: vi.fn(),
+  /** The wallet: what it was asked to send, by the hash it answered. */
+  sendTransaction: vi.fn(),
+  sent: {} as Record<string, { to: Hex; data: Hex; value: bigint }>,
   receipts: {} as Record<string, TransactionReceipt>,
   transactions: {} as Record<string, unknown>,
   blocks: {} as Record<string, { hash: Hex; number: bigint; timestamp: bigint }>,
   readAt: vi.fn(),
 }))
 
-vi.mock('@wagmi/core', () => ({ getAccount: mocks.getAccount, getPublicClient: () => mocks.publicClient }))
-vi.mock('wagmi', () => ({
-  usePublicClient: () => mocks.publicClient,
-  useSwitchChain: () => ({ switchChainAsync: vi.fn() }),
-  useWaitForTransactionReceipt: ({ hash }: { hash?: string }) => ({ data: hash ? mocks.receipts[hash.toLowerCase()] : undefined, isError: false }),
-  useWriteContract: () => ({ writeContractAsync: mocks.writeContract }),
+vi.mock('@wagmi/core', () => ({
+  getAccount: mocks.getAccount, getPublicClient: () => mocks.publicClient, switchChain: vi.fn(),
+  getWalletClient: async () => ({ chain: { id: 84532 }, sendTransaction: mocks.sendTransaction }),
 }))
+vi.mock('wagmi', () => ({ usePublicClient: () => mocks.publicClient }))
 vi.mock('@/hooks/useWallet', () => ({ useWallet: () => ({ isConnected: true, address: ALICE, isCenterWallet: false, openSignIn: vi.fn() }) }))
-vi.mock('@/lib/transaction-review', async importOriginal => ({
-  ...(await importOriginal<typeof import('@/lib/transaction-review')>()),
-  requestContractTransactionReview: mocks.requestReview,
-  requireTransactionReview: mocks.requireReview,
-}))
 vi.mock('@/providers/Providers', () => ({ wagmiConfig: {} }))
 vi.mock('@/lib/safe-connector', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/safe-connector')>()),
@@ -75,6 +74,7 @@ vi.mock('@/lib/sticky-rewards', async importOriginal => ({
 vi.mock('@/lib/preflight', async importOriginal => ({ ...(await importOriginal<typeof import('@/lib/preflight')>()), preflight: async () => undefined }))
 vi.mock('@/hooks/useSettled', () => ({ useSettled: <T,>(value: T) => value }))
 
+import { registerReviewHandler } from '@bananapus/nana-sdk-core/review'
 import { StickFlow } from '@/components/project/flows/StickFlow'
 import { UnstickFlow } from '@/components/project/flows/UnstickFlow'
 
@@ -82,14 +82,16 @@ let host: HTMLDivElement
 let root: Root
 let client: QueryClient
 let clicks = 0
+let unregister = () => {}
 
 beforeEach(() => {
   clicks = 0
   notifyManager.setScheduler(callback => queueMicrotask(callback))
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   mocks.getAccount.mockImplementation(() => ({ address: ALICE, chainId: CHAIN }))
-  mocks.requestReview.mockReset().mockResolvedValue(true)
-  mocks.requireReview.mockReset().mockResolvedValue(undefined)
+  mocks.review.mockReset()
+  unregister = registerReviewHandler(async prompt => { mocks.review(prompt.model); return prompt.confirmation })
+  mocks.sent = {}
   mocks.publicClient.simulateContract.mockImplementation(async (request: object) => ({ request: { ...request } }))
   mocks.publicClient.estimateContractGas.mockResolvedValue(50_000n)
   mocks.publicClient.getChainId.mockResolvedValue(CHAIN)
@@ -103,12 +105,16 @@ beforeEach(() => {
     if (!receipt) throw new Error('Receipt not found')
     return receipt
   })
+  mocks.publicClient.waitForTransactionReceipt.mockImplementation(async ({ hash }: { hash: Hex }) => {
+    while (!mocks.receipts[hash.toLowerCase()]) await new Promise(resolve => setTimeout(resolve, 5))
+    return mocks.receipts[hash.toLowerCase()]
+  })
   mocks.publicClient.getBlock.mockImplementation(async ({ blockNumber }: { blockNumber: bigint }) => {
     const block = mocks.blocks[String(blockNumber)]
     if (!block) throw new Error('Block not found')
     return block
   })
-  mocks.writeContract.mockReset()
+  mocks.sendTransaction.mockReset()
   mocks.readAt.mockReset().mockResolvedValue([{ status: 'success', result: 10n * 10n ** 18n }, { status: 'success', result: [0n, 0, 0, false] }, { status: 'success', result: false }, { status: 'success', result: 0n }])
   mocks.receipts = {}
   mocks.transactions = {}
@@ -120,6 +126,7 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
+  unregister()
   await act(async () => root.unmount())
   host.remove()
   client.clear()
@@ -153,18 +160,24 @@ async function type(label: string, value: string) {
     field.dispatchEvent(new Event('input', { bubbles: true }))
   })
 }
-async function mined(hash: Hex, block: bigint, functionName: string, render: () => void) {
-  const request = mocks.writeContract.mock.calls.find(([sent]) => sent.functionName === functionName)![0]
+/** The wallet answers each send with the next hash, and the chain knows what it was asked to send. */
+function answers(...hashes: Hex[]) {
+  for (const hash of hashes) mocks.sendTransaction.mockImplementationOnce(async (tx: { to: Hex; data: Hex; value?: bigint }) => {
+    mocks.sent[hash.toLowerCase()] = { to: tx.to, data: tx.data, value: tx.value ?? 0n }
+    return hash
+  })
+}
+async function mined(hash: Hex, block: bigint, render: () => void) {
+  const request = mocks.sent[hash.toLowerCase()]
   const blockHash = toHex(block, { size: 32 })
   mocks.blocks[String(block)] = { hash: blockHash, number: block, timestamp: 1_790_000_000n + block }
   mocks.transactions[hash.toLowerCase()] = {
-    hash, chainId: CHAIN, from: request.account, to: request.address,
-    input: encodeFunctionData({ abi: request.abi, functionName: request.functionName, args: request.args }),
-    value: request.value ?? 0n, blockHash, blockNumber: block, transactionIndex: 0,
+    hash, chainId: CHAIN, from: ALICE, to: request.to, input: request.data,
+    value: request.value, blockHash, blockNumber: block, transactionIndex: 0,
   }
   mocks.receipts[hash.toLowerCase()] = {
     transactionHash: hash, status: 'success', blockNumber: block, blockHash, transactionIndex: 0,
-    from: request.account, to: request.address, contractAddress: null, logs: [], logsBloom: `0x${'0'.repeat(512)}`,
+    from: ALICE, to: request.to, contractAddress: null, logs: [], logsBloom: `0x${'0'.repeat(512)}`,
     cumulativeGasUsed: 50_000n, gasUsed: 50_000n, effectiveGasPrice: 1n, type: 'eip1559',
   }
   await act(async () => render())
@@ -173,47 +186,45 @@ async function mined(hash: Hex, block: bigint, functionName: string, render: () 
 describe('the normal path adds no click, notice or wait', () => {
   it('a stick (pay): approve, then stick, one review of both and only the waiting line and the transaction link', async () => {
     const tree = () => root.render(<QueryClientProvider client={client}><StickFlow chainId={CHAIN} projectId={PROJECT} /></QueryClientProvider>)
-    mocks.writeContract.mockResolvedValueOnce(APPROVAL).mockResolvedValueOnce(STICK)
+    answers(APPROVAL, STICK)
     await act(async () => tree())
     await until(() => host.querySelector('input'), 'the Stick card')
     await type('Amount of underlying tokens to stick', '5')
     await until(() => button('Stick') && !button('Stick').disabled, 'the Stick button')
     // Stick is the only click: its one review shows both steps, and each is sent as the one before confirms.
     await click(button('Stick'))
-    await until(() => mocks.writeContract.mock.calls.length === 1 && confirmButton()?.textContent === 'Confirming…', 'the approval to be sent')
+    await until(() => mocks.sendTransaction.mock.calls.length === 1 && confirmButton()?.textContent === 'Confirming…', 'the approval to be sent')
     const seen: string[][] = [notices()]
-    await mined(APPROVAL, 4_001n, 'approve', tree)
-    await until(() => mocks.writeContract.mock.calls.length === 2 && confirmButton()?.textContent === 'Confirming…', 'the stick to be sent')
+    await mined(APPROVAL, 4_001n, tree)
+    await until(() => mocks.sendTransaction.mock.calls.length === 2 && confirmButton()?.textContent === 'Confirming…', 'the stick to be sent')
     seen.push(notices())
-    await mined(STICK, 4_005n, 'pay', tree)
+    await mined(STICK, 4_005n, tree)
     await until(() => title() === 'Stick confirmed', 'the stick to be counted')
     seen.push(notices())
 
     expect(clicks).toBe(1)
-    expect(mocks.requireReview).toHaveBeenCalledOnce()
-    expect(mocks.requestReview).not.toHaveBeenCalled()
+    expect(mocks.review).toHaveBeenCalledOnce()
     expect(seen).toEqual([['Waiting for confirmation…'], ['Waiting for confirmation…'], ['View transaction ↗']])
   })
 
   it('an unstick (cash-out): one review and only the waiting line and the transaction link', async () => {
     const info = stickyInfo(CHAIN, BigInt(PROJECT), { stSymbol: 'STICKYCPN' })
     const tree = () => root.render(<QueryClientProvider client={client}><UnstickFlow chainId={CHAIN} projectId={PROJECT} info={info} onClose={() => {}} /></QueryClientProvider>)
-    mocks.writeContract.mockResolvedValueOnce(UNSTICK)
+    answers(UNSTICK)
     await act(async () => tree())
     await type('Amount of Sticky tokens to unstick', '5')
     await until(() => anyButton('Unstick') && !anyButton('Unstick').disabled, 'the Unstick button')
     // Unstick is the only click: its one review opens on its own, and the unstick is sent under it.
     await click(anyButton('Unstick'))
-    await until(() => mocks.writeContract.mock.calls.length === 1 && confirmButton()?.textContent === 'Confirming…', 'the unstick to be sent')
+    await until(() => mocks.sendTransaction.mock.calls.length === 1 && confirmButton()?.textContent === 'Confirming…', 'the unstick to be sent')
     const seen: string[][] = [notices()]
-    await mined(UNSTICK, 4_010n, 'cashOutTokensOf', tree)
+    await mined(UNSTICK, 4_010n, tree)
     await until(() => title() === 'Unstick confirmed', 'the unstick to be counted')
     seen.push(notices())
 
     expect(clicks).toBe(1)
-    expect(mocks.requireReview).toHaveBeenCalledOnce()
-    expect(mocks.requestReview).not.toHaveBeenCalled()
-    expect(mocks.writeContract.mock.calls[0][0]).toMatchObject({ address: TERMINAL, functionName: 'cashOutTokensOf' })
+    expect(mocks.review).toHaveBeenCalledOnce()
+    expect(mocks.review.mock.calls[0][0].calls).toEqual([expect.objectContaining({ to: TERMINAL, functionName: 'cashOutTokensOf' })])
     expect(seen).toEqual([['Waiting for confirmation…View transaction ↗'], ['View transaction ↗']])
   })
 })

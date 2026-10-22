@@ -4,7 +4,7 @@ import { NATIVE_TOKEN } from '@bananapus/nana-sdk-core'
 import { QueryClient, QueryClientProvider, notifyManager, type QueryKey } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { erc20Abi, getAddress, type Abi, type Address, type Hex } from 'viem'
+import { erc20Abi, getAddress, type Address, type Hex } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stickyRewardReceiverFactoryAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
@@ -13,6 +13,7 @@ import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 import { EXTERNAL_WALLET_REQUIRED, WalletAuthContext } from '@/providers/WalletAuthContext'
 import { stickyInfo } from '../home-fixtures'
 import { returning, rewardChain } from '../lib/sticky-reward-fixtures'
+import { confirmedBlock, reviewedActionFake, type ReviewedActionFake } from '../support/reviewed-action'
 
 // The reward address of a group of a project's holders: where it is, whether it is created, what it holds to settle,
 // and creating it and settling what it holds into airdrops. The reads and the engine are mocks: the builders, the reads
@@ -31,26 +32,10 @@ const HASH = `0x${'c3'.repeat(32)}` as Hex
 /** Project 12 on Base Sepolia sticks ART, of 6 decimals, for STICKYART. */
 const INFO = stickyInfo(CHAIN, BigInt(PROJECT), { stakedToken: ART, symbol: 'ART', decimals: 6, stSymbol: 'STICKYART' })
 
-type Phase = 'idle' | 'review' | 'simulating' | 'signing' | 'pending' | 'submitted' | 'success' | 'error'
-type EngineState = {
-  phase: Phase
-  busy: boolean
-  error: string | null
-  hash: Hex | null
-  receipt: { blockNumber: bigint } | null
-  isSafe: boolean
-  safeProposalHash: null
-  safeNonceGuidance: null
-  send: ReturnType<typeof vi.fn>
-  review: ReturnType<typeof vi.fn>
-  reset: ReturnType<typeof vi.fn<() => void>>
-  dismiss: ReturnType<typeof vi.fn>
-}
-
 const mocks = vi.hoisted(() => ({
   wallet: {} as { address: string | undefined; isConnected: boolean; isCenterWallet: boolean; openSignIn: ReturnType<typeof vi.fn> },
   requestSignIn: vi.fn(),
-  tx: {} as EngineState,
+  tx: {} as ReviewedActionFake,
   receiver: vi.fn(),
   arrivals: vi.fn(),
   meta: vi.fn(),
@@ -58,9 +43,9 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/hooks/useWallet', () => ({ useWallet: () => mocks.wallet }))
-vi.mock('@/hooks/useSafeTx', async importOriginal => ({
-  ...(await importOriginal<typeof import('@/hooks/useSafeTx')>()),
-  useSafeTx: () => mocks.tx,
+vi.mock('@/hooks/useReviewedAction', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/hooks/useReviewedAction')>()),
+  useReviewedAction: () => mocks.tx,
 }))
 vi.mock('@/lib/sticky-receivers', () => ({ readReceiver: mocks.receiver, readArrivals: mocks.arrivals }))
 vi.mock('@/lib/sticky-rewards', async importOriginal => ({
@@ -71,35 +56,10 @@ vi.mock('@/lib/preflight', () => ({ preflight: mocks.preflight }))
 
 import { ReceiverFlow } from '@/components/project/flows/ReceiverFlow'
 
-const engine = (): EngineState => {
-  const state: EngineState = {
-    phase: 'idle',
-    busy: false,
-    error: null,
-    hash: null,
-    receipt: null,
-    isSafe: false,
-    safeProposalHash: null,
-    safeNonceGuidance: null,
-    send: vi.fn(async () => {
-      state.phase = 'pending'
-      state.busy = true
-      state.error = null
-      state.hash = null
-      state.receipt = null
-      return HASH
-    }),
-    // The step's one decoded review: what it returns is the proof the step is sent with.
-    review: vi.fn(async () => ({})),
-    dismiss: vi.fn(() => state.reset()),
-    reset: vi.fn(() => {
-      state.phase = 'idle'
-      state.busy = false
-      state.error = null
-      state.hash = null
-      state.receipt = null
-    }),
-  }
+const engine = () => {
+  const state = reviewedActionFake(HASH)
+  state.reset.mockImplementation(() => Object.assign(state, { phase: 'idle', busy: false, error: null, hash: null, receipt: null, landed: 0 }))
+  state.dismiss.mockImplementation(() => state.reset())
   return state
 }
 
@@ -202,13 +162,17 @@ const rowsOf = () =>
       return pairs
     }, []),
   )
-type Sent = { chainId: number; address: Address; abi: Abi; functionName: string; args: readonly unknown[] }
-const sent = (at: number) => mocks.tx.send.mock.calls[at] as [Sent, { reviewedAccount: Address }]
+/** The call the wallet was asked for `at`, and its run: the account it was reviewed for, and its check before the step. */
+const sent = (at: number) => {
+  const [call, step] = mocks.tx.send.mock.calls[at]
+  const action = mocks.tx.run.mock.calls.at(-1)![0]
+  return [call, { account: action.account, reverify: () => action.reverify!(call, step, step ? confirmedBlock(step - 1) : undefined) }] as const
+}
 async function confirmed() {
   mocks.tx.phase = 'success'
   mocks.tx.busy = false
   mocks.tx.hash = HASH
-  mocks.tx.receipt = { blockNumber: 10n }
+  mocks.tx.landed = mocks.tx.run.mock.calls.at(-1)![0].calls.length
   await render()
 }
 
@@ -277,19 +241,21 @@ describe('creating it', () => {
     expect(steps()).toEqual(['Create reward address'])
     expect(rowsOf()).toEqual({ Who: 'Staked 4+ weeks', 'Reward address': RECEIVER, On: 'Base Sepolia' })
 
-    const [request, options] = sent(0)
-    expect(request).toBe(tried)
-    expect(request).toMatchObject({ abi: stickyRewardReceiverFactoryAbi, functionName: 'deployReceiverFor', args: [INFO.stToken, 4000n] })
-    expect(options).toMatchObject({ reviewedAccount: ALICE, reviewed: await mocks.tx.review.mock.results[0].value })
-    expect(mocks.tx.review).toHaveBeenCalledExactlyOnceWith([tried], {
+    const [call, options] = sent(0)
+    expect(call.args).toBe(tried.args)
+    expect(call).toMatchObject({ to: FACTORY, abi: stickyRewardReceiverFactoryAbi, functionName: 'deployReceiverFor', args: [INFO.stToken, 4000n] })
+    expect(options.account).toBe(ALICE)
+    expect(mocks.tx.review).toHaveBeenCalledOnce()
+    expect(mocks.tx.run).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       account: ALICE,
       title: 'Create reward address',
-      rows: [
+      calls: [call],
+      context: [
         { label: 'Who', value: 'Staked 4+ weeks' },
         expect.objectContaining({ label: 'Reward address', value: RECEIVER }),
         { label: 'On', value: 'Base Sepolia' },
       ],
-    })
+    }))
   })
 
   it('says it is created, links it, and reads the reward address again', async () => {
@@ -345,8 +311,8 @@ describe('settling it', () => {
     })
     expect(mocks.preflight.mock.calls[0][0]).toMatchObject({ functionName: 'settleFor', args: [INFO.stToken, 0n, USDC] })
 
-    expect(sent(0)[0]).toMatchObject({ address: FACTORY, functionName: 'settleFor', args: [INFO.stToken, 0n, USDC] })
-    expect(sent(0)[1].reviewedAccount).toBe(ALICE)
+    expect(sent(0)[0]).toMatchObject({ to: FACTORY, functionName: 'settleFor', args: [INFO.stToken, 0n, USDC] })
+    expect(sent(0)[1].account).toBe(ALICE)
     invalidate.mockClear()
     await confirmed()
     expect(confirm()!.textContent).toContain('Arrivals settled into rewards')
@@ -477,12 +443,12 @@ describe('a wallet that cannot send', () => {
   it('names the account that reviewed it on its step, whichever account is connected by then', async () => {
     await open()
     let approve = () => {}
-    mocks.tx.review.mockImplementationOnce(() => new Promise(resolve => (approve = () => resolve({}))))
+    mocks.tx.review.mockImplementationOnce(() => new Promise(resolve => (approve = () => resolve())))
     await press(panel(), 'Create onchain')
     mocks.wallet = { ...mocks.wallet, address: CAROL }
     await render()
     await act(async () => approve())
     await settled()
-    expect(sent(0)[1].reviewedAccount).toBe(ALICE)
+    expect(sent(0)[1].account).toBe(ALICE)
   })
 })

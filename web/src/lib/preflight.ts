@@ -1,5 +1,5 @@
 import { BaseError, ContractFunctionRevertedError, type Address } from 'viem'
-import type { TxRequest } from '@/hooks/useSafeTx'
+import type { TxRequest } from '@/hooks/useReviewedAction'
 import { untilAborted } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
 

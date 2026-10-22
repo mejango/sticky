@@ -9,7 +9,7 @@ import { ModalShell } from '@/components/ui/ModalShell'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
-import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
+import { reviewedCall, useReviewedAction, type TxRequest } from '@/hooks/useReviewedAction'
 import { useStepPresses } from '@/hooks/useStepPresses'
 import { useWallet } from '@/hooks/useWallet'
 import { stickyHookAbi } from '@/lib/sticky-abis'
@@ -70,8 +70,8 @@ export function TrustFlow({
 }) {
   const trusting = sender === null
   const { address, isConnected, isCenterWallet, openSignIn } = useWallet()
-  const tx = useSafeTx(chainId)
-  const presses = useStepPresses(tx)
+  const tx = useReviewedAction()
+  const presses = useStepPresses(tx, closeReview)
   const client = useQueryClient()
   const [typed, setTyped] = useState('')
   const [review, setReview] = useState<Review | null>(null)
@@ -118,21 +118,19 @@ export function TrustFlow({
   async function send() {
     if (!plan || !current || sending) return
     const [, target] = plan.args as readonly [bigint, Address, boolean]
-    const outcome = await presses.press(
-      [plan],
-      (step, _confirmedAt, reviewed) =>
-        tx.send(step, {
-          reviewedAccount: current.account,
-          reviewed,
-          reverify: async () => {
-            if ((await trustedBy(chainId, projectId, plan.address, current.account, target)) === trusting) {
-              throw new Error(trusting ? ALREADY_TRUSTED : NOT_TRUSTED)
-            }
-          },
-        }),
-      { account: current.account, title: trusting ? 'Trust this sender' : 'Untrust this sender', rows: rowsOf(target) },
+    await presses.press(
+      {
+        account: current.account,
+        calls: [reviewedCall(plan, current.account)],
+        title: trusting ? 'Trust this sender' : 'Untrust this sender',
+        context: rowsOf(target),
+        reverify: async () => {
+          if ((await trustedBy(chainId, projectId, plan.address, current.account, target)) === trusting) {
+            throw new Error(trusting ? ALREADY_TRUSTED : NOT_TRUSTED)
+          }
+        },
+      },
     )
-    if (outcome === 'cancelled') closeReview()
   }
 
   // A review is the account's that asked for it: once another is connected it is dropped, and nothing already due or

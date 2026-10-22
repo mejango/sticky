@@ -35,8 +35,8 @@ describe('the hold and recovery gate', () => {
     expect(offenders(/\bfollowHeldWrite\b/, ['lib/write-holds.ts'])).toEqual([])
   })
 
-  it('hands a receipt to the hold in one place only: the engine, which then reads its settlement', () => {
-    expect(offenders(/\.onReceipt\(/, ['hooks/useSafeTx.ts'])).toEqual([])
+  it('never hands a receipt to the hold itself: core\'s reviewed send does, then reads its settlement', () => {
+    expect(offenders(/\.onReceipt\(/)).toEqual([])
   })
 
   it('shows the SDK\'s lines, labels and warnings, never an app copy of one', () => {

@@ -65,10 +65,6 @@ vi.mock('@/hooks/useProjectMetadata', () => ({
 vi.mock('@/hooks/useWallet', () => ({
   useWallet: () => ({ address: mocks.address, isConnected: mocks.address !== undefined, isCenterWallet: false, openSignIn: vi.fn() }),
 }))
-// The Stick card's transaction engine, idle: sending has tests of its own (stick-flow.test.tsx).
-vi.mock('@/hooks/useSafeTx', () => ({
-  useSafeTx: () => ({ phase: 'idle', busy: false, error: null, hash: null, receipt: null, send: vi.fn(), reset: vi.fn() }),
-}))
 vi.mock('@/lib/ens', () => ({ ensAvailable: () => false, lookupEnsName: async () => null }))
 // The Airdrops tab's reads have tests of their own (airdrops.test.tsx). Here they answer at once, with nothing.
 vi.mock('@/lib/sticky-rewards', async importOriginal => ({

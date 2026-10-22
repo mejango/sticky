@@ -28,9 +28,13 @@ function fixture(chainIds = [84532], capability: 'sponsored' | 'self-paid' | 'un
   const storage = memoryStorage()
   const store = createStickyLaunchStore(storage)
   const ports: StickyLaunchPorts = {
-    store, guard: vi.fn(), review: vi.fn(async () => 'reviewed'), quote: vi.fn(async (_plan, _remember, beforePublish) => { await beforePublish(); return quote }), status: vi.fn(async () => ({})),
+    store, guard: vi.fn(), quote: vi.fn(async (_plan, _remember, beforePublish) => { await beforePublish(); return quote }), status: vi.fn(async () => ({})),
     choosePayment: vi.fn(async () => quote.payment_info[0]),
-    sendDirect: vi.fn(async (_session, callbacks) => { await callbacks.beforeWrite(); callbacks.submitted(H1) }),
+    // The creation, and the listing signed in its review: published once the creation is sent.
+    sendDirect: vi.fn(async (session, callbacks, listing) => {
+      await callbacks.beforeWrite(); callbacks.submitted(H1)
+      if (listing) await ports.publishListing(session.plan).then(listing.published, (error: Error) => listing.failed(error.message))
+    }),
     sendPayment: vi.fn(async (_session, callbacks) => { await callbacks.beforeWrite(); callbacks.submitted(H2) }),
     verifyPayment: vi.fn(async () => true), verifyDeployment: vi.fn(async () => null),
     requireRetry: vi.fn(async () => {}),
@@ -86,7 +90,6 @@ describe('durable Sticky launch controller', () => {
     expect(f.store.load()?.candidates[84532]).toEqual([H1])
     await createStickyLaunchController(f.ports).run()
     expect(f.ports.sendDirect).toHaveBeenCalledTimes(1)
-    expect(f.ports.review).toHaveBeenCalledTimes(1)
     await expect(f.controller.clear()).rejects.toThrow('Recover')
   })
 
@@ -269,7 +272,7 @@ describe('durable Sticky launch controller', () => {
     const f = fixture()
     let release!: () => void
     const pending = new Promise<void>(resolve => { release = resolve })
-    vi.mocked(f.ports.review).mockImplementation(async () => { await pending; return 'reviewed' })
+    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await pending; await callbacks.beforeWrite(); callbacks.submitted(H1) })
     const running = f.controller.run()
     await expect(f.controller.run()).rejects.toThrow('already being processed')
     release()

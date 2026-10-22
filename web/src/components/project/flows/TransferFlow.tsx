@@ -9,7 +9,7 @@ import { ModalShell } from '@/components/ui/ModalShell'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
-import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
+import { reviewedCall, useReviewedAction, type TxRequest } from '@/hooks/useReviewedAction'
 import { useStepPresses } from '@/hooks/useStepPresses'
 import { useStickyPosition } from '@/hooks/useStickyProject'
 import { useWallet } from '@/hooks/useWallet'
@@ -68,8 +68,8 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
   const projectId = Number(info.projectId)
   const label = stickyLabel(info)
   const { address, isConnected, isCenterWallet, openSignIn } = useWallet()
-  const tx = useSafeTx(chainId)
-  const presses = useStepPresses(tx)
+  const tx = useReviewedAction()
+  const presses = useStepPresses(tx, closeReview)
   const client = useQueryClient()
   const position = useStickyPosition(chainId, projectId, address ?? null, info)
   const amountId = useId()
@@ -133,19 +133,17 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
   async function send() {
     if (!plan || !current || sending) return
     const [to, count] = plan.args as readonly [Address, bigint]
-    const outcome = await presses.press(
-      [plan],
-      (step, _confirmedAt, reviewed) =>
-        tx.send(step, {
-          reviewedAccount: current.account,
-          reviewed,
-          reverify: async () => {
-            if ((await heldBy(info, current.account)) < count) throw new Error(BALANCE_CHANGED)
-          },
-        }),
-      { account: current.account, title: 'Transfer', rows: rowsOf(to, count, current.whole) },
+    await presses.press(
+      {
+        account: current.account,
+        calls: [reviewedCall(plan, current.account)],
+        title: 'Transfer',
+        context: rowsOf(to, count, current.whole),
+        reverify: async () => {
+          if ((await heldBy(info, current.account)) < count) throw new Error(BALANCE_CHANGED)
+        },
+      },
     )
-    if (outcome === 'cancelled') closeReview()
   }
 
   // A review is the account's that asked for it: once another is connected it is dropped, and nothing already due or
