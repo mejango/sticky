@@ -479,11 +479,14 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
     async publishListing(plan, reviewed) {
       requireSingleHomeChain(plan.targets)
       const authority = reviewedWallet(plan.owner)
-      const intent = await publishStickyListing(plan, async message => {
+      // One copy is published, signed, compared with the approval and shown, so none of them can differ.
+      const signed = structuredClone(plan)
+      const approved = reviewed === approvalOf(launchCalls(signed, authority.safe), authority)
+      const intent = await publishStickyListing(signed, async message => {
         assertReviewedWallet(authority)
-        if (reviewed !== approvalOf(launchCalls(plan, authority.safe), authority)) await requireTransactionReview({ title: 'Publish Sticky listing', kind: 'authorization',
+        if (!approved) await requireTransactionReview({ title: 'Publish Sticky listing', kind: 'authorization',
           description: 'Authorize the exact saved launch calls and metadata for this listing.', confirmLabel: 'Publish',
-          calls: reviewCalls(plan) })
+          calls: reviewCalls(signed) })
         assertReviewedWallet(authority)
         const { wallet } = await connectedWallet(plan.targets[0].chainId as JBChainId, { expected: plan.owner, requireUnchanged: true, changedError: 'Connect the wallet that prepared this launch.' })
         requireSingleHomeChain(plan.targets)

@@ -506,6 +506,23 @@ describe('Sticky launch browser boundaries', () => {
     else expect(fake.sponsor).toHaveBeenCalledOnce()
   })
 
+  it('a listing signs the plan its approval was taken from, whatever the caller\'s copy becomes', async () => {
+    const shown = plan()
+    const approval = await fake.ports.review(shown, false)
+    fake.review.mockClear()
+    let published: LaunchPlan | undefined
+    fake.publish.mockImplementation(async (listed: LaunchPlan, sign) => {
+      published = listed
+      shown.cashOutTaxRate = '900'
+      await sign('Exact SDK listing message')
+      return { id: 'listing' }
+    })
+    await fake.ports.publishListing(shown, approval)
+    expect(fake.review).not.toHaveBeenCalled()
+    expect(published).not.toBe(shown)
+    expect(published?.cashOutTaxRate).toBe('500')
+  })
+
   it('the one review of a Safe launch shows the Safe execution gas the wallet will run', async () => {
     fake.safe = true
     const controller = createBrowserStickyLaunchController()
