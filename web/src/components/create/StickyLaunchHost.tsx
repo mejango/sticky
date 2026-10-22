@@ -106,10 +106,9 @@ export function StickyLaunchHost() {
     setLaunching(true)
     try { await work(current) } finally { setLaunching(false) }
   })
-  const prepare = async (plan: LaunchPlan, capability: 'sponsored' | 'self-paid' | 'unavailable') => {
-    const current = await getController()
-    await current.prepare(plan, capability)
-  }
+  /** The form's one launch press: save the launch, then open its decoded review. No confirmation comes before it. */
+  const prepare = (plan: LaunchPlan, capability: 'sponsored' | 'self-paid' | 'unavailable') =>
+    launch(async current => { await current.prepare(plan, capability); await current.run() })
   const complete = session ? launchComplete(session) : false
   const settledSuccess = !!session && (session.direct?.settled === 'success' || session.payment?.settled === 'success' || Object.keys(session.proven ?? {}).length > 0)
   const recoveryOnly = !!session && session.plan.targets.length !== 1

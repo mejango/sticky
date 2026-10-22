@@ -492,6 +492,28 @@ describe('Sticky launch browser boundaries', () => {
     expect(fake.write.mock.calls[0][0].gas).toBe(0n)
   })
 
+  it.each(['self-paid', 'sponsored'] as const)('one %s launch press opens one decoded review: listing and creation follow it without another', async capability => {
+    const controller = createBrowserStickyLaunchController()
+    fake.publish.mockImplementation(async (_plan, sign) => { await sign('Exact SDK listing message'); return { id: 'listing' } })
+    fake.intent.mockResolvedValue({ id: 'listing', publisher: OWNER, envelope: buildStickyEnvelope(plan()), deployments: [], deploys: [] })
+    fake.receipt.mockResolvedValue({ transactionHash: HASH, blockNumber: 10n, status: 'success' })
+    await controller.prepare(plan(), capability)
+    await controller.run()
+    expect(fake.review).toHaveBeenCalledOnce()
+    expect(fake.review.mock.calls[0][0]).toMatchObject({ title: 'Review Sticky launch' })
+    expect(fake.sign).toHaveBeenCalledOnce()
+    if (capability === 'self-paid') expect(fake.write).toHaveBeenCalledOnce()
+    else expect(fake.sponsor).toHaveBeenCalledOnce()
+  })
+
+  it('a listing or creation without the reviewed launch\'s calls is reviewed on its own', async () => {
+    fake.publish.mockImplementation(async (_plan, sign) => { await sign('Exact SDK listing message'); return { id: 'listing' } })
+    fake.receipt.mockResolvedValue({ transactionHash: HASH, blockNumber: 10n, status: 'success' })
+    await fake.ports.publishListing(plan(), 'another launch')
+    await fake.ports.sendDirect(session(), callbacks(), 'another launch')
+    expect(fake.review.mock.calls.map(([request]) => request.title)).toEqual(['Publish Sticky listing', 'Review Sticky creation'])
+  })
+
   it('remembers a published bundle UUID even when its exact quote binding fails', async () => {
     const remember = vi.fn()
     vi.mocked(fetch).mockResolvedValueOnce(json({ bundle_uuid: BUNDLE, tx_uuids: [], payment_info: [] }))

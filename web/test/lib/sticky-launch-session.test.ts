@@ -28,7 +28,7 @@ function fixture(chainIds = [84532], capability: 'sponsored' | 'self-paid' | 'un
   const storage = memoryStorage()
   const store = createStickyLaunchStore(storage)
   const ports: StickyLaunchPorts = {
-    store, guard: vi.fn(), review: vi.fn(async () => {}), quote: vi.fn(async (_plan, _remember, beforePublish) => { await beforePublish(); return quote }), status: vi.fn(async () => ({})),
+    store, guard: vi.fn(), review: vi.fn(async () => 'reviewed'), quote: vi.fn(async (_plan, _remember, beforePublish) => { await beforePublish(); return quote }), status: vi.fn(async () => ({})),
     choosePayment: vi.fn(async () => quote.payment_info[0]),
     sendDirect: vi.fn(async (_session, callbacks) => { await callbacks.beforeWrite(); callbacks.submitted(H1) }),
     sendPayment: vi.fn(async (_session, callbacks) => { await callbacks.beforeWrite(); callbacks.submitted(H2) }),
@@ -269,7 +269,7 @@ describe('durable Sticky launch controller', () => {
     const f = fixture()
     let release!: () => void
     const pending = new Promise<void>(resolve => { release = resolve })
-    vi.mocked(f.ports.review).mockImplementation(async () => pending)
+    vi.mocked(f.ports.review).mockImplementation(async () => { await pending; return 'reviewed' })
     const running = f.controller.run()
     await expect(f.controller.run()).rejects.toThrow('already being processed')
     release()

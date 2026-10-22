@@ -102,6 +102,6 @@ export function StickyCreateForm({ environment, busy, prepare, working, failed }
     </fieldset>
     {viewAs ? <p role="alert" className="text-sm text-err">Exit View as to create a token.</p>
       : !wallet.address || wallet.isCenterWallet ? <button type="button" className="btn-primary px-4 py-2" disabled={busy} onClick={() => void requestSignIn({ walletsOnly: true })}>Connect an external wallet</button>
-        : <button type="submit" className="btn-primary px-4 py-2" disabled={busy || homeChainId === undefined}>{busy ? 'Checking launch…' : 'Prepare launch'}</button>}
+        : <button type="submit" className="btn-primary px-4 py-2" disabled={busy || homeChainId === undefined}>{busy ? 'Checking launch…' : 'Launch'}</button>}
   </form>
 }

@@ -1,3 +1,21 @@
+# Launch: one press opens the decoded review (2026-10-22)
+
+Stacks on #73. The create form's launch press saved the launch, then a second press ("Continue launch" or "Request sponsored launch") opened the SDK review: two confirmations for one action.
+
+- [x] 1. The form's press saves the launch and runs it in one host action, so the SDK's decoded review is the only confirmation; the form's button reads "Launch". Validation and preparation errors stay inline (the host's alert), and no review opens.
+- [x] 2. A sponsored launch opens its sponsored review at once; closing it leaves the saved launch with "Request sponsored launch" and "Pay for launch myself". The session buttons stay for resuming a saved launch.
+- [x] 3. Codex pass 1: `run()` still opened up to three in-app reviews (launch, listing, creation). `ports.review` now returns the reviewed calls as text; listing and creation in the same run skip their own review only when their calls match it. `List on Juicebox Center` alone and resumed sends still review. The wallet's listing signature and send stay.
+- [x] 4. Tests: one press prepares then runs once (self-paid, sponsored), a failed preparation opens no review, the happy path is two clicks; through the real adapter, a self-paid and a sponsored launch each open exactly one review; listing or creation without the matching proof reviews on its own.
+- [x] 5. Full `npm run check`; two Codex passes; PR stacked on #73, no merge.
+
+## Plan refinement
+- **Objective:** One confirmation for launching: the SDK decoded review. No SDK bump.
+- **System fit:** Same controller (`prepare`, then `run`, each exclusive); recovery, journal and sponsor paths unchanged.
+- **Reuse and simplicity:** The host's existing `launch` action wraps both calls; the reviewed-calls text passes through `run` as an argument, with no stored state, so it cannot outlive the press.
+- **Evidence and unknowns:** Self-payers on a sponsorable launch now close the sponsored review to pick self-pay (previously one press before review); the free sponsored path is the default.
+- **Verification:** Launch host, happy path and create form suites, then full `npm run check`.
+- **Resource budget:** One small PR on #73.
+
 # Trust, Transfer, Unstick: one decoded review per user action (2026-10-22)
 
 Stacks on #72. Finishes the set: no Sticky action confirms twice.

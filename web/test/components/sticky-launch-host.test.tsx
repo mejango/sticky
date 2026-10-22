@@ -204,7 +204,7 @@ describe('global Sticky launch host', () => {
     expect(container.querySelector('[data-create-form]')?.getAttribute('data-create-form')).toBe('testnet')
     expect(mocks.run).not.toHaveBeenCalled()
   })
-  it('opens create from the event and prepares before a separate explicit launch action', async () => {
+  it('opens create from the event; its one launch press prepares and opens the decoded review, with no second confirmation', async () => {
     await mount()
     expect(container.querySelector('dialog')).toBeNull()
     expect(mocks.make).not.toHaveBeenCalled()
@@ -213,21 +213,31 @@ describe('global Sticky launch host', () => {
     expect(mocks.run).not.toHaveBeenCalled()
     await click('Prepare fixture')
     expect(mocks.prepare).toHaveBeenCalledExactlyOnceWith(mocks.plan, 'self-paid')
-    expect(container.querySelector('[data-create-form]')).toBeNull()
-    expect(mocks.run).not.toHaveBeenCalled()
-    await click('Continue launch')
     expect(mocks.run).toHaveBeenCalledOnce()
+    expect(mocks.prepare.mock.invocationCallOrder[0]).toBeLessThan(mocks.run.mock.invocationCallOrder[0])
+    expect(container.querySelector('[data-create-form]')).toBeNull()
   })
 
-  it('shows the sponsored action only after preparation chooses sponsorship', async () => {
+  it('a failed preparation opens no review and shows its error inline', async () => {
+    mocks.prepare.mockRejectedValueOnce(new Error('Token not found on Base Sepolia.'))
+    await mount()
+    await show()
+    await click('Prepare fixture')
+    expect(mocks.run).not.toHaveBeenCalled()
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe('Token not found on Base Sepolia.')
+    expect(container.querySelector('[data-create-form]')).not.toBeNull()
+  })
+
+  it('a sponsored launch opens its review at once; a closed review leaves sponsorship or self-pay to choose', async () => {
     mocks.capability = 'sponsored'
     await mount()
     await show()
     await click('Prepare fixture')
     expect(mocks.prepare).toHaveBeenCalledExactlyOnceWith(mocks.plan, 'sponsored')
+    expect(mocks.run).toHaveBeenCalledOnce()
     expect(button('Request sponsored launch')).toBeDefined()
+    expect(button('Pay for launch myself')).toBeDefined()
     expect(button('Continue launch')).toBeUndefined()
-    expect(mocks.run).not.toHaveBeenCalled()
   })
 
   it('restores the pending session on open instead of starting a new form or wallet action', async () => {

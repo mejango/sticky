@@ -113,6 +113,9 @@ function matchingIntent(session: StickyLaunchSession, intent: JBCenterIntent): J
   return intent
 }
 
+/** The reviewed launch's calls as text: a later step in the same run skips its own review only when its calls match. */
+const reviewedKey = (plan: LaunchPlan) => JSON.stringify(reviewCalls(plan), (_key, value: unknown) => typeof value === 'bigint' ? value.toString() : value)
+
 function reviewCalls(plan: LaunchPlan) {
   return plan.targets.map(target => ({
     chainId: target.chainId, from: plan.owner, to: target.call.target, data: target.call.data,
@@ -229,6 +232,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
         description: sponsored ? 'Approve listing and sponsored creation on the home chain.' : 'Review creation on the home chain before listing or payment.',
         confirmLabel: 'Continue' })
       guard(plan.owner)
+      return reviewedKey(plan)
     },
     async quote(plan, rememberUuid, beforePublish) {
       await checkLaunch(plan)
@@ -286,7 +290,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       if (!payment) throw new Error('Choose a payment option from this launch quote.')
       return payment
     },
-    async sendDirect(session, callbacks) {
+    async sendDirect(session, callbacks, reviewed) {
       const { plan } = session
       requireSingleHomeChain(plan.targets)
       const [target] = plan.targets
@@ -301,7 +305,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
         const hold = gated(gate, callbacks)
         return submitReviewedContractWrite({ request, expectedAccount: plan.owner,
         currentAccount: () => getAccount(wagmiConfig).address,
-        review: () => requireTransactionReview({ title: 'Review Sticky creation', calls: reviewCalls(plan).map(call => ({ ...call, ...(viaSafe ? { safeTxGas: 0n } : {}) })) }),
+        review: async () => { if (reviewed !== reviewedKey(plan)) await requireTransactionReview({ title: 'Review Sticky creation', calls: reviewCalls(plan).map(call => ({ ...call, ...(viaSafe ? { safeTxGas: 0n } : {}) })) }) },
         switchChain: async chainId => { ({ wallet } = await connectedWallet(chainId as JBChainId, { expected: plan.owner, requireUnchanged: true, changedError: 'Connect the wallet that prepared this launch.' })) },
         reverify: () => checkLaunch(plan),
         simulate: async reviewed => {
@@ -462,12 +466,12 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       return attempts.canDiscard(saved.attempt)
     },
     verifyDeployment: verifyStickyLaunchDeployment,
-    async publishListing(plan) {
+    async publishListing(plan, reviewed) {
       requireSingleHomeChain(plan.targets)
       const authority = reviewedWallet(plan.owner)
       const intent = await publishStickyListing(plan, async message => {
         assertReviewedWallet(authority)
-        await requireTransactionReview({ title: 'Publish Sticky listing', kind: 'authorization',
+        if (reviewed !== reviewedKey(plan)) await requireTransactionReview({ title: 'Publish Sticky listing', kind: 'authorization',
           description: 'Authorize the exact saved launch calls and metadata for this listing.', confirmLabel: 'Publish',
           calls: reviewCalls(plan) })
         assertReviewedWallet(authority)

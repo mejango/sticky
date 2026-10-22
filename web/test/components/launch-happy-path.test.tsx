@@ -1,4 +1,4 @@
-// The normal path of a launch: open, prepare, one launch action and Finish. These are main's clicks and lines; the
+// The normal path of a launch: open, one launch press (its decoded review) and Finish. These are main's clicks and lines; the
 // SDK's saved-attempt recovery adds no step, notice or wait to it.
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -78,27 +78,28 @@ async function show() { await act(async () => openStickyLaunch('testnet')) }
 const notices = () => [...container.querySelectorAll('[role="status"],[role="alert"]')].map(item => item.textContent).filter(Boolean)
 
 describe('the normal launch path adds no click, notice or wait', () => {
-  it('prepare, Continue launch, then Finish, with no notice on the way', async () => {
+  it('launch, its one review, then Finish, with no notice on the way', async () => {
     let clicks = 0
     const press = async (text: string) => { clicks += 1; await click(text) }
     const done = saved({ direct: { started: true, hash: HASH }, candidates: { 84532: [HASH] },
       results: { 84532: { hash: HASH, projectId: '7', token: ADDRESS } }, proven: { 84532: { hash: HASH, projectId: '7', token: ADDRESS } } })
-    mocks.run.mockImplementationOnce(async () => mocks.changed?.(done))
+    // Vitest can hand a second concurrent first import of a mocked module the real one: the result lands after the saved launch's import.
+    mocks.run.mockImplementationOnce(async () => { await vi.dynamicImportSettled(); mocks.changed?.(done) })
     mocks.clear.mockImplementationOnce(async () => mocks.changed?.(null))
     await mount()
     await show()
     const seen: string[][] = []
     await press('Prepare fixture')
-    seen.push(notices())
-    await press('Continue launch')
     await act(async () => { await vi.dynamicImportSettled() })
     seen.push(notices())
     expect(container.textContent).toContain('Open Sticky token')
     await press('Finish')
     seen.push(notices())
-    expect(clicks).toBe(3)
+    expect(clicks).toBe(2)
     expect(mocks.run).toHaveBeenCalledOnce()
     expect(mocks.clear).toHaveBeenCalledOnce()
-    expect(seen).toEqual([[], [], []])
+    // The saved launch, its result and Finish each refresh the home once.
+    await vi.waitFor(() => expect(mocks.refreshHome).toHaveBeenCalledTimes(3))
+    expect(seen).toEqual([[], []])
   })
 })
