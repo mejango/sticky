@@ -4,7 +4,7 @@ Sticky uses the same Sphinx proposal workflow and canonical CREATE2 factory as t
 
 ## Reproducible checkout
 
-Use Node 22.23.1, Foundry v1.8.1, and the committed npm lockfile. It installs exact physical copies of `@bananapus/core-v6@1.2.1` and `@bananapus/distributor-v6@2.0.0`, including the core deployment records consumed by the scripts. Install all dependencies, including the pinned Sphinx CLI, before compiling scripts:
+Use Node 22.23.4, Foundry v1.8.1, and the committed npm lockfile. It installs exact physical copies of `@bananapus/core-v6@1.2.1` and `@bananapus/distributor-v6@2.0.0`, including the core deployment records consumed by the scripts. Install all dependencies, including the pinned Sphinx CLI, before compiling scripts:
 
 ```sh
 npm ci
@@ -117,7 +117,7 @@ A rejected acceptance is different from a failed delivery: core catches split-ho
 ## Network-group commands
 
 The operator commands follow `deploy-all-v6` naming. Run from this package with Node
-22.23.1 and Foundry v1.8.1 on `PATH`. To reuse the workspace RPC and Sphinx setup
+22.23.4 and Foundry v1.8.1 on `PATH`. To reuse the workspace RPC and Sphinx setup
 without copying credentials, set:
 
 ```sh

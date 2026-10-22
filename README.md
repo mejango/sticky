@@ -105,7 +105,7 @@ Project rules do not expire. Reserved issuance and fund access limits are zero. 
 
 ## Develop and check
 
-Use Node 22.23.1, Foundry v1.8.1, and the committed npm lockfile. A clean `npm ci` installs the exact published `@bananapus/core-v6@1.2.1` and `@bananapus/distributor-v6@2.0.0` packages used by [contract CI](.github/workflows/test.yml).
+Use Node 22.23.4, Foundry v1.8.1, and the committed npm lockfile. A clean `npm ci` installs the exact published `@bananapus/core-v6@1.2.1` and `@bananapus/distributor-v6@2.0.0` packages used by [contract CI](.github/workflows/test.yml).
 
 ```sh
 npm ci
