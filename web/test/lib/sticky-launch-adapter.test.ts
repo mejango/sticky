@@ -265,9 +265,7 @@ describe('Sticky launch browser boundaries', () => {
     noted.beforeWrite.mockImplementation(async () => { fake.account.chainId = 10 })
     await expect(kind === 'direct' ? fake.ports.sendDirect(session(), noted) : fake.ports.sendPayment(paymentSession(), noted)).rejects.toThrow('changed networks')
     expect(noted.beforeWrite).toHaveBeenCalledOnce()
-    // ponytail: core's payment tells no unsent step after its journal hook, so the payment's start stays saved and its
-    // recovery asks for the explicit check; clear it here too once payRelayrReviewed has onUnsent.
-    expect(noted.rejected).toHaveBeenCalledTimes(kind === 'direct' ? 1 : 0)
+    expect(noted.rejected).toHaveBeenCalledOnce()
     expect(fake.write).not.toHaveBeenCalled()
     expect(fake.send).not.toHaveBeenCalled()
   })

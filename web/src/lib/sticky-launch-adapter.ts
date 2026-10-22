@@ -7,6 +7,7 @@ import { safeExecutionRunsCalls } from '@bananapus/nana-sdk-core/safe-service'
 import {
   RELAYR_API,
   RELAYR_UUID_RE,
+  RelayrPaymentNotSentError,
   bindRelayrQuote,
   readRelayrBundle,
   relayrBundleRequest,
@@ -195,7 +196,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
     let began = false
     return {
       beforeWallet: async () => { await callbacks.beforeWrite(); began = true },
-      onUnsent: () => { if (began) callbacks.rejected() },
+      onUnsent: () => { if (began) callbacks.rejected(); began = false },
       onSubmitted: (hash: Hex, safe: boolean) => {
         if (!isHash(hash)) throw new Error('The wallet did not return a readable submission hash. Keep the launch saved.')
         callbacks.submitted(hash, safe ? hash : undefined)
@@ -328,6 +329,8 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       guard(owner)
       const journal = boundary(callbacks)
       let sent: Hex | undefined
+      /** The wallet the payment was reviewed in: its hashes are recorded as that wallet sends them. */
+      const safe = reviewedSendDeps.adapter.isSafe()
       const paid = await payRelayrReviewed(quote, details.chainId, {
         account: owner,
         context: launchContext(session.plan),
@@ -347,11 +350,12 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
         // Every hash the payment is known by: the wallet's, then the mined one.
         onSent: async hash => {
           sent ??= hash
-          callbacks.submitted(hash, reviewedSendDeps.adapter.isSafe() ? sent : undefined)
+          callbacks.submitted(hash, safe ? sent : undefined)
         },
       }, { ...reviewedSendDeps, onProgress: () => phase('Confirm payment in your wallet.') }).catch(error => {
-        // Only the wallet's own refusal (4001) says nothing was sent; any other failure keeps the submission started.
-        if (!sent && isDefiniteWalletRejection(error)) journal.onUnsent()
+        // Only the wallet's own refusal (4001), or core's final gate before the wallet, says nothing was sent; any other
+        // failure keeps the submission started.
+        if (!sent && (isDefiniteWalletRejection(error) || error instanceof RelayrPaymentNotSentError)) journal.onUnsent()
         throw error
       })
       const execution = 'safeTxHash' in paid ? await safeExecution(details.chainId, paid.safeTxHash, callbacks) : paid.hash

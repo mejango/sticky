@@ -28,6 +28,9 @@ import { exitWarning, followDetached, holds } from '@/lib/write-holds'
 import { wagmiConfig } from '@/providers/Providers'
 import { EXTERNAL_WALLET_REQUIRED } from '@/providers/WalletAuthContext'
 
+/** A run whose page closed before a later step's wallet prompt: that step is not sent. */
+export const PAGE_CLOSED_LINE = 'The page closed before the next transaction was sent. Nothing more was sent.'
+
 export type TxPhase =
   | 'idle'
   | 'review'
@@ -152,6 +155,12 @@ export function useReviewedAction() {
   /** Counts account changes: a run reviewed before one sends nothing after it, even once the account is back. */
   const accountEpoch = useRef(0)
   useEffect(() => { accountEpoch.current += 1 }, [address])
+  /** Whether the page that runs the action is still open: a run whose page has gone sends no later step. */
+  const open = useRef(true)
+  useEffect(() => {
+    open.current = true
+    return () => { open.current = false }
+  }, [])
   /** A run that ended with nothing finished: once its state shows, it is read for a cancel. */
   const [ended, setEnded] = useState<{ onCancelled: () => void } | null>(null)
   const last = useRef<{ action: ReviewedRun; chainId: number; proposed: ReviewedCall | null } | null>(null)
@@ -192,9 +201,11 @@ export function useReviewedAction() {
             await reverify(call, index, before ? (await publicClient(call.chainId as JBChainId).getTransactionReceipt({ hash: before })).blockNumber : undefined)
           },
         } : {}),
-        beforeWallet: async (call, step) => {
+        // Core's last check before each wallet prompt, after every await.
+        assertWriteState: () => {
+          if (!open.current) throw new Error(PAGE_CLOSED_LINE)
           if (accountEpoch.current !== epoch) throw new Error(REVIEWED_ACCOUNT_CHANGED_LINE)
-          await action.beforeWallet?.(call, step)
+          action.assertWriteState?.()
         },
         onSubmitted: async (call, step, hash, how) => {
           if (!how.safe) hashes[step] = hash

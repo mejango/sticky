@@ -59,7 +59,7 @@
     },
     {
       "file": "src/lib/sticky-launch-adapter.ts",
-      "line": 488,
+      "line": 492,
       "api": "request",
       "boundary": "navigator.locks.request on the sticky-launch-write lock: cross-tab launch coordination, never a wallet RPC.",
       "test": "test/lib/sticky-launch-adapter.test.ts"

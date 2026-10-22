@@ -212,6 +212,30 @@ describe('useReviewedAction', () => {
     await unmount()
   })
 
+  it('sends no later step once the page that ran it has gone, and frees that step', async () => {
+    confirmEveryReview()
+    const { stick, unstick } = baseline
+    const calls = [stick, unstick].map((sent, at) => ({ chainId: sent.chainId, to: sent.to as Address, data: sent.data as Hex, value: BigInt(sent.value), ...(at ? { dependsOnPrior: true } : {}) }))
+    const onUnsent = vi.fn(async () => {})
+    const { ref, unmount } = await mount()
+    // The page closes while the first step confirms.
+    const confirming = Promise.withResolvers<void>()
+    client.waitForTransactionReceipt.mockImplementationOnce(async ({ hash }: { hash: Hex }) => {
+      await confirming.promise
+      return receipt(hash)
+    })
+    let running!: ReturnType<Action['run']>
+    await act(async () => {
+      running = ref.current!.run({ account: ALICE, calls, onUnsent })
+      await vi.waitFor(() => expect(walletSends).toHaveLength(1))
+    })
+    await unmount()
+    confirming.resolve()
+    expect(await running).toBeNull()
+    expect(walletSends).toHaveLength(1)
+    expect(onUnsent).toHaveBeenCalledExactlyOnceWith(expect.anything(), 1)
+  })
+
   it('calls onCancelled, and sends nothing, when the review is closed', async () => {
     unregister.push(registerReviewHandler(async () => null))
     const onCancelled = vi.fn()
