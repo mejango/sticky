@@ -514,13 +514,24 @@ describe('Sticky launch browser boundaries', () => {
     fake.publish.mockImplementation(async (listed: LaunchPlan, sign) => {
       published = listed
       shown.cashOutTaxRate = '900'
+      shown.owner = TOKEN
       await sign('Exact SDK listing message')
       return { id: 'listing' }
     })
     await fake.ports.publishListing(shown, approval)
     expect(fake.review).not.toHaveBeenCalled()
+    expect(fake.sign).toHaveBeenCalledWith({ account: OWNER, message: 'Exact SDK listing message' })
     expect(published).not.toBe(shown)
     expect(published?.cashOutTaxRate).toBe('500')
+  })
+
+  it('a sponsored approval never covers a creation the wallet pays for', async () => {
+    const approval = await fake.ports.review(plan(), true)
+    fake.review.mockClear()
+    fake.receipt.mockResolvedValue({ transactionHash: HASH, blockNumber: 10n, status: 'success' })
+    await fake.ports.sendDirect(session(), callbacks(), approval)
+    expect(fake.review).toHaveBeenCalledOnce()
+    expect(fake.review.mock.calls[0][0]).toMatchObject({ title: 'Review Sticky creation' })
   })
 
   it('the one review of a Safe launch shows the Safe execution gas the wallet will run', async () => {
