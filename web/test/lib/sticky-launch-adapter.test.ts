@@ -506,6 +506,26 @@ describe('Sticky launch browser boundaries', () => {
     else expect(fake.sponsor).toHaveBeenCalledOnce()
   })
 
+  it('the one review of a Safe launch shows the Safe execution gas the wallet will run', async () => {
+    fake.safe = true
+    const controller = createBrowserStickyLaunchController()
+    await controller.prepare(plan(), 'unavailable')
+    await controller.run().catch(() => {})
+    expect(fake.review).toHaveBeenCalledOnce()
+    expect(fake.review.mock.calls[0][0].calls).toEqual([expect.objectContaining({ safeTxGas: 0n })])
+  })
+
+  it.each(['plan', 'wallet'] as const)('a launch whose %s changes during its review is refused before listing or creation', async change => {
+    const controller = createBrowserStickyLaunchController()
+    const shown = plan()
+    fake.review.mockImplementationOnce(async () => {
+      if (change === 'plan') shown.cashOutTaxRate = '900'
+      else fake.account.connector = { ...fake.account.connector, uid: 'replacement-wallet' }
+    })
+    await expect(fake.ports.review(shown, false)).rejects.toThrow(change === 'plan' ? /saved launch call differs|changed during its review/ : 'changed during its review')
+    expect(controller.load()).toBeNull()
+  })
+
   it('a listing or creation without the reviewed launch\'s calls is reviewed on its own', async () => {
     fake.publish.mockImplementation(async (_plan, sign) => { await sign('Exact SDK listing message'); return { id: 'listing' } })
     fake.receipt.mockResolvedValue({ transactionHash: HASH, blockNumber: 10n, status: 'success' })

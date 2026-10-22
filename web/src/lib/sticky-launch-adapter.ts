@@ -113,8 +113,11 @@ function matchingIntent(session: StickyLaunchSession, intent: JBCenterIntent): J
   return intent
 }
 
-/** The reviewed launch's calls as text: a later step in the same run skips its own review only when its calls match. */
-const reviewedKey = (plan: LaunchPlan) => JSON.stringify(reviewCalls(plan), (_key, value: unknown) => typeof value === 'bigint' ? value.toString() : value)
+/** The launch calls as the wallet will run them: a Safe executes them with safeTxGas 0. */
+const launchCalls = (plan: LaunchPlan, safe: boolean) => reviewCalls(plan).map(call => ({ ...call, ...(safe ? { safeTxGas: 0n } : {}) }))
+/** What one review approved, as text: a later step in the same run skips its own review only for exactly these calls and wallet. */
+const approvalOf = (calls: ReturnType<typeof launchCalls>, authority: ReturnType<typeof reviewedWallet>) =>
+  JSON.stringify({ calls, connector: authority.connectorUid }, (_key, value: unknown) => typeof value === 'bigint' ? value.toString() : value)
 
 function reviewCalls(plan: LaunchPlan) {
   return plan.targets.map(target => ({
@@ -227,12 +230,16 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
     async review(plan, sponsored) {
       phase('Checking the launch on its home chain.')
       await checkLaunch(plan)
-      await requireTransactionReview({ calls: reviewCalls(plan), title: 'Review Sticky launch',
+      const authority = reviewedWallet(plan.owner)
+      const calls = launchCalls(plan, authority.safe)
+      const approval = approvalOf(calls, authority)
+      await requireTransactionReview({ calls, title: 'Review Sticky launch',
         kind: sponsored ? 'authorization' : 'transaction',
         description: sponsored ? 'Approve listing and sponsored creation on the home chain.' : 'Review creation on the home chain before listing or payment.',
         confirmLabel: 'Continue' })
-      guard(plan.owner)
-      return reviewedKey(plan)
+      const after = reviewedWallet(plan.owner)
+      if (approvalOf(launchCalls(plan, after.safe), after) !== approval) throw new Error('The launch or wallet changed during its review. Review it again.')
+      return approval
     },
     async quote(plan, rememberUuid, beforePublish) {
       await checkLaunch(plan)
@@ -300,12 +307,15 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       const client = clientFor(target.chainId)
       const authority = reviewedWallet(plan.owner)
       const viaSafe = authority.safe
+      // Taken with the request above: the review is skipped only if the approval matches the calls this request carries.
+      const shown = launchCalls(plan, viaSafe)
+      const approved = reviewed === approvalOf(shown, authority)
       let wallet: Awaited<ReturnType<typeof connectedWallet>>['wallet'] | undefined
       const hash = await launchHold(session, 'direct', viaSafe).send(client, async gate => {
         const hold = gated(gate, callbacks)
         return submitReviewedContractWrite({ request, expectedAccount: plan.owner,
         currentAccount: () => getAccount(wagmiConfig).address,
-        review: async () => { if (reviewed !== reviewedKey(plan)) await requireTransactionReview({ title: 'Review Sticky creation', calls: reviewCalls(plan).map(call => ({ ...call, ...(viaSafe ? { safeTxGas: 0n } : {}) })) }) },
+        review: async () => { if (!approved) await requireTransactionReview({ title: 'Review Sticky creation', calls: shown }) },
         switchChain: async chainId => { ({ wallet } = await connectedWallet(chainId as JBChainId, { expected: plan.owner, requireUnchanged: true, changedError: 'Connect the wallet that prepared this launch.' })) },
         reverify: () => checkLaunch(plan),
         simulate: async reviewed => {
@@ -471,7 +481,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       const authority = reviewedWallet(plan.owner)
       const intent = await publishStickyListing(plan, async message => {
         assertReviewedWallet(authority)
-        if (reviewed !== reviewedKey(plan)) await requireTransactionReview({ title: 'Publish Sticky listing', kind: 'authorization',
+        if (reviewed !== approvalOf(launchCalls(plan, authority.safe), authority)) await requireTransactionReview({ title: 'Publish Sticky listing', kind: 'authorization',
           description: 'Authorize the exact saved launch calls and metadata for this listing.', confirmLabel: 'Publish',
           calls: reviewCalls(plan) })
         assertReviewedWallet(authority)
