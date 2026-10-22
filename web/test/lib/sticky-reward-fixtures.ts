@@ -1,6 +1,7 @@
 import {
-  decodeFunctionData,
+  decodeAbiParameters,
   encodeFunctionResult,
+  getAbiItem,
   getAddress,
   multicall3Abi,
   pad,
@@ -72,6 +73,10 @@ function inFilter(entry: ScannedLog, { address: wanted, topics, fromBlock, toBlo
   return entry.address.toLowerCase() === wanted.toLowerCase() && inRange && topicsMatch
 }
 
+/** The only Multicall3 function the reader calls. */
+const AGGREGATE3 = getAbiItem({ abi: multicall3Abi, name: 'aggregate3' })
+const AGGREGATE3_SELECTOR = toFunctionSelector(AGGREGATE3)
+
 /** The fake Center. `stock` says what a contract returns, `deploy` gives an account code, `lose` makes it refuse
  * requests, and `requests` lists every request it got, with the calls a Multicall3 request carried. A read that names a sender is not batched, and is
  * answered alone with that sender in the request. */
@@ -122,8 +127,10 @@ export function rewardChain(logs: ScannedLog[] = []) {
       const find = (target: string, callData: Hex) => {
         const entry = table.get(`${target.toLowerCase()}:${callData.slice(0, 10)}`)
         if (!entry) throw new Error(`the fake chain has nothing at ${target} for ${callData.slice(0, 10)}`)
-        const { functionName, args } = decodeFunctionData({ abi: entry.abi, data: callData })
-        return { entry, read: { target: target as Address, functionName, args: args ?? [] } }
+        // The selector already named the function: its arguments are decoded against it alone. Decoding against the whole
+        // ABI hashes every function's signature again for each call, which is most of what a large read costs here.
+        const args = decodeAbiParameters(entry.item.inputs, `0x${callData.slice(10)}`)
+        return { entry, read: { target: target as Address, functionName: entry.item.name, args } }
       }
       const answerOf = ({ entry, read }: ReturnType<typeof find>) => {
         const value = typeof entry.answer === 'function' ? entry.answer(read.args) : entry.answer
@@ -146,7 +153,8 @@ export function rewardChain(logs: ScannedLog[] = []) {
         const error = { code: 3, message: 'execution reverted', data: '0x' }
         return new Response(JSON.stringify({ jsonrpc: '2.0', id, error }), { headers: { 'content-type': 'application/json' } })
       }
-      const [calls] = decodeFunctionData({ abi: multicall3Abi, data: call.data }).args as readonly [readonly Call[]]
+      if (!call.data.startsWith(AGGREGATE3_SELECTOR)) throw new Error(`unexpected Multicall3 call ${call.data.slice(0, 10)}`)
+      const [calls] = decodeAbiParameters(AGGREGATE3.inputs, `0x${call.data.slice(10)}`) as readonly [readonly Call[]]
       const decoded = calls.map(({ target, callData }) => find(target, callData))
       requests.push({ method, block, reads: decoded.map(({ read }) => read) })
       if (refuses(decoded.map(({ read }) => read))) return refused()
