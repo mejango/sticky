@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
 /**
- * The Transfer and Trust flows on the real engine: their confirm, `useSafeTx` and the review, simulation and wallet
- * write behind it, with only the wallet, the chain and the review dialog faked. What reaches the simulation and the
- * wallet is what the confirm showed, and the flow's second read of the chain comes before either.
+ * The Transfer and Trust flows on the real engine: their one decoded review, `useSafeTx` and the simulation and wallet
+ * write behind it, with only the wallet, the chain and the review dialogs faked. What reaches the simulation and the
+ * wallet is what the review showed, no step opens a review of its own, and the flow's second read of the chain comes
+ * before either.
  */
 
 import { QueryClient, QueryClientProvider, notifyManager } from '@tanstack/react-query'
@@ -28,6 +29,8 @@ const mocks = vi.hoisted(() => ({
   },
   getAccount: vi.fn(),
   requestReview: vi.fn(),
+  /** The action's one decoded review. */
+  requireReview: vi.fn(),
   switchChain: vi.fn(),
   writeContract: vi.fn(),
   safe: false,
@@ -49,6 +52,7 @@ vi.mock('@/hooks/useWallet', () => ({
 vi.mock('@/lib/transaction-review', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/transaction-review')>()),
   requestContractTransactionReview: mocks.requestReview,
+  requireTransactionReview: mocks.requireReview,
 }))
 vi.mock('@/providers/Providers', () => ({ wagmiConfig: {} }))
 vi.mock('@/lib/safe-connector', async importOriginal => ({
@@ -118,6 +122,7 @@ beforeEach(() => {
   mocks.waitForSafeExecutionHash.mockReset().mockImplementation(() => new Promise(() => {}))
   mocks.getAccount.mockReset().mockImplementation(() => ({ address: mocks.account, chainId: CHAIN }))
   mocks.requestReview.mockReset().mockResolvedValue(true)
+  mocks.requireReview.mockReset().mockResolvedValue(undefined)
   mocks.switchChain.mockReset().mockResolvedValue(undefined)
   mocks.publicClient.simulateContract.mockReset().mockImplementation(async (request: object) => ({ request }))
   mocks.publicClient.estimateContractGas.mockReset().mockResolvedValue(50_000n)
@@ -169,6 +174,20 @@ const switchWalletOnly = (account: Address) => mocks.getAccount.mockImplementati
 /** The confirm's main button, and the line under its step that says what the engine is doing. */
 const primary = () => confirm().querySelector<HTMLButtonElement>('footer button.btn-primary')!
 const statusLine = () => confirm().querySelector('p.text-bluebs-700')?.textContent ?? null
+/** Holds the next decoded review open until the test approves it. */
+function holdReview() {
+  const open = Promise.withResolvers<void>()
+  mocks.requireReview.mockReturnValueOnce(open.promise)
+  return {
+    approve: async () => {
+      await act(async () => open.resolve())
+      await settle()
+    },
+  }
+}
+type Shown = { calls: { functionName: string; from: Address; args: readonly unknown[] }[]; title?: string; rows?: unknown[] }
+/** What decoded review `at` showed. */
+const shown = (at = 0) => mocks.requireReview.mock.calls[at][0] as Shown
 
 describe('a Safe review dismissed from its enclosing modal', () => {
   const escape = () => act(async () => {
@@ -187,10 +206,11 @@ describe('a Safe review dismissed from its enclosing modal', () => {
     await render(flow)
     await type(kind === 'transfer' ? 'Recipient' : 'Sender address', BOB)
     if (kind === 'transfer') await type('Amount', '1.123456789')
-    await press(modal(), `Review ${kind}`)
     const invalidate = vi.spyOn(client, 'invalidateQueries')
-    await press(confirm(), `Confirm & ${kind}`)
+    // The review opens, and the send follows it, with no other press.
+    await press(modal(), `Review ${kind}`)
 
+    expect(mocks.requireReview).toHaveBeenCalledOnce()
     expect(statusLine()).toContain('Proposed to your Safe. Its other signers can approve it there.')
     expect(primary().textContent).toBe('Done')
     expect(confirm().querySelector('li')?.getAttribute('data-state')).toBe('active')
@@ -201,7 +221,6 @@ describe('a Safe review dismissed from its enclosing modal', () => {
 
     // Escape closes the notice; another review still follows the original reservation.
     await press(modal(), `Review ${kind}`)
-    await press(confirm(), `Confirm & ${kind}`)
     expect(mocks.writeContract).toHaveBeenCalledOnce()
     await escape()
     await escape()
@@ -215,12 +234,10 @@ describe('a Safe review dismissed from its enclosing modal', () => {
     await type('Recipient', BOB)
     await type('Amount', '1.987654321')
     await press(modal(), 'Review transfer')
-    await press(confirm(), 'Confirm & transfer')
     expect(statusLine()).toBe('Proposed to your Safe. Its other signers can approve it there.')
     expect(primary().textContent).toBe('Done')
     await escape()
     await press(modal(), 'Review transfer')
-    await press(confirm(), 'Confirm & transfer')
     expect(mocks.writeContract).toHaveBeenCalledOnce()
     expect(primary().textContent).toBe('Done')
   })
@@ -234,22 +251,24 @@ describe('a transfer', () => {
     await press(modal(), 'Review transfer')
   }
 
-  it('wallet-action:transfer-sticky-tokens reaches the review, the simulation and the wallet as the exact transfer the confirm showed', async () => {
+  it('wallet-action:transfer-sticky-tokens reaches its one review, the simulation and the wallet as the exact transfer it showed', async () => {
+    const open = holdReview()
     await reviewed('1.000000000000000001')
     expect(confirm().textContent).toContain('1.000000000000000001 STICKYART')
-    expect(mocks.requestReview).not.toHaveBeenCalled()
-
-    await press(confirm(), 'Confirm & transfer')
+    expect(mocks.writeContract).not.toHaveBeenCalled()
 
     const amount = 1_000_000_000_000_000_001n
-    expect(mocks.requestReview).toHaveBeenCalledOnce()
-    expect(mocks.requestReview.mock.calls[0][0]).toMatchObject({
-      chainId: CHAIN,
-      address: STICKY,
-      functionName: 'transfer',
-      args: [BOB, amount],
-      account: ALICE,
+    expect(mocks.requireReview).toHaveBeenCalledOnce()
+    expect(shown()).toMatchObject({
+      title: 'Transfer',
+      calls: [expect.objectContaining({ chainId: CHAIN, functionName: 'transfer', args: [BOB, amount], from: ALICE })],
+      rows: expect.arrayContaining([{ label: 'Transfer', value: '1.000000000000000001 STICKYART', strong: true }]),
     })
+    await open.approve()
+
+    // That review was the only confirmation: the send opened none of its own.
+    expect(mocks.requireReview).toHaveBeenCalledOnce()
+    expect(mocks.requestReview).not.toHaveBeenCalled()
     expect(mocks.publicClient.simulateContract).toHaveBeenCalledOnce()
     expect(mocks.publicClient.simulateContract.mock.calls[0][0]).toMatchObject({
       address: STICKY,
@@ -274,7 +293,6 @@ describe('a transfer', () => {
     const prompt = Promise.withResolvers<string>()
     mocks.writeContract.mockReturnValue(prompt.promise)
     await reviewed('1')
-    await press(confirm(), 'Confirm & transfer')
 
     expect(mocks.writeContract).toHaveBeenCalledOnce()
     expect(statusLine()).toBe('Confirm in your wallet…')
@@ -288,11 +306,12 @@ describe('a transfer', () => {
   })
 
   it('stops before the simulation and the wallet when the balance has fallen since the review', async () => {
+    const open = holdReview()
     await reviewed('1.5')
     mocks.read.mockResolvedValue(answer(E18))
-    await press(confirm(), 'Confirm & transfer')
+    await open.approve()
 
-    expect(mocks.requestReview).toHaveBeenCalledOnce()
+    expect(mocks.requestReview).not.toHaveBeenCalled()
     expect(mocks.publicClient.simulateContract).not.toHaveBeenCalled()
     expect(mocks.writeContract).not.toHaveBeenCalled()
     expect(confirm().textContent).toContain('Your token balance changed. Review the amount.')
@@ -300,28 +319,30 @@ describe('a transfer', () => {
   })
 
   it('stops at the simulation when the chain refuses the transfer, and the wallet is never asked', async () => {
-    await reviewed('1')
     mocks.publicClient.simulateContract.mockRejectedValue(new Error('execution reverted'))
-    await press(confirm(), 'Confirm & transfer')
+    await reviewed('1')
     expect(mocks.writeContract).not.toHaveBeenCalled()
     expect(confirm().textContent).toContain('execution reverted')
   })
 
-  it('wallet-action:transfer-sticky-tokens sends nothing once the account that reviewed it is no longer connected: its review goes, and nothing is reviewed or asked of the wallet', async () => {
+  it('wallet-action:transfer-sticky-tokens sends nothing once the account that reviewed it is no longer connected: its review goes, and nothing is asked of the wallet', async () => {
+    const open = holdReview()
     await reviewed('1')
     expect(document.querySelector('section[data-tx-confirm]')).not.toBeNull()
     await switchTo(BOB, transfer())
-
     expect(document.querySelector('section[data-tx-confirm]')).toBeNull()
+    await open.approve()
+
     expect(mocks.requestReview).not.toHaveBeenCalled()
     expect(mocks.publicClient.simulateContract).not.toHaveBeenCalled()
     expect(mocks.writeContract).not.toHaveBeenCalled()
   })
 
-  it('wallet-action:transfer-sticky-tokens refuses a click that lands after the wallet switched accounts and before the page shows it, before a review opens', async () => {
+  it('wallet-action:transfer-sticky-tokens refuses a send after the wallet switched accounts and before the page shows it', async () => {
+    const open = holdReview()
     await reviewed('1')
     switchWalletOnly(BOB)
-    await press(confirm(), 'Confirm & transfer')
+    await open.approve()
 
     expect(confirm().textContent).toContain(REVIEWED_ACCOUNT_CHANGED)
     expect(mocks.requestReview).not.toHaveBeenCalled()
@@ -329,16 +350,14 @@ describe('a transfer', () => {
     expect(mocks.writeContract).not.toHaveBeenCalled()
   })
 
-  it('wallet-action:transfer-sticky-tokens refuses a transfer whose review was open while the wallet switched accounts', async () => {
-    const review = Promise.withResolvers<boolean>()
-    mocks.requestReview.mockReturnValueOnce(review.promise)
+  it('wallet-action:transfer-sticky-tokens sends nothing for a review approved after the account switched away and back', async () => {
+    const open = holdReview()
     await reviewed('1')
-    await press(confirm(), 'Confirm & transfer')
-    expect(mocks.requestReview).toHaveBeenCalledOnce()
-
     await switchTo(BOB, transfer())
-    await act(async () => review.resolve(true))
-    await settle()
+    await switchTo(ALICE, transfer())
+    // The review was dropped with the account change: its approval sends nothing, and the form asks for a new one.
+    expect(document.querySelector('section[data-tx-confirm]')).toBeNull()
+    await open.approve()
 
     expect(mocks.publicClient.simulateContract).not.toHaveBeenCalled()
     expect(mocks.writeContract).not.toHaveBeenCalled()
@@ -350,20 +369,18 @@ describe('a change of trust', () => {
     <TrustFlow chainId={CHAIN} projectId={12} info={info} sender={sender} onClose={() => {}} />
   )
 
-  it('wallet-action:trust-or-untrust-a-sender reaches the wallet as setTrustedSenderFor(project, sender, true), after the hook was read again', async () => {
+  it('wallet-action:trust-or-untrust-a-sender reaches the wallet as setTrustedSenderFor(project, sender, true), after one review and the hook was read again', async () => {
     mocks.read.mockResolvedValue(answer(false))
     await render(trust(null))
     await type('Sender address', BOB)
     await press(modal(), 'Review trust')
-    await press(confirm(), 'Confirm & trust')
 
-    expect(mocks.requestReview.mock.calls[0][0]).toMatchObject({
-      chainId: CHAIN,
-      address: HOOK,
-      functionName: 'setTrustedSenderFor',
-      args: [12n, BOB, true],
-      account: ALICE,
+    expect(mocks.requireReview).toHaveBeenCalledOnce()
+    expect(shown()).toMatchObject({
+      title: 'Trust this sender',
+      calls: [expect.objectContaining({ chainId: CHAIN, functionName: 'setTrustedSenderFor', args: [12n, BOB, true], from: ALICE })],
     })
+    expect(mocks.requestReview).not.toHaveBeenCalled()
     expect(mocks.publicClient.simulateContract.mock.calls[0][0]).toMatchObject({
       address: HOOK,
       abi: stickyHookAbi,
@@ -382,7 +399,6 @@ describe('a change of trust', () => {
     await render(trust(null))
     await type('Sender address', BOB)
     await press(modal(), 'Review trust')
-    await press(confirm(), 'Confirm & trust')
 
     expect(statusLine()).toBe('Confirm in your wallet…')
     expect(primary().textContent).toBe('Confirm in your wallet…')
@@ -395,45 +411,51 @@ describe('a change of trust', () => {
     mocks.read.mockResolvedValue(answer(true))
     await render(trust(BOB))
     await press(modal(), 'Review untrust')
-    await press(confirm(), 'Confirm & untrust')
+    expect(mocks.requireReview).toHaveBeenCalledOnce()
+    expect(shown().title).toBe('Untrust this sender')
+    expect(mocks.requestReview).not.toHaveBeenCalled()
     expect(mocks.writeContract.mock.calls[0][0]).toMatchObject({ address: HOOK, functionName: 'setTrustedSenderFor', args: [12n, BOB, false], account: ALICE })
   })
 
   it('stops before the wallet when someone else has already changed the trust', async () => {
     mocks.read.mockResolvedValue(answer(false))
+    const open = holdReview()
     await render(trust(null))
     await type('Sender address', BOB)
     await press(modal(), 'Review trust')
     mocks.read.mockResolvedValue(answer(true))
-    await press(confirm(), 'Confirm & trust')
+    await open.approve()
     expect(mocks.publicClient.simulateContract).not.toHaveBeenCalled()
     expect(mocks.writeContract).not.toHaveBeenCalled()
     expect(confirm().textContent).toContain('This sender is already trusted.')
   })
 
-  /** A review of trusting BOB, made as ALICE. */
+  /** A review of trusting BOB, made as ALICE, held open until the test approves it. */
   async function reviewedTrust() {
+    const open = holdReview()
     mocks.read.mockResolvedValue(answer(false))
     await render(trust(null))
     await type('Sender address', BOB)
     await press(modal(), 'Review trust')
+    return open
   }
 
-  it('wallet-action:trust-or-untrust-a-sender sends nothing once the account that reviewed it is no longer connected: its review goes, and nothing is reviewed or asked of the wallet', async () => {
-    await reviewedTrust()
+  it('wallet-action:trust-or-untrust-a-sender sends nothing once the account that reviewed it is no longer connected: its review goes, and nothing is asked of the wallet', async () => {
+    const open = await reviewedTrust()
     expect(document.querySelector('section[data-tx-confirm]')).not.toBeNull()
     await switchTo(BOB, trust(null))
-
     expect(document.querySelector('section[data-tx-confirm]')).toBeNull()
+    await open.approve()
+
     expect(mocks.requestReview).not.toHaveBeenCalled()
     expect(mocks.publicClient.simulateContract).not.toHaveBeenCalled()
     expect(mocks.writeContract).not.toHaveBeenCalled()
   })
 
-  it('wallet-action:trust-or-untrust-a-sender refuses a click that lands after the wallet switched accounts and before the page shows it, before a review opens', async () => {
-    await reviewedTrust()
+  it('wallet-action:trust-or-untrust-a-sender refuses a send after the wallet switched accounts and before the page shows it', async () => {
+    const open = await reviewedTrust()
     switchWalletOnly(BOB)
-    await press(confirm(), 'Confirm & trust')
+    await open.approve()
 
     expect(confirm().textContent).toContain(REVIEWED_ACCOUNT_CHANGED)
     expect(mocks.requestReview).not.toHaveBeenCalled()
@@ -441,16 +463,12 @@ describe('a change of trust', () => {
     expect(mocks.writeContract).not.toHaveBeenCalled()
   })
 
-  it('wallet-action:trust-or-untrust-a-sender refuses a change of trust whose review was open while the wallet switched accounts', async () => {
-    const review = Promise.withResolvers<boolean>()
-    mocks.requestReview.mockReturnValueOnce(review.promise)
-    await reviewedTrust()
-    await press(confirm(), 'Confirm & trust')
-    expect(mocks.requestReview).toHaveBeenCalledOnce()
-
+  it('wallet-action:trust-or-untrust-a-sender sends nothing for a review approved after the account switched away and back', async () => {
+    const open = await reviewedTrust()
     await switchTo(BOB, trust(null))
-    await act(async () => review.resolve(true))
-    await settle()
+    await switchTo(ALICE, trust(null))
+    expect(document.querySelector('section[data-tx-confirm]')).toBeNull()
+    await open.approve()
 
     expect(mocks.publicClient.simulateContract).not.toHaveBeenCalled()
     expect(mocks.writeContract).not.toHaveBeenCalled()

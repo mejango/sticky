@@ -1,3 +1,21 @@
+# Trust, Transfer, Unstick: one decoded review per user action (2026-10-22)
+
+Stacks on #72. Finishes the set: no Sticky action confirms twice.
+
+- [x] 1. Trust and Transfer use `useStepPresses` (one step): plan -> arm -> one review with rows -> send; cancel closes; a review whose account is no longer connected is dropped (restart), so approving it later sends nothing. Transfer's tranche and streak notes are now rows, shown in the review.
+- [x] 2. Unstick keeps its own step accounting (it re-plans from the chain without what went through) and gains the same review: one `tx.review` of the steps left with its rows (the auto-stick teardown note is a row), each step sent under the proof, the next due once one is counted; close/re-plan bump a generation, a press while one is under way waits, a null send, failure or released hold drops the proof.
+- [x] 3. Tests: exactly one review per flow (trust, untrust, transfer, unstick full exit, happy path), cancel, retry re-review, account change, double press (mutation-checked).
+- [x] 4. Grep: no `Confirm &` labels or `reviewedInParent` left in src; every TxConfirmDialog flow sends through a review proof.
+- [x] 5. Full `npm run check` green; two Codex passes (2 Medium, fixed; then Approve); PR stacked on #72, no merge. Remaining pre-existing: StickyLaunchHost asks "Continue launch" before the SDK review (Codex Low).
+
+## Plan refinement
+- **Objective:** Trust, Transfer and Unstick have exactly one in-app confirmation, the SDK decoded review with the summary rows. No SDK bump.
+- **System fit:** Same chain as #70/#71; existing reverify, simulation and account guards unchanged.
+- **Reuse and simplicity:** `useStepPresses` reused for the single-step flows. Unstick's step accounting does not fit its index model, so it adds the review, proof and due flag locally (ponytail: move into the hook if a third flow needs re-planned steps).
+- **Evidence and unknowns:** Forked test updates surfaced two source gaps (Transfer/Trust account change while the review is open; Unstick double press), both fixed with tests.
+- **Verification:** Focused suites, mutation checks, full `npm run check`.
+- **Resource budget:** One branch on #72.
+
 # sticky-rewards "hundred groups" timeouts under load (2026-10-22)
 
 Two tests in `test/lib/sticky-rewards.test.ts` timed out at 5 s in full `test:ci` runs on a loaded machine (load 40+, also on origin/main) and passed alone in 0.1-0.5 s.

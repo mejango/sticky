@@ -2,16 +2,16 @@
 
 import { withApprovalParent } from '@/lib/sticky-hold-intent'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { erc20Abi, formatUnits, type Address } from 'viem'
 import { Refusal } from '@/components/project/flows/refusal'
 import { reviewGate } from '@/components/project/flows/review-gate'
 import { ModalShell } from '@/components/ui/ModalShell'
 import { Revalidating } from '@/components/ui/Revalidating'
-import { TxConfirmDialog, type TxConfirmRow } from '@/components/ui/TxConfirmDialog'
+import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
-import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
+import { useSafeTx, type ReviewedCalls, type TxRequest } from '@/hooks/useSafeTx'
 import { useSettled } from '@/hooks/useSettled'
 import { useWallet } from '@/hooks/useWallet'
 import { preflight } from '@/lib/preflight'
@@ -24,6 +24,7 @@ import type { Answer, StickyProjectInfo } from '@/lib/sticky-project'
 import { quoteUnstick, unstickQuoteSentence, type UnstickQuote } from '@/lib/sticky-quotes'
 import { refreshAfterAutoStick, refreshAfterUnstick } from '@/lib/sticky-refresh'
 import { need, readAt } from '@/lib/sticky-rewards'
+import { TransactionReviewCancelledError, type TransactionReviewRow } from '@/lib/transaction-review'
 import { chainName } from '@/lib/urn'
 import { EXTERNAL_WALLET_REQUIRED } from '@/providers/WalletAuthContext'
 
@@ -61,13 +62,6 @@ type Sent = { holder: string; steps: readonly TxRequest[] }
 const NOTHING: readonly TxRequest[] = []
 const NOTHING_SENT: Sent = { holder: '', steps: NOTHING }
 
-/** What each step of an unstick says on the button that sends it. */
-const ACTIONS: Record<string, string> = {
-  setConfigFor: 'Turn off auto-stick',
-  setTrustedSenderFor: 'Remove auto-stick permission',
-  approve: 'Remove auto-stick allowance',
-}
-const actionFor = (step: TxRequest) => ACTIONS[step.functionName] ?? 'Confirm & unstick'
 const titleOf = (step: TxRequest) => step.label ?? step.functionName
 const titlesOf = (steps: readonly TxRequest[]) => steps.map(titleOf).join('; ')
 /** A step that takes auto-stick apart: every step but the unstick itself. */
@@ -161,7 +155,7 @@ async function planUnstick(
 }
 
 /** The review's rows: what goes, what is kept, and what comes back at least, in exact digits. */
-function reviewRows(info: StickyProjectInfo, { count, balance, quote }: Plan): TxConfirmRow[] {
+function reviewRows(info: StickyProjectInfo, { count, balance, quote, steps }: Plan): TransactionReviewRow[] {
   const amount = (value: bigint) => `${formatUnits(value, info.decimals)} ${info.symbol}`
   return [
     { label: 'Unstick', value: `${formatUnits(count, SHARE_DECIMALS)} ${info.stSymbol}`, strong: true },
@@ -172,6 +166,9 @@ function reviewRows(info: StickyProjectInfo, { count, balance, quote }: Plan): T
     ...(quote.fee > 0n ? [{ label: 'Protocol fee', value: amount(quote.fee) }] : []),
     ...(quote.net === 0n
       ? [{ label: 'Effect', value: 'Your Sticky tokens are burned and no underlying tokens come back.' }]
+      : []),
+    ...(count === balance && steps.some(isTeardown)
+      ? [{ label: 'Auto-stick', value: 'This unsticks everything you hold, so auto-stick is taken apart first.' }]
       : []),
     { label: 'On', value: chainName(info.chainId) },
   ]
@@ -232,6 +229,15 @@ export function UnstickFlow({
   const preparation = useRef<AbortController | null>(null)
   const waiting = useRef(false)
   const reviewAgain = useRef<() => void>(() => undefined)
+  // The plan's one decoded review: the proof its steps are sent with, and whether the next step is due to be sent. `live`
+  // is the plan being open, and `generation` counts the plans made and closed, so a send scheduled for a plan that is
+  // gone is not made.
+  const reviewed = useRef<ReviewedCalls | undefined>(undefined)
+  const live = useRef(false)
+  const generation = useRef(0)
+  /** A send is under way (its review open, or the engine not yet answered): another press waits for it. */
+  const pressing = useRef(false)
+  const [due, setDue] = useState(false)
 
   const who = address?.toLowerCase()
   // What went through is the plan's account's while there is a plan, and the connected account's otherwise.
@@ -280,10 +286,21 @@ export function UnstickFlow({
     setSent(record => ({ holder: key, steps: record.holder === key ? [...record.steps, step] : [step] }))
     setPlan(current => current && { ...current, steps: current.steps.slice(1) })
     setError(null)
+    // The next step the review showed is sent without asking again.
+    if (reviewed.current) setDue(true)
     // What the step changed is read again: a step of the teardown changes only the holder's auto-stick and trust.
     if (isTeardown(step)) refreshAfterAutoStick(client, chainId, projectId, holder)
     else refreshAfterUnstick(client, chainId, projectId, holder)
   }, [tx.phase, accepted, client, chainId, projectId])
+
+  // A step that fails after the engine took it, or that the engine lets go of without a result (a released hold), drops
+  // the review, so whatever is sent next is reviewed again; a released step is no longer out. This runs before the
+  // commit that shows it can be clicked.
+  useLayoutEffect(() => {
+    if (accepted === null || (tx.phase !== 'error' && tx.phase !== 'idle')) return
+    reviewed.current = undefined
+    if (tx.phase === 'idle') setAccepted(null)
+  }, [tx.phase, accepted])
 
   // A plan is for one account. One whose account has gone is dropped, unless its send is on its way.
   useEffect(() => {
@@ -310,12 +327,19 @@ export function UnstickFlow({
     preparation.current?.abort()
     const controller = new AbortController()
     preparation.current = controller
+    generation.current += 1
+    live.current = false
+    pressing.current = false
+    reviewed.current = undefined
+    setDue(false)
     setPreparing(true)
     try {
       const next = await planUnstick(info, address, shares, landed, controller.signal)
       if (controller.signal.aborted) return
       setPlan(next)
       setError(null)
+      live.current = true
+      setDue(true)
     } catch (reason) {
       if (controller.signal.aborted) return
       if (!(reason instanceof Refusal)) console.warn(PLAN_UNREADABLE, { chainId, projectId }, reason)
@@ -359,15 +383,45 @@ export function UnstickFlow({
   }
 
   async function sendNext() {
-    if (!plan || sending || preparing) return
+    if (!plan || sending || preparing || !live.current || pressing.current || plan.steps.length === 0) return
+    const mine = generation.current
+    pressing.current = true
+    try {
+      await reviewAndSend(plan, mine)
+    } finally {
+      if (generation.current === mine) pressing.current = false
+    }
+  }
+
+  async function reviewAndSend(plan: Plan, mine: number) {
+    setDue(false)
     const [step] = plan.steps
     setError(null)
+    // One decoded review shows every step left, with the summary rows; each is then sent under it.
+    if (!reviewed.current) {
+      try {
+        reviewed.current = await tx.review(plan.steps, { account: plan.holder, title: `Unstick ${info.symbol}`, rows: reviewRows(info, plan) })
+      } catch (reason) {
+        if (!(reason instanceof TransactionReviewCancelledError)) throw reason
+        if (generation.current === mine) closeReview()
+        return
+      }
+      if (generation.current !== mine) return
+    }
     // Every step is sent as the holder the plan was made for, and the engine refuses it, before a review opens, while
     // another account is connected. Its send answers nothing while its lock is held, and a step it did not answer has
-    // not been taken.
-    const hash = await tx.send(step, { reviewedAccount: plan.holder, reverify: () => stillFits(info, plan, step) })
+    // not been taken: the review is dropped, so the next press reviews what is left again.
+    const hash = await tx.send(step, { reviewedAccount: plan.holder, reviewed: reviewed.current, reverify: () => stillFits(info, plan, step) })
+    if (generation.current !== mine) return
     if (hash !== null) setAccepted({ step, holder: plan.holder })
+    else reviewed.current = undefined
   }
+
+  // The plan's one review opens once it is planned, and each step it showed is sent as the one before is counted.
+  useEffect(() => {
+    if (due && plan && !sending && !preparing) void sendNext()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [due, plan, sending, preparing])
 
   function retry() {
     if (!plan || sending) return
@@ -378,6 +432,12 @@ export function UnstickFlow({
 
   function closeReview() {
     if (sending) return
+    // Closed at once: a step already due for this plan is not sent.
+    generation.current += 1
+    live.current = false
+    pressing.current = false
+    reviewed.current = undefined
+    setDue(false)
     if (complete) {
       setSent(NOTHING_SENT)
       return onClose()
@@ -399,11 +459,10 @@ export function UnstickFlow({
   const flowError = error ?? tx.error
   const inFlight = sendingStatus(tx)
   const steps = [...landed, ...(plan?.steps ?? [])]
-  const takesAutoStickApart = plan !== null && plan.count === plan.balance && steps.some(isTeardown)
   const partway = landed.length > 0 && plan !== null && !complete
   const showsLink = complete || (tx.phase === 'pending' && !tx.safeProposalHash)
 
-  const actionLabel = failed || (preparing && plan) ? 'Retry' : plan && plan.steps.length > 0 ? actionFor(plan.steps[0]) : 'Confirm & unstick'
+  const actionLabel = failed || (preparing && plan) ? 'Retry' : 'Review again'
 
   const status = preparing ? (
     plan ? CHECKING : PLANNING
@@ -491,11 +550,7 @@ export function UnstickFlow({
           settled={tx.phase === 'submitted'}
           status={status}
           error={flowError}
-        >
-          {takesAutoStickApart ? (
-            <p className="text-sm text-smoke-700">This unsticks everything you hold, so auto-stick is taken apart first.</p>
-          ) : null}
-        </TxConfirmDialog>
+        />
       ) : null}
     </ModalShell>
   )

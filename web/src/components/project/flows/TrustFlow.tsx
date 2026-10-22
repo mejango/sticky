@@ -10,6 +10,7 @@ import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
+import { useStepPresses } from '@/hooks/useStepPresses'
 import { useWallet } from '@/hooks/useWallet'
 import { stickyHookAbi } from '@/lib/sticky-abis'
 import { trustTx } from '@/lib/sticky-builders'
@@ -17,6 +18,7 @@ import { stickyLabel } from '@/lib/sticky-format'
 import type { Answer, StickyProjectInfo } from '@/lib/sticky-project'
 import { refreshAfterTrust } from '@/lib/sticky-refresh'
 import { need, readAt } from '@/lib/sticky-rewards'
+import type { TransactionReviewRow } from '@/lib/transaction-review'
 import { chainName } from '@/lib/urn'
 
 const ALREADY_TRUSTED = 'This sender is already trusted.'
@@ -47,8 +49,8 @@ type Review = { account: Address; plan: TxRequest | null; preparing: boolean; er
  * Letting a sender stick tokens for the holder, or taking that back, in a modal. Trusting asks for the sender's address;
  * untrusting is for one of the senders the holder's list shows. Either way the address is a whole one, in one case or
  * with its checksum right, and not the zero address. The review asks the hook whether the sender is trusted now, refuses
- * a change that changes nothing, plans the one call, and its confirm replaces the form in the same card; the hook is
- * asked again just before the wallet is. A wallet that cannot send, Signa or View as, is refused when the review
+ * a change that changes nothing, plans the one call, and opens its one decoded review with the summary rows; the card
+ * then follows the send. The hook is asked again just before the wallet is. A wallet that cannot send, Signa or View as, is refused when the review
  * starts. Once the change is confirmed, what it changed is read again.
  */
 export function TrustFlow({
@@ -69,6 +71,7 @@ export function TrustFlow({
   const trusting = sender === null
   const { address, isConnected, isCenterWallet, openSignIn } = useWallet()
   const tx = useSafeTx(chainId)
+  const presses = useStepPresses(tx)
   const client = useQueryClient()
   const [typed, setTyped] = useState('')
   const [review, setReview] = useState<Review | null>(null)
@@ -95,6 +98,7 @@ export function TrustFlow({
 
     const mine = ++attempt.current
     tx.reset()
+    presses.restart()
     setReview({ account, plan: null, preparing: true, error: null })
     try {
       const request = trustTx(chainId, BigInt(projectId), target, trusting)
@@ -102,7 +106,10 @@ export function TrustFlow({
         if (attempt.current === mine) refuse(trusting ? ALREADY_TRUSTED : NOT_TRUSTED)
         return
       }
-      if (attempt.current === mine) setReview({ account, plan: request, preparing: false, error: null })
+      if (attempt.current === mine) {
+        setReview({ account, plan: request, preparing: false, error: null })
+        presses.arm()
+      }
     } catch (reason) {
       if (attempt.current === mine) refuse(reason instanceof Error ? reason.message : TRUST_UNREADABLE)
     }
@@ -111,18 +118,58 @@ export function TrustFlow({
   async function send() {
     if (!plan || !current || sending) return
     const [, target] = plan.args as readonly [bigint, Address, boolean]
-    await tx.send(plan, {
-      reviewedAccount: current.account,
-      reverify: async () => {
-        if ((await trustedBy(chainId, projectId, plan.address, current.account, target)) === trusting) {
-          throw new Error(trusting ? ALREADY_TRUSTED : NOT_TRUSTED)
-        }
+    const outcome = await presses.press(
+      [plan],
+      (step, _confirmedAt, reviewed) =>
+        tx.send(step, {
+          reviewedAccount: current.account,
+          reviewed,
+          reverify: async () => {
+            if ((await trustedBy(chainId, projectId, plan.address, current.account, target)) === trusting) {
+              throw new Error(trusting ? ALREADY_TRUSTED : NOT_TRUSTED)
+            }
+          },
+        }),
+      { account: current.account, title: trusting ? 'Trust this sender' : 'Untrust this sender', rows: rowsOf(target) },
+    )
+    if (outcome === 'cancelled') closeReview()
+  }
+
+  // A review is the account's that asked for it: once another is connected it is dropped, and nothing already due or
+  // under review for it is sent. The holder reviews again from the form.
+  const stale = review !== null && current === null
+  useEffect(() => {
+    if (!stale) return
+    attempt.current += 1
+    presses.restart()
+    setReview(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stale])
+
+  // The change's one decoded review opens once it is planned.
+  useEffect(() => {
+    if (presses.due && plan && !sending) void send()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presses.due, plan, sending])
+
+  /** The review's rows: the project, the sender, and what changes. */
+  function rowsOf(target: Address): TransactionReviewRow[] {
+    return [
+      { label: 'Project', value: info ? `${stickyLabel(info)} #${projectId}` : `#${projectId}` },
+      { label: 'Sender', value: target, mono: true },
+      {
+        label: 'Trusted',
+        value: trusting ? 'Yes, they can add stakes to your position.' : 'No, they can no longer add stakes to your position.',
+        strong: true,
       },
-    })
+      { label: 'On', value: chainName(chainId) },
+    ]
   }
 
   function closeReview() {
     attempt.current += 1
+    // Closed at once: a send already due for this change is not made.
+    presses.restart()
     setReview(null)
     if (complete) onClose()
     else tx.dismiss()
@@ -170,27 +217,14 @@ export function TrustFlow({
           preparing={!plan}
           onClose={closeReview}
           title={complete ? (trusting ? 'Sender trusted' : 'Sender untrusted') : trusting ? 'Trust this sender' : 'Untrust this sender'}
-          rows={
-            planSender
-              ? [
-                  { label: 'Project', value: info ? `${stickyLabel(info)} #${projectId}` : `#${projectId}` },
-                  { label: 'Sender', value: planSender, mono: true },
-                  {
-                    label: 'Trusted',
-                    value: trusting ? 'Yes, they can add stakes to your position.' : 'No, they can no longer add stakes to your position.',
-                    strong: true,
-                  },
-                  { label: 'On', value: chainName(chainId) },
-                ]
-              : undefined
-          }
+          rows={planSender ? rowsOf(planSender) : undefined}
           steps={[{ title: plan?.label ?? (trusting ? 'Trust sender' : 'Untrust sender') }]}
           activeIndex={0}
           stepsIntro={stepsIntro(1, complete ? 1 : 0)}
           complete={complete}
           settled={tx.phase === 'submitted'}
           busy={sending}
-          action={confirmAction(tx.phase, tx.phase === 'error' ? 'Retry' : trusting ? 'Confirm & trust' : 'Confirm & untrust')}
+          action={confirmAction(tx.phase, tx.phase === 'error' ? 'Retry' : 'Review again')}
           onConfirm={() => void send()}
           status={
             complete ? (
