@@ -34,14 +34,14 @@
       "line": 14,
       "api": "request",
       "boundary": "The page reader's transport adds the page's abort signal to each public RPC read; never a wallet RPC.",
-      "test": "test/page-signals.test.ts"
+      "test": "test/data/jbcenter-browser.test.ts"
     },
     {
       "file": "src/lib/jbcenter-public-client.ts",
       "line": 53,
       "api": "request",
       "boundary": "eth_blockNumber on the page reader: a public read of the head, never a wallet RPC.",
-      "test": "test/page-signals.test.ts"
+      "test": "test/data/jbcenter-browser.test.ts"
     },
     {
       "file": "src/lib/project-handles.ts",
