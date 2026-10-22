@@ -6,11 +6,12 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { erc20Abi, pad, zeroHash, type Address, type Hex } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { TxRequest, TxSendOptions } from '@/hooks/useSafeTx'
+import type { ReviewedCalls, TxRequest, TxSendOptions } from '@/hooks/useSafeTx'
 import { bridgeCalldata, type BridgeMovement, type BridgeRoute } from '@/lib/sticky-bridge'
 import { bridgeStorageKey, createPendingBridgeWrite, readBridgeRecords, readPendingBridgeWrite, saveBridgeRecords, savePendingBridgeWrite, saveWatchedBridgeRoute, storeBridgeWrite } from '@/lib/sticky-bridge-journal'
 import { checkedItLabel, HELD_EXIT_LABEL, SAVED_ATTEMPT_CHECK_LINE, WRITE_HOLD_PENDING_LINE } from '@bananapus/nana-sdk-core/review'
 import { holds } from '@/lib/write-holds'
+import { TransactionReviewCancelledError } from '@/lib/transaction-review'
 import { holdIntent } from '@/lib/sticky-hold-intent'
 import { heldChain, heldWrite } from '../support/held-chain'
 import { WalletAuthContext } from '@/providers/WalletAuthContext'
@@ -22,10 +23,12 @@ const OWNER = A(40), RECEIVER = A(41), HASH = H(90)
 const INFO = stickyInfo(10, 22n)
 const ROUTE: BridgeRoute = { source: { chainId: 1 }, destination: { chainId: 10 }, sourceSucker: A(1), destinationSucker: A(2), sourceProjectId: '11', destinationProjectId: '12', sourceToken: A(3), rewardToken: A(4), backingToken: A(5), remoteBackingToken: A(6), terminal: A(7), sourceMeta: { symbol: 'SRC', decimals: 18 }, rewardMeta: { symbol: 'DST', decimals: 18 }, backingMeta: { symbol: 'ETH', decimals: 18 }, canPrepare: true }
 const KEY = bridgeStorageKey(10, INFO.stToken, 0n, OWNER)
-const mocks = vi.hoisted(() => ({ wallet: {} as { address: Address; isConnected: boolean; isCenterWallet: boolean; openSignIn: ReturnType<typeof vi.fn> }, tx: {} as Record<string, unknown>, discover: vi.fn(), prepare: vi.fn(), movements: vi.fn(), flush: vi.fn(), claim: vi.fn(), verifyWrite: vi.fn(), verifySource: vi.fn(), receiver: vi.fn(), walletWrite: vi.fn(), refresh: vi.fn(), settle: vi.fn() }))
+const mocks = vi.hoisted(() => ({ staleSends: [] as unknown[], wallet: {} as { address: Address; isConnected: boolean; isCenterWallet: boolean; openSignIn: ReturnType<typeof vi.fn> }, tx: {} as Record<string, unknown>, discover: vi.fn(), prepare: vi.fn(), movements: vi.fn(), flush: vi.fn(), claim: vi.fn(), verifyWrite: vi.fn(), verifySource: vi.fn(), receiver: vi.fn(), walletWrite: vi.fn(), refresh: vi.fn(), settle: vi.fn() }))
 vi.mock('@/hooks/useWallet', () => ({ useWallet: () => mocks.wallet }))
 vi.mock('@wagmi/core', async original => ({ ...(await original<typeof import('@wagmi/core')>()), getPublicClient: (_config: unknown, { chainId }: { chainId: number }) => (chainId === 1 ? chain : destination).client }))
-vi.mock('@/hooks/useSafeTx', async original => ({ ...(await original<typeof import('@/hooks/useSafeTx')>()), useSafeTx: () => mocks.tx }))
+// Each render's sender is bound to the chain it was rendered for, as useSafeTx's is.
+vi.mock('@/hooks/useSafeTx', async original => ({ ...(await original<typeof import('@/hooks/useSafeTx')>()), useSafeTx: (chainId: number) => ({ ...mocks.tx,
+  send: (request: TxRequest, options: TxSendOptions) => { if (request.chainId !== chainId) mocks.staleSends.push(request); return (mocks.tx.send as (request: TxRequest, options: TxSendOptions) => Promise<Hex | null>)(request, options) } }) }))
 vi.mock('@/lib/sticky-bridge', async original => ({ ...(await original<typeof import('@/lib/sticky-bridge')>()), createStickyBridge: () => mocks }))
 vi.mock('@/lib/jbcenter-public-client', async original => ({ ...(await original<typeof import('@/lib/jbcenter-public-client')>()), jbCenterPublicClient: vi.fn() }))
 vi.mock('@/lib/sticky-receivers', () => ({ readReceiver: mocks.receiver }))
@@ -37,15 +40,25 @@ let root: Root, host: HTMLDivElement, client: QueryClient, approved: boolean
 let chain = heldChain(1), destination = heldChain(10)
 const onClose = vi.fn(), onFunded = vi.fn()
 const queuedRequest = (metadata = H(99)) => ({ ...buildBridgePrepareTx({ chainId: 1, sucker: ROUTE.sourceSucker, projectTokenCount: 10n ** 18n, beneficiary: RECEIVER, minTokensReclaimed: 965n, token: ROUTE.backingToken, metadata }), label: 'Queue cross-chain rewards' })
+/** The proof useSafeTx's one decoded review returns for exactly these calls. */
+const callKey = (request: TxRequest) => `${request.chainId}:${request.address.toLowerCase()}:${bridgeCalldata(request)}:${request.value ?? 0n}`
+/** The calls each mocked review showed, by the proof it returned. */
+const shown = new WeakMap<ReviewedCalls, string[]>()
+const reviewedProof = (requests: readonly TxRequest[]): ReviewedCalls => { const proof = {} as ReviewedCalls; shown.set(proof, requests.map(callKey)); return proof }
+const covers = (proof: ReviewedCalls | undefined, request: TxRequest) => !!proof && !!shown.get(proof)?.includes(callKey(request))
 const movement = (status: BridgeMovement['status']): BridgeMovement => ({ leaf: { index: 0n, beneficiary: pad(RECEIVER), projectTokenCount: 10n ** 18n, terminalTokenAmount: 965n, metadata: H(99) }, leafHash: H(98), sourceHash: HASH, blockNumber: 100n, caller: OWNER, status, proof: Array<Hex>(32).fill(zeroHash) } as unknown as BridgeMovement)
+let proofs: ReviewedCalls[] = []
 beforeEach(() => {
   localStorage.clear()
+  proofs = []
+  mocks.staleSends = []
   chain = heldChain(1)
   destination = heldChain(10)
   vi.stubGlobal('navigator', { locks: { request: async (_name: string, _options: unknown, work: (lock: object) => unknown) => work({}) } })
   approved = false
   mocks.wallet = { address: OWNER, isConnected: true, isCenterWallet: false, openSignIn: vi.fn() }
   mocks.tx = { phase: 'idle', busy: false, error: null, notice: null, hash: null, isSafe: false, safeNonceGuidance: null, safeProposalHash: null,
+    review: vi.fn(async (requests: TxRequest[]) => { const proof = reviewedProof(requests); proofs.push(proof); return proof }),
     reset: vi.fn(() => Object.assign(mocks.tx, { phase: 'idle', hash: null, busy: false, error: null })), dismiss: vi.fn(() => Object.assign(mocks.tx, { phase: 'idle', hash: null, busy: false })),
     send: vi.fn(async (request: TxRequest, options: TxSendOptions) => {
       try { await options.reverify?.(request); await options.durableRecovery?.reserve(); await mocks.walletWrite(request); await options.durableRecovery?.submitted(HASH, !!mocks.tx.isSafe); return HASH } catch (reason) { mocks.tx.error = (reason as Error).message; return null }
@@ -65,8 +78,12 @@ beforeEach(() => {
 })
 afterEach(async () => {
   try {
-    // Every write and step opens the SDK's decoded review: no send may skip it.
-    for (const [, options] of (mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls) expect(options).not.toHaveProperty('reviewedInParent')
+    // Every write and step carries its action's one decoded review: no send skips it.
+    expect(mocks.staleSends).toEqual([])
+    for (const [, options] of (mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls) {
+      expect(options).not.toHaveProperty('reviewedInParent')
+      expect(proofs).toContain(options.reviewed)
+    }
   } finally { await act(async () => root.unmount()); host.remove(); client.clear() }
 })
 async function render(info = INFO, delivery?: { route?: BridgeRoute; groupId: bigint }) {
@@ -81,7 +98,8 @@ async function type(label: string, value: string) {
   await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })) })
 }
 async function find() { await render(); await type('Origin project token', ROUTE.sourceToken); await press('Find bridge') }
-async function review() { await find(); await type('Amount', '1'); await press('Review transfer') }
+/** The transfer form, filled. 'Review transfer' is then its one confirmation. */
+async function review() { await find(); await type('Amount', '1') }
 async function confirmed() { Object.assign(mocks.tx, { phase: 'success', hash: HASH, busy: false }); await render() }
 const storedPending = () => JSON.parse(localStorage.getItem(`sticky:bridge:pending:v1:${OWNER.toLowerCase()}`)!)
 function failReturnedHashSave(failure: 'write' | 'read' = 'write') {
@@ -109,22 +127,25 @@ describe('reviewed durable bridge workflow', () => {
   it('repairs the actual returned approval hash after its durable save failed', async () => {
     await review()
     const save = failReturnedHashSave()
-    await press('Confirm & approve')
+    await press('Review transfer')
     const original = storedPending()
     expect(original.id).toBeTruthy(); expect(original.hash).toBeUndefined()
     expect(readPendingBridgeWrite(OWNER)?.hash).toBe(HASH)
     save.mockRestore()
     approved = true
     await confirmed()
-    expect(mocks.walletWrite).toHaveBeenCalledOnce()
     expect(mocks.verifyWrite).toHaveBeenCalledWith({ chainId: 1 }, OWNER, HASH, expect.anything(), { hash: HASH, safeProposal: false })
-    expect(readPendingBridgeWrite(OWNER)).toBeNull()
     expect(readBridgeRecords(KEY)[0].steps).toHaveLength(1)
+    // The approval's reservation is cleared; the transfer's next step, in the same review, is what is pending now.
+    await vi.waitFor(() => expect(mocks.walletWrite).toHaveBeenCalledTimes(2))
+    expect(mocks.walletWrite).toHaveBeenLastCalledWith(expect.objectContaining({ functionName: 'prepare' }))
+    expect(readPendingBridgeWrite(OWNER)?.request.data).toBe(readBridgeRecords(KEY)[0].steps[0].data)
+    expect(mocks.tx.review).toHaveBeenCalledOnce()
   })
   it.each([false, true])('never repairs or clears a newer identical approval using an older result (replacement hash %s)', async hasHash => {
     await review()
     const save = failReturnedHashSave()
-    await press('Confirm & approve')
+    await press('Review transfer')
     const original = storedPending()
     save.mockRestore()
     const replacement = { ...original, id: crypto.randomUUID(), ...(hasHash ? { hash: H(91), safeProposal: false } : {}) }
@@ -138,7 +159,7 @@ describe('reviewed durable bridge workflow', () => {
   it.each(['write', 'read'] as const)('recovers the retained approval after two hash saves fail, the review unmounts and storage returns (%s)', async failure => {
     await review()
     const save = failReturnedHashSave(failure)
-    await press('Confirm & approve')
+    await press('Review transfer')
     approved = true
     await confirmed()
     expect(save.failures()).toBeGreaterThanOrEqual(2)
@@ -172,24 +193,32 @@ describe('reviewed durable bridge workflow', () => {
   })
   it('wallet-action:approve-a-bridge-transfer Approve a bridge transfer: reviews the exact spender and saves intent before the wallet call', async () => {
     await review()
-    expect(text()).toContain('Minimum backing')
-    expect(text()).toContain(ROUTE.sourceSucker)
-    expect(text()).toContain(ROUTE.sourceToken)
-    expect(text()).toContain('Allowance after approval1 SRC')
     mocks.walletWrite.mockImplementation(async (request: TxRequest) => {
       expect(readPendingBridgeWrite(OWNER)?.request.data).toBe(bridgeCalldata(request))
       expect(request).toMatchObject({ functionName: 'approve', address: ROUTE.sourceToken, args: [ROUTE.sourceSucker, 10n ** 18n] })
     })
-    await press('Confirm & approve')
+    await press('Review transfer')
+    // The one decoded review shows the summary above both steps.
+    const [steps, context] = (mocks.tx.review as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(steps.map((step: TxRequest) => step.functionName)).toEqual(['approve', 'prepare'])
+    const rows = (context.rows as { label: string; value: string }[]).map(row => `${row.label}${row.value}`)
+    expect(rows).toEqual(expect.arrayContaining([`Bridge contract${ROUTE.sourceSucker}`, `Origin token${ROUTE.sourceToken}`, 'Allowance after approval1 SRC']))
+    expect(rows.some(row => row.startsWith('Minimum backing'))).toBe(true)
     expect(mocks.walletWrite).toHaveBeenCalledTimes(1)
     expect(readPendingBridgeWrite(OWNER)?.hash).toBe(HASH)
     expect(onFunded).not.toHaveBeenCalled()
   })
   it('wallet-action:queue-cross-chain-rewards Queue cross-chain rewards: continues only after approval proof and preserves the reviewed receiver and metadata', async () => {
-    await review(); const metadata = readBridgeRecords(KEY)[0].metadata
-    await press('Confirm & approve'); approved = true; await confirmed()
-    expect(readPendingBridgeWrite(OWNER)).toBeNull()
-    await press('Confirm & queue')
+    await review()
+    await press('Review transfer'); const metadata = readBridgeRecords(KEY)[0].metadata
+    approved = true; await confirmed()
+    // One user action, one decoded review: the queue step follows the approval without asking again.
+    await vi.waitFor(() => expect(mocks.walletWrite).toHaveBeenCalledTimes(2))
+    expect(mocks.tx.review).toHaveBeenCalledOnce()
+    const [approval, queue] = (mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls
+    expect(approval[1].reviewed).toBe(queue[1].reviewed)
+    expect(covers(queue[1].reviewed, queue[0])).toBe(true)
+    expect(queue[1].simulationBlockNumber).toBe(100n)
     expect(mocks.walletWrite).toHaveBeenLastCalledWith(expect.objectContaining({ functionName: 'prepare', args: [10n ** 18n, pad(RECEIVER), 965n, ROUTE.backingToken, metadata] }))
     const record = readBridgeRecords(KEY)[0]
     mocks.movements.mockResolvedValue([{ ...movement('queued'), leaf: { ...movement('queued').leaf, metadata } }])
@@ -200,19 +229,74 @@ describe('reviewed durable bridge workflow', () => {
     expect(text()).toContain('Ready to send')
   })
   it('wallet-action:send-queued-rewards-across-chains Send queued rewards across chains: reviews and sends the exact transport budget', async () => {
-    mocks.movements.mockResolvedValue([movement('queued')]); await find(); await press('Refresh bridge status'); await press('Send across chains'); expect(text()).toContain('Bridge transport budget0.0000000000000001 ETH'); await press('Confirm & send')
+    mocks.movements.mockResolvedValue([movement('queued')]); await find(); await press('Refresh bridge status'); await press('Send across chains'); expect(text()).toContain('Bridge transport budget0.0000000000000001 ETH')
     expect(mocks.walletWrite).toHaveBeenCalledWith(expect.objectContaining({ functionName: 'toRemote', value: 100n, chainId: 1 }))
+    expect(mocks.tx.review).toHaveBeenCalledOnce()
+    expect(mocks.tx.review).toHaveBeenCalledWith([expect.objectContaining({ functionName: 'toRemote' })], expect.objectContaining({ rows: expect.arrayContaining([{ label: 'Bridge transport budget', value: '0.0000000000000001 ETH' }]) }))
     expect(readPendingBridgeWrite(OWNER)?.request.value).toBe('100')
   })
   it('wallet-action:claim-arriving-rewards Claim arriving rewards: sends the fresh destination proof and hands claimed rewards to the existing settlement flow', async () => {
-    mocks.movements.mockResolvedValue([movement('claimable')]); await find(); await press('Refresh bridge status'); await press('Claim arrival'); await press('Confirm & claim')
+    mocks.movements.mockResolvedValue([movement('claimable')]); await find(); await press('Refresh bridge status'); await press('Claim arrival')
     expect(mocks.walletWrite).toHaveBeenCalledWith(expect.objectContaining({ functionName: 'claim', chainId: 10, address: ROUTE.destinationSucker }))
+    expect(mocks.tx.review).toHaveBeenCalledOnce()
     mocks.movements.mockResolvedValue([movement('claimed')]); await confirmed(); await press('Check unsettled rewards')
     expect(mocks.settle).toHaveBeenCalledWith(expect.objectContaining({ initialToken: ROUTE.rewardToken, initialGroupId: 0n, initiallyOpen: true, onSettled: onFunded }))
     expect(onFunded).not.toHaveBeenCalled()
   })
+  it('closes the transfer and sends nothing when its one review is closed', async () => {
+    ;(mocks.tx.review as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new TransactionReviewCancelledError())
+    await review(); await press('Review transfer')
+    expect(mocks.tx.send).not.toHaveBeenCalled()
+    expect(readPendingBridgeWrite(OWNER)).toBeNull()
+    expect(text()).not.toContain('Review again')
+    expect(text()).not.toContain('Review closed')
+    expect(button('Continue transfer')).toBeDefined()
+  })
+  it('sends the queue step once its approval recovery lets go of the bridge lock, however long its refresh takes', async () => {
+    await review()
+    // Exclusive locks by name, as the browser's: a request that must not wait gets none while another holds it.
+    const held = new Set<string>(), waiting = new Map<string, (() => void)[]>()
+    vi.stubGlobal('navigator', { locks: { request: async (name: string, options: { ifAvailable?: boolean }, work: (lock: object | null) => unknown) => {
+      if (held.has(name) && options.ifAvailable) return work(null)
+      while (held.has(name)) await new Promise<void>(done => waiting.set(name, [...(waiting.get(name) ?? []), done]))
+      held.add(name)
+      try { return await work({}) } finally { held.delete(name); waiting.get(name)?.shift()?.() }
+    } } })
+    await press('Review transfer'); approved = true
+    await vi.waitFor(() => expect(mocks.walletWrite).toHaveBeenCalledOnce())
+    const slow = Promise.withResolvers<{ address: Address }>()
+    mocks.receiver.mockReturnValueOnce(slow.promise)
+    await confirmed()
+    await act(async () => slow.resolve({ address: RECEIVER }))
+    await vi.waitFor(() => expect(mocks.walletWrite).toHaveBeenCalledTimes(2))
+    expect(mocks.walletWrite).toHaveBeenLastCalledWith(expect.objectContaining({ functionName: 'prepare' }))
+    expect(mocks.tx.review).toHaveBeenCalledOnce()
+    expect(text()).not.toContain('already open in another tab')
+  })
+  it('sends nothing more for a transfer closed while its approval was being recovered', async () => {
+    await review(); await press('Review transfer'); approved = true
+    const proof = Promise.withResolvers<{ success: boolean; receipt: { blockNumber: bigint } }>()
+    mocks.verifyWrite.mockReturnValueOnce(proof.promise)
+    await confirmed()
+    await press('Cancel')
+    await act(async () => proof.resolve({ success: true, receipt: { blockNumber: 100n } }))
+    await vi.waitFor(() => expect(readBridgeRecords(KEY)[0].steps).toHaveLength(1))
+    expect(mocks.walletWrite).toHaveBeenCalledOnce()
+    expect(mocks.tx.send).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(button('Continue transfer')).toBeDefined())
+  })
+  it('reviews the steps left again, together, when a transfer is resumed', async () => {
+    await review(); await press('Review transfer'); approved = true
+    // The approval confirmed while this page was away: the queue step is resumed from the saved transfer.
+    await act(async () => root.unmount()); root = createRoot(host)
+    Object.assign(mocks.tx, { phase: 'idle', hash: null })
+    await render(); await press('Check transaction')
+    await press('Continue transfer')
+    expect(mocks.tx.review).toHaveBeenCalledTimes(2)
+    expect((mocks.tx.review as ReturnType<typeof vi.fn>).mock.calls[1][0].map((step: TxRequest) => step.functionName)).toEqual(['prepare'])
+  })
   it('retains a submitted Safe approval without advancing steps or reporting success', async () => {
-    await review(); mocks.tx.isSafe = true; await press('Confirm & approve'); Object.assign(mocks.tx, { phase: 'submitted', notice: 'Awaiting Safe confirmations' }); await render()
+    await review(); mocks.tx.isSafe = true; await press('Review transfer'); Object.assign(mocks.tx, { phase: 'submitted', notice: 'Awaiting Safe confirmations' }); await render()
     await press('Done')
     expect(readPendingBridgeWrite(OWNER)).toMatchObject({ hash: HASH, safeProposal: true })
     expect(readBridgeRecords(KEY)[0].steps).toHaveLength(2)
@@ -221,7 +305,7 @@ describe('reviewed durable bridge workflow', () => {
   })
   it('keeps an unknown wallet reply locked across dismissal and reload', async () => {
     mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => { await options.durableRecovery?.reserve(); return null })
-    await review(); await press('Confirm & approve'); await press('Cancel')
+    await review(); await press('Review transfer'); await press('Cancel')
     await act(async () => root.unmount()); root = createRoot(host); await render()
     expect(readPendingBridgeWrite(OWNER)?.hash).toBeUndefined()
     expect(button('Review transfer').disabled).toBe(true)
@@ -230,7 +314,7 @@ describe('reviewed durable bridge workflow', () => {
   it('brings a hashless reservation the SDK never held to the one explicit check after reload, which clears it, keeps the transfer, and allows exactly one more send', async () => {
     const normalSend = mocks.tx.send as (request: TxRequest, options: TxSendOptions) => Promise<Hex | null>
     mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => { await options.durableRecovery?.reserve(); return null })
-    await review(); await press('Confirm & approve'); await press('Cancel')
+    await review(); await press('Review transfer'); await press('Cancel')
     const metadata = readBridgeRecords(KEY)[0].metadata
     await act(async () => root.unmount()); root = createRoot(host); await render()
     expect(readPendingBridgeWrite(OWNER)?.hash).toBeUndefined()
@@ -246,7 +330,6 @@ describe('reviewed durable bridge workflow', () => {
 
     mocks.tx.send = vi.fn(normalSend)
     await press('Continue transfer')
-    await press('Confirm & approve')
     expect(mocks.tx.send).toHaveBeenCalledOnce()
   })
   /** The wallet replied with a hash and the review closed without a result: the attempt is saved with its hash. */
@@ -258,7 +341,7 @@ describe('reviewed durable bridge workflow', () => {
       await given.durableRecovery?.reserve(); await given.durableRecovery?.submitted(HASH, false)
       return null
     })
-    await review(); await press('Confirm & approve')
+    await review(); await press('Review transfer')
     return { normalSend, released: () => options.durableRecovery!.released!() }
   }
   /** The approval the review sends, and the key its hold has, as the flow computes them. */
@@ -287,7 +370,7 @@ describe('reviewed durable bridge workflow', () => {
     expect(readPendingBridgeWrite(OWNER)).toBeNull()
     expect(readBridgeRecords(KEY)[0].metadata).toBe(metadata)
     mocks.tx.send = vi.fn(normalSend)
-    await press('Cancel'); await press('Continue transfer'); await press('Confirm & approve')
+    await press('Cancel'); await press('Continue transfer')
     expect(mocks.tx.send).toHaveBeenCalledOnce()
   })
   it('after a reload, shows the SDK\'s exit for a saved hash the chain has not shown for 30 minutes, and the exit clears it keeping the transfer', async () => {
@@ -318,7 +401,7 @@ describe('reviewed durable bridge workflow', () => {
     const save = failReturnedHashSave()
     const failing = mocks.tx.send as (request: TxRequest, options: TxSendOptions) => Promise<Hex | null>
     mocks.tx.send = vi.fn(async (request: TxRequest, given: TxSendOptions) => { options = given; await failing(request, given); return null })
-    await review(); await press('Confirm & approve')
+    await review(); await press('Review transfer')
     expect(save.failures()).toBeGreaterThan(0)
     // The raw storage still holds the hashless reservation; the retained reply is only in memory.
     expect(storedPending().hash).toBeUndefined()
@@ -327,7 +410,7 @@ describe('reviewed durable bridge workflow', () => {
     expect(localStorage.getItem(`sticky:bridge:pending:v1:${OWNER.toLowerCase()}`)).toMatch(/^null$/)
     expect(readPendingBridgeWrite(OWNER)).toBeNull()
     mocks.tx.send = vi.fn(normalSend)
-    await press('Cancel'); await press('Continue transfer'); await press('Confirm & approve')
+    await press('Cancel'); await press('Continue transfer')
     expect(mocks.tx.send).toHaveBeenCalledOnce()
   })
   it('clears the submission marker of a dropped prepare when the SDK exit releases it, keeping the transfer to continue or cancel', async () => {
@@ -339,7 +422,7 @@ describe('reviewed durable bridge workflow', () => {
       await given.durableRecovery?.reserve(); await given.durableRecovery?.submitted(HASH, false)
       return null
     })
-    await review(); await press('Confirm & queue')
+    await review(); await press('Review transfer')
     const before = readBridgeRecords(KEY)[0]
     expect(before.submission?.hash).toBe(HASH)
     await act(async () => { await options.durableRecovery!.released!() })
@@ -355,12 +438,12 @@ describe('reviewed durable bridge workflow', () => {
     await press('Cancel unsubmitted transfer')
     expect(readBridgeRecords(KEY)).toHaveLength(0)
     mocks.tx.send = vi.fn(normalSend)
-    await review(); await press('Confirm & queue')
+    await review(); await press('Review transfer')
     expect(readBridgeRecords(KEY)).toHaveLength(1)
   })
   it('records a settlement the SDK reports after a failed hash save and a reload, marks the step done, and sends nothing again', async () => {
     const save = failReturnedHashSave()
-    await review(); await press('Confirm & approve'); await press('Cancel')
+    await review(); await press('Review transfer'); await press('Cancel')
     expect(storedPending().hash).toBeUndefined()
     save.mockRestore()
     const sent = (mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls.length
@@ -391,7 +474,9 @@ describe('reviewed durable bridge workflow', () => {
   it('keeps the prepare submission marker on the sped-up hash when the route refresh then fails', async () => {
     approved = true
     const SPED_UP = H(91)
-    mocks.tx.send = vi.fn(async (_request: TxRequest, given: TxSendOptions) => {
+    mocks.tx.send = vi.fn(async (request: TxRequest, given: TxSendOptions) => {
+      // The SDK's speed-up is of the same call the review saved (its metadata is the prepare's).
+      chain.mined(SPED_UP, { to: request.address, data: bridgeCalldata(request) }, OWNER)
       await given.durableRecovery?.reserve(); await given.durableRecovery?.submitted(HASH, false)
       return null
     })
@@ -399,10 +484,7 @@ describe('reviewed durable bridge workflow', () => {
     await heldWrite({ chainId: 1, account: OWNER, namespace: holdIntent(prepare, OWNER)!, call: { to: prepare.address, data: bridgeCalldata(prepare) }, client: chain.client, hash: SPED_UP })
     mocks.movements.mockRejectedValue(new Error('Route refresh unavailable'))
     await review()
-    // The metadata the review saved is the prepare's; the SDK's speed-up is of the same call.
-    const call = { to: readBridgeRecords(KEY)[0].steps[0].address, data: readBridgeRecords(KEY)[0].steps[0].data }
-    chain.mined(SPED_UP, call, OWNER)
-    await press('Confirm & queue'); await press('Cancel')
+    await press('Review transfer'); await press('Cancel')
     await vi.waitFor(() => expect(readBridgeRecords(KEY)[0].submission?.hash).toBe(SPED_UP))
     expect(readPendingBridgeWrite(OWNER)?.hash).toBe(SPED_UP)
     expect(button('Continue transfer')).toBeUndefined()
@@ -428,7 +510,7 @@ describe('reviewed durable bridge workflow', () => {
       await given.durableRecovery?.reserve(); await given.durableRecovery?.submitted(HASH, false)
       return null
     })
-    await review(); await press('Confirm & queue'); await press('Cancel')
+    await review(); await press('Review transfer'); await press('Cancel')
     await act(async () => root.unmount()); root = createRoot(host)
     later(31 * 60_000)
     mocks.movements.mockRejectedValue(new Error('Route refresh unavailable'))
@@ -488,7 +570,7 @@ describe('reviewed durable bridge workflow', () => {
     await review()
     const setItem = Storage.prototype.setItem
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key, value) { if (key.startsWith('sticky:bridge:pending:')) throw new Error('Storage full'); setItem.call(this, key, value) })
-    await press('Confirm & approve')
+    await press('Review transfer')
     expect(mocks.walletWrite).not.toHaveBeenCalled()
     expect(readBridgeRecords(KEY)[0].submission).toBeUndefined()
     expect(readPendingBridgeWrite(OWNER)).toBeNull()
@@ -503,22 +585,21 @@ describe('reviewed durable bridge workflow', () => {
       if (key.startsWith('sticky:bridge:pending:') && stored && stored !== 'null' && mismatch) { mismatch = false; return null }
       return stored
     })
-    await press('Confirm & approve')
+    await press('Review transfer')
     expect(mocks.walletWrite).not.toHaveBeenCalled()
     expect(readPendingBridgeWrite(OWNER)).toBeNull()
     expect(readBridgeRecords(KEY)[0].submission).toBeUndefined()
     expect(text()).toContain('could not be saved')
   })
   it.each(['spender', 'value', 'chain', 'selector'] as const)('refuses a tampered saved next step (%s) under the unchanged parent review', async field => {
-    await review(); await press('Confirm & approve')
+    await review(); await press('Review transfer')
     const record = readBridgeRecords(KEY)[0], step = record.steps[1]
     if (field === 'spender') step.data = bridgeCalldata({ ...queuedRequest(record.metadata), args: [10n ** 18n, pad(A(999)), 965n, ROUTE.backingToken, record.metadata] })
     if (field === 'value') step.value = '1'
     if (field === 'chain') step.chainId = 10
     if (field === 'selector') step.data = bridgeCalldata({ chainId: 1, address: ROUTE.sourceToken, abi: erc20Abi, functionName: 'approve', args: [A(999), 10n ** 18n] })
     saveBridgeRecords(KEY, [record]); approved = true; await confirmed()
-    await press(field === 'selector' ? 'Confirm & approve' : 'Confirm & queue')
-    expect(mocks.walletWrite).toHaveBeenCalledTimes(1)
+        expect(mocks.walletWrite).toHaveBeenCalledTimes(1)
     expect(text()).toContain('saved bridge step or quote changed')
     expect(readPendingBridgeWrite(OWNER)).toBeNull()
   })
@@ -559,7 +640,6 @@ describe('reviewed durable bridge workflow', () => {
     expect(mocks.movements).toHaveBeenCalledWith(expect.objectContaining({ sourceSucker: ROUTE.sourceSucker, canPrepare: false }), RECEIVER)
     expect(text()).toContain('Arrived. Ready to claim')
     await press('Claim arrival')
-    await press('Confirm & claim')
     expect(mocks.walletWrite).toHaveBeenCalledWith(expect.objectContaining({ chainId: 10, address: ROUTE.destinationSucker, functionName: 'claim' }))
   })
 

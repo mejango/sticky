@@ -7,12 +7,12 @@ import { ReceiverFlow } from '@/components/project/flows/ReceiverFlow'
 import { reviewGate } from '@/components/project/flows/review-gate'
 import { FIELD_INPUT, FIELD_LABEL, StakeAgeFields } from '@/components/project/StakeAgeFields'
 import { ModalShell } from '@/components/ui/ModalShell'
-import { TxConfirmDialog, type TxConfirmRow } from '@/components/ui/TxConfirmDialog'
+import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { holdIntent } from '@/lib/sticky-hold-intent'
 import { SavedWriteRecovery } from '@/components/ui/SavedWriteRecovery'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, ViewTransactionLink } from '@/components/ui/TxProgress'
-import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
+import { useSafeTx, type ReviewedCalls, type TxRequest } from '@/hooks/useSafeTx'
 import { useWallet } from '@/hooks/useWallet'
 import { parseAmount } from '@/lib/sticky-amount'
 import { bridgeCalldata, bridgeRouteId, bridgeWriteHasUniqueReference, createStickyBridge, type BridgeMovement, type BridgeRoute } from '@/lib/sticky-bridge'
@@ -25,6 +25,7 @@ import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { readReceiver } from '@/lib/sticky-receivers'
 import { refreshAfterFund } from '@/lib/sticky-refresh'
 import { groupIdFromWeeks, groupLabel } from '@/lib/sticky-rewards'
+import { TransactionReviewCancelledError, type TransactionReviewRow } from '@/lib/transaction-review'
 import { chainName } from '@/lib/urn'
 import type { JBChainId } from '@bananapus/nana-sdk-core'
 
@@ -39,7 +40,11 @@ type Review = {
   receiver: Address
   record?: BridgeRecord
   movement?: BridgeMovement
-  rows: TxConfirmRow[]
+  rows: TransactionReviewRow[]
+  /** The action's one decoded review: each step it showed is sent without asking again. */
+  reviewed?: ReviewedCalls
+  /** Send this step once it renders: the action was just chosen, or its review already showed this next step. */
+  autoSend?: boolean
   confirmedAt?: bigint
   attempt?: PendingBridgeWrite
 }
@@ -81,6 +86,8 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
   const tx = useSafeTx(review?.request.chainId ?? sourceChainId)
   const generation = useRef(0)
   const handledHash = useRef<Hex | null>(null)
+  /** Bumped when the person closes the review: an action they closed sends nothing more. */
+  const action = useRef(0)
   const identity = `${info.chainId}:${info.projectId}:${info.stToken}:${sourceChainId}:${wallet.address ?? ''}:${minWeeks}:${maxWeeks}:${delivery?.groupId ?? 'manual'}:${delivery?.route ? bridgeRouteId(delivery.route) : ''}`
   const currentIdentity = useRef(identity)
   useEffect(() => { currentIdentity.current = identity; generation.current += 1; return () => { currentIdentity.current = ''; generation.current += 1 } }, [identity])
@@ -156,7 +163,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
     if (!found.length) throw new Error('This token has no verified direct bridge to this chain.')
     setRoutes(found); setSelected(0)
   }
-  const rowsFor = (record: BridgeRecord): TxConfirmRow[] => [
+  const rowsFor = (record: BridgeRecord): TransactionReviewRow[] => [
     { label: 'Send', value: `${formatUnits(BigInt(record.amount), record.route.sourceMeta.decimals)} ${record.route.sourceMeta.symbol} on ${chainName(record.route.source.chainId)}`, strong: true },
     { label: 'Origin token', value: record.route.sourceToken, mono: true },
     { label: 'Bridge contract', value: record.route.sourceSucker, mono: true },
@@ -191,7 +198,8 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
     else await updateBridgeRecords(key, current => [...current, next])
     assertCurrent(identity)
     tx.reset(); handledHash.current = null
-    setReview({ identity, owner: account, key, receiver, route, record: next, request: plan.steps[0], rows: rowsFor(next) })
+    // The button was the choice: its one decoded review opens as soon as this step renders.
+    setReview({ identity, owner: account, key, receiver, route, record: next, request: plan.steps[0], rows: rowsFor(next), autoSend: true })
     setRecords(readBridgeRecords(key))
   }
   async function reviewMovement(item: Item) {
@@ -203,7 +211,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
     const request = item.row.status === 'queued' ? await bridge.flush(item.route, account, receiver) : await bridge.claim(item.route, item.row, account, receiver)
     assertCurrent(identity)
     tx.reset(); handledHash.current = null
-    setReview({ identity, owner: account, key, receiver, route: item.route, movement: item.row, request, rows: [
+    setReview({ identity, owner: account, key, receiver, route: item.route, movement: item.row, request, autoSend: true, rows: [
       { label: 'Reward token', value: item.route.rewardToken, mono: true }, { label: 'Reward address', value: receiver, mono: true },
       { label: 'Rewards', value: groupLabel(groupId) }, { label: 'On', value: chainName(request.chainId) },
       { label: 'Bridge contract', value: request.address, mono: true },
@@ -211,6 +219,8 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
       { label: 'Source transaction', value: item.row.sourceHash, mono: true },
     ] })
   }
+  /** The summary above the action's decoded calls. */
+  const reviewRows = (current: Review): TransactionReviewRow[] => [...current.rows, ...(current.request.functionName === 'approve' ? [{ label: 'Allowance after approval', value: `${formatUnits(BigInt(current.request.args[1] as bigint), current.route.sourceMeta.decimals)} ${current.route.sourceMeta.symbol}` }] : [])]
   async function verifyReview(current: Review) {
     assertCurrent(current.identity)
     if (current.record) {
@@ -226,17 +236,29 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
     }
     assertCurrent(current.identity)
   }
-  async function confirm() {
-    if (!active || busy) return
-    const current = active
+  /** Sends the review's current step. Without the action's review proof, every step left is reviewed together first. */
+  async function confirm(chosen: Review) {
+    const current = { ...chosen, autoSend: false }
     await run(async () => {
+      assertCurrent(current.identity)
       if (readPendingBridgeWrite(current.owner)) throw new Error('Recover the pending bridge transaction before sending it again.')
+      let reviewed = current.reviewed
+      if (!reviewed) {
+        const steps = current.record ? [current.request, ...current.record.steps.slice(1).map(restoreBridgeWrite)] : [current.request]
+        try {
+          reviewed = await tx.review(steps, { account: current.owner, title: current.record ? 'Airdrop across chains' : current.request.label ?? 'Confirm bridge step', rows: reviewRows(current) })
+        } catch (reason) {
+          if (reason instanceof TransactionReviewCancelledError) { closeReview(); return }
+          throw reason
+        }
+        assertCurrent(current.identity)
+      }
       const held = createPendingBridgeWrite({ owner: current.owner, request: storeBridgeWrite(current.request), intent: holdIntent(current.request, current.owner), ...(current.record ? { metadata: current.record.metadata, recordKey: current.key } : {}) })
-      setReview({ ...current, attempt: held })
+      setReview({ ...current, reviewed, attempt: held })
       let reserved = false
       const undo = () => endPendingBridgeAttempt(current.owner, held.id)
       await tx.send(current.request, {
-        reviewedAccount: current.owner, simulationBlockNumber: current.confirmedAt,
+        reviewedAccount: current.owner, reviewed, simulationBlockNumber: current.confirmedAt,
         reverify: () => verifyReview(current),
         durableRecovery: {
           reserve: async () => {
@@ -303,7 +325,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
   }
   useEffect(() => {
     if (tx.phase !== 'success' || !tx.hash || !active || handledHash.current === tx.hash) return
-    const current = active, hash = tx.hash
+    const current = active, hash = tx.hash, epoch = action.current
     const submissionHash = tx.submissionHash, safeProposal = tx.submissionIsSafe
     void withBridgeLock(async () => {
       let held = readPendingBridgeWrite(current.owner)
@@ -318,12 +340,19 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
       handledHash.current = hash
       assertCurrent(current.identity)
       const record = current.record && readBridgeRecords(current.key).find(item => item.metadata === current.record!.metadata)
-      if (record?.steps.length) {
-        tx.reset(); handledHash.current = null
-        setReview({ ...current, record: { ...current.record!, steps: record.steps }, confirmedAt, request: restoreBridgeWrite(record.steps[0]) })
-      } else { setReview(null); tx.reset() }
+      const next: Review | null = record?.steps.length
+        ? { ...current, record: { ...current.record!, steps: record.steps }, confirmedAt, request: restoreBridgeWrite(record.steps[0]), autoSend: !!current.reviewed }
+        : null
+      if (!next) { if (epoch === action.current) setReview(null); tx.reset() }
       await refresh()
-    }, true).catch(reason => setError((reason as Error).message))
+      return next
+    }, true).then(next => {
+      // Published once the lock is free, so its send can take it. The transfer's next step was in its one review:
+      // it is sent without asking again, unless the review was closed or the wallet, project or bridge changed.
+      if (!next || epoch !== action.current || currentIdentity.current !== next.identity) return
+      tx.reset(); handledHash.current = null
+      setReview(next)
+    }).catch(reason => setError((reason as Error).message))
     // Each canonical hash is processed once, against the frozen review.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tx.phase, tx.hash, tx.submissionHash, tx.submissionIsSafe, active])
@@ -334,7 +363,15 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
     if (!legacyOwner) return
     void withBridgeLock(async () => { setPending(ensurePendingBridgeId(legacyOwner)) }, true).catch(() => undefined)
   }, [legacyOwner])
+  // A chosen step is sent from its own render, so the sender is the one for its chain.
+  useEffect(() => {
+    if (!active?.autoSend || busy || tx.phase !== 'idle') return
+    setReview({ ...active, autoSend: false })
+    void confirm(active)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, busy, tx.phase])
   function closeReview() {
+    action.current += 1
     generation.current += 1
     setReview(null)
     tx.dismiss()
@@ -384,7 +421,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
         {settle?.identity === identity ? <ReceiverFlow key={`${settle.token}:${settle.groupId}`} info={info} chainId={info.chainId} projectId={Number(info.projectId)} initialToken={settle.token} initialGroupId={settle.groupId} initiallyOpen onSettled={onFunded} /> : null}
         <TxError error={error} />
       </div>
-      {active ? <TxConfirmDialog open title={active.request.label ?? 'Confirm bridge step'} rows={[...active.rows, ...(active.request.functionName === 'approve' ? [{ label: 'Allowance after approval', value: `${formatUnits(BigInt(active.request.args[1] as bigint), active.route.sourceMeta.decimals)} ${active.route.sourceMeta.symbol}` }] : [])]} steps={(active.record?.steps ?? [storeBridgeWrite(active.request)]).map(step => ({ title: step.label }))} activeIndex={0} onClose={closeReview} onConfirm={() => void confirm()} busy={busy} settled={tx.phase === 'submitted'} complete={false} action={confirmAction(tx.phase, active.request.functionName === 'approve' ? 'Confirm & approve' : active.request.functionName === 'prepare' ? 'Confirm & queue' : active.request.functionName === 'claim' ? 'Confirm & claim' : 'Confirm & send')} status={sendingStatus(tx) ?? undefined} error={tx.error} /> : null}
+      {active ? <TxConfirmDialog open title={active.request.label ?? 'Confirm bridge step'} rows={reviewRows(active)} steps={(active.record?.steps ?? [storeBridgeWrite(active.request)]).map(step => ({ title: step.label }))} activeIndex={0} onClose={closeReview} onConfirm={() => void confirm({ ...active, reviewed: undefined })} busy={busy} settled={tx.phase === 'submitted'} complete={false} action={confirmAction(tx.phase, 'Review again')} status={sendingStatus(tx) ?? undefined} error={tx.error} /> : null}
     </ModalShell>
   )
 }

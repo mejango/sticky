@@ -4,13 +4,13 @@ import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { buildBridgeClaimTx, buildBridgePrepareTx, buildStickyCollectorSendTx, buildStickyCollectorSettleTx, buildToRemoteTx, suckerLeafProof } from '@bananapus/nana-sdk-core/v6'
-import { pad, zeroHash, type Abi } from 'viem'
+import { encodeFunctionData, pad, zeroHash, type Abi } from 'viem'
 
 vi.mock('wagmi', () => ({ useAccount: () => ({ address: undefined, chainId: undefined }) }))
 vi.mock('next/image', () => ({ default: (props: Record<string, unknown>) => createElement('img', { ...props, src: 'asset' }) }))
 
 import { TransactionReviewProvider } from '@/components/TransactionReviewProvider'
-import { requestContractTransactionReview } from '@/lib/transaction-review'
+import { requestContractTransactionReview, requireTransactionReview, type TransactionReviewRequest } from '@/lib/transaction-review'
 import { COLLECTOR_ROUTE as ROUTE, COLLECTOR_SOURCE as SOURCE, collectorAddress as A, COLLECTOR_RECEIVER as RECEIVER, localCollectorSource } from '../collector-fixtures'
 
 let container: HTMLDivElement
@@ -47,4 +47,18 @@ it.each(steps)("shows the SDK's decoded review of %s", async (signature, amount,
   expect(text).toContain(`chain ${step.chainId}`)
   expect(text).toContain(`Destination${step.address}`)
   expect(text).toContain(`Native value`)
+})
+
+it("shows the action's summary rows above every decoded call of its one review", async () => {
+  const calls = steps.slice(0, 2).map(([, , step]) => ({ chainId: step.chainId, to: step.address, data: encodeFunctionData(step as never), value: ('value' in step ? step.value : undefined) ?? 0n, from: A(40), abi: step.abi as Abi, functionName: step.functionName, args: step.args }))
+  const request: TransactionReviewRequest = { title: 'Airdrop across chains', rows: [{ label: 'Send', value: '1 SRC on Ethereum', strong: true }, { label: 'Reward address', value: RECEIVER, mono: true }], calls }
+  act(() => root.render(<TransactionReviewProvider>{null}</TransactionReviewProvider>))
+  await act(async () => { requireTransactionReview(request).catch(() => {}) })
+  await act(async () => { await vi.dynamicImportSettled() })
+  const text = document.querySelector('dialog')?.textContent ?? ''
+  expect(text).toContain('Airdrop across chains')
+  expect(text).toContain('Send1 SRC on Ethereum')
+  expect(text).toContain(`Reward address${RECEIVER}`)
+  expect(text.indexOf('Send1 SRC on Ethereum')).toBeLessThan(text.indexOf('Contract functionprepare('))
+  expect(text).toContain('Contract functiontoRemote(address)')
 })

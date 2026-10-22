@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { zeroAddress, type AbiFunction, type AbiParameter } from 'viem'
 import {
   describeJBHookMetadata,
@@ -603,6 +603,16 @@ function ReviewModal({
               {reviewDescription(request)}
             </p>
           </div>
+          {request.rows?.length ? (
+            <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 rounded-xl border border-smoke-200 bg-white px-4 py-3 text-sm">
+              {request.rows.map((row, index) => (
+                <Fragment key={index}>
+                  <dt className="text-smoke-500">{row.label}</dt>
+                  <dd className={`min-w-0 text-right text-ink ${row.mono ? 'break-all font-mono text-xs' : 'break-words'} ${row.strong ? 'font-medium' : ''}`}>{row.value}</dd>
+                </Fragment>
+              ))}
+            </dl>
+          ) : null}
           {request.authorization ? (
             <div className="mt-3 rounded-xl border border-bluebs-100 bg-bluebs-25 px-4 py-3 text-xs leading-relaxed text-bluebs-700">
               {signsMessage
