@@ -488,7 +488,9 @@ describe('Sticky launch browser boundaries', () => {
     expect(fake.write.mock.calls[0][0].gas).toBe(0n)
   })
 
-  it.each(['self-paid', 'sponsored'] as const)('one %s launch press opens one decoded review: listing and creation follow it without another', async capability => {
+  // A sponsored review shows the listing message alone: a message signature cannot carry the creation's decoded calls
+  // yet (SDK request).
+  it.each(['self-paid', 'sponsored'] as const)('one %s launch press opens one review: listing and creation follow it without another', async capability => {
     const controller = createBrowserStickyLaunchController()
     fake.publish.mockImplementation(async (_plan, sign) => { await sign('Exact SDK listing message'); return { id: 'listing' } })
     fake.intent.mockResolvedValue({ id: 'listing', publisher: OWNER, envelope: buildStickyEnvelope(plan()), deployments: [], deploys: [] })

@@ -5,9 +5,12 @@ import { useQueryClient } from '@tanstack/react-query'
 import type { JBChainId } from '@bananapus/nana-sdk-core'
 import { encodeFunctionData, keccak256, stringToHex, type Abi, type Address, type Hex, type TransactionReceipt } from 'viem'
 import {
+  discardReviewedSequence,
+  findReviewedSequence,
   HELD_CONFIRMING_LINE,
   openStepHold,
   REVIEWED_ACCOUNT_CHANGED_LINE,
+  waitForTrackedReceipt,
   WRITE_HOLD_REVERTED_LINE,
   WRITE_HOLD_UNCHECKED_LINE,
   type ReviewContextRow,
@@ -196,9 +199,10 @@ export function useReviewedAction() {
         ...(viaSafe && !action.confirmLabel ? { confirmLabel: 'Agree & continue to Safe' } : {}),
         ...(reverify ? {
           reverify: async (call: ReviewedCall, index: number) => {
-            // Core simulates this step on the block the step before it confirmed in: the check reads there too.
+            // Core simulates this step on the block the step before it confirmed in: the check reads there too. Its
+            // receipt is core's own wait's, which follows a sped-up or replaced send to the transaction that was mined.
             const before = hashes[index - 1]
-            await reverify(call, index, before ? (await publicClient(call.chainId as JBChainId).getTransactionReceipt({ hash: before })).blockNumber : undefined)
+            await reverify(call, index, before ? (await waitForTrackedReceipt(publicClient(call.chainId as JBChainId), before)).blockNumber : undefined)
           },
         } : {}),
         // Core's last check before each wallet prompt, after every await.
@@ -215,6 +219,8 @@ export function useReviewedAction() {
       })
       if (done?.status === 'proposed' && last.current?.action === action) last.current.proposed = action.calls[done.step] ?? null
       setResult(done)
+      // ponytail: a resumed run whose last step settled while away reports no progress (SDK request): done is every step.
+      if (done?.status === 'done') setLanded(action.calls.length)
       if (!done && onCancelled) setEnded({ onCancelled })
       return done
     } finally {
@@ -244,8 +250,13 @@ export function useReviewedAction() {
   const onReleased = last.current?.action.onReleased
   const runExit = () => {
     setExitError(null)
-    void runner.exitAction?.run().then(released => {
+    const ran = last.current?.action
+    void runner.exitAction?.run().then(async released => {
       if (!released) return
+      // ponytail: core keeps the sequence's released step as uncertain and refuses its calls until it is discarded (SDK
+      // request); the person's exit is that discard, and the flow plans from the chain again.
+      const saved = ran && address && ran.calls.length > 1 ? findReviewedSequence(sequenceScope(ran.calls), address) : null
+      if (saved) await discardReviewedSequence(saved).catch(() => undefined)
       // The hold's line was the run's error: once released, the action is offered again with nothing failed.
       runner.reset()
       void Promise.resolve(onReleased?.()).catch(() => undefined)

@@ -236,6 +236,28 @@ describe('useReviewedAction', () => {
     expect(onUnsent).toHaveBeenCalledExactlyOnceWith(expect.anything(), 1)
   })
 
+  it('sends the same steps again once the person released a step the wallet left uncertain', async () => {
+    confirmEveryReview()
+    const { stick, unstick } = baseline
+    const calls = [stick, unstick].map((sent, at) => ({ chainId: sent.chainId, to: sent.to as Address, data: sent.data as Hex, value: BigInt(sent.value), ...(at ? { dependsOnPrior: true } : {}) }))
+    walletClient.sendTransaction.mockRejectedValueOnce(new Error('Connection lost after sending'))
+    const { ref, unmount } = await mount()
+    await act(async () => {
+      expect(await ref.current!.run({ account: ALICE, calls })).toBeNull()
+    })
+    expect(ref.current!.held?.exit).toBeTypeOf('function')
+    // The person checked their wallet: nothing went out.
+    await act(async () => ref.current!.held!.exit!())
+    await vi.waitFor(() => expect(ref.current!.held).toBeNull())
+    let result: Awaited<ReturnType<Action['run']>> = null
+    await act(async () => {
+      result = await ref.current!.run({ account: ALICE, calls })
+    })
+    expect(result!.status).toBe('done')
+    expect(walletSends).toHaveLength(2)
+    await unmount()
+  })
+
   it('calls onCancelled, and sends nothing, when the review is closed', async () => {
     unregister.push(registerReviewHandler(async () => null))
     const onCancelled = vi.fn()
