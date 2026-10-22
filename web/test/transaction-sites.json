@@ -166,22 +166,5 @@
         "Submit a reviewed direct write"
       ]
     }
-  },
-  "rawWalletCalls": {
-    "writeContract": {
-      "src/lib/sticky-launch-adapter.ts": 1
-    },
-    "sendTransaction": {
-      "src/lib/sticky-launch-adapter.ts": 1
-    },
-    "signMessage": {
-      "src/lib/sticky-launch-adapter.ts": 1
-    },
-    "useWriteContract": {
-      "src/hooks/useSafeTx.ts": 1
-    },
-    "writeContractAsync": {
-      "src/hooks/useSafeTx.ts": 1
-    }
   }
 }

@@ -47,24 +47,7 @@ const actual = {
   useSafeTx: {},
   authorityCalls: {},
   reviewedDirectWrites: {},
-  rawWalletCalls: {},
 }
-const rawNames = new Set([
-  ...Object.keys(manifest.rawWalletCalls),
-  'useSendTransaction',
-  'sendTransactionAsync',
-  'useSignTypedData',
-  'signTypedDataAsync',
-  'useSignMessage',
-  'signMessage',
-  'signMessageAsync',
-  'signTransaction',
-  'signTransactionAsync',
-  'sendRawTransaction',
-  'sendCalls',
-  'writeContracts',
-])
-const forbiddenRpcMethods = []
 
 for (const path of sourceFiles(sourceRoot)) {
   const file = repositoryPath(path)
@@ -80,7 +63,6 @@ for (const path of sourceFiles(sourceRoot)) {
     'useSafeTx',
     'runAuthorityCalls',
     'submitReviewedContractWrite',
-    ...rawNames,
   ])
   const aliases = new Map()
 
@@ -115,23 +97,6 @@ for (const path of sourceFiles(sourceRoot)) {
       actual.useSafeTx[file] ??= { hooks: 0, sends: 0 }
       actual.useSafeTx[file].hooks += 1
     }
-    if (
-      ts.isVariableDeclaration(node) &&
-      ts.isObjectBindingPattern(node.name) &&
-      node.initializer &&
-      ts.isCallExpression(node.initializer) &&
-      ['useWriteContract', 'useSendTransaction'].includes(
-        canonicalCalledName(node.initializer.expression) ?? '',
-      )
-    ) {
-      for (const element of node.name.elements) {
-        if (!ts.isIdentifier(element.name)) continue
-        const exposed = element.propertyName
-          ? element.propertyName.getText(source)
-          : element.name.text
-        if (rawNames.has(exposed)) aliases.set(element.name.text, exposed)
-      }
-    }
     ts.forEachChild(node, collectBindings)
   }
   collectBindings(source)
@@ -154,19 +119,8 @@ for (const path of sourceFiles(sourceRoot)) {
       if (name === 'submitReviewedContractWrite') {
         increment(actual.reviewedDirectWrites, file)
       }
-      if (name && rawNames.has(name)) {
-        actual.rawWalletCalls[name] ??= {}
-        increment(actual.rawWalletCalls[name], file)
-      }
     }
 
-    if (
-      ts.isStringLiteral(node) &&
-      ['eth_sendTransaction', 'eth_sendRawTransaction'].includes(node.text)
-    ) {
-      const position = source.getLineAndCharacterOfPosition(node.getStart(source))
-      forbiddenRpcMethods.push(`${file}:${position.line + 1} (${node.text})`)
-    }
     ts.forEachChild(node, visit)
   }
   visit(source)
@@ -224,13 +178,6 @@ checkMap(
   ),
   actual.reviewedDirectWrites,
 )
-checkMap('raw wallet calls', manifest.rawWalletCalls, actual.rawWalletCalls)
-
-if (forbiddenRpcMethods.length) {
-  failures.push(
-    `Raw wallet JSON-RPC methods bypass the reviewed boundary:\n${forbiddenRpcMethods.join('\n')}`,
-  )
-}
 
 const coverageRows = new Map()
 const testFiles = new Set(
@@ -359,5 +306,5 @@ const directCount = Object.values(actual.reviewedDirectWrites).reduce(
   0,
 )
 console.log(
-  `Transaction inventory verified: ${safeSendCount} useSafeTx sends (${mappedSendCount} individually action-mapped), ${authorityCount} authority entry points, ${directCount} reviewed direct-write entry points, and no unreviewed raw wallet API sites.`,
+  `Transaction inventory verified: ${safeSendCount} useSafeTx sends (${mappedSendCount} individually action-mapped), ${authorityCount} authority entry points, ${directCount} reviewed direct-write entry points. Raw wallet sites are checked by npm run wallet:check.`,
 )

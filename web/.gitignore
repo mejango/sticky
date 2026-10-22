@@ -14,3 +14,7 @@ test-results/
 
 next-env.d.ts
 *.tsbuildinfo
+
+# Temporary: the unpublished SDK 4.0.0 tarball until 4.0.0 is on npm.
+.local-sdk/*
+!.local-sdk/bananapus-nana-sdk-core-4.0.0-local.3.tgz

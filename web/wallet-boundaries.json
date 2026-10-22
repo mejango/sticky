@@ -1,0 +1,110 @@
+{
+  "format": "juice-sdk-wallet-boundaries-1",
+  "sites": [
+    {
+      "file": "src/components/TransactionReviewProvider.tsx",
+      "line": 136,
+      "api": "registerTransactionReviewHandler",
+      "boundary": "Old-review handler: the provider queues the SDK's boolean review requests (useSafeTx, bridge, collector and launch reviews) into the one review dialog. Removed when those paths move to core (K4).",
+      "test": "test/components/transaction-review-decoded.test.tsx"
+    },
+    {
+      "file": "src/hooks/useSafeTx.ts",
+      "line": 172,
+      "api": "useWriteContract",
+      "boundary": "Creates the wagmi write useSafeTx sends with; the write below runs only inside submitReviewedContractWrite after the review and simulation. Deleted with useSafeTx in K3.",
+      "test": "test/transactions/use-safe-tx.test.ts"
+    },
+    {
+      "file": "src/hooks/useSafeTx.ts",
+      "line": 388,
+      "api": "writeContractAsync",
+      "boundary": "useSafeTx's one wallet write: submitReviewedContractWrite's write callback, sent from the simulated request after the review, the reviewed-wallet check and the write hold. Moves to sendReviewed in K3.",
+      "test": "test/transactions/use-safe-tx.test.ts"
+    },
+    {
+      "file": "src/lib/hook-logs.ts",
+      "line": 265,
+      "api": "request",
+      "boundary": "eth_getLogs on a Center public client: a log scan, never a wallet RPC.",
+      "test": "test/lib/hook-logs-center.test.ts"
+    },
+    {
+      "file": "src/lib/jbcenter-public-client.ts",
+      "line": 14,
+      "api": "request",
+      "boundary": "The page reader's transport adds the page's abort signal to each public RPC read; never a wallet RPC.",
+      "test": "test/page-signals.test.ts"
+    },
+    {
+      "file": "src/lib/jbcenter-public-client.ts",
+      "line": 53,
+      "api": "request",
+      "boundary": "eth_blockNumber on the page reader: a public read of the head, never a wallet RPC.",
+      "test": "test/page-signals.test.ts"
+    },
+    {
+      "file": "src/lib/project-handles.ts",
+      "line": 301,
+      "api": "request",
+      "boundary": "eth_call on a public client with a return-size cap: a read, never a wallet RPC.",
+      "test": "test/lib/project-handles.test.ts"
+    },
+    {
+      "file": "src/lib/sticky-bridge-journal.ts",
+      "line": 145,
+      "api": "request",
+      "boundary": "navigator.locks.request on the sticky-reward-bridge lock: cross-tab bridge coordination, never a wallet RPC.",
+      "test": "test/lib/sticky-bridge-journal.test.ts"
+    },
+    {
+      "file": "src/lib/sticky-bridge-journal.ts",
+      "line": 152,
+      "api": "request",
+      "boundary": "navigator.locks.request on the bridge record storage lock: cross-tab storage coordination, never a wallet RPC.",
+      "test": "test/lib/sticky-bridge-journal.test.ts"
+    },
+    {
+      "file": "src/lib/sticky-bridge.ts",
+      "line": 213,
+      "api": "request",
+      "boundary": "eth_getLogs on the source chain's public client to find queued bridge leaves: a read, never a wallet RPC.",
+      "test": "test/lib/sticky-bridge.test.ts"
+    },
+    {
+      "file": "src/lib/sticky-launch-adapter.ts",
+      "line": 336,
+      "api": "writeContract",
+      "boundary": "The launch's deployStickyFor: submitReviewedContractWrite's write callback, sent from the simulated request after the launch's one review and the reviewed-wallet check. Moves to sendReviewed in K3.",
+      "test": "test/lib/sticky-launch-adapter.test.ts"
+    },
+    {
+      "file": "src/lib/sticky-launch-adapter.ts",
+      "line": 393,
+      "api": "sendTransaction",
+      "boundary": "The legacy Relayr execution payment: submitReviewedContractWrite's write callback, sent after its review, the reviewed-wallet check and the payment snapshot check. Moves to runRelayrReviewed in K3.",
+      "test": "test/lib/sticky-launch-adapter.test.ts"
+    },
+    {
+      "file": "src/lib/sticky-launch-adapter.ts",
+      "line": 497,
+      "api": "signMessage",
+      "boundary": "The Juicebox Center listing message, signed by the wallet that prepared the launch after the reviewed-wallet check. Moves to signReviewed in K3.",
+      "test": "test/lib/sticky-launch-adapter.test.ts"
+    },
+    {
+      "file": "src/lib/sticky-launch-adapter.ts",
+      "line": 532,
+      "api": "request",
+      "boundary": "navigator.locks.request on the sticky-launch-write lock: cross-tab launch coordination, never a wallet RPC.",
+      "test": "test/lib/sticky-launch-adapter.test.ts"
+    },
+    {
+      "file": "src/providers/lazy-center-connector.ts",
+      "line": 15,
+      "api": "request",
+      "boundary": "The Signa connector's read callback forwards public reads to the Center RPC transport for Base; Signa's own wallet signs and refuses writes here.",
+      "test": "test/providers/lazy-center-connector.test.ts"
+    }
+  ]
+}
