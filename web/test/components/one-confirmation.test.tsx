@@ -21,7 +21,7 @@ import {
   COLLECTOR_INFO, COLLECTOR_OWNER as OWNER, COLLECTOR_RECEIVER as RECEIVER, COLLECTOR_ROUTE as ROUTE, COLLECTOR_SOURCE as SOURCE,
 } from '../collector-fixtures'
 
-type Sent = { to: Address; data: Hex; value?: bigint }
+type Sent = { to: Address; data: Hex; value?: bigint; chainId?: number; chain?: { id: number }; account?: Address | { address: Address }; from?: Address }
 const mocks = vi.hoisted(() => ({
   review: vi.fn(),
   sendTransaction: vi.fn(),
@@ -151,10 +151,15 @@ async function type(label: string, value: string) {
   })
 }
 const reviewed = () => mocks.review.mock.calls.map(([model]) => (model as ReviewModel).calls.map(call => call.functionName))
-const exact = ({ to, data, value }: Sent) => ({ to: to.toLowerCase(), data, value: value ?? 0n })
+/** A send as the wallet was asked for it: its chain and sender too. */
+const exact = ({ to, data, value }: Sent, chainId: number | undefined, from: Address | undefined) =>
+  ({ chainId, from: from?.toLowerCase(), to: to.toLowerCase(), data, value: value ?? 0n })
+const senderOf = (tx: Sent) => (typeof tx.account === 'object' ? tx.account.address : tx.account) ?? tx.from
 /** What the wallet was asked to send, in order, and what the one review showed. */
-const sent = () => mocks.sendTransaction.mock.calls.map(([tx]) => exact(tx as Sent))
-const shown = () => (mocks.review.mock.calls[0][0] as ReviewModel).calls.map(call => exact(call as Sent))
+const sent = () => mocks.sendTransaction.mock.calls.map(([tx]) => exact(tx as Sent, (tx as Sent).chain?.id ?? (tx as Sent).chainId, senderOf(tx as Sent)))
+const shown = () => (mocks.review.mock.calls[0][0] as ReviewModel).calls.map(call => exact(call as Sent, call.chainId, (call as Sent).from ?? OWNER))
+/** Lets every timer and promise the run left run out, so a late send would show. */
+const settle = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 300)) })
 
 it('wallet-action:queue-cross-chain-rewards one press and one review send the approval and the queue step', async () => {
   presses = 0
@@ -165,9 +170,12 @@ it('wallet-action:queue-cross-chain-rewards one press and one review send the ap
   await press('Review transfer')
   await vi.waitFor(() => expect(mocks.sendTransaction).toHaveBeenCalledTimes(2), { timeout: 3_000 })
   // The form's two presses (find, then the transfer) and core's one review: no second dialog between the steps.
+  await settle()
+  expect(mocks.sendTransaction).toHaveBeenCalledTimes(2)
   expect(presses).toBe(2)
   expect(reviewed()).toEqual([['approve', 'prepare']])
   expect(sent().map(call => call.to)).toEqual([ROUTE.sourceToken.toLowerCase(), ROUTE.sourceSucker.toLowerCase()])
+  expect(sent().map(({ chainId, from }) => [chainId, from])).toEqual([[1, OWNER.toLowerCase()], [1, OWNER.toLowerCase()]])
   expect(sent()).toEqual(shown())
 })
 
@@ -177,6 +185,8 @@ it('wallet-action:deliver-queued-rewards one press and one review send the deliv
   await type('Amount to deliver', '1')
   await press('Review delivery')
   await vi.waitFor(() => expect(mocks.sendTransaction).toHaveBeenCalledOnce(), { timeout: 3_000 })
+  await settle()
+  expect(mocks.sendTransaction).toHaveBeenCalledOnce()
   expect(presses).toBe(1)
   expect(reviewed()).toEqual([['send']])
   expect(sent()).toEqual([expect.objectContaining({ to: SOURCE.allocation.deployment.address.toLowerCase(), value: 77n })])
