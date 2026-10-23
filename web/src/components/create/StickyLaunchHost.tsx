@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import dynamic from 'next/dynamic'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { isHash, type Hex } from 'viem'
-import { HELD_SUCCESS_LINE } from '@bananapus/nana-sdk-core/review'
+import { errorLine, HELD_SUCCESS_LINE } from '@bananapus/nana-sdk-core/review'
 import { ModalShell } from '@/components/ui/ModalShell'
 import { ProjectLink } from '@/components/ProjectLink'
 import { displayChainName, explorerTxUrl } from '@/lib/chainDisplay'
@@ -17,7 +17,7 @@ const CreateForm = dynamic(() => import('./StickyCreateForm').then(module => mod
 // The SDK's saved-attempt recovery loads with the launch adapter, never on a page without a saved launch.
 const LaunchRecovery = dynamic(() => import('./LaunchRecovery').then(module => module.LaunchRecovery))
 type Controller = ReturnType<typeof import('@/lib/sticky-launch-adapter').createBrowserStickyLaunchController>
-const message = (error: unknown) => error instanceof Error ? error.message : 'Could not finish this step. Your saved launch is kept for recovery.'
+const message = (error: unknown) => error instanceof Error ? errorLine(error) : 'Could not finish this step. Your saved launch is kept for recovery.'
 
 /** The saved launch lives above routes. Closing a dialog never discards its publication or wallet evidence. */
 export function StickyLaunchHost() {

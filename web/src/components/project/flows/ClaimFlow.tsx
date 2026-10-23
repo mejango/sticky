@@ -26,7 +26,7 @@ import { refreshAfterCollect, refreshAfterRewardStick } from '@/lib/sticky-refre
 import { groupLabel, hasRewardsToVest, need, readAt, type RewardCard } from '@/lib/sticky-rewards'
 import { chainName } from '@/lib/urn'
 import { useViewAs } from '@/lib/viewAs'
-import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
+import { errorLine, ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 const PREPARE_UNREADABLE = 'Could not prepare a claim of rewards; the pot says what could not be read.'
 const CLAIM_UNREADABLE = 'Could not check the claim before sending a step of it; the dialog says so.'
@@ -229,7 +229,7 @@ export function ClaimFlow({
       if (signal.aborted) return
       const told = refusalOf(reason)
       if (!(told instanceof Refusal)) console.warn(PREPARE_UNREADABLE, { chainId, projectId }, told)
-      setFailure({ message: asSentence(told instanceof Error ? told.message : String(told)), account: account.toLowerCase() })
+      setFailure({ message: asSentence(errorLine(told)), account: account.toLowerCase() })
     } finally {
       if (!signal.aborted) setPreparing(false)
     }
@@ -244,7 +244,7 @@ export function ClaimFlow({
       ;({ collectable: now } = await stakedRewardGroups(chainId, info, reviewed.account, reviewed.groupIds))
     } catch (reason) {
       console.warn(CLAIM_UNREADABLE, { chainId, projectId }, reason)
-      throw new ReviewLineError(asSentence(reason instanceof Error ? reason.message : String(reason)), { cause: reason })
+      throw new ReviewLineError(asSentence(errorLine(reason)), { cause: reason })
     }
     if (now !== reviewed.collectable) throw new ReviewLineError('Your claimable rewards changed. Review again.')
   }

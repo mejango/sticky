@@ -22,7 +22,7 @@ import { refreshAfterTransfer } from '@/lib/sticky-refresh'
 import { need, readAt } from '@/lib/sticky-rewards'
 import type { TransactionReviewRow } from '@/lib/transaction-review'
 import { chainName } from '@/lib/urn'
-import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
+import { errorLine, ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 const LOCKED = 'This Sticky token is locked and cannot be transferred.'
 const MORE_THAN_HELD = 'That is more than you hold.'
@@ -127,7 +127,7 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
       setReview({ account, plan: transferTx(info, to, count), whole: count === now, preparing: false, error: null })
       presses.arm()
     } catch (reason) {
-      if (attempt.current === mine) refuse(reason instanceof Error ? reason.message : BALANCE_UNREADABLE)
+      if (attempt.current === mine) refuse(reason instanceof Error ? errorLine(reason) : BALANCE_UNREADABLE)
     }
   }
 

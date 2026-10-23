@@ -1,6 +1,6 @@
 import { isAddress, isHash, type Hex } from 'viem'
 import type { RelayrPayment, RelayrQuote } from '@bananapus/nana-sdk-core/review/relayr'
-import { TransactionReviewCancelledError, writeIntentKey, type SavedAttempt } from '@bananapus/nana-sdk-core/review'
+import { errorLine, ReviewLineError, TransactionReviewCancelledError, writeIntentKey, type SavedAttempt } from '@bananapus/nana-sdk-core/review'
 import { requireSingleHomeChain, validateLaunchCall, type LaunchPlan, type LaunchTarget } from '@/lib/sticky-launch-plan'
 
 export const STICKY_LAUNCH_KEY = 'sticky-launch-pending-v1'
@@ -54,7 +54,7 @@ export function validateStickyLaunch(value: unknown): StickyLaunchSession {
       !['direct', 'relayr', 'center'].includes(session.mode) || typeof session.published !== 'boolean' ||
       !session.candidates || !session.results || !session.listing || !session.listing.recorded ||
       !['pending', 'published', 'unlisted', 'unavailable'].includes(session.listing.state)) {
-    throw new Error('The saved launch is unreadable. Keep its recovery data; do not launch it again.')
+    throw new ReviewLineError('The saved launch is unreadable. Keep its recovery data; do not launch it again.')
   }
   const ids = new Set<number>()
   for (const target of session.plan.targets) {
@@ -65,7 +65,7 @@ export function validateStickyLaunch(value: unknown): StickyLaunchSession {
         !/^0x00d5ce37[0-9a-f]+$/i.test(target.call.data) || !/^\d+$/.test(target.call.value) ||
         !Array.isArray(session.candidates[target.chainId]) ||
         session.candidates[target.chainId].some(hash => !isHash(hash))) {
-      throw new Error('The saved launch calls are invalid. Keep its recovery data.')
+      throw new ReviewLineError('The saved launch calls are invalid. Keep its recovery data.')
     }
     validateLaunchCall(session.plan, target)
     ids.add(target.chainId)
@@ -75,11 +75,11 @@ export function validateStickyLaunch(value: unknown): StickyLaunchSession {
       (session.listing.requested !== undefined && typeof session.listing.requested !== 'boolean') ||
       (session.listing.selfPaid !== undefined && typeof session.listing.selfPaid !== 'boolean') ||
       (session.listing.requested && session.listing.selfPaid)) {
-    throw new Error('The saved launch publication is invalid. Keep its recovery data.')
+    throw new ReviewLineError('The saved launch publication is invalid. Keep its recovery data.')
   }
   for (const history of [session.directAttempts, session.paymentAttempts]) {
     if (history !== undefined && (!Array.isArray(history) || history.some(attempt => !attempt?.started || !attempt.hash))) {
-      throw new Error('The saved launch attempts are invalid. Keep their recovery data.')
+      throw new ReviewLineError('The saved launch attempts are invalid. Keep their recovery data.')
     }
   }
   for (const submitted of [session.direct, session.payment, ...(session.directAttempts ?? []), ...(session.paymentAttempts ?? [])]) {
@@ -88,7 +88,7 @@ export function validateStickyLaunch(value: unknown): StickyLaunchSession {
         (submitted.hash !== undefined && !isHash(submitted.hash)) ||
         (submitted.proposalHash !== undefined && !isHash(submitted.proposalHash)) ||
         (!submitted.started && (!!submitted.hash || !!submitted.proposalHash)))) {
-      throw new Error('The saved launch submission is invalid. Keep its recovery data.')
+      throw new ReviewLineError('The saved launch submission is invalid. Keep its recovery data.')
     }
   }
   return session
@@ -105,12 +105,12 @@ export function createStickyLaunchStore(storage: Store) {
       validateStickyLaunch(session)
       const raw = JSON.stringify(session)
       storage.setItem(STICKY_LAUNCH_KEY, raw)
-      if (storage.getItem(STICKY_LAUNCH_KEY) !== raw) throw new Error('Launch recovery could not be saved. Nothing further was sent.')
+      if (storage.getItem(STICKY_LAUNCH_KEY) !== raw) throw new ReviewLineError('Launch recovery could not be saved. Nothing further was sent.')
       return JSON.parse(raw) as StickyLaunchSession
     },
     remove() {
       storage.removeItem(STICKY_LAUNCH_KEY)
-      if (storage.getItem(STICKY_LAUNCH_KEY) !== null) throw new Error('The saved launch could not be cleared.')
+      if (storage.getItem(STICKY_LAUNCH_KEY) !== null) throw new ReviewLineError('The saved launch could not be cleared.')
     },
   }
 }
@@ -234,11 +234,11 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
   }
   const load = () => {
     const session = ports.store.load()
-    if (!session) throw new Error('No launch is saved.')
+    if (!session) throw new ReviewLineError('No launch is saved.')
     return session
   }
   const exclusively = async <T>(run: () => Promise<T>): Promise<T> => {
-    if (busy) throw new Error('This launch is already being processed.')
+    if (busy) throw new ReviewLineError('This launch is already being processed.')
     busy = true
     try { return await run() } finally { busy = false }
   }
@@ -257,7 +257,7 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     } catch (error) {
       // Closing its review is no failure of the listing: the launch stops there, as it was.
       if (error instanceof TransactionReviewCancelledError) throw error
-      listed.failed(error instanceof Error ? error.message : 'Listing unavailable.')
+      listed.failed(error instanceof Error ? errorLine(error) : 'Listing unavailable.')
     }
     return load()
   }
@@ -273,7 +273,7 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
         }
         current = save({ ...current, candidates, error: undefined })
       } catch (error) {
-        current = save({ ...current, error: error instanceof Error ? error.message : 'Could not check the saved launch.' })
+        current = save({ ...current, error: error instanceof Error ? errorLine(error) : 'Could not check the saved launch.' })
       }
     }
     // Previously confirmed receipts must remain canonical; one unavailable chain cannot renew old proof.
@@ -306,7 +306,7 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
             current = save({ ...current, listing: { ...current.listing, recorded: { ...current.listing.recorded, [target.chainId]: result.hash } } })
           }
         } catch (error) {
-          current = save({ ...current, listing: { ...current.listing, error: error instanceof Error ? error.message : 'Listing will need another check.' } })
+          current = save({ ...current, listing: { ...current.listing, error: error instanceof Error ? errorLine(error) : 'Listing will need another check.' } })
         }
       }
     }
@@ -331,7 +331,7 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
           ports.guard(session.plan.owner)
           requireSingleHomeChain(session.plan.targets)
         }
-        if (session[kind]?.started) throw new Error('This launch already has a wallet submission. Recover it before continuing.')
+        if (session[kind]?.started) throw new ReviewLineError('This launch already has a wallet submission. Recover it before continuing.')
         if (kind === 'direct') save({ ...session, direct: { started: true } })
         else if (session.payment) save({ ...session, payment: { ...session.payment, started: true } })
       },
@@ -355,7 +355,7 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     prepare(plan: LaunchPlan, capability: 'sponsored' | 'self-paid' | 'unavailable') {
       requireSingleHomeChain(plan.targets)
       ports.guard(plan.owner)
-      if (ports.store.load()) throw new Error('Finish or resume the saved launch first.')
+      if (ports.store.load()) throw new ReviewLineError('Finish or resume the saved launch first.')
       return save({ version: 1, plan, mode: capability === 'sponsored' ? 'center' : 'direct',
         published: false, candidates: Object.fromEntries(plan.targets.map(target => [target.chainId, []])), results: {},
         listing: { state: capability === 'unavailable' ? 'unavailable' : 'pending', recorded: {} } })
@@ -376,11 +376,11 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
           await ports.sponsor(session, () => {
             ports.guard(session.plan.owner)
             requireSingleHomeChain(session.plan.targets)
-            if (session.listing.requested) throw new Error('This sponsor request was already published.')
+            if (session.listing.requested) throw new ReviewLineError('This sponsor request was already published.')
             // Save immediately before request: a timeout may still queue the deployment.
             session = save({ ...session, listing: { ...session.listing, requested: true, requestedAt: Date.now() } })
           })
-          if (!session.listing.requested) throw new Error('The sponsor request was not durably recorded.')
+          if (!session.listing.requested) throw new ReviewLineError('The sponsor request was not durably recorded.')
           return refreshSession(load())
         }
       }
@@ -392,16 +392,16 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
         const quote = await ports.quote(session.plan, uuid => { session = save({ ...session, bundleUuid: uuid }) }, () => {
           ports.guard(session.plan.owner)
           requireSingleHomeChain(session.plan.targets)
-          if (session.published) throw new Error('This launch was already published.')
+          if (session.published) throw new ReviewLineError('This launch was already published.')
           session = save({ ...session, published: true })
         })
-        if (!session.published) throw new Error('The launch publication was not durably recorded.')
+        if (!session.published) throw new ReviewLineError('The launch publication was not durably recorded.')
         session = save({ ...session, quote, bundleUuid: quote.bundle_uuid })
       }
-      if (!session.quote) throw new Error('This launch may already be published. Keep it saved and recover its deployment hashes; publishing again could create duplicates.')
+      if (!session.quote) throw new ReviewLineError('This launch may already be published. Keep it saved and recover its deployment hashes; publishing again could create duplicates.')
       const option = await ports.choosePayment(session)
       if (!session.quote.payment_info.some(quoted => JSON.stringify(quoted) === JSON.stringify(option))) {
-        throw new Error('Choose one of the saved quote’s actual payment options.')
+        throw new ReviewLineError('Choose one of the saved quote’s actual payment options.')
       }
       ports.guard(session.plan.owner)
       session = save({ ...session, payment: { option, started: false } })
@@ -418,7 +418,7 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
       const kind = session.payment?.started ? 'payment' : 'direct'
       const submitted = session[kind]
       if (!submitted?.started || !submitted.hash) {
-        throw new Error('This submission has no recorded transaction hash. Check your wallet, then use the exit shown for it; another receipt cannot release an unknown wallet submission.')
+        throw new ReviewLineError('This submission has no recorded transaction hash. Check your wallet, then use the exit shown for it; another receipt cannot release an unknown wallet submission.')
       }
       await ports.requireRetry(session, kind, 'retry')
       ports.guard(session.plan.owner)
@@ -453,7 +453,7 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
       requireSingleHomeChain(session.plan.targets)
       ports.guard(session.plan.owner)
       if (session.mode !== 'center' || session.listing.requested) {
-        throw new Error('This launch may already be running. Keep its saved recovery and check again.')
+        throw new ReviewLineError('This launch may already be running. Keep its saved recovery and check again.')
       }
       return save({ ...session, mode: 'direct',
         listing: { ...session.listing, selfPaid: true } })
@@ -467,14 +467,14 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     }),
     addHash: (chainId: number, hash: Hex) => exclusively(async () => {
       const session = load()
-      if (!isHash(hash) || !session.candidates[chainId]) throw new Error('Enter a transaction hash for one of this launch’s chains.')
+      if (!isHash(hash) || !session.candidates[chainId]) throw new ReviewLineError('Enter a transaction hash for one of this launch’s chains.')
       return refreshSession(save({ ...session, candidates: { ...session.candidates, [chainId]: [...new Set([...session.candidates[chainId], hash])] } }))
     }),
     clear: () => exclusively(async () => {
       const session = await refreshSession(load())
-      if (!launchCanClear(session)) throw new Error('This launch has published or submitted calls. Recover it before starting another.')
+      if (!launchCanClear(session)) throw new ReviewLineError('This launch has published or submitted calls. Recover it before starting another.')
       // The SDK decides whether its saved attempt may go: never while held, or with a success not yet followed.
-      if (!(await ports.canDiscard(session))) throw new Error('This launch is still being confirmed. Check again before finishing.')
+      if (!(await ports.canDiscard(session))) throw new ReviewLineError('This launch is still being confirmed. Check again before finishing.')
       // A later success does not let a stale failed-attempt proof be forgotten.
       const history = { ...session, direct: undefined, payment: undefined }
       if (session.directAttempts?.length) await ports.requireRetry(history, 'direct', 'retire')

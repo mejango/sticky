@@ -2,7 +2,7 @@
 
 import { stickyDeployerAbi, type JBChainId } from '@bananapus/nana-sdk-core'
 import { JBCenterRequestError, type JBCenterIntent } from '@bananapus/nana-sdk-core/jbcenter'
-import { intent, isDefiniteWalletRejection, launchIntent, payRelayrReviewed, sendReviewed, signReviewed, waitForTrackedReceipt, type ReviewedCall, type ReviewedResult, type ReviewedSignature, type WriteHoldClient } from '@bananapus/nana-sdk-core/review'
+import { errorLine, intent, isDefiniteWalletRejection, ReviewLineError, launchIntent, payRelayrReviewed, sendReviewed, signReviewed, waitForTrackedReceipt, type ReviewedCall, type ReviewedResult, type ReviewedSignature, type WriteHoldClient } from '@bananapus/nana-sdk-core/review'
 import { safeExecutionRunsCalls } from '@bananapus/nana-sdk-core/safe-service'
 import {
   RELAYR_API,
@@ -51,28 +51,28 @@ const chainsOf = (plan: LaunchPlan) => plan.targets.map(target => target.chainId
 function guard(owner: Address): void {
   assertNoViewAs()
   const connected = getAccount(wagmiConfig)
-  if (connected.connector?.id === 'juicebox-center') throw new Error('Connect an external wallet to create a Sticky token.')
-  if (!connected.address || !same(connected.address, owner)) throw new Error('Connect the wallet that prepared this launch.')
+  if (connected.connector?.id === 'juicebox-center') throw new ReviewLineError('Connect an external wallet to create a Sticky token.')
+  if (!connected.address || !same(connected.address, owner)) throw new ReviewLineError('Connect the wallet that prepared this launch.')
 }
 
 /** A saved quote must still describe the immutable calls reviewed by this launch. */
 function boundQuote(session: StickyLaunchSession) {
   const { quote, plan } = session
   if (!quote || quote.bundle_uuid !== session.bundleUuid || !RELAYR_UUID_RE.test(quote.bundle_uuid)) {
-    throw new Error('The saved launch has no authenticated payment quote. Keep it saved for recovery.')
+    throw new ReviewLineError('The saved launch has no authenticated payment quote. Keep it saved for recovery.')
   }
   plan.targets.forEach(target => validateLaunchCall(plan, target))
   const expected = relayrBundleRequest(plan.targets.map(target => target.call)).transactions
   const bindings = quote.expectedTransactions
   if (!Array.isArray(bindings) || bindings.length !== expected.length || new Set(bindings.map(item => item.txUuid)).size !== expected.length) {
-    throw new Error('The saved payment quote does not identify every launch call.')
+    throw new ReviewLineError('The saved payment quote does not identify every launch call.')
   }
   for (const [index, binding] of bindings.entries()) {
     const call = expected[index]
     if (!RELAYR_UUID_RE.test(binding.txUuid) || binding.chain !== call.chain || binding.entry.chain !== call.chain ||
         !same(binding.entry.target, call.target) || !same(binding.entry.data, call.data) ||
         binding.entry.value !== call.value || (binding.entry.virtual_nonce ?? 0) !== call.virtual_nonce) {
-      throw new Error('The saved payment quote differs from the reviewed launch.')
+      throw new ReviewLineError('The saved payment quote differs from the reviewed launch.')
     }
   }
   return quote
@@ -94,7 +94,7 @@ function matchingIntent(session: StickyLaunchSession, intent: JBCenterIntent): J
         const shown = actual.jb[key]
         return (key === 'owner' || key === 'stakedToken') && typeof shown === 'string' && typeof value === 'string'
           ? !same(shown, value) : JSON.stringify(shown) !== JSON.stringify(value)
-      })) throw new Error('The saved listing differs from the reviewed launch.')
+      })) throw new ReviewLineError('The saved listing differs from the reviewed launch.')
   return intent
 }
 
@@ -148,7 +148,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
   const store = createStickyLaunchStore(window.localStorage)
   const center = createStickyCenterClient()
   const readIntent = async (session: StickyLaunchSession) => {
-    if (!session.listing.intentId) throw new Error('The launch has no published listing.')
+    if (!session.listing.intentId) throw new ReviewLineError('The launch has no published listing.')
     return matchingIntent(session, await center.getIntent(session.listing.intentId))
   }
   /** A Safe's proposal, saved when the wallet returned it, is followed to its execution and that transaction's receipt. */
@@ -157,7 +157,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
     const execution = await resolveSafe(chainId, proposal)
     await callbacks.submitted(execution, proposal)
     const receipt = await waitForTrackedReceipt(clientFor(chainId), execution)
-    if (!isHash(receipt.transactionHash)) throw new Error('The submitted transaction has no readable receipt hash. Keep the launch saved.')
+    if (!isHash(receipt.transactionHash)) throw new ReviewLineError('The submitted transaction has no readable receipt hash. Keep the launch saved.')
     if (!same(receipt.transactionHash, execution)) await callbacks.submitted(receipt.transactionHash, proposal)
     return receipt.transactionHash
   }
@@ -178,7 +178,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       config = { kind, plan: plan.id, deployer: intent.address(target.deployer) }
     } else {
       const quote = boundQuote(session)
-      if (!session.payment) throw new Error('Choose a payment option first.')
+      if (!session.payment) throw new ReviewLineError('Choose a payment option first.')
       const details = relayrPaymentDetails(session.payment.option, { bundleUuid: quote.bundle_uuid, destinationChainIds: chainsOf(plan), nowSeconds: 0 })
       chainId = details.chainId
       call = { to: details.target, data: details.calldata, value: details.amount }
@@ -198,7 +198,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       beforeWallet: async () => { await callbacks.beforeWrite(); began = true },
       onUnsent: () => { if (began) callbacks.rejected(); began = false },
       onSubmitted: (hash: Hex, safe: boolean) => {
-        if (!isHash(hash)) throw new Error('The wallet did not return a readable submission hash. Keep the launch saved.')
+        if (!isHash(hash)) throw new ReviewLineError('The wallet did not return a readable submission hash. Keep the launch saved.')
         callbacks.submitted(hash, safe ? hash : undefined)
       },
     }
@@ -242,7 +242,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       if (session.quote) reads.push((async () => {
         const quote = boundQuote(session)
         const bundle = await readRelayrBundle(quote.bundle_uuid)
-        if (!Array.isArray(bundle.transactions)) throw new Error('The saved bundle has no launch transaction inventory.')
+        if (!Array.isArray(bundle.transactions)) throw new ReviewLineError('The saved bundle has no launch transaction inventory.')
         const records = relayrDestinationRecords({ bindings: quote.expectedTransactions, records: bundle.transactions })
         for (const [index, record] of records.entries()) {
           const hash = relayrDestinationHash(record)
@@ -270,7 +270,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       const selected = await requireFundingChainSelection(options.map(option => ({ chainId: option.chain,
         label: fundingChainLabel(chainName(option.chain), BigInt(option.amount)) })))
       const payment = options.find(option => option.chain === selected)
-      if (!payment) throw new Error('Choose a payment option from this launch quote.')
+      if (!payment) throw new ReviewLineError('Choose a payment option from this launch quote.')
       return payment
     },
     async sendDirect(session, callbacks, listing?: ListingCallbacks) {
@@ -305,17 +305,17 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
             asked = true
             result = await send([{ kind: 'message', chainId: target.chainId, message }])
             const [signature] = result.signatures ?? []
-            if (!signature) throw new Error('The listing was not signed.')
+            if (!signature) throw new ReviewLineError('The listing was not signed.')
             return signature
           })
           listing.published(intent.id)
         } catch (error) {
           // Nothing was asked of the wallet: Center could not prepare the listing, so the launch goes on without it.
           if (!asked) {
-            listing.failed(error instanceof Error ? error.message : 'Listing unavailable.')
+            listing.failed(error instanceof Error ? errorLine(error) : 'Listing unavailable.')
             result = await send([])
           } else if (!result) throw error
-          else listing.failed(error instanceof Error ? error.message : 'Listing unavailable.')
+          else listing.failed(error instanceof Error ? errorLine(error) : 'Listing unavailable.')
         }
       } else result = await send([])
       if (result!.status === 'proposed') await safeExecution(target.chainId, result!.safeTxHash, callbacks)
@@ -323,7 +323,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
     async sendPayment(session, callbacks) {
       requireSingleHomeChain(session.plan.targets)
       const quote = boundQuote(session)
-      if (!session.payment) throw new Error('Choose a payment option first.')
+      if (!session.payment) throw new ReviewLineError('Choose a payment option first.')
       const details = relayrPaymentDetails(session.payment.option, { bundleUuid: quote.bundle_uuid, destinationChainIds: chainsOf(session.plan) })
       const { owner } = session.plan
       guard(owner)
@@ -362,7 +362,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       phase('Payment submitted. Checking execution on the home chain.')
       if (!(await ports.verifyPayment({ ...session,
         payment: { ...session.payment, hash: execution, proposalHash: 'safeTxHash' in paid ? paid.safeTxHash : undefined },
-      }))) throw new Error('The original payment is still being verified. Keep this launch saved; do not pay again.')
+      }))) throw new ReviewLineError('The original payment is still being verified. Keep this launch saved; do not pay again.')
     },
     async verifyPayment(session) {
       const quote = boundQuote(session)
@@ -389,29 +389,29 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       phase('Checking previous submissions.')
       const refused = 'Every previous submission must be proven finalized and failed. Keep this launch saved and check again.'
       const minedSubmission = async (chainId: number, submission: LaunchSubmission): Promise<LaunchSubmission> => {
-        if (!submission.started || !submission.hash || !isHash(submission.hash)) throw new Error(refused)
+        if (!submission.started || !submission.hash || !isHash(submission.hash)) throw new ReviewLineError(refused)
         return submission.proposalHash && same(submission.hash, submission.proposalHash)
           ? { ...submission, hash: await resolveSafe(chainId, submission.proposalHash, 2_000) } : submission
       }
       if (kind === 'direct') {
         const [target] = session.plan.targets
-        if (session.plan.targets.length !== 1) throw new Error('Only a single-chain wallet creation can be retried directly.')
+        if (session.plan.targets.length !== 1) throw new ReviewLineError('Only a single-chain wallet creation can be retried directly.')
         const attempts = [...(session.directAttempts ?? []), ...(session.direct?.started ? [session.direct] : [])]
-        if (!attempts.length) throw new Error(refused)
+        if (!attempts.length) throw new ReviewLineError(refused)
         for (const attempt of attempts.filter(each => !each.exited)) {
-          if (!(await verifyFinalizedStickyLaunchFailure(session, target, await minedSubmission(target.chainId, attempt), clientFor(target.chainId)))) throw new Error(refused)
+          if (!(await verifyFinalizedStickyLaunchFailure(session, target, await minedSubmission(target.chainId, attempt), clientFor(target.chainId)))) throw new ReviewLineError(refused)
         }
       } else {
         const quote = boundQuote(session)
         const attempts = [...(session.paymentAttempts ?? []), ...(session.payment?.started ? [session.payment] : [])]
-        if (!attempts.length) throw new Error(refused)
+        if (!attempts.length) throw new ReviewLineError(refused)
         const directPayments = new Map<string, { payment: ReturnType<typeof relayrPaymentDetails>; hashes: Hex[] }>()
         for (const attempt of attempts.filter(each => !each.exited)) {
           const details = relayrPaymentDetails(attempt.option, { bundleUuid: quote.bundle_uuid,
             destinationChainIds: chainsOf(session.plan), ...(purpose === 'retire' ? { nowSeconds: 0 } : {}) })
           const submission = await minedSubmission(details.chainId, attempt)
           if (!(await verifyFinalizedStickyCallFailure({ chainId: details.chainId, owner: session.plan.owner,
-            call: { to: details.target, data: details.calldata, value: details.amount }, submission }, clientFor(details.chainId)))) throw new Error(refused)
+            call: { to: details.target, data: details.calldata, value: details.amount }, submission }, clientFor(details.chainId)))) throw new ReviewLineError(refused)
           if (!submission.proposalHash) {
             const key = `${details.chainId}:${details.target.toLowerCase()}:${details.calldata.toLowerCase()}:${details.amount}`
             const group = directPayments.get(key) ?? { payment: details, hashes: [] }
@@ -490,9 +490,9 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
   }
   const controller = createStickyLaunchController(ports)
   const exclusive = async <T>(run: () => Promise<T> | T): Promise<T> => {
-    if (!navigator.locks) throw new Error('This browser cannot coordinate launch recovery across tabs. Use a browser with Web Locks support.')
+    if (!navigator.locks) throw new ReviewLineError('This browser cannot coordinate launch recovery across tabs. Use a browser with Web Locks support.')
     return await navigator.locks.request('sticky-launch-write', { ifAvailable: true }, async lock => {
-      if (!lock) throw new Error('Another tab is processing this launch. Resume it there or wait for it to finish.')
+      if (!lock) throw new ReviewLineError('Another tab is processing this launch. Resume it there or wait for it to finish.')
       return run()
     })
   }

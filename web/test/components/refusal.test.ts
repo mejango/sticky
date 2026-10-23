@@ -1,9 +1,10 @@
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 import { describe, expect, it } from 'vitest'
 import { Refusal, refusalOf } from '@/components/project/flows/refusal'
 
 describe('refusalOf', () => {
-  it('takes an error with no cause for an answer, and keeps its words', () => {
-    const answer = refusalOf(new Error('this amount is too small'))
+  it('takes a line the page wrote, with no cause, for an answer, and keeps its words', () => {
+    const answer = refusalOf(new ReviewLineError('this amount is too small'))
     expect(answer).toBeInstanceOf(Refusal)
     expect((answer as Error).message).toBe('this amount is too small')
   })
@@ -14,5 +15,10 @@ describe('refusalOf', () => {
     const refusal = new Refusal('That is more than you hold.')
     expect(refusalOf(refusal)).toBe(refusal)
     expect(refusalOf('text')).toBe('text')
+  })
+
+  it('never takes text the page did not write for an answer', () => {
+    const node = new Error('upstream sentinel')
+    expect(refusalOf(node)).toBe(node)
   })
 })

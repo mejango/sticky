@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 import { QueryClient, QueryClientProvider, notifyManager, type QueryKey } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -274,7 +275,7 @@ describe('collecting', () => {
   })
 
   it('refuses a collect the chain would refuse, in its words, and opens no review', async () => {
-    mocks.preflight.mockRejectedValue(new Error('The distributor would refuse this: JBDistributor_NoAccess'))
+    mocks.preflight.mockRejectedValue(new ReviewLineError('The distributor would refuse this: JBDistributor_NoAccess'))
     await render()
     await press(host, 'Collect only')
     expect(errorText()).toBe('The distributor would refuse this: JBDistributor_NoAccess.')
@@ -434,7 +435,7 @@ describe('claiming and sticking', () => {
   })
 
   it('manual and automatic compounding reject a zero canonical mint for any token precision', async () => {
-    mocks.quote.mockRejectedValue(new Error('this amount is too small or cannot be priced precisely enough at the current backing price'))
+    mocks.quote.mockRejectedValue(new ReviewLineError('this amount is too small or cannot be priced precisely enough at the current backing price'))
     await render()
     await press(host, 'Claim & stick')
     expect(errorText()).toBe('This amount is too small or cannot be priced precisely enough at the current backing price.')
@@ -464,7 +465,7 @@ describe('claiming and sticking', () => {
 
     // A claim that cannot be read stops the step, and the console hears why.
     const cause = new Error('429')
-    mocks.groups.mockRejectedValue(new Error('what you can collect could not be read.', { cause }))
+    mocks.groups.mockRejectedValue(new ReviewLineError('what you can collect could not be read.', { cause }))
     await expect(reverify!()).rejects.toThrow('What you can collect could not be read.')
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('claim'), { chainId: CHAIN, projectId: PROJECT }, expect.objectContaining({ cause }))
   })

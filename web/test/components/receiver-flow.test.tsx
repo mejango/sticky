@@ -276,7 +276,7 @@ describe('creating it', () => {
     expect(confirm()).toBeNull()
 
     mocks.receiver.mockResolvedValue({ address: RECEIVER, created: false })
-    mocks.preflight.mockRejectedValue(new Error('The reward receiver factory would refuse this: FailedDeployment', { cause: new Error('revert') }))
+    mocks.preflight.mockRejectedValue(new ReviewLineError('The reward receiver factory would refuse this: FailedDeployment', { cause: new Error('revert') }))
     await act(async () => void (await client.invalidateQueries()))
     await settled()
     await press(panel(), 'Create onchain')
@@ -415,7 +415,7 @@ describe('the panel', () => {
   })
 
   it('says when what the address holds cannot be read', async () => {
-    mocks.arrivals.mockRejectedValue(new Error('the arrivals could not be read.', { cause: new Error('429') }))
+    mocks.arrivals.mockRejectedValue(new ReviewLineError('the arrivals could not be read.', { cause: new Error('429') }))
     await open()
     expect(arrivals()).toBe('Could not read what it holds.')
   })

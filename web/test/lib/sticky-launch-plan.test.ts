@@ -213,7 +213,8 @@ describe('runtime preparation', () => {
     state.answers.set(`${TOKENS}.tokenOf`, ZERO)
     await expect(prepareStickyLaunch({ ...input, tokenInput: '4' }, OWNER)).rejects.toThrow('has no ERC-20')
     state.answers.set(`${TOKEN}.symbol`, new Error('metadata unavailable'))
-    await expect(prepareStickyLaunch(input, OWNER)).rejects.toThrow('metadata unavailable')
+    // The node's words stay in the cause: the person reads the network's line.
+    await expect(prepareStickyLaunch(input, OWNER)).rejects.toMatchObject({ message: expect.stringMatching(/^Base Sepolia: The network returned an error/), cause: expect.anything() })
   })
 
   it('revalidates a saved plan without changing its identity and refuses fresh fee, metadata or deployment drift', async () => {

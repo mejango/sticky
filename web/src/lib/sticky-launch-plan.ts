@@ -1,4 +1,5 @@
 import { jbControllerAbi } from '@bananapus/nana-sdk-core'
+import { errorLine, ReviewLineError } from '@bananapus/nana-sdk-core/review'
 import { decodeFunctionData, encodeFunctionData, erc20Abi, zeroAddress, type Address, type Hex } from 'viem'
 import { chainsForEnvironment, SUPPORTED_CHAINS, type ChainEnvironment } from '@/lib/chains'
 import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
@@ -58,14 +59,14 @@ const chainName = (chainId: number) => SUPPORTED_CHAINS.find(chain => chain.id =
 
 /** New preparation and every execution boundary require one local pool; saved evidence may still name older calls. */
 export function requireSingleHomeChain(choices: readonly unknown[]): void {
-  if (choices.length !== 1) throw new Error('Choose exactly one home chain for this Sticky pool. Saved launch evidence is kept for recovery.')
+  if (choices.length !== 1) throw new ReviewLineError('Choose exactly one home chain for this Sticky pool. Saved launch evidence is kept for recovery.')
 }
 
 /** At 100% an unstick returns nothing, so the form stops at 99.99%. */
 export function bonusBasisPoints(choice: string, custom?: string): bigint {
   const text = choice === 'custom' ? String(custom ?? '').trim() : String(choice)
-  if (choice !== 'custom' && !BONUS_PRESETS.some(preset => preset === text)) throw new Error('Choose a stickiness bonus.')
-  if (!/^\d{1,2}(?:\.\d{1,2})?$/.test(text)) throw new Error('Enter a bonus from 0 to 99.99%.')
+  if (choice !== 'custom' && !BONUS_PRESETS.some(preset => preset === text)) throw new ReviewLineError('Choose a stickiness bonus.')
+  if (!/^\d{1,2}(?:\.\d{1,2})?$/.test(text)) throw new ReviewLineError('Enter a bonus from 0 to 99.99%.')
   const [whole, fraction = ''] = text.split('.')
   return BigInt(whole) * 100n + BigInt((fraction + '00').slice(0, 2))
 }
@@ -77,7 +78,7 @@ export function defaultNames(tokenName: string, tokenSymbol: string) {
 export function parseSenders(text: string): Address[] {
   const senders: Address[] = []
   for (const value of String(text || '').split(',').map(item => item.trim()).filter(Boolean)) {
-    if (!isAddress(value)) throw new Error(`Not an address: ${value}`)
+    if (!isAddress(value)) throw new ReviewLineError(`Not an address: ${value}`)
     if (!senders.some(sender => same(sender, value))) senders.push(value)
   }
   return senders
@@ -85,7 +86,7 @@ export function parseSenders(text: string): Address[] {
 
 /** Every launch trusts AutoStick; preserve user order and include the adapter exactly once, last. */
 export function launchGranters(senders: readonly Address[], adapter: unknown, name: string): Address[] {
-  if (!isAddress(adapter)) throw new Error(`${name} has no auto-stick helper configured, so Sticky can't launch there.`)
+  if (!isAddress(adapter)) throw new ReviewLineError(`${name} has no auto-stick helper configured, so Sticky can't launch there.`)
   return [...senders.filter(sender => !same(sender, adapter)), adapter]
 }
 
@@ -105,7 +106,7 @@ export function parseTokenInput(input: string, aliases = TOKEN_CHAIN_ALIASES): T
 }
 
 function requireProjectHomeChain(chainId: number | null, homeChainId: number, name: string): void {
-  if (chainId !== null && chainId !== homeChainId) throw new Error(`The project prefix must match the selected home chain, ${name}.`)
+  if (chainId !== null && chainId !== homeChainId) throw new ReviewLineError(`The project prefix must match the selected home chain, ${name}.`)
 }
 
 /** Project IDs resolve on the pool's home chain; a prefix cannot silently substitute another chain's asset. */
@@ -120,16 +121,16 @@ export async function resolveProjectToken({ projectId, chainId, targetChainIds, 
   const [homeChainId] = targetChainIds
   requireProjectHomeChain(chainId, homeChainId, nameOf(homeChainId))
   const address = await tokenOfAt(homeChainId, projectId).catch(() => ZERO)
-  if (!isAddress(address)) throw new Error(`Project #${projectId} has no ERC-20 on ${nameOf(homeChainId)}.`)
+  if (!isAddress(address)) throw new ReviewLineError(`Project #${projectId} has no ERC-20 on ${nameOf(homeChainId)}.`)
   return { address, chainIds: [homeChainId] }
 }
 
 export function checkSameToken<T extends { name: string; tokenName: string; tokenSymbol: string; tokenDecimals: number }>(reads: readonly T[]): T {
   const [first] = reads
-  if (!first) throw new Error('Choose at least one chain.')
+  if (!first) throw new ReviewLineError('Choose at least one chain.')
   for (const read of reads.slice(1)) {
     if (read.tokenSymbol !== first.tokenSymbol || read.tokenName !== first.tokenName || read.tokenDecimals !== first.tokenDecimals) {
-      throw new Error(`${read.name}: the token differs from the one on ${first.name}.`)
+      throw new ReviewLineError(`${read.name}: the token differs from the one on ${first.name}.`)
     }
   }
   return first
@@ -146,14 +147,14 @@ async function loadStickyRuntime(chainId: number) {
   const deployment = stickyDeployment(chainId)
   const name = chainName(chainId)
   const blocker = launchChainBlocker(chainId)
-  if (!deployment || blocker) throw new Error(`${name} can't launch Sticky: ${blocker}.`)
+  if (!deployment || blocker) throw new ReviewLineError(`${name} can't launch Sticky: ${blocker}.`)
   const client = jbCenterPublicClient(chainId)
   const actualChainId = await client.getChainId()
-  if (actualChainId !== chainId) throw new Error(`${name}'s configured RPC returned chain ${actualChainId}`)
+  if (actualChainId !== chainId) throw new ReviewLineError(`${name}'s configured RPC returned chain ${actualChainId}`)
   const requireCode = async (address: Address) => {
-    if (!isAddress(address)) throw new Error(`A required Sticky contract is missing on ${name}`)
+    if (!isAddress(address)) throw new ReviewLineError(`A required Sticky contract is missing on ${name}`)
     const code = await client.getCode({ address })
-    if (!code || code === '0x') throw new Error(`A required Sticky contract is missing at ${address} on ${name}`)
+    if (!code || code === '0x') throw new ReviewLineError(`A required Sticky contract is missing at ${address} on ${name}`)
   }
   await requireCode(deployment.deployer)
   const controller = await client.readContract({ address: deployment.deployer, abi: stickyDeployerAbi, functionName: 'CONTROLLER' })
@@ -170,7 +171,7 @@ async function loadStickyRuntime(chainId: number) {
     client.readContract({ address: deployment.autoStick, abi: stickyAutoStickAbi, functionName: 'HOOK' }),
   ])
   if (!same(adapterDeployer, deployment.deployer) || !same(hook, adapterHook) || !same(adapterDistributor, deployment.distributor)) {
-    throw new Error(`The auto-stick adapter on ${name} does not match this Sticky deployment and distributor.`)
+    throw new ReviewLineError(`The auto-stick adapter on ${name} does not match this Sticky deployment and distributor.`)
   }
   return { ...deployment, name, controller, projects, tokens, fee }
 }
@@ -185,64 +186,64 @@ async function readLaunchToken(target: { chainId: number; name: string }, token:
     ])
     return { tokenName, tokenSymbol, tokenDecimals }
   } catch (error) {
-    throw new Error(`${target.name}: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
+    throw new ReviewLineError(`${target.name}: ${errorLine(error)}`, { cause: error })
   }
 }
 
 /** The persisted calls, the form's words and the SDK's decoded review must name the same immutable launch. */
 export function validateLaunchCall(plan: LaunchPlan, target: LaunchTarget) {
   const decoded = decodeFunctionData({ abi: stickyDeployerAbi, data: target.call.data })
-  if (decoded.functionName !== 'deployStickyFor') throw new Error('The saved call is not a Sticky launch.')
+  if (decoded.functionName !== 'deployStickyFor') throw new ReviewLineError('The saved call is not a Sticky launch.')
   const [token, name, symbol, uri, tax, granters, soulbound] = decoded.args
   const canonical = encodeFunctionData({ abi: stickyDeployerAbi, functionName: 'deployStickyFor', args: decoded.args })
   if (!same(canonical, target.call.data) || !same(token, plan.token) || name !== plan.name || symbol !== plan.symbol ||
       uri !== plan.projectUri || tax.toString() !== plan.cashOutTaxRate || soulbound !== plan.soulbound ||
       !granters.length || target.call.chain !== target.chainId || !same(target.call.target, target.deployer)) {
-    throw new Error('The saved launch call differs from its reviewed configuration.')
+    throw new ReviewLineError('The saved launch call differs from its reviewed configuration.')
   }
   return decoded.args
 }
 
 /** Reuse saved intent identity, but never stale preparation evidence at the wallet boundary. */
 export async function revalidateStickyLaunch(plan: LaunchPlan): Promise<void> {
-  if (!isAddress(plan.owner) || !isAddress(plan.token) || !plan.targets.length) throw new Error('The saved launch is invalid.')
+  if (!isAddress(plan.owner) || !isAddress(plan.token) || !plan.targets.length) throw new ReviewLineError('The saved launch is invalid.')
   requireSingleHomeChain(plan.targets)
   const allowed = chainsForEnvironment(plan.environment)
   if (new Set(plan.targets.map(target => target.chainId)).size !== plan.targets.length
     || plan.targets.some(target => !allowed.some(chain => chain.id === target.chainId))) {
-    throw new Error('The saved launch chains do not match its network environment.')
+    throw new ReviewLineError('The saved launch chains do not match its network environment.')
   }
   await Promise.all(plan.targets.map(async target => {
     const runtime = await loadStickyRuntime(target.chainId)
     if (target.call.chain !== target.chainId || !same(target.call.target, target.deployer)
       || !same(runtime.deployer, target.deployer) || !same(runtime.controller, target.controller)
-      || !same(runtime.projects, target.projects)) throw new Error(`${runtime.name}: the Sticky deployment changed. Review the launch again.`)
-    if (runtime.fee !== BigInt(target.call.value)) throw new Error(`${runtime.name}: the project creation fee changed. Review the launch again.`)
+      || !same(runtime.projects, target.projects)) throw new ReviewLineError(`${runtime.name}: the Sticky deployment changed. Review the launch again.`)
+    if (runtime.fee !== BigInt(target.call.value)) throw new ReviewLineError(`${runtime.name}: the project creation fee changed. Review the launch again.`)
     const metadata = await readLaunchToken(runtime, plan.token)
     checkSameToken([{ name: 'the reviewed launch', tokenName: plan.tokenName, tokenSymbol: plan.tokenSymbol, tokenDecimals: plan.tokenDecimals },
       { name: runtime.name, ...metadata }])
     const [, , , , tax, granters] = validateLaunchCall(plan, target)
     if (tax > 9999n || !same(granters[granters.length - 1], runtime.autoStick)
       || granters.some(granter => !isAddress(granter)) || new Set(granters.map(granter => granter.toLowerCase())).size !== granters.length) {
-      throw new Error(`${runtime.name}: the saved call does not match the reviewed launch.`)
+      throw new ReviewLineError(`${runtime.name}: the saved call does not match the reviewed launch.`)
     }
   }))
 }
 
 /** Reads and prepares exact calls only. Wallet review, publication and submission belong to the lifecycle adapter. */
 export async function prepareStickyLaunch(input: LaunchInput, owner: Address): Promise<LaunchPlan> {
-  if (!isAddress(owner)) throw new Error('Connect a wallet to create a Sticky token.')
+  if (!isAddress(owner)) throw new ReviewLineError('Connect a wallet to create a Sticky token.')
   const cashOutTaxRate = bonusBasisPoints(input.bonusChoice, input.customBonus)
   const senders = parseSenders(input.trustedSenders)
   requireSingleHomeChain(input.chainIds)
   const allowed = chainsForEnvironment(input.environment)
   if (new Set(input.chainIds).size !== input.chainIds.length || input.chainIds.some(id => !allowed.some(chain => chain.id === id))) {
-    throw new Error('Choose each chain once, in the selected network environment.')
+    throw new ReviewLineError('Choose each chain once, in the selected network environment.')
   }
   const [homeChainId] = input.chainIds
   const parsed = parseTokenInput(input.tokenInput)
-  if (parsed.kind === 'unknown-chain') throw new Error(`Unknown chain "${parsed.prefix}". Try eth, op, base or arb.`)
-  if (parsed.kind !== 'address' && parsed.kind !== 'project') throw new Error('Enter a token address or a Juicebox project ID.')
+  if (parsed.kind === 'unknown-chain') throw new ReviewLineError(`Unknown chain "${parsed.prefix}". Try eth, op, base or arb.`)
+  if (parsed.kind !== 'address' && parsed.kind !== 'project') throw new ReviewLineError('Enter a token address or a Juicebox project ID.')
   if (parsed.kind === 'project') requireProjectHomeChain(parsed.chainId, homeChainId, chainName(homeChainId))
   const runtime = await loadStickyRuntime(homeChainId)
   const token = parsed.kind === 'address' ? parsed.address : (await resolveProjectToken({
@@ -251,7 +252,7 @@ export async function prepareStickyLaunch(input: LaunchInput, owner: Address): P
       address: runtime.tokens, abi: tokensAbi, functionName: 'tokenOf', args: [projectId],
     }),
   })).address
-  if (!isAddress(token)) throw new Error('Enter a token address or a Juicebox project ID.')
+  if (!isAddress(token)) throw new ReviewLineError('Enter a token address or a Juicebox project ID.')
   const { tokenName, tokenSymbol, tokenDecimals } = await readLaunchToken(runtime, token)
   const defaults = defaultNames(tokenName, tokenSymbol)
   const name = input.name?.trim() || defaults.name

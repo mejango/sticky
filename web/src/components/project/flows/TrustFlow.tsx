@@ -20,7 +20,7 @@ import { refreshAfterTrust } from '@/lib/sticky-refresh'
 import { need, readAt } from '@/lib/sticky-rewards'
 import type { TransactionReviewRow } from '@/lib/transaction-review'
 import { chainName } from '@/lib/urn'
-import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
+import { errorLine, ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 const ALREADY_TRUSTED = 'This sender is already trusted.'
 const NOT_TRUSTED = 'This sender is not trusted.'
@@ -112,7 +112,7 @@ export function TrustFlow({
         presses.arm()
       }
     } catch (reason) {
-      if (attempt.current === mine) refuse(reason instanceof Error ? reason.message : TRUST_UNREADABLE)
+      if (attempt.current === mine) refuse(reason instanceof Error ? errorLine(reason) : TRUST_UNREADABLE)
     }
   }
 

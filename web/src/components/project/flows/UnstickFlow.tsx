@@ -446,7 +446,7 @@ export function UnstickFlow({
         : !address
           ? 'Sign in to quote your unstick.'
           : quote.isError
-            ? `Quote unavailable: ${quote.error.message}`
+            ? `Quote unavailable: ${errorLine(quote.error)}`
             : quote.data
               ? unstickQuoteSentence(quote.data, settled, info)
               : QUOTING

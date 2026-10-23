@@ -4,19 +4,17 @@ import type { TxRequest } from '@/hooks/useReviewedAction'
 import { untilAborted } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
 
-/** Why the chain refuses a call, in the words of its revert when it has any. */
-export function reasonOf(error: unknown): string {
-  if (!(error instanceof BaseError)) return error instanceof Error ? error.message : 'no reason was given'
-  const reverted = error.walk(cause => cause instanceof ContractFunctionRevertedError)
-  return reverted instanceof ContractFunctionRevertedError
-    ? (reverted.data?.errorName ?? reverted.reason ?? reverted.shortMessage)
-    : error.shortMessage
+/** The custom error a call reverted with, named by Sticky's own ABIs: the one part of a node's answer said to a person.
+ * Undefined when the call did not revert, and null when it reverted with nothing those ABIs name. */
+function revertOf(error: unknown): string | null | undefined {
+  const reverted = error instanceof BaseError ? error.walk(cause => cause instanceof ContractFunctionRevertedError) : null
+  return reverted instanceof ContractFunctionRevertedError ? (reverted.data?.errorName ?? null) : undefined
 }
 
 /**
  * `step` tried against the chain as `account` will send it, before its review is shown: the request the review shows,
  * asked of a node, with the flow's signal. A call the chain would refuse is refused here, in `refusal`'s words and the
- * chain's, and the cause is kept.
+ * name of its custom error, and the cause is kept.
  */
 export async function preflight(step: TxRequest, account: Address, signal: AbortSignal, refusal: string): Promise<void> {
   try {
@@ -33,6 +31,9 @@ export async function preflight(step: TxRequest, account: Address, signal: Abort
     )
   } catch (cause) {
     if (signal.aborted) throw cause
-    throw new ReviewLineError(`${refusal}: ${reasonOf(cause)}`, { cause })
+    const reverted = revertOf(cause)
+    // A node that failed to answer is the network's error, which core's line says with its retry.
+    if (reverted === undefined) throw cause
+    throw new ReviewLineError(reverted ? `${refusal}: ${reverted}` : `${refusal}.`, { cause })
   }
 }

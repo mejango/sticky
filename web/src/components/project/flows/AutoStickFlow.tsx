@@ -43,7 +43,7 @@ import { refreshAfterAutoStick, refreshAfterCollect, refreshAfterRewardStick } f
 import { readRewardSchedule, unlockSentence } from '@/lib/sticky-rewards'
 import { chainName } from '@/lib/urn'
 import { useViewAs } from '@/lib/viewAs'
-import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
+import { errorLine, ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 const PREPARE_UNREADABLE = "Could not prepare a change of auto-stick; the card says what could not be read."
 const SCHEDULE_UNREADABLE = "Could not read the distributor's unlock schedule; the auto-stick form leaves it out."
@@ -366,7 +366,7 @@ export function AutoStickFlow({
       if (signal.aborted) return
       const told = refusalOf(reason)
       if (!(told instanceof Refusal)) console.warn(PREPARE_UNREADABLE, { chainId, projectId }, told)
-      setFailure({ message: asSentence(told instanceof Error ? told.message : String(told)), account: account.toLowerCase() })
+      setFailure({ message: asSentence(errorLine(told)), account: account.toLowerCase() })
     } finally {
       if (!signal.aborted) setPreparing(false)
     }
@@ -386,7 +386,7 @@ export function AutoStickFlow({
       now = await readAutoStickStanding(chainId, info.projectId, reviewed.account, { stakedToken: info.stakedToken, block })
     } catch (reason) {
       console.warn(STANDING_UNREADABLE, { chainId, projectId }, reason)
-      throw new ReviewLineError(asSentence(reason instanceof Error ? reason.message : String(reason)), { cause: reason })
+      throw new ReviewLineError(asSentence(errorLine(reason)), { cause: reason })
     }
     const before = reviewed.steps.slice(0, reviewed.steps.indexOf(step))
     const expected = consentAfter(reviewed.from, before)

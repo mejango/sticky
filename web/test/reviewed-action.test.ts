@@ -10,7 +10,7 @@ import { createElement, createRef, forwardRef, useImperativeHandle } from 'react
 import TestRenderer, { act } from 'react-test-renderer'
 import { decodeFunctionData, numberToHex, type Abi, type Address, type Hex } from 'viem'
 import { jbMultiTerminalAbi } from '@bananapus/nana-sdk-core'
-import { registerReviewHandler, type ReviewedCall } from '@bananapus/nana-sdk-core/review'
+import { registerReviewHandler, ReviewLineError, type ReviewedCall } from '@bananapus/nana-sdk-core/review'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import baseline from './fixtures/use-safe-tx-calldata.json'
 
@@ -209,6 +209,25 @@ describe('useReviewedAction', () => {
     expect(ref.current!.landed).toBe(2)
     expect(ref.current!.phase).toBe('success')
     expect(ref.current!.hash).toBe(hashes[1])
+    await unmount()
+  })
+
+  it('keeps a confirmed step counted when the run resumed after it fails again', async () => {
+    confirmEveryReview()
+    const { stick, unstick } = baseline
+    const calls = [stick, unstick].map((sent, at) => ({ chainId: sent.chainId, to: sent.to as Address, data: sent.data as Hex, value: BigInt(sent.value), ...(at ? { dependsOnPrior: true } : {}) }))
+    const reverify = vi.fn(async (_call: ReviewedCall, index: number) => {
+      if (index === 1) throw new ReviewLineError('The unstick changed. Review it again.')
+    })
+    const { ref, unmount } = await mount()
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await act(async () => {
+        expect(await ref.current!.run({ account: ALICE, calls, reverify })).toBeNull()
+      })
+      expect(ref.current!.error).toBe('The unstick changed. Review it again.')
+      expect(ref.current!.landed).toBe(1)
+    }
+    expect(walletSends).toHaveLength(1)
     await unmount()
   })
 

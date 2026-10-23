@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 import { QueryClient, QueryClientProvider, notifyManager, type QueryKey } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -462,7 +463,7 @@ describe('the other actions', () => {
   })
 
   it('manual and automatic compounding reject a zero canonical mint for any token precision', async () => {
-    mocks.quote.mockRejectedValue(new Error('this amount is too small or cannot be priced precisely enough at the current backing price'))
+    mocks.quote.mockRejectedValue(new ReviewLineError('this amount is too small or cannot be priced precisely enough at the current backing price'))
     await render(on())
     await press(card(), 'Stick ready rewards now')
     expect(errorText()).toBe('This amount is too small or cannot be priced precisely enough at the current backing price.')
@@ -757,7 +758,7 @@ describe('a step, read again before it is sent', () => {
     await render(on())
     await press(card(), 'Turn off auto-stick')
     const cause = new Error('429')
-    mocks.standing.mockRejectedValue(new Error('your auto-stick could not be read.', { cause }))
+    mocks.standing.mockRejectedValue(new ReviewLineError('your auto-stick could not be read.', { cause }))
     await expect(reverify(0)).rejects.toThrow('Your auto-stick could not be read.')
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('auto-stick'), { chainId: CHAIN, projectId: PROJECT }, expect.objectContaining({ cause }))
   })

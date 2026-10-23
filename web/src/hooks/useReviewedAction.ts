@@ -5,6 +5,8 @@ import { useQueryClient } from '@tanstack/react-query'
 import type { JBChainId } from '@bananapus/nana-sdk-core'
 import { encodeFunctionData, keccak256, stringToHex, type Abi, type Address, type Hex, type TransactionReceipt } from 'viem'
 import {
+  discardReviewedSequence,
+  findReviewedSequence,
   HELD_CONFIRMING_LINE,
   openStepHold,
   REVIEWED_ACCOUNT_CHANGED_LINE,
@@ -170,11 +172,13 @@ export function useReviewedAction() {
   }, [])
   /** A run that ended with nothing finished: once its state shows, it is read for a cancel. */
   const [ended, setEnded] = useState<{ onCancelled: () => void } | null>(null)
-  const last = useRef<{ action: ReviewedRun; chainId: number; proposed: ReviewedCall | null } | null>(null)
+  const last = useRef<{ action: ReviewedRun; account: Address | undefined; chainId: number; proposed: ReviewedCall | null } | null>(null)
   const runner = useReviewedRun({
     account: address,
     ...reviewedSendDeps,
     engine: loadReviewEngine,
+    // A step starts only once every step before it confirmed, here or in a resumed run's earlier one.
+    onProgress: ({ step }) => setLanded(count => Math.max(count, step)),
     guard: () => {
       if (isCenterWallet) throw new ReviewLineError(EXTERNAL_WALLET_REQUIRED)
       if (getViewAs()) throw new ReviewLineError(VIEW_AS_WRITE_BLOCKED)
@@ -191,7 +195,7 @@ export function useReviewedAction() {
     setExitError(null)
     const viaSafe = isSafeConnection(wagmiConfig)
     const { onReleased: _released, onCancelled, reverify, ...sent } = action
-    last.current = { action, chainId: action.calls[0].chainId, proposed: null }
+    last.current = { action, account: address, chainId: action.calls[0].chainId, proposed: null }
     const epoch = accountEpoch.current
     const abort = new AbortController()
     aborts.current.add(abort)
@@ -218,7 +222,7 @@ export function useReviewedAction() {
           await action.onSubmitted?.(call, step, hash, how)
         },
         onConfirmed: async (call, step, receipt) => {
-          setLanded(step + 1)
+          setLanded(count => Math.max(count, step + 1))
           await action.onConfirmed?.(call, step, receipt)
         },
       })
@@ -228,6 +232,7 @@ export function useReviewedAction() {
         setExitError(REVIEWED_ACCOUNT_CHANGED_LINE)
         return null
       }
+      if (done?.status === 'done') setLanded(action.calls.length)
       if (done?.status === 'proposed' && last.current?.action === action) last.current.proposed = action.calls[done.step] ?? null
       setResult(done)
       if (!done && onCancelled) setEnded({ onCancelled })
@@ -260,15 +265,16 @@ export function useReviewedAction() {
   const onReleased = last.current?.action.onReleased
   const runExit = () => {
     setExitError(null)
-    const ran = last.current?.action
+    const ran = last.current
     void runner.exitAction?.run().then(async released => {
       if (!released) return
-      // The person's exit drops the sequence of the released step, so the flow plans from the chain again; discarding
-      // also resets the run, whose error was the hold's line.
-      if (ran && ran.calls.length > 1) await runner.discard(sequenceScope(ran.calls)).catch(() => undefined)
+      // The person's exit drops the sequence of the released step, under the account that sent it (which may no longer
+      // be the connected one), so the flow plans from the chain again.
+      const saved = ran?.account && ran.action.calls.length > 1 ? findReviewedSequence(sequenceScope(ran.action.calls), ran.account) : null
+      if (saved) await discardReviewedSequence(saved)
       runner.reset()
       void Promise.resolve(onReleased?.()).catch(() => undefined)
-    }, () => setExitError(WRITE_HOLD_UNCHECKED_LINE))
+    }).catch(() => setExitError(WRITE_HOLD_UNCHECKED_LINE))
   }
   const held = !shown
     ? null
@@ -320,8 +326,9 @@ export function useReviewedAction() {
     failure: runner.failure,
     /** A step was mined and reverted: its receipt says so, not why. */
     reverted: phase === 'error' && runner.failure instanceof ReviewedCallRevertedError,
-    /** How many of the run's steps confirmed: the confirm is on the one after them. */
-    landed,
+    /** How many of the run's steps confirmed: the confirm is on the one after them. A followed hold that settled the
+     * run's last step ends it with every step confirmed. */
+    landed: runner.phase === 'done' ? Math.max(landed, runner.total) : landed,
     hash,
     safeProposalHash,
     /** The wallet's reply for the run's latest step: a transaction, or a Safe proposal. */

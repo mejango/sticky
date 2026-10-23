@@ -240,7 +240,7 @@ export function ReceiverFlow({
       if (signal.aborted) return
       const told = refusalOf(reason)
       if (!(told instanceof Refusal)) console.warn(PREPARE_UNREADABLE, { chainId, projectId }, told)
-      setFailure({ message: asSentence(told instanceof Error ? told.message : String(told)), account: account.toLowerCase() })
+      setFailure({ message: asSentence(errorLine(told)), account: account.toLowerCase() })
     } finally {
       if (!signal.aborted) setPreparing(false)
     }

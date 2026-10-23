@@ -590,7 +590,7 @@ describe('the preflight', () => {
     await press('Unstick', form())
     await until(() => formText().includes('The terminal would refuse this unstick'), 'the refusal')
 
-    expect(form().querySelector('p.text-red-700')!.textContent).toContain('The terminal would refuse this unstick:')
+    expect(form().querySelector('p.text-red-700')!.textContent).toContain('The terminal would refuse this unstick')
     expect(confirm()).toBeNull()
     expect(mocks.review).not.toHaveBeenCalled()
     expect(mocks.publicClient.request).not.toHaveBeenCalled()

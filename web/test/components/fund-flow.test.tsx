@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 import { NATIVE_TOKEN } from '@bananapus/nana-sdk-core'
 import { QueryClient, QueryClientProvider, notifyManager, type QueryKey } from '@tanstack/react-query'
 import { act } from 'react'
@@ -346,7 +347,7 @@ describe('the review', () => {
 
   it('says when the token could not be read, tells the console why, and opens no review', async () => {
     const cause = new Error('429')
-    mocks.meta.mockRejectedValue(new Error('the reward token could not be read.', { cause }))
+    mocks.meta.mockRejectedValue(new ReviewLineError('the reward token could not be read.', { cause }))
     await review({ token: USDC })
     expect(errorText()).toBe('The reward token could not be read.')
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('airdrop'), { chainId: CHAIN, projectId: PROJECT }, expect.objectContaining({ cause }))
@@ -391,7 +392,7 @@ describe('the review', () => {
 
   it('says what could not be read, tells the console why, and opens no review', async () => {
     const cause = new Error('429')
-    mocks.funds.mockRejectedValue(new Error('the balance and the allowance could not be read.', { cause }))
+    mocks.funds.mockRejectedValue(new ReviewLineError('the balance and the allowance could not be read.', { cause }))
     await review()
     expect(errorText()).toBe('The balance and the allowance could not be read.')
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('airdrop'), { chainId: CHAIN, projectId: PROJECT }, expect.objectContaining({ cause }))
@@ -451,7 +452,7 @@ describe('the send', () => {
     await expect(reverify()).resolves.toBeUndefined()
     expect(mocks.native).toHaveBeenLastCalledWith(CHAIN, ALICE, { signal: undefined })
     const cause = new Error('429')
-    mocks.native.mockRejectedValue(new Error('the balance could not be read.', { cause }))
+    mocks.native.mockRejectedValue(new ReviewLineError('the balance could not be read.', { cause }))
     await expect(reverify()).rejects.toThrow('The balance could not be read.')
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('balance'), { chainId: CHAIN, projectId: PROJECT }, expect.objectContaining({ cause }))
   })
