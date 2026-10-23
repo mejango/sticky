@@ -7,6 +7,7 @@ import { refreshAfterConfirmedWrite } from '@/lib/sticky-refresh'
 import {
   BaseError,
   encodeFunctionData,
+  isAddressEqual,
   isHash,
   type Abi,
   type Address,
@@ -30,7 +31,7 @@ import { holdIntent } from '@/lib/sticky-hold-intent'
 import { legacyNamespaces } from '@/lib/legacy-intents'
 import { getViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 import { assertReviewedWallet } from '@/lib/wallet-core'
-import { requestContractTransactionReview, TransactionReviewCancelledError } from '@/lib/transaction-review'
+import { requestContractTransactionReview, requireTransactionReview, TransactionReviewCancelledError, type TransactionReviewRequest, type TransactionReviewRow } from '@/lib/transaction-review'
 import { chainName } from '@/lib/urn'
 import { wagmiConfig } from '@/providers/Providers'
 import { EXTERNAL_WALLET_REQUIRED } from '@/providers/WalletAuthContext'
@@ -59,6 +60,12 @@ export type TxRequest = {
   parent?: string
 }
 
+declare const reviewedCalls: unique symbol
+/** An opaque proof that one decoded review approved an action's exact calls. Only `review` issues one. */
+export type ReviewedCalls = { readonly [reviewedCalls]: true }
+/** What each issued proof's review showed: the calls, and the account, wallet connection, Safe mode and hold line. */
+const approvedReviews = new WeakMap<ReviewedCalls, Readonly<{ account: Address; connectorUid?: string; safe: boolean; line: string | null; calls: readonly string[] }>>()
+
 export type TxSendOptions = {
   /**
    * The account this request was built for: the one that reviewed it, and
@@ -68,6 +75,11 @@ export type TxSendOptions = {
    */
   reviewedAccount: Address
   reverify?: (request: TxRequest) => Promise<unknown>
+  /**
+   * The action's one decoded review already showed this exact call: it is sent without asking again. Any difference
+   * (calldata, value, chain, account, wallet connection, Safe mode, hold line, a review notice) opens its own decoded review.
+   */
+  reviewed?: ReviewedCalls
   /** Persist an unknown-submission marker immediately before the wallet write. */
   beforeWrite?: () => unknown | Promise<unknown>
   /** Called if the final account gate aborts a persisted intent before the wallet write. */
@@ -84,12 +96,6 @@ export type TxSendOptions = {
     /** The user's exit released the SDK hold on this write: clear the reservation, keep the transfer's metadata. */
     released?: () => unknown | Promise<unknown>
   }
-  /**
-   * The exact request was already rendered in a parent confirmation surface.
-   * This skips only the second app-owned review; account checks, revalidation,
-   * simulation, duplicate protection, and the wallet confirmation still run.
-   */
-  reviewedInParent?: boolean
   /**
    * Simulate against a confirmed prerequisite block instead of a load
    * balancer's potentially lagging `latest` view. This is required when the
@@ -128,6 +134,11 @@ function callOf(request: Pick<TxRequest, 'address' | 'abi' | 'functionName' | 'a
     data: encodeFunctionData({ abi: request.abi, functionName: request.functionName, args: request.args as unknown[] }),
     value: request.value ?? 0n,
   }
+}
+
+/** A call as a review approved it: its chain, target, calldata and value. */
+function callKey(chainId: number, call: { to: Address; data: Hex; value?: bigint }): string {
+  return `${chainId}:${call.to.toLowerCase()}:${call.data.toLowerCase()}:${call.value ?? 0n}`
 }
 
 /** A friendly one-line message out of a viem/wagmi error. */
@@ -307,8 +318,9 @@ export function useSafeTx(chainId: number) {
           request,
           expectedAccount: account,
           review: async reviewed => {
-            // A review notice always opens the review, even where the caller already rendered the payload.
-            if (sendOptions.reviewedInParent && !sendOptions.reviewNotice && !holds.reviewLine()) return
+            const proof = sendOptions.reviewed && approvedReviews.get(sendOptions.reviewed)
+            if (proof && !sendOptions.reviewNotice && proof.safe === viaSafe && isAddressEqual(proof.account, account) && proof.connectorUid === connectorUid &&
+              proof.line === holds.reviewLine() && proof.calls.includes(callKey(reviewed.chainId, callOf(reviewed)))) return
             const description = [sendOptions.reviewNotice, holds.reviewLine(), viaSafe ? SAFE_NONCE_GUIDANCE : null].filter(Boolean).join('\n\n')
             const approved = await requestContractTransactionReview(
               // A Safe app signs the sent gas as safeTxGas; 0 makes a failed call revert.
@@ -433,6 +445,31 @@ export function useSafeTx(chainId: number) {
     [chainId, isConnected, isCenterWallet, publicClient, switchChainAsync, writeContractAsync],
   )
 
+  /**
+   * One decoded review of every call one user action sends, with the action's summary rows above them. The proof it
+   * returns lets each of those exact calls be sent without asking again. Throws TransactionReviewCancelledError when closed.
+   */
+  const review = useCallback(async (requests: readonly TxRequest[], { account, title, rows }: { account: Address; title?: string; rows?: readonly TransactionReviewRow[] }): Promise<ReviewedCalls> => {
+    const viaSafe = isSafeConnection(wagmiConfig)
+    const connectorUid = getAccount(wagmiConfig).connector?.uid
+    const line = holds.reviewLine()
+    const calls = requests.map(request => ({
+      ...callOf(request), chainId: request.chainId, from: account, abi: request.abi, functionName: request.functionName, args: request.args,
+      ...(request.label ? { label: request.label } : {}),
+      // A Safe app signs the sent gas as safeTxGas; 0 makes a failed call revert.
+      ...(viaSafe ? { safeTxGas: 0n } : {}),
+    }))
+    const description = [line, viaSafe ? SAFE_NONCE_GUIDANCE : null].filter(Boolean).join('\n\n')
+    const request: TransactionReviewRequest = {
+      calls, ...(title ? { title } : {}), ...(rows?.length ? { rows } : {}), ...(description ? { description } : {}),
+      ...(viaSafe ? { confirmLabel: 'Agree & continue to Safe' } : {}),
+    }
+    await requireTransactionReview(request)
+    const proof = Object.freeze({}) as ReviewedCalls
+    approvedReviews.set(proof, Object.freeze({ account, connectorUid, safe: viaSafe, line, calls: Object.freeze(calls.map(call => callKey(call.chainId, call))) }))
+    return proof
+  }, [])
+
   // While the wallet's own prompt is open the call is reserved, not lost: the flow shows the prompt, not the hold.
   const prompting = phase === 'review' || phase === 'simulating' || phase === 'signing'
   const shown = phase === 'pending' && !prompting ? write : null
@@ -497,6 +534,7 @@ export function useSafeTx(chainId: number) {
     safeNonceGuidance: awaitingProposal ? SAFE_NONCE_GUIDANCE : null,
     receipt: result?.receipt ?? null,
     send,
+    review,
     reset,
     /** Close the current confirmation. The hold keeps the write; dismissing is never evidence that it can be sent again. */
     dismiss: reset,

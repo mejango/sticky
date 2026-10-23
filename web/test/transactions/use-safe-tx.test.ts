@@ -44,6 +44,7 @@ const mocks = vi.hoisted(() => ({
   },
   getAccount: vi.fn(),
   requestReview: vi.fn(),
+  requireReview: vi.fn(),
   safeConnection: false,
   switchChain: vi.fn(),
   waitForSafeExecutionHash: vi.fn(),
@@ -70,6 +71,7 @@ vi.mock('@/hooks/useWallet', () => ({
 vi.mock('@/lib/transaction-review', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/transaction-review')>()),
   requestContractTransactionReview: mocks.requestReview,
+  requireTransactionReview: mocks.requireReview,
 }))
 vi.mock('@/providers/Providers', () => ({ wagmiConfig: {} }))
 vi.mock('@/lib/safe-connector', async importOriginal => ({
@@ -82,7 +84,7 @@ vi.mock('@/lib/safe-connector', async importOriginal => ({
   findPendingSafeAppProposal: async () => null,
 }))
 
-import { useSafeTx } from '@/hooks/useSafeTx'
+import { useSafeTx, type ReviewedCalls, type TxSendOptions } from '@/hooks/useSafeTx'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 
 type TxRequestOf = object
@@ -167,6 +169,7 @@ beforeEach(() => {
   mocks.receipt = { data: undefined, isError: false }
   mocks.getAccount.mockImplementation(() => ({ address: mocks.account, chainId: mocks.chainId, connector: { uid: mocks.connectorUid } }))
   mocks.requestReview.mockResolvedValue(true)
+  mocks.requireReview.mockReset().mockResolvedValue(undefined)
   mocks.safeConnection = false
   mocks.switchChain.mockImplementation(async ({ chainId }: { chainId: number }) => { mocks.chainId = chainId })
   mocks.waitForSafeExecutionHash.mockResolvedValue(EXECUTION_HASH)
@@ -403,19 +406,111 @@ describe('useSafeTx', () => {
     )
   })
 
-  it('skips only the duplicate app review when the parent already showed the exact call', async () => {
+  it('opens the decoded review for every write, even one a parent panel summarized', async () => {
     const hook = await renderHook()
 
     await act(async () => {
-      await hook.ref.current!.send(request, { ...reviewedByAlice, reviewedInParent: true })
+      // A caller cannot skip the SDK's decoded review: no option names that skip.
+      await hook.ref.current!.send(request, { ...reviewedByAlice, reviewedInParent: true } as TxSendOptions)
     })
 
-    expect(mocks.requestReview).not.toHaveBeenCalled()
+    expect(mocks.requestReview).toHaveBeenCalledWith(
+      expect.objectContaining({ address: BOB, functionName: request.functionName, args: request.args, account: ALICE }),
+      expect.anything(),
+    )
     expect(mocks.switchChain).toHaveBeenCalledWith({ chainId: 10 })
     expect(mocks.publicClient.simulateContract).toHaveBeenCalledWith(
       expect.objectContaining({ address: BOB, account: ALICE }),
     )
     expect(mocks.writeContract).toHaveBeenCalled()
+  })
+
+  describe('one decoded review per user action', () => {
+    const second = { ...request, args: [ALICE, 9n] as const, value: 0n, label: 'Second step' }
+    const reviewBoth = async (hook: Awaited<ReturnType<typeof renderHook>>) => {
+      let proof!: ReviewedCalls
+      await act(async () => { proof = await hook.ref.current!.review([request, second], { account: ALICE, title: 'Two steps', rows: [{ label: 'Send', value: '5 SRC', strong: true }] }) })
+      return proof
+    }
+
+    it('shows every call of the action, decoded, with its summary rows, in one review', async () => {
+      const hook = await renderHook()
+      await reviewBoth(hook)
+      expect(mocks.requireReview).toHaveBeenCalledOnce()
+      expect(mocks.requireReview).toHaveBeenCalledWith({
+        title: 'Two steps',
+        rows: [{ label: 'Send', value: '5 SRC', strong: true }],
+        calls: [
+          expect.objectContaining({ chainId: 10, to: BOB, value: 7n, from: ALICE, functionName: 'transfer', args: [BOB, 5n], label: 'Transfer', data: encodeFunctionData({ abi: ABI, functionName: 'transfer', args: [BOB, 5n] }) }),
+          expect.objectContaining({ chainId: 10, to: BOB, value: 0n, from: ALICE, functionName: 'transfer', args: [ALICE, 9n], label: 'Second step' }),
+        ],
+      })
+    })
+
+    it('sends each reviewed call without asking again', async () => {
+      const hook = await renderHook()
+      const proof = await reviewBoth(hook)
+      await act(async () => { await hook.ref.current!.send(request, { ...reviewedByAlice, reviewed: proof }) })
+      await act(async () => { hook.ref.current!.reset() })
+      await act(async () => { await hook.ref.current!.send(second, { ...reviewedByAlice, reviewed: proof }) })
+      expect(mocks.requestReview).not.toHaveBeenCalled()
+      expect(mocks.requireReview).toHaveBeenCalledOnce()
+      expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+    })
+
+    it.each([
+      ['another wallet connection with the same address', () => { mocks.connectorUid = 'wallet-two' }],
+      ['a Safe connection', () => { mocks.safeConnection = true }],
+    ])('reviews again when the reviewed calls are sent through %s', async (_, change) => {
+      const hook = await renderHook()
+      const proof = await reviewBoth(hook)
+      change()
+      mocks.requestReview.mockResolvedValueOnce(false)
+      await act(async () => { await hook.ref.current!.send(request, { ...reviewedByAlice, reviewed: proof }) })
+      expect(mocks.requestReview).toHaveBeenCalledOnce()
+      expect(mocks.writeContract).not.toHaveBeenCalled()
+    })
+
+    it('reviews again for another account than the one the action review showed', async () => {
+      const hook = await renderHook()
+      let proof!: ReviewedCalls
+      await act(async () => { proof = await hook.ref.current!.review([request], { account: BOB }) })
+      mocks.requestReview.mockResolvedValueOnce(false)
+      await act(async () => { await hook.ref.current!.send(request, { ...reviewedByAlice, reviewed: proof }) })
+      expect(mocks.requestReview).toHaveBeenCalledOnce()
+      expect(mocks.writeContract).not.toHaveBeenCalled()
+    })
+
+    it('reviews the exact call again when anything differs from what the action review showed', async () => {
+      const hook = await renderHook()
+      const proof = await reviewBoth(hook)
+      const changed = [
+        [{ ...request, args: [BOB, 6n] as const }, {}],
+        [{ ...request, value: 8n }, {}],
+        [{ ...request, chainId: 1 }, {}],
+        // A proof review() did not issue, even one shaped like a real one.
+        [request, { reviewed: { ...proof } }],
+        [request, { reviewed: {} }],
+        [request, { reviewNotice: 'The quote got worse.' }],
+      ] as const
+      for (const [call, options] of changed) {
+        mocks.requestReview.mockClear()
+        mocks.requestReview.mockResolvedValueOnce(false)
+        await act(async () => { await hook.ref.current!.send(call as never, { ...reviewedByAlice, reviewed: proof, ...options } as TxSendOptions) })
+        expect(mocks.requestReview).toHaveBeenCalledOnce()
+      }
+      expect(mocks.writeContract).not.toHaveBeenCalled()
+    })
+
+    it('marks every call for a Safe as it is proposed, with the Safe guidance', async () => {
+      mocks.safeConnection = true
+      const hook = await renderHook()
+      await reviewBoth(hook)
+      expect(mocks.requireReview).toHaveBeenCalledWith(expect.objectContaining({
+        description: expect.stringContaining('Safe nonce guidance'), confirmLabel: 'Agree & continue to Safe',
+        calls: [expect.objectContaining({ safeTxGas: 0n }), expect.objectContaining({ safeTxGas: 0n })],
+      }))
+    })
   })
 
   it('cancels without switching, simulating, or signing', async () => {
@@ -454,7 +549,6 @@ describe('useSafeTx', () => {
 
   it.each([
     ['its own review', {}],
-    ['a review its parent showed', { reviewedInParent: true }],
   ])(
     'refuses, before %s opens, a request reviewed for another account',
     async (_, options) => {
@@ -1260,10 +1354,10 @@ describe('useSafeTx', () => {
       expect(hook.ref.current).toMatchObject({ phase: 'pending', holdNotice: WRITE_HOLD_IN_TAB_LINE })
     })
 
-    it('still opens the review line in a parent review when holds last only in this tab', async () => {
+    it('opens the review line when holds last only in this tab', async () => {
       vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Storage unavailable') })
       const hook = await renderHook()
-      await act(async () => { await hook.ref.current!.send(request, { ...reviewedByAlice, reviewedInParent: true }) })
+      await act(async () => { await hook.ref.current!.send(request, reviewedByAlice) })
       expect(mocks.requestReview).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ description: expect.stringContaining(WRITE_HOLD_IN_TAB_LINE) }))
     })
 

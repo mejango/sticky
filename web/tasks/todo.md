@@ -1,3 +1,21 @@
+# Bridge and Collector: one decoded review per user action (2026-10-22)
+
+Survey H1: BridgeFlow and CollectorFlow passed `reviewedInParent`, so useSafeTx skipped the SDK's decoded review; the user confirmed only app-built rows (no function, no args, no amount on flush/claim) on cross-chain fund moves. jango (2026-10-22): one confirmation per user action, and the SDK decoded review is that confirmation, with the summary rows inside it.
+
+- [x] 1. Remove `reviewedInParent` (option, early return, both call sites).
+- [x] 2. `useSafeTx.review(requests, { account, title, rows })`: one SDK review of every call one user action sends (Safe guidance, safeTxGas 0, hold line as in the per-call review), returning a proof of the exact calls. `send` skips its own review only for a call in that proof with the same account, Safe mode and hold line and no review notice; anything else opens the per-call decoded review. Same idea as jbm's project-batch requireTransactionReview over all calls.
+- [x] 3. `TransactionReviewRequest.rows` (TxConfirmRow's shape as text), rendered above the decoded calls.
+- [x] 4. Bridge: Review transfer / Continue transfer / Send across chains / Claim arrival, and Collector: Review delivery, open the one review directly. A transfer's approve and queue are reviewed together; the queue step is sent after the approval confirms without asking again. Resume reviews the steps left again. Closing the review closes the action. TxConfirmDialog stays as the progress card; its button is now only "Review again" after a failure.
+- [x] 5. Full `npm run check` gates green except two sticky-rewards 5 s timeouts under load (also on origin/main, pass alone); three Codex passes (4 Mediums, then 1 Medium, all fixed; then Approve); pushed to PR #70, no merge.
+
+## Plan refinement
+- **Objective:** Every Bridge and Collector action has exactly one in-app confirmation, the SDK decoded review, showing its summary rows and every call it sends; nothing sends a call the review did not show. No SDK bump.
+- **System fit:** Outcome (sign what you read, once) -> capability (SDK requireTransactionReview via useSafeTx) -> evidence (decoded calls plus the proof of what was approved) -> prepared action (the flows' existing requests, journals and reverify) -> authority (held send, wallet) -> verified result (journal recovery, unchanged). Other flows (Fund, Claim, Stick, AutoStick, Receiver) keep their current pattern; flagged for a follow-up.
+- **Reuse and simplicity:** The review queue, dialog and per-call review are reused; the new code is one `review` method, one proof check, one optional `rows` field and its render. No boolean skip remains.
+- **Evidence and unknowns:** SDK 3.4.1 requestTransactionReview passes the request object to the app's handler unchanged, so `rows` reaches the dialog; jbm project-batch.ts:494 reviews all calls once. The `rows` shape matches jbm's TxConfirmRow so it can move into the SDK.
+- **Verification:** Hook tests (one review for all calls, send without re-asking, every difference re-reviews, Safe marking), flow tests (one review per action, follow-up step sent under the same proof, cancel closes, resume re-reviews), dialog render test; full `npm run check` in web/.
+- **Resource budget:** Same worktree and branch; focused suites, then one full gate run; replan if the SDK drops unknown request fields.
+
 # Stick failure reason and re-quote (2026-10-20)
 
 Ruling (jango): if a payment fails, we should know the reason and let the user adjust. A stick pays Sticky's terminal with no buyback, so its minimum stays the exact quote; a shortfall offers a fresh quote instead of a looser minimum.

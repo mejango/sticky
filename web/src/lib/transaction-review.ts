@@ -3,7 +3,7 @@
 import {
   buildTransactionDebugPrompt as buildDebugPrompt,
   buildTransactionReviewPrompt as buildReviewPrompt,
-  type TransactionReviewRequest,
+  type TransactionReviewRequest as SdkTransactionReviewRequest,
 } from '@bananapus/nana-sdk-core/review'
 import { displayChainName, explorerOrigin } from '@/lib/chainDisplay'
 
@@ -21,8 +21,13 @@ export {
   type FundingChainOption,
   type TransactionReviewCall,
   type TransactionReviewOptions,
-  type TransactionReviewRequest,
 } from '@bananapus/nana-sdk-core/review'
+
+/** One line of an action's summary (what moves where), shown above its decoded calls. TxConfirmRow's shape, as text. */
+export type TransactionReviewRow = { label: string; value: string; mono?: boolean; strong?: boolean }
+
+/** The SDK's review request, with the action's summary rows. */
+export type TransactionReviewRequest = SdkTransactionReviewRequest & { rows?: readonly TransactionReviewRow[] }
 
 const display = { chainName: displayChainName, explorerOrigin }
 

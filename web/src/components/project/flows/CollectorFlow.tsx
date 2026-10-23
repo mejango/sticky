@@ -6,12 +6,12 @@ import { formatUnits, isAddressEqual, isHash, type Address, type Hex } from 'vie
 import { BridgeFlow } from '@/components/project/flows/BridgeFlow'
 import { reviewGate } from '@/components/project/flows/review-gate'
 import { FIELD_INPUT, FIELD_LABEL } from '@/components/project/StakeAgeFields'
-import { TxConfirmDialog, type TxConfirmRow } from '@/components/ui/TxConfirmDialog'
+import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { holdIntent } from '@/lib/sticky-hold-intent'
 import { SavedWriteRecovery } from '@/components/ui/SavedWriteRecovery'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, ViewTransactionLink } from '@/components/ui/TxProgress'
-import { useSafeTx } from '@/hooks/useSafeTx'
+import { useSafeTx, type ReviewedCalls } from '@/hooks/useSafeTx'
 import { useWallet } from '@/hooks/useWallet'
 import { parseAmount } from '@/lib/sticky-amount'
 import { createStickyBridge } from '@/lib/sticky-bridge'
@@ -24,11 +24,12 @@ import { collectorWriteKind, createStickyCollectorDelivery, type CollectorDelive
 import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { refreshAfterFund } from '@/lib/sticky-refresh'
 import { groupLabel } from '@/lib/sticky-rewards'
+import { TransactionReviewCancelledError, type TransactionReviewRow } from '@/lib/transaction-review'
 import { chainName } from '@/lib/urn'
 
 const delivery = createStickyCollectorDelivery()
 const bridge = createStickyBridge()
-type Review = { identity: string; owner: Address; delivery: CollectorDelivery; rows: TxConfirmRow[]; attempt?: PendingBridgeWrite }
+type Review = { identity: string; owner: Address; delivery: CollectorDelivery; rows: TransactionReviewRow[]; attempt?: PendingBridgeWrite; autoSend?: boolean }
 const changed = 'The wallet, pool or allocation changed. Review this delivery again.'
 
 /** A source allocation is already held by the collector. Anyone may pay to deliver it to its fixed home pool. */
@@ -102,7 +103,8 @@ export function CollectorFlow({ source, info, onSettled }: {
     const prepared = await delivery.prepare(source, gate.account, count)
     assertCurrent(identity)
     tx.reset(); handledHash.current = null
-    setReview({ identity, owner: gate.account, delivery: prepared, rows: [
+    // The button was the choice: its one decoded review opens as soon as this step renders.
+    setReview({ identity, owner: gate.account, delivery: prepared, autoSend: true, rows: [
       { label: 'Deliver', value: `${formatUnits(count, prepared.meta.decimals)} ${prepared.meta.symbol}`, strong: true },
       { label: 'Source chain', value: chainName(deployment.sourceChainId) },
       { label: 'Home chain', value: chainName(info.chainId) },
@@ -113,11 +115,19 @@ export function CollectorFlow({ source, info, onSettled }: {
       { label: 'Afterward', value: remote ? 'Wait for bridge delivery, claim the arrival, then settle it into airdrops.' : 'The allocation settles into this pool’s airdrops.' },
     ] })
   }
-  async function confirm() {
-    if (!active || busy) return
-    const current = active
+  async function confirm(chosen: Review) {
+    const current = { ...chosen, autoSend: false }
     await run(async () => {
+      assertCurrent(current.identity)
       if (readPendingBridgeWrite(current.owner)) throw new Error('Recover the pending transaction before sending again.')
+      let reviewed: ReviewedCalls
+      try {
+        reviewed = await tx.review([current.delivery.request], { account: current.owner, title: current.delivery.request.label ?? 'Deliver queued rewards', rows: current.rows })
+      } catch (reason) {
+        if (reason instanceof TransactionReviewCancelledError) { closeReview(); return }
+        throw reason
+      }
+      assertCurrent(current.identity)
       const held = createPendingBridgeWrite({ owner: current.owner, request: storeBridgeWrite(current.delivery.request), intent: holdIntent(current.delivery.request, current.owner) })
       setReview({ ...current, attempt: held })
       let reserved = false
@@ -126,7 +136,7 @@ export function CollectorFlow({ source, info, onSettled }: {
       // useSafeTx can adopt an existing Safe proposal without invoking beforeWrite.
       if (source.bridgeRoute) saveWatchedBridgeRoute(info.chainId, info.stToken, groupId, source.bridgeRoute)
       await tx.send(current.delivery.request, {
-        reviewedAccount: current.owner, reviewedInParent: true,
+        reviewedAccount: current.owner, reviewed,
         reverify: async () => { assertCurrent(current.identity); await delivery.reverify(current.delivery, current.owner); assertCurrent(current.identity) },
         durableRecovery: {
           reserve: async () => {
@@ -213,6 +223,13 @@ export function CollectorFlow({ source, info, onSettled }: {
     if (!legacyOwner) return
     void withBridgeLock(async () => { setPending(ensurePendingBridgeId(legacyOwner)) }, true).catch(() => undefined)
   }, [legacyOwner])
+  // A chosen delivery is sent from its own render.
+  useEffect(() => {
+    if (!active?.autoSend || busy || tx.phase !== 'idle') return
+    setReview({ ...active, autoSend: false })
+    void confirm(active)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, busy, tx.phase])
   function closeReview() { setReview(null); tx.dismiss(); void refresh() }
   const ours = pending ? collectorWriteKind(source, pending) : null
   return (
@@ -249,7 +266,7 @@ export function CollectorFlow({ source, info, onSettled }: {
         </> : <p className="text-sm text-muted">Recover the pending action in its original bridge or allocation panel.</p>}
       </div> : null}
       <TxError error={error} />
-      {active ? <TxConfirmDialog open title={active.delivery.request.label ?? 'Deliver queued rewards'} rows={active.rows} steps={[{ title: active.delivery.request.label ?? 'Deliver queued rewards' }]} activeIndex={0} onClose={closeReview} onConfirm={() => void confirm()} busy={busy} settled={tx.phase === 'submitted'} complete={false} action={confirmAction(tx.phase, remote ? 'Confirm & deliver' : 'Confirm & settle')} status={sendingStatus(tx) ?? undefined} error={tx.error} /> : null}
+      {active ? <TxConfirmDialog open title={active.delivery.request.label ?? 'Deliver queued rewards'} rows={active.rows} steps={[{ title: active.delivery.request.label ?? 'Deliver queued rewards' }]} activeIndex={0} onClose={closeReview} onConfirm={() => void confirm(active)} busy={busy} settled={tx.phase === 'submitted'} complete={false} action={confirmAction(tx.phase, 'Review again')} status={sendingStatus(tx) ?? undefined} error={tx.error} /> : null}
       {monitor ? <BridgeFlow info={info} sourceChainId={deployment.sourceChainId} delivery={{ route: source.bridgeRoute, groupId }} onClose={() => setMonitor(false)} onFunded={onSettled} /> : null}
     </div>
   )

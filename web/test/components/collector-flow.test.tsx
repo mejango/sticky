@@ -5,7 +5,8 @@ import { buildStickyCollectorSendTx, buildStickyCollectorSettleTx } from '@banan
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { TxRequest, TxSendOptions } from '@/hooks/useSafeTx'
+import type { ReviewedCalls, TxRequest, TxSendOptions } from '@/hooks/useSafeTx'
+import { TransactionReviewCancelledError } from '@/lib/transaction-review'
 import { bridgeCalldata } from '@/lib/sticky-bridge'
 import { createPendingBridgeWrite, readPendingBridgeWrite, readWatchedBridgeRoutes, savePendingBridgeWrite, storeBridgeWrite } from '@/lib/sticky-bridge-journal'
 import type { CollectorSource } from '@/lib/sticky-collector'
@@ -35,6 +36,7 @@ const requestOf = (source = SOURCE, amount = UNIT): TxRequest => source.bridgeRo
   ? { ...buildStickyCollectorSendTx({ ...source.allocation, amount, sucker: source.bridgeRoute.sourceSucker, backingToken: source.bridgeRoute.backingToken, value: 77n }), label: 'Deliver queued rewards' }
   : { ...buildStickyCollectorSettleTx({ ...source.allocation, amount }), label: 'Settle queued rewards' }
 let root: Root, host: HTMLDivElement, client: QueryClient
+let proofs: ReviewedCalls[] = []
 let chain = heldChain(1), home = heldChain(10)
 const onSettled = vi.fn()
 beforeEach(() => {
@@ -43,7 +45,10 @@ beforeEach(() => {
   home = heldChain(10)
   vi.stubGlobal('navigator', { locks: { request: async (_name: string, _options: unknown, work: (lock: object) => unknown) => work({}) } })
   mocks.wallet = { address: OWNER, isConnected: true, isCenterWallet: false, openSignIn: vi.fn() }
+  proofs = []
   mocks.tx = { phase: 'idle', busy: false, error: null, notice: null, hash: null, isSafe: false,
+    // The proof useSafeTx's one decoded review returns for exactly these calls.
+    review: vi.fn(async () => { const proof = {} as ReviewedCalls; proofs.push(proof); return proof }),
     reset: vi.fn(() => Object.assign(mocks.tx, { phase: 'idle', hash: null, busy: false, error: null })),
     dismiss: vi.fn(() => Object.assign(mocks.tx, { phase: 'idle', hash: null, busy: false })),
     send: vi.fn(async (request: TxRequest, options: TxSendOptions) => {
@@ -60,7 +65,15 @@ beforeEach(() => {
   host = document.createElement('div'); document.body.append(host); root = createRoot(host)
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 })
-afterEach(async () => { await act(async () => root.unmount()); host.remove(); client.clear() })
+afterEach(async () => {
+  try {
+    // Every write carries its action's one decoded review: no send skips it.
+    for (const [, options] of (mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls) {
+      expect(options).not.toHaveProperty('reviewedInParent')
+      expect(proofs).toContain(options.reviewed)
+    }
+  } finally { await act(async () => root.unmount()); host.remove(); client.clear() }
+})
 async function render(source = SOURCE, info = INFO) {
   await act(async () => root.render(<QueryClientProvider client={client}><WalletAuthContext.Provider value={{ requestSignIn: vi.fn() }}><CollectorFlow source={source} info={info} onSettled={onSettled} /></WalletAuthContext.Provider></QueryClientProvider>))
 }
@@ -72,7 +85,8 @@ async function type(label: string, value: string) {
   const input = document.getElementById(node.htmlFor) as HTMLInputElement
   await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })) })
 }
-async function review(source = SOURCE) { await render(source); await type('Amount to deliver', '1'); await press('Review delivery') }
+/** The delivery form, filled. 'Review delivery' is then its one confirmation. */
+async function review(source = SOURCE) { await render(source); await type('Amount to deliver', '1') }
 async function confirmed(source = SOURCE) { Object.assign(mocks.tx, { phase: 'success', hash: HASH, busy: false }); await render(source) }
 const storedPending = () => JSON.parse(localStorage.getItem(`sticky:bridge:pending:v1:${OWNER.toLowerCase()}`)!)
 function failReturnedHashSave(failure: 'write' | 'read' = 'write') {
@@ -100,7 +114,7 @@ describe('permissionless collector delivery', () => {
   it('repairs the actual returned delivery hash after its durable save failed', async () => {
     await review()
     const save = failReturnedHashSave()
-    await press('Confirm & deliver')
+    await press('Review delivery')
     const original = storedPending()
     expect(original.id).toBeTruthy(); expect(original.hash).toBeUndefined()
     expect(readPendingBridgeWrite(OWNER)?.hash).toBe(HASH)
@@ -114,7 +128,7 @@ describe('permissionless collector delivery', () => {
   it.each([false, true])('never repairs or clears a newer identical delivery using an older result (replacement hash %s)', async hasHash => {
     await review()
     const save = failReturnedHashSave()
-    await press('Confirm & deliver')
+    await press('Review delivery')
     const original = storedPending()
     save.mockRestore()
     const replacement = { ...original, id: crypto.randomUUID(), ...(hasHash ? { hash: H(91), safeProposal: false } : {}) }
@@ -128,7 +142,7 @@ describe('permissionless collector delivery', () => {
   it.each(['write', 'read'] as const)('recovers the retained delivery after two hash saves fail, the review unmounts and storage returns (%s)', async failure => {
     await review()
     const save = failReturnedHashSave(failure)
-    await press('Confirm & deliver')
+    await press('Review delivery')
     await confirmed()
     expect(save.failures()).toBeGreaterThanOrEqual(2)
     expect(mocks.verifyWrite).not.toHaveBeenCalled()
@@ -163,22 +177,32 @@ describe('permissionless collector delivery', () => {
   it('wallet-action:deliver-queued-rewards reviews one partial allocation and persists its exact call and route before the wallet', async () => {
     await review()
     expect(text()).toContain('Queued on Ethereum: 10 SRC')
-    expect(text()).toContain('Reward address')
-    expect(text()).toContain('Home chainOptimism')
     mocks.walletWrite.mockImplementation(async (request: TxRequest) => {
       expect(readPendingBridgeWrite(OWNER)?.request.data).toBe(bridgeCalldata(request))
       expect(readWatchedBridgeRoutes(10, INFO.stToken, 4000n)).toEqual([expect.objectContaining({ sourceSucker: ROUTE.sourceSucker, canPrepare: false })])
       expect(request).toMatchObject({ chainId: 1, address: SOURCE.allocation.deployment.address, functionName: 'send', args: [3n, INFO.stToken, 4000n, UNIT, ROUTE.sourceSucker, ROUTE.backingToken], value: 77n })
     })
-    await press('Confirm & deliver')
+    await press('Review delivery')
     expect(mocks.walletWrite).toHaveBeenCalledTimes(1)
+    // One user action, one decoded review, with the delivery's summary above the call.
+    expect(mocks.tx.review).toHaveBeenCalledOnce()
+    expect(mocks.tx.review).toHaveBeenCalledWith([expect.objectContaining({ functionName: 'send' })], expect.objectContaining({ account: OWNER, rows: expect.arrayContaining([{ label: 'Home chain', value: 'Optimism' }, expect.objectContaining({ label: 'Reward address' })]) }))
     expect(mocks.reverify).toHaveBeenCalledWith(expect.objectContaining({ amount: UNIT }), OWNER)
     expect(readPendingBridgeWrite(OWNER)).toMatchObject({ hash: HASH, safeProposal: false })
     expect(onSettled).not.toHaveBeenCalled()
   })
 
+  it('closes the delivery and sends nothing when its one review is closed', async () => {
+    ;(mocks.tx.review as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new TransactionReviewCancelledError())
+    await review(); await press('Review delivery')
+    expect(mocks.tx.send).not.toHaveBeenCalled()
+    expect(readPendingBridgeWrite(OWNER)).toBeNull()
+    expect(text()).not.toContain('Review again')
+    expect(text()).not.toContain('Review closed')
+  })
+
   it('reports verified remote submission separately from settlement and opens the existing fixed-group bridge monitor', async () => {
-    await review(); await press('Confirm & deliver')
+    await review(); await press('Review delivery')
     mocks.read.mockResolvedValue({ pending: 9n * UNIT, meta: ROUTE.sourceMeta })
     await confirmed()
     expect(readPendingBridgeWrite(OWNER)).toBeNull()
@@ -191,7 +215,7 @@ describe('permissionless collector delivery', () => {
 
   it('wallet-action:settle-queued-rewards reports local settlement only after exact canonical execution proof', async () => {
     const source = localCollectorSource()
-    await review(source); await press('Confirm & settle')
+    await review(source); await press('Review delivery')
     expect(onSettled).not.toHaveBeenCalled()
     await confirmed(source)
     expect(onSettled).toHaveBeenCalledExactlyOnceWith(source.verified.rewardToken)
@@ -201,7 +225,7 @@ describe('permissionless collector delivery', () => {
 
   it('keeps a hashless unknown attempt locked through dismissal, reload and a matching historical hash', async () => {
     mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => { await options.durableRecovery?.reserve(); return null })
-    await review(); await press('Confirm & deliver'); await press('Cancel')
+    await review(); await press('Review delivery'); await press('Cancel')
     await act(async () => root.unmount()); root = createRoot(host); await render()
     expect(button('Review delivery').disabled).toBe(true)
     const held = readPendingBridgeWrite(OWNER)
@@ -215,7 +239,7 @@ describe('permissionless collector delivery', () => {
   })
 
   it('keeps a Safe proposal pending until its executed hash verifies the saved proposal', async () => {
-    await review(); mocks.tx.isSafe = true; await press('Confirm & deliver')
+    await review(); mocks.tx.isSafe = true; await press('Review delivery')
     Object.assign(mocks.tx, { phase: 'submitted', notice: 'Awaiting Safe confirmations' }); await render()
     await press('Done')
     expect(onSettled).not.toHaveBeenCalled()
@@ -260,7 +284,7 @@ describe('permissionless collector delivery', () => {
   it('brings a hashless delivery reservation the SDK never held to the one explicit check after reload, which clears it, keeps the watched route, and allows exactly one more send', async () => {
     const normalSend = mocks.tx.send as (request: TxRequest, options: TxSendOptions) => Promise<string | null>
     mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => { await options.durableRecovery?.reserve(); return null })
-    await review(); await press('Confirm & deliver')
+    await review(); await press('Review delivery')
     const route = readWatchedBridgeRoutes(10, INFO.stToken, 4000n)
     expect(route).toHaveLength(1)
     await act(async () => root.unmount()); root = createRoot(host)
@@ -276,7 +300,7 @@ describe('permissionless collector delivery', () => {
 
     mocks.tx.send = vi.fn(normalSend)
     await review()
-    await press('Confirm & deliver')
+    await press('Review delivery')
     expect(mocks.tx.send).toHaveBeenCalledOnce()
   })
   async function hashedThenDropped() {
@@ -287,7 +311,7 @@ describe('permissionless collector delivery', () => {
       await given.durableRecovery?.reserve(); await given.durableRecovery?.submitted(HASH, false)
       return null
     })
-    await review(); await press('Confirm & deliver')
+    await review(); await press('Review delivery')
     return { normalSend, released: () => options.durableRecovery!.released!() }
   }
   /** The delivery the review sends, as the chain sees it. */
@@ -305,7 +329,7 @@ describe('permissionless collector delivery', () => {
     expect(readPendingBridgeWrite(OWNER)).toBeNull()
     expect(readWatchedBridgeRoutes(10, INFO.stToken, 4000n)).toEqual(route)
     mocks.tx.send = vi.fn(normalSend)
-    await press('Cancel'); await review(); await press('Confirm & deliver')
+    await press('Cancel'); await review(); await press('Review delivery')
     expect(mocks.tx.send).toHaveBeenCalledOnce()
   })
   it('after a reload, shows the SDK\'s exit for a saved delivery hash the chain has not shown for 30 minutes, and clears it keeping the route', async () => {
@@ -333,7 +357,7 @@ describe('permissionless collector delivery', () => {
   it('records a settlement the SDK reports after a failed hash save and a reload, and sends nothing again', async () => {
     await review()
     const save = failReturnedHashSave()
-    await press('Confirm & deliver')
+    await press('Review delivery')
     save.mockRestore()
     const sent = (mocks.tx.send as ReturnType<typeof vi.fn>).mock.calls.length
     await act(async () => root.unmount()); root = createRoot(host)
@@ -376,14 +400,14 @@ describe('permissionless collector delivery', () => {
   it('never reaches the wallet if recovery storage fails', async () => {
     await review()
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Storage full') })
-    await press('Confirm & deliver')
+    await press('Review delivery')
     expect(mocks.walletWrite).not.toHaveBeenCalled()
     expect(onSettled).not.toHaveBeenCalled()
   })
 
   it('revalidates before sending and keeps the queue untouched when the live route refuses', async () => {
     await review(); mocks.reverify.mockRejectedValue(new Error('Route retired'))
-    await press('Confirm & deliver')
+    await press('Review delivery')
     expect(mocks.walletWrite).not.toHaveBeenCalled()
     expect(readPendingBridgeWrite(OWNER)).toBeNull()
     expect(text()).toContain('Route retired')
@@ -392,12 +416,12 @@ describe('permissionless collector delivery', () => {
   it('drops an asynchronous review when the source group changes', async () => {
     const deferred = Promise.withResolvers<unknown>()
     mocks.prepare.mockReturnValueOnce(deferred.promise)
-    await review()
+    await review(); await press('Review delivery')
     const other = { ...SOURCE, allocation: { ...SOURCE.allocation, groupId: 0n } }
     await render(other)
     await act(async () => deferred.resolve({ source: SOURCE, amount: UNIT, pending: 10n * UNIT, meta: ROUTE.sourceMeta, verified: SOURCE.verified, request: requestOf() }))
     expect(mocks.walletWrite).not.toHaveBeenCalled()
-    expect(button('Confirm & deliver')).toBeUndefined()
+    expect(button('Review again')).toBeUndefined()
     expect(text()).toContain('allocation changed')
   })
 
@@ -411,7 +435,7 @@ describe('permissionless collector delivery', () => {
     const deferred = Promise.withResolvers<void>()
     await review()
     mocks.reverify.mockReturnValueOnce(deferred.promise)
-    await press('Confirm & deliver')
+    await press('Review delivery')
     await act(async () => root.unmount()); root = createRoot(host)
     await render({ ...SOURCE, allocation: { ...SOURCE.allocation, groupId: 0n } })
     await act(async () => deferred.resolve())
@@ -426,7 +450,7 @@ describe('permissionless collector delivery', () => {
       await options.durableRecovery?.submitted(HASH, true)
       return HASH
     })
-    await press('Confirm & deliver')
+    await press('Review delivery')
     expect(readPendingBridgeWrite(OWNER)).toMatchObject({ hash: HASH, safeProposal: true })
     expect(readWatchedBridgeRoutes(10, INFO.stToken, 4000n)).toHaveLength(1)
   })
@@ -435,7 +459,7 @@ describe('permissionless collector delivery', () => {
     mocks.tx.send = vi.fn(async (_request: TxRequest, options: TxSendOptions) => {
       await options.durableRecovery?.reserve(); await options.durableRecovery?.releaseUnsubmitted(); return null
     })
-    await review(); await press('Confirm & deliver')
+    await review(); await press('Review delivery')
     expect(readPendingBridgeWrite(OWNER)).toBeNull()
     expect(onSettled).not.toHaveBeenCalled()
   })
