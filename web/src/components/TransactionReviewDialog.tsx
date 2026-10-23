@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, useMemo, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   addressLabel,
   currencyLabel,
@@ -24,6 +24,9 @@ import { chainName } from '@/lib/urn'
 import { FeeBuybackNotice, useFeeBuybackReview } from './FeeBuybackNotice'
 
 import type { PendingReview, PendingFundingChainSelection, TransactionReviewDialogProps } from './TransactionReviewProvider'
+
+/** What the review says when core's simulation saw this send revert: nothing is sent, and what to do next. */
+export const SIMULATION_FAILED_LINE = "This would fail onchain right now, so it can't be sent. Cancel, then try again in a moment."
 
 const ARRAY_TYPE = /\[\d*\]$/
 
@@ -524,6 +527,13 @@ function ReviewModal({
   const rows = model.context
   const [agreed, setAgreed] = useState(false)
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  // Core refuses a confirm once its simulation saw a revert: the dialog says so and offers only Cancel.
+  const [wouldFail, setWouldFail] = useState(false)
+  useEffect(() => {
+    let live = true
+    pending.simulation?.then(simulated => { if (live) setWouldFail(simulated.status === 'failed') }, () => undefined)
+    return () => { live = false }
+  }, [pending.simulation])
 
   const copyPrompt = async () => {
     try {
@@ -670,6 +680,7 @@ function ReviewModal({
               agree to {isAuthorization ? 'authorize' : 'send'} this exact call.
             </span>
           </label>
+          {wouldFail ? <p role="alert" className="mt-3 text-sm text-red-700">{SIMULATION_FAILED_LINE}</p> : null}
           <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             <button
               type="button"
@@ -681,7 +692,7 @@ function ReviewModal({
             <button
               type="button"
               onClick={async () => { if (await feeReview.confirm()) onFinish(true) }}
-              disabled={!agreed || feeReview.busy || checkingProject}
+              disabled={!agreed || wouldFail || feeReview.busy || checkingProject}
               className="btn-primary min-h-[44px] px-5 text-sm"
             >
               {checkingProject ? 'Checking project link…' : feeReview.confirmLabel ?? model.confirmLabel ??

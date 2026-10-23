@@ -10,7 +10,7 @@ import {
   useState,
 } from 'react'
 import type { Address } from 'viem'
-import { registerReviewHandler, type ReviewModel } from '@bananapus/nana-sdk-core/review'
+import { registerReviewHandler, type ReviewModel, type ReviewSimulation } from '@bananapus/nana-sdk-core/review'
 import { useAccount } from 'wagmi'
 import { ModalDialog } from '@/components/ui/ModalShell'
 import { loadReviewEngine } from '@/lib/review-engine'
@@ -29,6 +29,8 @@ export type PendingReview = {
   account?: Address
   /** Core's prompt: the model it bound, confirmed only by its own confirmation. */
   model: ReviewModel
+  /** Core's review-time simulation, which runs while the review is open. */
+  simulation?: Promise<ReviewSimulation>
 }
 
 export type PendingFundingChainSelection = {
@@ -210,7 +212,7 @@ export function TransactionReviewProvider({ children }: PropsWithChildren) {
     () =>
       registerReviewHandler(async prompt => {
         const approved = await new Promise<boolean>(resolve => {
-          const pending: PendingReview = { kind: 'review', id: nextId.current++, model: prompt.model, resolve, scope: scopeRef.current, account: accountRef.current }
+          const pending: PendingReview = { kind: 'review', id: nextId.current++, model: prompt.model, simulation: prompt.simulation, resolve, scope: scopeRef.current, account: accountRef.current }
           // Core withdrew the prompt (the run's account changed): its dialog closes, or it leaves the queue.
           prompt.signal.addEventListener('abort', () => {
             if (activeRef.current === pending) void finish(pending.id, null)

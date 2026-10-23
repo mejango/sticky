@@ -1,6 +1,7 @@
 import { jbV6ContractAddress } from '@bananapus/nana-sdk-core'
 import { JBCenterClient, isSponsorable, publishSignedIntent, type JBCenterIntentInput } from '@bananapus/nana-sdk-core/jbcenter'
 import { TRUSTED_FORWARDER_ABI } from '@bananapus/nana-sdk-core/review/relayr'
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 import { isEip7702DelegatedEoaRuntime } from '@bananapus/nana-sdk-core/safe'
 import type { Hex } from 'viem'
 import { jbCenterBaseUrl } from '@/lib/jbcenter-config'
@@ -11,11 +12,11 @@ export const STICKY_LISTING_FORWARDER = jbV6ContractAddress.ERC2771Forwarder[1]
 
 /** Reconstruct saved envelopes for recovery too; only publication admits a new single-home launch. */
 export function buildStickyEnvelope(plan: LaunchPlan): JBCenterIntentInput {
-  if (!plan.targets.length) throw new Error('A listing needs at least one launch call.')
-  if (!isAddress(plan.owner)) throw new Error('A listing needs the launching wallet.')
+  if (!plan.targets.length) throw new ReviewLineError('A listing needs at least one launch call.')
+  if (!isAddress(plan.owner)) throw new ReviewLineError('A listing needs the launching wallet.')
   const targets = [...plan.targets].sort((a, b) => a.chainId - b.chainId)
   const chainIds = targets.map(target => target.chainId)
-  if (new Set(chainIds).size !== chainIds.length) throw new Error('A listing has one launch per chain.')
+  if (new Set(chainIds).size !== chainIds.length) throw new ReviewLineError('A listing has one launch per chain.')
   return {
     format: 'sticky.center/deploy.v1', deploymentVersion: '6', chainIds,
     deploymentCalls: targets.map(({ chainId, call }) => ({ chainId, to: call.target, data: call.data.toLowerCase() as Hex })),

@@ -244,6 +244,19 @@ export function useReviewedAction() {
   }
 
   const { held: shown } = runner
+  // Core ends a run as done once the held step it followed settles, which may be an early step of a sequence (an
+  // approval, say). The sequence saved under the run's account says what is left: the run resumes from there.
+  const ranLast = last.current
+  let settledSteps: number | null = null
+  if (runner.phase === 'done' && !result && ranLast?.account && ranLast.action.calls.length > 1) {
+    try {
+      const saved = findReviewedSequence(sequenceScope(ranLast.action.calls), ranLast.account)
+      if (saved) settledSteps = saved.completed.length + (saved.sending ? 1 : 0)
+    } catch {
+      settledSteps = null
+    }
+  }
+  const unfinished = settledSteps !== null && settledSteps < (ranLast?.action.calls.length ?? 0)
   // Core says a run that returned nothing was cancelled by leaving its error empty, with nothing held.
   useEffect(() => {
     if (!ended) return
@@ -254,7 +267,7 @@ export function useReviewedAction() {
   const heldSafe = !!shown?.state && shown.state.status !== 'clear' && shown.state.record.safe
   // Core's phase, with its held view: a run that stopped with a step in flight is held, with that hold's line.
   const phase: TxPhase =
-    runner.phase === 'done' ? 'success'
+    runner.phase === 'done' ? (unfinished ? 'idle' : 'success')
       : runner.phase === 'proposed' ? 'submitted'
         : runner.phase === 'receipt' ? 'pending'
           : runner.phase !== 'idle' ? runner.phase
@@ -328,7 +341,7 @@ export function useReviewedAction() {
     reverted: phase === 'error' && runner.failure instanceof ReviewedCallRevertedError,
     /** How many of the run's steps confirmed: the confirm is on the one after them. A followed hold that settled the
      * run's last step ends it with every step confirmed. */
-    landed: runner.phase === 'done' ? Math.max(landed, runner.total) : landed,
+    landed: unfinished ? settledSteps! : (runner.phase === 'done' ? Math.max(landed, ranLast?.action.calls.length ?? 0) : landed),
     hash,
     safeProposalHash,
     /** The wallet's reply for the run's latest step: a transaction, or a Safe proposal. */

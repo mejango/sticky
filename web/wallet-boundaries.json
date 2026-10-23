@@ -3,7 +3,7 @@
   "sites": [
     {
       "file": "src/components/TransactionReviewProvider.tsx",
-      "line": 211,
+      "line": 213,
       "api": "registerReviewHandler",
       "boundary": "The page's one review handler: it answers core's prompt only with the person's choice in the review dialog, cancels on a scope or account change, and closes when core withdraws the prompt.",
       "test": "test/components/transaction-review-scope.test.tsx"

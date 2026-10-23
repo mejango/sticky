@@ -7,7 +7,7 @@ import {
   switchChain,
 } from '@wagmi/core'
 import type { JBChainId } from '@bananapus/nana-sdk-core'
-import { viemWalletAdapter, type ReviewedSendDeps } from '@bananapus/nana-sdk-core/review'
+import { ReviewLineError, viemWalletAdapter, type ReviewedSendDeps } from '@bananapus/nana-sdk-core/review'
 import type { PublicClient } from 'viem'
 import { wagmiConfig } from '@/providers/Providers'
 import { chainName } from '@/lib/urn'
@@ -30,7 +30,7 @@ async function switchTo(chainId: number): Promise<void> {
   await switchChain(wagmiConfig, { chainId: chainId as JBChainId }).catch(error => {
     // Safe apps cannot switch chains; the wagmi error only names the connector.
     throw /does not support chain switching/.test(String(error))
-      ? new Error(`This wallet cannot switch chains. Open it on ${chainName(chainId)} and try again.`)
+      ? new ReviewLineError(`This wallet cannot switch chains. Open it on ${chainName(chainId)} and try again.`)
       : error
   })
 }

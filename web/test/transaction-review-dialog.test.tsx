@@ -127,4 +127,23 @@ describe('transaction review dialog', () => {
     act(() => close?.click())
     expect(finished).toEqual([false])
   })
+
+  it('says a send the simulation saw revert cannot go, without the node\'s words, and offers only Cancel', async () => {
+    const payment = REVIEW_REQUESTS['pay with 721 metadata'].calls[0]
+    const { TransactionReviewDialog, SIMULATION_FAILED_LINE } = await import('@/components/TransactionReviewDialog')
+    const simulation = Promise.resolve({ status: 'failed' as const, message: 'upstream sentinel' })
+    await act(async () => root.render(
+      <TransactionReviewDialog
+        pending={{ kind: 'review', id: 1, model: buildReviewModel({ calls: [payment] } as TransactionReviewRequest), simulation, resolve: () => {} }}
+        onFinish={() => {}}
+      />,
+    ))
+    const dialog = document.querySelector('dialog')!
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toBe(SIMULATION_FAILED_LINE)
+    expect(dialog.textContent).not.toContain('upstream sentinel')
+    const checkbox = dialog.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    act(() => checkbox.click())
+    const confirm = dialog.querySelector<HTMLButtonElement>('footer button.btn-primary')
+    expect(confirm?.disabled).toBe(true)
+  })
 })
