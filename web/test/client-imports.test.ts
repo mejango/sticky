@@ -112,7 +112,9 @@ describe('shared client rules have one SDK owner', () => {
 
   it.each([
     ['jbcenter', 'createPacedJBCenterLimiter'],
-    ['review', 'submitReviewedContractWrite'],
+    ['review', 'sendReviewed'],
+    ['review', 'signReviewed'],
+    ['review', 'payRelayrReviewed'],
     ['review', 'transactionMessage'],
     ['safe-service', 'readSafeAppExecution'],
     ['safe-service', 'findPendingSafeAppProposal'],

@@ -21,7 +21,7 @@ vi.mock('next/image', () => ({
 }))
 
 import { TransactionReviewProvider } from '@/components/TransactionReviewProvider'
-import { requireTransactionReview } from '@/lib/transaction-review'
+import { promptReview } from '../support/review-prompt'
 import '../dialog-shim'
 
 let container: HTMLDivElement
@@ -44,7 +44,7 @@ async function openReviewOn(chainId: number) {
   )
   await act(async () => {
     // Swallow the cancellation thrown when the modal unmounts after the test.
-    requireTransactionReview({
+    promptReview({
       calls: [
         {
           chainId,
@@ -109,7 +109,7 @@ describe('transaction review chain identity', () => {
     ] as const
     act(() => root.render(<TransactionReviewProvider>{null}</TransactionReviewProvider>))
     await act(async () => {
-      requireTransactionReview({
+      promptReview({
         calls: [
           {
             chainId: 8453,

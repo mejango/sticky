@@ -60,6 +60,8 @@ jobs:
         run: npm run schema:check:offline
       - name: Check reviewed transaction inventory
         run: npm run transaction:check
+      - name: Check raw wallet boundaries
+        run: npm run wallet:check
       - name: Run tests
         run: npm run test:ci
       - name: Build production application

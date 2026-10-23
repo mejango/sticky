@@ -21,6 +21,7 @@ import {
 } from '@/lib/sticky-abis'
 import { deploymentOn, type StickyDeployment } from '@/lib/sticky-addresses'
 import { parseStickyUri } from '@/lib/sticky-metadata'
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 /** One Sticky project on one chain, as of `blockNumber`. */
 export type StickyProjectInfo = {
@@ -145,7 +146,7 @@ type Recorded = {
 function reading(chainId: number, projectId: bigint) {
   const where = `Sticky project ${projectId} on chain ${chainId}`
   const unreadable = (read: string, cause: Error): never => {
-    throw new Error(`${where}: ${read} could not be read.`, { cause })
+    throw new ReviewLineError(`${where}: ${read} could not be read.`, { cause })
   }
   const need = <T>(answer: Answer<T>, read: string): T =>
     answer.status === 'success' ? answer.result : unreadable(read, answer.error)

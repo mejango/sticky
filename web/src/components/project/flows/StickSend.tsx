@@ -1,23 +1,24 @@
 'use client'
 
+import { errorLine, ReviewLineError } from '@bananapus/nana-sdk-core/review'
+import { asSentence } from '@/lib/sticky-format'
 import { useQueryClient } from '@tanstack/react-query'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { formatUnits, isAddressEqual, type Address } from 'viem'
 import { told } from '@/components/project/flows/refusal'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
-import { useSafeTx } from '@/hooks/useSafeTx'
+import { reviewedSteps, useReviewedAction } from '@/hooks/useReviewedAction'
 import { useStepPresses } from '@/hooks/useStepPresses'
 import { useWallet } from '@/hooks/useWallet'
 import { readBalanceAndAllowance } from '@/lib/sticky-allowance'
 import { approveSteps, stickTx, type TxRequest } from '@/lib/sticky-builders'
-import { asSentence } from '@/lib/sticky-format'
 import { withApprovalParent } from '@/lib/sticky-hold-intent'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { assertCanStickFor, quoteStick } from '@/lib/sticky-quotes'
 import { refreshAfterStick } from '@/lib/sticky-refresh'
 import type { TransactionReviewRow } from '@/lib/transaction-review'
-import { stickFailure, type StickFailure } from '@/lib/sticky-stick-failure'
+import { stickFailure } from '@/lib/sticky-stick-failure'
 import { chainName } from '@/lib/urn'
 import { EXTERNAL_WALLET_REQUIRED } from '@/providers/WalletAuthContext'
 
@@ -69,21 +70,25 @@ export function StickSend({
   onReviewAgain: () => void
 }) {
   const { isConnected, isCenterWallet } = useWallet()
-  const tx = useSafeTx(chainId)
+  const tx = useReviewedAction()
   const client = useQueryClient()
   const [plan, setPlan] = useState<Plan | null>(null)
   const [preparing, setPreparing] = useState(false)
-  /** Why the last send failed, when the revert says. */
-  const [failure, setFailure] = useState<StickFailure | null>(null)
-  // The steps confirmed so far, one for each press: the dialog is on the one after them.
-  const presses = useStepPresses(tx)
-  const { landed } = presses
+  const presses = useStepPresses(tx, close)
+  // The steps confirmed so far: the dialog is on the one after them.
+  const { landed } = tx
   const reading = useRef<AbortController | null>(null)
   const latest = useRef({ tx, presses, onFailure })
   latest.current = { tx, presses, onFailure }
 
   const sending = tx.busy || tx.phase === 'review'
   const complete = plan !== null && landed === plan.steps.length
+  // Why the stick failed, when the revert says. Only the stick itself reads as a stick failure; an approval that fails
+  // keeps the engine's line and Retry.
+  const failure = useMemo(
+    () => (tx.phase === 'error' && plan && landed === plan.steps.length - 1 ? stickFailure(tx.failure, plan.info.stSymbol) : null),
+    [tx.phase, tx.failure, plan, landed],
+  )
 
   // Each request plans afresh from what the chain says now.
   useEffect(() => {
@@ -93,7 +98,6 @@ export function StickSend({
     reading.current = controller
     const { signal } = controller
     latest.current.tx.reset()
-    setFailure(null)
     setPlan(null)
     latest.current.presses.restart()
     setPreparing(true)
@@ -107,7 +111,7 @@ export function StickSend({
           { token: info.stakedToken, owner: account, spender: terminal },
           { signal },
         )
-        if (balance < value) throw new Error(MORE_THAN_HELD)
+        if (balance < value) throw new ReviewLineError(MORE_THAN_HELD)
         const minted = await quoteStick(chainId, info.projectId, info.stakedToken, value, account, beneficiary, { signal })
         const steps = withApprovalParent([
           ...approveSteps(chainId, info.stakedToken, terminal, allowance, value, {
@@ -122,7 +126,7 @@ export function StickSend({
         latest.current.presses.arm()
       } catch (reason) {
         if (!signal.aborted) {
-          const message = asSentence(told(REVIEW_UNREADABLE, { chainId, projectId }, reason).message)
+          const message = asSentence(errorLine(told(REVIEW_UNREADABLE, { chainId, projectId }, reason)))
           latest.current.onFailure(message, account.toLowerCase())
         }
       } finally {
@@ -136,30 +140,24 @@ export function StickSend({
   async function verify({ info: staked, terminal: spender, account: owner, amount: value }: Plan) {
     const { balance } = await readBalanceAndAllowance(chainId, { token: staked.stakedToken, owner, spender }).catch(reason => {
       const unreadable = told(BALANCE_UNREADABLE, { chainId, projectId }, reason)
-      throw new Error(asSentence(unreadable.message), { cause: unreadable })
+      throw new ReviewLineError(asSentence(errorLine(unreadable)), { cause: unreadable })
     })
-    if (balance < value) throw new Error(`Your ${staked.symbol} balance changed. Review the amount.`)
+    if (balance < value) throw new ReviewLineError(`Your ${staked.symbol} balance changed. Review the amount.`)
   }
 
   async function confirm() {
     if (!plan || sending) return
     // The plan is the reviewing account's: its balance, its allowance, its trust check and its quote. Every step is sent
     // as that account, and the engine refuses it, before a review opens, while another is connected.
-    setFailure(null)
-    const outcome = await presses.press(
-      plan.steps,
-      (step, confirmedAt, reviewed) =>
-        tx.send(step, {
-          reviewedAccount: plan.account,
-          reviewed,
-          simulationBlockNumber: confirmedAt,
-          reverify: () => verify(plan),
-          // Only the stick itself reads as a stick failure; an approval that fails keeps the engine's line and Retry.
-          onFailure: error => setFailure(step === plan.steps[plan.steps.length - 1] ? stickFailure(error, plan.info.stSymbol) : null),
-        }),
-      { account: plan.account, title: forSomeoneElse ? 'Stick for someone else' : 'Stick', rows: rowsOf(plan, forSomeoneElse, chainId) },
+    await presses.press(
+      {
+        account: plan.account,
+        calls: reviewedSteps(plan.steps, plan.account),
+        title: forSomeoneElse ? 'Stick for someone else' : 'Stick',
+        context: rowsOf(plan, forSomeoneElse, chainId),
+        reverify: () => verify(plan),
+      },
     )
-    if (outcome === 'cancelled') close()
   }
 
   // The stick's one decoded review opens once it is planned, and each step it showed is sent as the one before confirms.

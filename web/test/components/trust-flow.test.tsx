@@ -3,7 +3,7 @@
 import { QueryClient, QueryClientProvider, notifyManager, type QueryKey } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { encodeFunctionData, getAddress, zeroAddress, type Abi, type Address } from 'viem'
+import { getAddress, zeroAddress, type Address } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stickyHookAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
@@ -12,6 +12,7 @@ import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 import { EXTERNAL_WALLET_REQUIRED, WalletAuthContext } from '@/providers/WalletAuthContext'
 import { stickyInfo } from '../home-fixtures'
 import fixtures from '../lib/calldata-fixtures.json'
+import { reviewedActionFake } from '../support/reviewed-action'
 
 // The Trust flow, for trusting a sender and for untrusting one: who is asked, what it reads before it asks the wallet,
 // what it sends and what it refreshes afterwards. The engine has tests of its own (test/transactions): its hook is a
@@ -29,9 +30,9 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@/hooks/useWallet', () => ({ useWallet: () => ({ ...mocks.wallet, openSignIn: mocks.openSignIn }) }))
 // The engine's hook is a mock; its labels for the phases it reports are its own.
-vi.mock('@/hooks/useSafeTx', async importOriginal => ({
-  ...(await importOriginal<typeof import('@/hooks/useSafeTx')>()),
-  useSafeTx: () => mocks.tx,
+vi.mock('@/hooks/useReviewedAction', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/hooks/useReviewedAction')>()),
+  useReviewedAction: () => mocks.tx,
 }))
 vi.mock('@/lib/sticky-rewards', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-rewards')>()),
@@ -54,22 +55,7 @@ const HASH = `0x${'c3'.repeat(32)}`
 /** Project 12 on Base Sepolia, whose Sticky token is STICKYART. */
 const INFO = stickyInfo(CHAIN, BigInt(PROJECT), { symbol: 'ART', stSymbol: 'STICKYART' })
 
-const idle = () => ({
-  phase: 'idle',
-  busy: false,
-  hash: null as string | null,
-  error: null as string | null,
-  receipt: null,
-  isSafe: false,
-  safeProposalHash: null,
-  safeNonceGuidance: null,
-  confirmationUncertain: false,
-  send: vi.fn().mockResolvedValue(null),
-  // The change's one decoded review: what it returns is the proof the send carries.
-  review: vi.fn(async () => ({})),
-  reset: vi.fn(),
-  dismiss: vi.fn(),
-})
+const idle = () => reviewedActionFake(HASH as `0x${string}`)
 const tx = () => mocks.tx as ReturnType<typeof idle>
 
 /** What a read of the hook's record of a trusted sender answers. */
@@ -331,54 +317,52 @@ describe('trusting a sender: the send', () => {
     await render()
     await reviewTrust(SENDER)
 
-    expect(tx().send).toHaveBeenCalledOnce()
-    const [request, options] = tx().send.mock.calls[0] as [{ chainId: number; address: Address; abi: Abi; functionName: string; args: unknown[] }, { reviewed: unknown }]
-    expect(request).toMatchObject({ chainId: CHAIN, address: HOOK, functionName: 'setTrustedSenderFor', args: [12n, SENDER, true] })
-    // Exactly one confirmation: the decoded review of this call, with the summary rows, whose proof the send carries.
-    expect(tx().review).toHaveBeenCalledExactlyOnceWith([request], {
+    // Exactly one confirmation: the one review of this run, with the summary rows, and the send is its call.
+    expect(tx().run).toHaveBeenCalledOnce()
+    const action = tx().run.mock.calls[0][0]
+    expect(action.calls).toHaveLength(1)
+    expect(action.calls[0]).toMatchObject({ chainId: CHAIN, to: HOOK, functionName: 'setTrustedSenderFor', args: [12n, SENDER, true] })
+    expect(action).toMatchObject({
       account: ALICE,
       title: 'Trust this sender',
-      rows: [
+      context: [
         { label: 'Project', value: 'STICKYART #12' },
         { label: 'Sender', value: SENDER, mono: true },
         { label: 'Trusted', value: 'Yes, they can add stakes to your position.', strong: true },
         { label: 'On', value: 'Base Sepolia' },
       ],
     })
-    expect(options.reviewed).toBe(await tx().review.mock.results[0].value)
-    expect(Object.isFrozen(request)).toBe(true)
-    expect(Object.isFrozen(request.args)).toBe(true)
+    expect(tx().review).toHaveBeenCalledOnce()
+    expect(tx().send).toHaveBeenCalledExactlyOnceWith(action.calls[0], 0)
   })
 
   it('names the account that reviewed the change, which the engine sends it from and no other', async () => {
     await render()
     await reviewTrust(SENDER)
-    const [, options] = tx().send.mock.calls[0] as [unknown, { reviewedAccount: Address }]
-    expect(options.reviewedAccount).toBe(ALICE)
+    expect(tx().run.mock.calls[0][0].account).toBe(ALICE)
   })
 
   it('sends what cast encoded for the same values, byte for byte', async () => {
     const sender = getAddress(`0x${'3'.repeat(40)}`)
     await render()
     await reviewTrust(sender)
-    const [request] = tx().send.mock.calls[0] as [{ abi: Abi; functionName: string; args: unknown[] }]
-    expect(encodeFunctionData({ abi: request.abi, functionName: request.functionName, args: request.args })).toBe(fixtures.setTrustedSenderFor)
+    expect(tx().send.mock.calls[0][0].data).toBe(fixtures.setTrustedSenderFor)
   })
 
   it('reads the hook again just before it asks the wallet, and stops if the sender has become trusted', async () => {
     await render()
     await reviewTrust(SENDER)
-    const [request, options] = tx().send.mock.calls[0] as [unknown, { reverify: (request: unknown) => Promise<unknown> }]
+    const { calls: [call], reverify } = tx().run.mock.calls[0][0]
 
     mocks.read.mockClear().mockResolvedValue(trusted(false))
-    await expect(options.reverify(request)).resolves.toBeUndefined()
+    await expect(reverify!(call, 0, undefined)).resolves.toBeUndefined()
     expect(mocks.read.mock.calls[0].slice(0, 3)).toEqual(hookRead(ALICE, SENDER))
 
     mocks.read.mockResolvedValue(trusted(true))
-    await expect(options.reverify(request)).rejects.toThrow('This sender is already trusted.')
+    await expect(reverify!(call, 0, undefined)).rejects.toThrow('This sender is already trusted.')
 
     mocks.read.mockRejectedValue(new Error('429'))
-    await expect(options.reverify(request)).rejects.toThrow('Could not read whether this sender is trusted. Try again.')
+    await expect(reverify!(call, 0, undefined)).rejects.toThrow('Could not read whether this sender is trusted. Try again.')
   })
 
   it('shows its one step as the one to confirm before it is sent, and as done once it is', async () => {
@@ -412,6 +396,7 @@ describe('trusting a sender: the send', () => {
   })
 
   it('is busy while the engine is, and shows its error with a way to try again', async () => {
+    tx().send.mockRejectedValueOnce(new Error('Transaction cancelled.'))
     await render()
     await reviewTrust(SENDER)
     tx().busy = true
@@ -451,15 +436,12 @@ describe('untrusting a sender', () => {
     expect(text).toContain('Untrust this sender')
     expect(text).toContain('No, they can no longer add stakes to your position.')
 
-    expect(tx().send).toHaveBeenCalledOnce()
-    const [request, options] = tx().send.mock.calls[0] as [
-      { chainId: number; address: Address; functionName: string; args: unknown[] },
-      { reviewedAccount: Address },
-    ]
-    expect(request).toMatchObject({ chainId: CHAIN, address: HOOK, functionName: 'setTrustedSenderFor', args: [12n, SENDER, false] })
-    expect(Object.isFrozen(request)).toBe(true)
-    expect(options.reviewedAccount).toBe(ALICE)
-    expect(tx().review).toHaveBeenCalledExactlyOnceWith([request], expect.objectContaining({ account: ALICE, title: 'Untrust this sender' }))
+    expect(tx().run).toHaveBeenCalledOnce()
+    const action = tx().run.mock.calls[0][0]
+    expect(action.calls).toHaveLength(1)
+    expect(action.calls[0]).toMatchObject({ chainId: CHAIN, to: HOOK, functionName: 'setTrustedSenderFor', args: [12n, SENDER, false] })
+    expect(action).toMatchObject({ account: ALICE, title: 'Untrust this sender' })
+    expect(tx().send).toHaveBeenCalledExactlyOnceWith(action.calls[0], 0)
   })
 
   it('says the sender is not trusted when the hook says so, and sends nothing', async () => {
@@ -493,10 +475,10 @@ describe('untrusting a sender', () => {
     mocks.read.mockResolvedValue(trusted(true))
     await render(SENDER)
     await press(modal(), 'Review untrust')
-    const [request, options] = tx().send.mock.calls[0] as [unknown, { reverify: (request: unknown) => Promise<unknown> }]
-    await expect(options.reverify(request)).resolves.toBeUndefined()
+    const { calls: [call], reverify } = tx().run.mock.calls[0][0]
+    await expect(reverify!(call, 0, undefined)).resolves.toBeUndefined()
     mocks.read.mockResolvedValue(trusted(false))
-    await expect(options.reverify(request)).rejects.toThrow('This sender is not trusted.')
+    await expect(reverify!(call, 0, undefined)).rejects.toThrow('This sender is not trusted.')
   })
 })
 
@@ -595,7 +577,7 @@ describe('a wallet that cannot send', () => {
     mocks.read.mockResolvedValue(trusted(true))
     // The decoded review stays open while the account changes.
     let approve = () => {}
-    tx().review.mockImplementationOnce(() => new Promise(resolve => (approve = () => resolve({}))))
+    tx().review.mockImplementationOnce(() => new Promise(resolve => (approve = () => resolve())))
     await render(SENDER)
     await press(modal(), 'Review untrust')
     expect(confirm()).not.toBeNull()
@@ -603,10 +585,11 @@ describe('a wallet that cannot send', () => {
     await render(SENDER)
     expect(confirm()).toBeNull()
     expect(buttonIn(modal(), 'Review untrust')).toBeDefined()
-    // The review approved after the account changed sends nothing.
+    // The run was reviewed for its account, which core sends from and no other: once approved it reopens nothing here.
+    expect(tx().run.mock.calls[0][0].account).toBe(ALICE)
     await act(async () => approve())
     await render(SENDER)
-    expect(tx().send).not.toHaveBeenCalled()
+    expect(confirm()).toBeNull()
   })
 
   it('is refused, in View as, when the review starts', async () => {

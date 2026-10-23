@@ -14,7 +14,7 @@ import { ModalShell } from '@/components/ui/ModalShell'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
-import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
+import { reviewedSteps, useReviewedAction, type TxRequest } from '@/hooks/useReviewedAction'
 import { useStepPresses } from '@/hooks/useStepPresses'
 import { useWallet } from '@/hooks/useWallet'
 import { asked } from '@/lib/hook-logs'
@@ -40,6 +40,7 @@ import {
 } from '@/lib/sticky-rewards'
 import { chainName } from '@/lib/urn'
 import { useViewAs } from '@/lib/viewAs'
+import { errorLine, ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 const PREPARE_UNREADABLE = 'Could not prepare an airdrop; its form says what could not be read.'
 const BALANCE_UNREADABLE = 'Could not check the balance before sending a step of an airdrop; the dialog says so.'
@@ -181,9 +182,9 @@ function SameChainFundFlow({
 }) {
   const { address, isConnected, isCenterWallet, openSignIn } = useWallet()
   const { viewAs } = useViewAs()
-  const tx = useSafeTx(chainId)
-  const presses = useStepPresses(tx)
-  const { landed } = presses
+  const tx = useReviewedAction()
+  const presses = useStepPresses(tx, closeReview)
+  const { landed } = tx
   const client = useQueryClient()
   const ids = { from: useId(), token: useId(), amount: useId() }
   const [token, setToken] = useState('')
@@ -224,7 +225,7 @@ function SameChainFundFlow({
       if (signal.aborted) return
       const told = refusalOf(reason)
       if (!(told instanceof Refusal)) console.warn(PREPARE_UNREADABLE, { chainId, projectId }, told)
-      setFailure({ message: asSentence(told instanceof Error ? told.message : String(told)), account: account.toLowerCase() })
+      setFailure({ message: asSentence(errorLine(told)), account: account.toLowerCase() })
     } finally {
       if (!signal.aborted) setPreparing(false)
     }
@@ -238,19 +239,17 @@ function SameChainFundFlow({
       ;({ balance } = await fundsOf(chainId, sent, account, stickyDeployment(chainId)!.distributor))
     } catch (reason) {
       console.warn(BALANCE_UNREADABLE, { chainId, projectId }, reason)
-      throw new Error(asSentence(reason instanceof Error ? reason.message : String(reason)), { cause: reason })
+      throw new ReviewLineError(asSentence(errorLine(reason)), { cause: reason })
     }
-    if (balance < value) throw new Error(`Your ${meta.symbol} balance changed. Review the amount.`)
+    if (balance < value) throw new ReviewLineError(`Your ${meta.symbol} balance changed. Review the amount.`)
   }
 
   async function confirm() {
     if (!plan || sending) return
     // Every step is sent as the account that reviewed the airdrop, and the engine refuses it while another is connected.
-    const outcome = await presses.press(plan.steps, (step, confirmedAt, reviewed) =>
-      tx.send(step, { reviewedAccount: plan.account, reviewed, simulationBlockNumber: confirmedAt, reverify: () => verify(plan) }),
-      { account: plan.account, title: 'Airdrop', rows: rowsOf(plan, info) },
+    await presses.press(
+      { account: plan.account, calls: reviewedSteps(plan.steps, plan.account), title: 'Airdrop', context: rowsOf(plan, info), reverify: () => verify(plan) },
     )
-    if (outcome === 'cancelled') closeReview()
   }
 
   // The airdrop's one decoded review opens once it is planned, and each step it showed is sent as the one before confirms.

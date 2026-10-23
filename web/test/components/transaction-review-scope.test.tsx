@@ -14,7 +14,7 @@ vi.mock('@/providers/ProjectRouteContext', () => ({ useProjectReviewScope: () =>
 vi.mock('@/providers/ProjectRouteBlockedContext', () => ({ useProjectRouteBlocked: () => mocks.blocked }))
 vi.mock('@/components/TransactionReviewDialog', () => ({
   TransactionReviewDialog: ({ pending, onFinish, checkingProject }: TransactionReviewDialogProps) => <div data-review={pending.id}>
-    <p>{pending.kind === 'review' ? pending.request.title : 'Choose funding'}</p>
+    <p>{pending.kind === 'review' ? pending.model.title : 'Choose funding'}</p>
     <button data-approve disabled={checkingProject} onClick={() => onFinish(pending.kind === 'review' ? true : 8453)}>Approve</button>
     <button data-cancel onClick={() => onFinish(null)}>Cancel</button>
     {checkingProject && <span>Checking project</span>}
@@ -22,13 +22,14 @@ vi.mock('@/components/TransactionReviewDialog', () => ({
 }))
 
 import { TransactionReviewProvider } from '@/components/TransactionReviewProvider'
-import { requireFundingChainSelection, requireTransactionReview } from '@/lib/transaction-review'
+import { requireFundingChainSelection } from '@/lib/transaction-review'
+import { promptReview } from '../support/review-prompt'
 
 let host: HTMLDivElement
 let root: Root
 const verify = vi.fn<() => Promise<boolean>>()
 const render = () => act(async () => root.render(<TransactionReviewProvider>Application</TransactionReviewProvider>))
-const review = (title = 'Review') => requireTransactionReview({ title,
+const review = (title = 'Review') => promptReview({ title,
   calls: [{ chainId: 8453, to: '0x1111111111111111111111111111111111111111', data: '0x' }],
 }).then(() => true, () => false)
 const funding = () => requireFundingChainSelection([{ chainId: 8453, label: 'Base' }]).catch(() => null)

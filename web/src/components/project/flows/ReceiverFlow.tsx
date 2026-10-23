@@ -1,5 +1,6 @@
 'use client'
 
+import { errorLine } from '@bananapus/nana-sdk-core/review'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useId, useRef, useState } from 'react'
 import { formatUnits, type Address } from 'viem'
@@ -14,7 +15,7 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
-import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
+import { reviewedSteps, useReviewedAction, type TxRequest } from '@/hooks/useReviewedAction'
 import { useStepPresses } from '@/hooks/useStepPresses'
 import type { TransactionReviewRow } from '@/lib/transaction-review'
 import { useWallet } from '@/hooks/useWallet'
@@ -69,7 +70,7 @@ async function arrivalsOf(
   } catch (reason) {
     const told = refusalOf(reason)
     if (signal.aborted || !(told instanceof Refusal)) throw reason
-    return { refused: asSentence(told.message) }
+    return { refused: asSentence(errorLine(told)) }
   }
   return { meta, amount: await readArrivals(chainId, receiver, token, { signal }) }
 }
@@ -170,9 +171,9 @@ export function ReceiverFlow({
 }) {
   const { address, isConnected, isCenterWallet, openSignIn } = useWallet()
   const { viewAs } = useViewAs()
-  const tx = useSafeTx(chainId)
-  const presses = useStepPresses(tx)
-  const { landed } = presses
+  const tx = useReviewedAction()
+  const presses = useStepPresses(tx, close)
+  const { landed } = tx
   const client = useQueryClient()
   const tokenId = useId()
   const [opened, setOpened] = useState(initiallyOpen)
@@ -239,7 +240,7 @@ export function ReceiverFlow({
       if (signal.aborted) return
       const told = refusalOf(reason)
       if (!(told instanceof Refusal)) console.warn(PREPARE_UNREADABLE, { chainId, projectId }, told)
-      setFailure({ message: asSentence(told instanceof Error ? told.message : String(told)), account: account.toLowerCase() })
+      setFailure({ message: asSentence(errorLine(told)), account: account.toLowerCase() })
     } finally {
       if (!signal.aborted) setPreparing(false)
     }
@@ -248,12 +249,7 @@ export function ReceiverFlow({
   async function confirm() {
     if (!plan || sending) return
     // The step is sent as the account that reviewed it, and the engine refuses it while another is connected.
-    const outcome = await presses.press(
-      plan.steps,
-      (step, _confirmedAt, reviewed) => tx.send(step, { reviewedAccount: plan.account, reviewed }),
-      { account: plan.account, title: titleOf(plan.kind), rows: plan.rows },
-    )
-    if (outcome === 'cancelled') close()
+    await presses.press({ account: plan.account, calls: reviewedSteps(plan.steps, plan.account), title: titleOf(plan.kind), context: plan.rows })
   }
 
   // The step's one decoded review opens once it is planned.
@@ -305,7 +301,7 @@ export function ReceiverFlow({
           <StakeAgeFields minWeeks={minWeeks} maxWeeks={maxWeeks} onMinWeeks={setMinWeeks} onMaxWeeks={setMaxWeeks} />
           {receiver.isError ? (
             <p role="alert" className="text-err">
-              {asSentence(receiver.error.message)}{' '}
+              {asSentence(errorLine(receiver.error))}{' '}
               <button type="button" className="btn-link font-semibold" onClick={() => void receiver.refetch()}>
                 Try again
               </button>

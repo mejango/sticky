@@ -1,7 +1,7 @@
 import { dehydrate, QueryClient, useQueryClient } from '@tanstack/react-query'
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { erc20Abi } from 'viem'
+import { encodeFunctionData, erc20Abi } from 'viem'
 import { useConfig } from 'wagmi'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { serializeState } from '@/lib/query-persist'
@@ -142,19 +142,21 @@ describe('Providers', () => {
 
   it('holds the one review queue every write waits on', async () => {
     const { Providers } = await load()
-    const { requestContractTransactionReview } = await import('@/lib/transaction-review')
-    const call = {
+    const { reviewDecision } = await import('../support/review-prompt')
+    const args = ['0x2222222222222222222222222222222222222222', 1n] as const
+    const request = { calls: [{
       chainId: 84532,
-      address: '0x1111111111111111111111111111111111111111',
+      to: '0x1111111111111111111111111111111111111111',
+      data: encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args }),
       abi: erc20Abi,
       functionName: 'approve',
-      args: ['0x2222222222222222222222222222222222222222', 1n],
-    } as const
-    await expect(requestContractTransactionReview(call)).rejects.toThrow('Transaction review is unavailable')
+      args,
+    }] } as const
+    await expect(reviewDecision(request)).rejects.toThrow('Transaction review is unavailable')
 
     await mount(<Providers><p>the app</p></Providers>)
     let answered = false
-    const asked = requestContractTransactionReview(call).then(approved => {
+    const asked = reviewDecision(request).then(approved => {
       answered = true
       return approved
     })

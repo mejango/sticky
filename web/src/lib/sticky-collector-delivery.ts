@@ -3,11 +3,12 @@ import {
   type StickyCollectorRoute,
 } from '@bananapus/nana-sdk-core/v6'
 import { decodeFunctionData, isAddressEqual, zeroAddress, type Address, type PublicClient } from 'viem'
-import type { TxRequest } from '@/hooks/useSafeTx'
+import type { TxRequest } from '@/hooks/useReviewedAction'
 import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
 import { bridgeCalldata, createStickyBridge, type BridgeToken } from '@/lib/sticky-bridge'
 import type { PendingBridgeWrite } from '@/lib/sticky-bridge-journal'
 import { createStickyCollector, type CollectorSource } from '@/lib/sticky-collector'
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 export type CollectorDelivery = {
   source: CollectorSource
@@ -50,17 +51,17 @@ export function createStickyCollectorDelivery(clientFor: (chainId: number) => Pu
   async function prepare(source: CollectorSource, owner: Address, amount: bigint): Promise<CollectorDelivery> {
     const verified = await collector.verify(source)
     if (isAddressEqual(verified.sourceToken, zeroAddress)) {
-      throw new Error('The allocation is queued. Deploy the source project’s ERC-20 before delivering it.')
+      throw new ReviewLineError('The allocation is queued. Deploy the source project’s ERC-20 before delivering it.')
     }
     const { pending, meta } = await read({ ...source, verified })
-    if (amount <= 0n || amount > pending) throw new Error('Choose a positive amount within the remaining queued allocation.')
+    if (amount <= 0n || amount > pending) throw new ReviewLineError('Choose a positive amount within the remaining queued allocation.')
     const { sourceChainId, destinationChainId } = source.allocation.deployment
     let request: TxRequest
     if (sourceChainId === destinationChainId) {
       request = { ...buildStickyCollectorSettleTx({ ...source.allocation, amount }), label: 'Settle queued rewards' }
     } else {
       const route = source.bridgeRoute
-      if (!route) throw new Error('A verified direct bridge to this pool’s home chain is required.')
+      if (!route) throw new ReviewLineError('A verified direct bridge to this pool’s home chain is required.')
       const build = (value: bigint): TxRequest => ({
         ...buildStickyCollectorSendTx({ ...source.allocation, amount, sucker: route.sourceSucker, backingToken: route.backingToken, value }),
         label: 'Deliver queued rewards',
@@ -77,7 +78,7 @@ export function createStickyCollectorDelivery(clientFor: (chainId: number) => Pu
       !isAddressEqual(fresh.verified.receiver, reviewed.verified.receiver) ||
       !isAddressEqual(fresh.verified.sourceToken, reviewed.verified.sourceToken) ||
       !isAddressEqual(fresh.verified.rewardToken, reviewed.verified.rewardToken)) {
-      throw new Error('The allocation, receiver or bridge budget changed. Review delivery again.')
+      throw new ReviewLineError('The allocation, receiver or bridge budget changed. Review delivery again.')
     }
   }
 

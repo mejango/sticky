@@ -10,6 +10,7 @@ import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
 import { parseAmount } from '@/lib/sticky-amount'
 import { createStickyBridge, type BridgeRoute } from '@/lib/sticky-bridge'
 import { parseTokenInput } from '@/lib/sticky-launch-plan'
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 /** A configured source allocation, with live SDK evidence and its optional direct bridge lane. */
 export type CollectorSource = {
@@ -22,7 +23,7 @@ export type CollectorSource = {
 export function reservedSplitPercent(text: string): number {
   const portion = new SplitPortion(0)
   portion.value = parseAmount(text, portion.decimals - 2)
-  if (portion.value === 0n) throw new Error('Enter a positive share of reserved tokens.')
+  if (portion.value === 0n) throw new ReviewLineError('Enter a positive share of reserved tokens.')
   return Number(portion.value)
 }
 
@@ -54,16 +55,16 @@ export function createStickyCollector(
     groupId: bigint
   }): Promise<CollectorSource[]> {
     const configured = deployment(sourceChainId, homeChainId)
-    if (!configured) throw new Error('No verified collector deployment is configured for this source and home chain.')
+    if (!configured) throw new ReviewLineError('No verified collector deployment is configured for this source and home chain.')
     const input = parseTokenInput(sourceProject)
-    if (input.kind !== 'project' && input.kind !== 'address') throw new Error('Enter a Juicebox V6 project ID or project token address.')
+    if (input.kind !== 'project' && input.kind !== 'address') throw new ReviewLineError('Enter a Juicebox V6 project ID or project token address.')
     if (input.kind === 'project' && input.chainId !== null && input.chainId !== sourceChainId) {
-      throw new Error('The project prefix must match the selected source chain.')
+      throw new ReviewLineError('The project prefix must match the selected source chain.')
     }
     const sourceProjectId = input.kind === 'project' ? input.projectId : await getProjectIdForToken(clientFor(sourceChainId), {
       chainId: configured.sourceChainId, token: input.address,
     })
-    if (!sourceProjectId) throw new Error('This is not a Juicebox V6 project token on the selected source chain.')
+    if (!sourceProjectId) throw new ReviewLineError('This is not a Juicebox V6 project token on the selected source chain.')
     const allocation = { deployment: configured, sourceProjectId, stickyToken, groupId }
     // Validate the SDK allocation before discovery reads; no recipe is displayed until live verification succeeds.
     buildStickyReservedSplit({ ...allocation, percent: 0 })
@@ -83,7 +84,7 @@ export function createStickyCollector(
     const sources = checked.flatMap(result => result.status === 'fulfilled' ? [result.value] : [])
     if (!sources.length) {
       const refused = checked.find(result => result.status === 'rejected')
-      throw refused?.reason ?? new Error('No usable direct route connects this source project to the pool’s home chain.')
+      throw refused?.reason ?? new ReviewLineError('No usable direct route connects this source project to the pool’s home chain.')
     }
     return sources
   }

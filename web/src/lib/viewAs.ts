@@ -2,6 +2,7 @@
 
 import { useSyncExternalStore } from 'react'
 import { getAddress, isAddress, type Address } from 'viem'
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 /**
  * Site-wide "View as" (impersonation) mode: a localStorage-persisted address
@@ -94,5 +95,5 @@ export const VIEW_AS_WRITE_BLOCKED =
 
 /** Write-seam guard: throws while view-as mode is active. */
 export function assertNoViewAs(): void {
-  if (getViewAs()) throw new Error(VIEW_AS_WRITE_BLOCKED)
+  if (getViewAs()) throw new ReviewLineError(VIEW_AS_WRITE_BLOCKED)
 }

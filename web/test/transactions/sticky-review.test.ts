@@ -37,10 +37,10 @@ import {
   stickyRewardReceiverFactoryAbi,
 } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
-import {
-  requestContractTransactionReview,
-  type ContractTransactionReviewCall,
-} from '@/lib/transaction-review'
+import { promptReview } from '../support/review-prompt'
+
+/** A contract write as the review is asked to show it. */
+type ContractCall = { chainId: number; address: Address; abi: Abi; functionName: string; args?: readonly unknown[]; value?: bigint; account?: Address }
 
 const CHAIN = 84532
 const sticky = stickyDeployment(CHAIN)!
@@ -58,7 +58,7 @@ const relayrPaymentAbi = parseAbi(['function prepayment(bytes16 bundle, uint40 d
 
 type Write = {
   selector: Hex
-  call: ContractTransactionReviewCall
+  call: ContractCall
   /** An argument of the call, and text its row shows. */
   row: [name: string, text: string]
   /** The destination's name, when the dialog knows it. */
@@ -239,10 +239,13 @@ afterEach(async () => {
 })
 
 /** Opens the review of `call` and returns its dialog. */
-async function review(call: ContractTransactionReviewCall) {
+async function review(call: ContractCall) {
   await act(async () => root.render(createElement(TransactionReviewProvider, null, null)))
   await act(async () => {
-    requestContractTransactionReview(call, { label: 'Sticky write' }).catch(() => {})
+    promptReview({ calls: [{
+      chainId: call.chainId, to: call.address, data: encodeFunctionData(call as never), value: call.value,
+      abi: call.abi, functionName: call.functionName, args: call.args, label: 'Sticky write',
+    }] }).catch(() => {})
   })
   await act(async () => {
     await vi.dynamicImportSettled()

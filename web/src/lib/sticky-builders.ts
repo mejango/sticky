@@ -21,7 +21,8 @@ import { deploymentOn } from '@/lib/sticky-addresses'
 import type { AutoStickState } from '@/lib/sticky-autostick'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { isValidGroupId, NATIVE_REWARD_TOKEN, type TokenMeta } from '@/lib/sticky-rewards'
-import type { TxRequest } from '@/hooks/useSafeTx'
+import type { TxRequest } from '@/hooks/useReviewedAction'
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 export type { TxRequest }
 
@@ -72,7 +73,7 @@ export function stickTx(
   amount: bigint,
   minReturned: bigint,
 ): TxRequest {
-  if (minReturned <= 0n) throw new Error('A stick needs a minimum of Sticky tokens to mint, from its quote.')
+  if (minReturned <= 0n) throw new ReviewLineError('A stick needs a minimum of Sticky tokens to mint, from its quote.')
   const { terminal } = deploymentOn(info.chainId)
   return frozen({
     ...buildPayTx({
@@ -231,8 +232,8 @@ export function fundTxs(
     decimals,
   }: { stToken: Address; token: Address; amount: bigint; groupId: bigint; allowance: bigint } & TokenMeta,
 ): TxRequest[] {
-  if (!isValidGroupId(groupId)) throw new Error('the distributor does not accept this stake-age window')
-  if (amount <= 0n) throw new Error('enter an amount greater than zero')
+  if (!isValidGroupId(groupId)) throw new ReviewLineError('the distributor does not accept this stake-age window')
+  if (amount <= 0n) throw new ReviewLineError('enter an amount greater than zero')
   const { distributor } = deploymentOn(chainId)
   const native = token.toLowerCase() === NATIVE_REWARD_TOKEN
   return [
@@ -293,7 +294,7 @@ export function claimAndStickTxs(
     canStick,
   }: { groupIds: readonly bigint[]; collectable: bigint; allowance: bigint; canStick: boolean },
 ): TxRequest[] {
-  if (collectable <= 0n) throw new Error('nothing is claimable yet. Rewards unlock a round after you collect them')
+  if (collectable <= 0n) throw new ReviewLineError('nothing is claimable yet. Rewards unlock a round after you collect them')
   const { chainId, projectId, stakedToken, symbol, decimals } = info
   const { autoStick } = deploymentOn(chainId)
   return [
@@ -328,10 +329,10 @@ type AutoStickProject = Pick<StickyProjectInfo, 'chainId' | 'projectId' | 'stake
  * (OLD asConfigTx, app.js:4365). */
 function autoStickConfigTx(info: AutoStickProject, minimum: bigint, cooldown: number, label: string): TxRequest {
   if (minimum <= 0n || minimum > MAX_MINIMUM) {
-    throw new Error('the auto-stick minimum must fit in uint128 and be greater than zero')
+    throw new ReviewLineError('the auto-stick minimum must fit in uint128 and be greater than zero')
   }
   if (!Number.isInteger(cooldown) || cooldown < MIN_COOLDOWN || cooldown > MAX_COOLDOWN) {
-    throw new Error('auto-stick cooldown must be between 1 and 30 days')
+    throw new ReviewLineError('auto-stick cooldown must be between 1 and 30 days')
   }
   const { chainId, projectId } = info
   return frozen({
@@ -361,7 +362,7 @@ export function autoStickOnTxs(
   { minimum, cooldown, cap }: AutoStickChoice,
 ): TxRequest[] {
   const on = autoStickConfigTx(info, minimum, cooldown, 'Turn on auto-stick')
-  if (cap <= 0n) throw new Error('set an allowance cap, or choose unlimited')
+  if (cap <= 0n) throw new ReviewLineError('set an allowance cap, or choose unlimited')
   const { chainId, projectId, stakedToken, symbol, decimals } = info
   return [
     ...(state.enabled ? [autoStickOffTx(info, state)] : []),
@@ -382,7 +383,7 @@ export function autoStickSettingsTx(
   { enabled }: Pick<AutoStickState, 'enabled'>,
   { minimum, cooldown }: Pick<AutoStickChoice, 'minimum' | 'cooldown'>,
 ): TxRequest {
-  if (!enabled) throw new Error('auto-stick is off. Turn it on to change its settings')
+  if (!enabled) throw new ReviewLineError('auto-stick is off. Turn it on to change its settings')
   return autoStickConfigTx(info, minimum, cooldown, 'Save auto-stick settings')
 }
 
@@ -392,7 +393,7 @@ export function repairTxs(
   info: AutoStickProject,
   { projectGranter, personallyTrusted }: Pick<AutoStickState, 'projectGranter' | 'personallyTrusted'>,
 ): TxRequest[] {
-  if (projectGranter || personallyTrusted) throw new Error('auto-stick permission is already enabled')
+  if (projectGranter || personallyTrusted) throw new ReviewLineError('auto-stick permission is already enabled')
   return [adapterTrustTx(info.chainId, info.projectId, info.symbol)]
 }
 
@@ -426,7 +427,7 @@ export function beginVestingTx(info: AutoStickProject, holder: Address, groupIds
 /** A reward address created: the receiver for the holders of `stToken` in group `groupId`, deployed at the address the
  * factory predicts for them (OLD createRewardAddress, app.js:4064). */
 export function createReceiverTx(chainId: number, { stToken, groupId }: { stToken: Address; groupId: bigint }): TxRequest {
-  if (!isValidGroupId(groupId)) throw new Error('this stake-age window is not valid')
+  if (!isValidGroupId(groupId)) throw new ReviewLineError('this stake-age window is not valid')
   return frozen({
     chainId,
     address: deploymentOn(chainId).rewardReceiverFactory,
@@ -444,9 +445,9 @@ export function settleTx(
   { stToken, groupId, token }: { stToken: Address; groupId: bigint; token: Address },
 ): TxRequest {
   if (token.toLowerCase() === NATIVE_REWARD_TOKEN) {
-    throw new Error('reward receivers settle ERC-20 tokens. Fund ETH rewards directly')
+    throw new ReviewLineError('reward receivers settle ERC-20 tokens. Fund ETH rewards directly')
   }
-  if (!isValidGroupId(groupId)) throw new Error('this stake-age window is not valid')
+  if (!isValidGroupId(groupId)) throw new ReviewLineError('this stake-age window is not valid')
   return frozen({
     chainId,
     address: deploymentOn(chainId).rewardReceiverFactory,

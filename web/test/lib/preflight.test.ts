@@ -35,12 +35,12 @@ describe('preflight', () => {
     ])
   })
 
-  it('refuses a call the chain would refuse, in the words given and the chain\'s, and keeps the cause', async () => {
+  it('refuses a call the chain would refuse, in the words given, and keeps the node\'s answer as the cause', async () => {
     const chain = rewardChain()
     chain.stock(deployment.distributor, stickyDistributorAbi, 'collectVestedRewards', REVERT, 5)
     const { preflight } = await load()
     await expect(preflight(collect, HOLDER, new AbortController().signal, 'The distributor would refuse this')).rejects.toMatchObject({
-      message: expect.stringMatching(/^The distributor would refuse this: .+/),
+      message: 'The distributor would refuse this.',
       cause: expect.any(Error),
     })
   })

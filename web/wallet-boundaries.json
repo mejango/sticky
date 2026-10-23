@@ -1,0 +1,26 @@
+{
+  "format": "juice-sdk-wallet-boundaries-1",
+  "sites": [
+    {
+      "file": "src/components/TransactionReviewProvider.tsx",
+      "line": 213,
+      "api": "registerReviewHandler",
+      "boundary": "The page's one review handler: it answers core's prompt only with the person's choice in the review dialog, cancels on a scope or account change, and closes when core withdraws the prompt.",
+      "test": "test/components/transaction-review-scope.test.tsx"
+    },
+    {
+      "file": "src/lib/jbcenter-public-client.ts",
+      "line": 14,
+      "api": "request",
+      "boundary": "The page reader's transport adds the page's abort signal to each public RPC read; never a wallet RPC.",
+      "test": "test/data/jbcenter-browser.test.ts"
+    },
+    {
+      "file": "src/providers/lazy-center-connector.ts",
+      "line": 15,
+      "api": "request",
+      "boundary": "The Signa connector's read callback forwards public reads to the Center RPC transport for Base; Signa's own wallet signs and refuses writes here.",
+      "test": "test/providers/lazy-center-connector.test.ts"
+    }
+  ]
+}

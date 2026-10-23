@@ -22,7 +22,8 @@ vi.mock('next/image', () => ({
 }))
 
 import { TransactionReviewProvider } from '@/components/TransactionReviewProvider'
-import { requireTransactionReview, type TransactionReviewRequest } from '@/lib/transaction-review'
+import { type TransactionReviewRequest } from '@bananapus/nana-sdk-core/review'
+import { promptReview } from '../support/review-prompt'
 import '../dialog-shim'
 
 const TOKEN = '0x3333333333333333333333333333333333333333'
@@ -46,7 +47,7 @@ async function review(request: TransactionReviewRequest): Promise<string> {
   act(() => root.render(<TransactionReviewProvider>{null}</TransactionReviewProvider>))
   await act(async () => {
     // Swallow the cancellation thrown when the modal unmounts after the test.
-    requireTransactionReview(request).catch(() => {})
+    promptReview(request).catch(() => {})
   })
   await act(async () => {
     await vi.dynamicImportSettled()
@@ -143,8 +144,8 @@ describe('decoded transaction review', () => {
     )
   })
 
-  it('shows the connected wallet as the sender of a transaction, and no sender it was not given for an authorization', async () => {
-    let text = await review({ calls: [{ chainId: 1, to: TARGET, data: '0xdeadbeef' as Hex }] })
+  it('shows the sender core names for a transaction, and none for an authorization', async () => {
+    let text = await review({ calls: [{ chainId: 1, to: TARGET, data: '0xdeadbeef' as Hex, from: ACCOUNT }] })
     expect(text).toContain(`From${ACCOUNT}`)
     act(() => root.unmount())
     root = createRoot(container)

@@ -1,5 +1,5 @@
 import { intent, writeIntentKey } from '@bananapus/nana-sdk-core/review'
-import type { TxRequest } from '@/hooks/useSafeTx'
+import type { TxRequest } from '@/hooks/useReviewedAction'
 
 /**
  * REMOVE AFTER ONE RELEASE. A frozen copy of the app-local hold keys origin/main shipped (Sticky #60), so an attempt

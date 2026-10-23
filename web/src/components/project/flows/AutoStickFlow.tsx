@@ -11,7 +11,7 @@ import { ModalShell } from '@/components/ui/ModalShell'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
-import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
+import { reviewedSteps, useReviewedAction, type TxRequest } from '@/hooks/useReviewedAction'
 import { useStepPresses } from '@/hooks/useStepPresses'
 import { useWallet } from '@/hooks/useWallet'
 import type { TransactionReviewRow } from '@/lib/transaction-review'
@@ -43,6 +43,7 @@ import { refreshAfterAutoStick, refreshAfterCollect, refreshAfterRewardStick } f
 import { readRewardSchedule, unlockSentence } from '@/lib/sticky-rewards'
 import { chainName } from '@/lib/urn'
 import { useViewAs } from '@/lib/viewAs'
+import { errorLine, ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 const PREPARE_UNREADABLE = "Could not prepare a change of auto-stick; the card says what could not be read."
 const SCHEDULE_UNREADABLE = "Could not read the distributor's unlock schedule; the auto-stick form leaves it out."
@@ -297,9 +298,9 @@ export function AutoStickFlow({
 }) {
   const { address, isConnected, isCenterWallet, openSignIn } = useWallet()
   const { viewAs } = useViewAs()
-  const tx = useSafeTx(chainId)
-  const presses = useStepPresses(tx)
-  const { landed } = presses
+  const tx = useReviewedAction()
+  const presses = useStepPresses(tx, closeReview)
+  const { landed } = tx
   const client = useQueryClient()
   const minimumId = useId()
   const capId = useId()
@@ -365,7 +366,7 @@ export function AutoStickFlow({
       if (signal.aborted) return
       const told = refusalOf(reason)
       if (!(told instanceof Refusal)) console.warn(PREPARE_UNREADABLE, { chainId, projectId }, told)
-      setFailure({ message: asSentence(told instanceof Error ? told.message : String(told)), account: account.toLowerCase() })
+      setFailure({ message: asSentence(errorLine(told)), account: account.toLowerCase() })
     } finally {
       if (!signal.aborted) setPreparing(false)
     }
@@ -385,7 +386,7 @@ export function AutoStickFlow({
       now = await readAutoStickStanding(chainId, info.projectId, reviewed.account, { stakedToken: info.stakedToken, block })
     } catch (reason) {
       console.warn(STANDING_UNREADABLE, { chainId, projectId }, reason)
-      throw new Error(asSentence(reason instanceof Error ? reason.message : String(reason)), { cause: reason })
+      throw new ReviewLineError(asSentence(errorLine(reason)), { cause: reason })
     }
     const before = reviewed.steps.slice(0, reviewed.steps.indexOf(step))
     const expected = consentAfter(reviewed.from, before)
@@ -395,25 +396,22 @@ export function AutoStickFlow({
       now.personallyTrusted !== expected.personallyTrusted ||
       (pulls && now.allowance < reviewed.needs!)
     ) {
-      throw new Error(CHANGED)
+      throw new ReviewLineError(CHANGED)
     }
   }
 
   async function confirm() {
     if (!plan || sending) return
     // Every step is sent as the account that reviewed the change, and the engine refuses it while another is connected.
-    const outcome = await presses.press(
-      plan.steps,
-      (step, confirmedAt, reviewed) =>
-        tx.send(step, {
-          reviewedAccount: plan.account,
-          reviewed,
-          simulationBlockNumber: confirmedAt,
-          reverify: () => verify(plan, step, confirmedAt),
-        }),
-      { account: plan.account, title: plan.title, rows: plan.rows },
+    await presses.press(
+      {
+        account: plan.account,
+        calls: reviewedSteps(plan.steps, plan.account),
+        title: plan.title,
+        context: plan.rows,
+        reverify: (_call, index, confirmedAt) => verify(plan, plan.steps[index], confirmedAt),
+      },
     )
-    if (outcome === 'cancelled') closeReview()
   }
 
   // The change's one decoded review opens once it is planned, and each step it showed is sent as the one before confirms.

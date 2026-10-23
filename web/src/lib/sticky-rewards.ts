@@ -51,6 +51,7 @@ import { formatAmount, formatDuration, shortAddress } from '@/lib/sticky-format'
 import { pinnedBlock } from '@/lib/sticky-holders'
 import { indexedStickyFunding } from '@/lib/sticky-indexed'
 import { answered, capped, type Answer } from '@/lib/sticky-project'
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 type Cancel = { signal?: AbortSignal }
 
@@ -77,16 +78,16 @@ export function groupIdFromWeeks(minValue: string, maxValue: string): bigint {
   const parse = (value: string, label: string) => {
     const text = value.trim()
     if (text === '') return null
-    if (!/^\d{1,4}$/.test(text)) throw new Error(`${label} must be a whole number of weeks`)
+    if (!/^\d{1,4}$/.test(text)) throw new ReviewLineError(`${label} must be a whole number of weeks`)
     return BigInt(text)
   }
   const minWeeks = parse(minValue, 'the minimum stake age') ?? 0n
   const maxWeeks = parse(maxValue, 'the maximum stake age') ?? 0n
   if (minWeeks > MAX_CRITERIA_WEEKS || maxWeeks > MAX_CRITERIA_WEEKS) {
-    throw new Error(`stake age is limited to ${MAX_CRITERIA_WEEKS} weeks`)
+    throw new ReviewLineError(`stake age is limited to ${MAX_CRITERIA_WEEKS} weeks`)
   }
-  if (minWeeks === 0n && maxWeeks !== 0n) throw new Error('a maximum stake age needs a minimum of at least 1 week')
-  if (maxWeeks !== 0n && maxWeeks < minWeeks) throw new Error('the maximum stake age must be at least the minimum')
+  if (minWeeks === 0n && maxWeeks !== 0n) throw new ReviewLineError('a maximum stake age needs a minimum of at least 1 week')
+  if (maxWeeks !== 0n && maxWeeks < minWeeks) throw new ReviewLineError('the maximum stake age must be at least the minimum')
   return minWeeks * CRITERIA_BASE + maxWeeks
 }
 
@@ -257,7 +258,7 @@ const FUND = toEventSelector(getAbiItem({ abi: stickyDistributorAbi, name: 'Fund
 /** What one call answered, or why the read cannot go on. */
 export function need<T>(answer: Answer<T>, what: string): T {
   if (answer.status === 'success') return answer.result
-  throw new Error(`${what} could not be read.`, { cause: answer.error })
+  throw new ReviewLineError(`${what} could not be read.`, { cause: answer.error })
 }
 
 /**
@@ -303,7 +304,7 @@ export async function readRewardSchedule(
   const names = ['ROUND_DURATION', 'VESTING_ROUNDS', 'STARTING_TIMESTAMP', 'currentRound']
   const answers = (await readAt(chainId, names.map(name => distributorCall(distributor, name)), at.number, signal)) as Answer<bigint>[]
   const [roundDuration, vestingRounds, start, round] = answers.map((answer, i) => need(answer, `the distributor's ${names[i]}`))
-  if (roundDuration === 0n || vestingRounds === 0n) throw new Error('the distributor returned an invalid round schedule')
+  if (roundDuration === 0n || vestingRounds === 0n) throw new ReviewLineError('the distributor returned an invalid round schedule')
   return { roundDuration, vestingRounds, start, round }
 }
 
@@ -445,7 +446,7 @@ function tokenMetaOf(token: Address, answers: readonly Answer<unknown>[]): Token
   const [symbolOf, decimalsOf, symbolBytes32Of] = answers as [Answer<string>, Answer<number>, Answer<Hex>]
   const decimals = need(decimalsOf, "the reward token's decimals")
   if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
-    throw new Error(`the reward token returned ${decimals} as its decimals`)
+    throw new ReviewLineError(`the reward token returned ${decimals} as its decimals`)
   }
   const symbol =
     symbolOf.status === 'success'
@@ -546,7 +547,7 @@ export async function rewardTokenMeta(chainId: number, token: Address, { signal 
   if (token.toLowerCase() === NATIVE_REWARD_TOKEN) return { symbol: 'ETH', decimals: 18 }
   const answers = await asked('the reward token', () => readAt(chainId, tokenCalls(token), undefined, signal), signal)
   // `readAt` throws a request that got no answer, so a call that failed here is the address's own answer.
-  if (answers[1].status === 'failure') throw new Error(NOT_A_TOKEN)
+  if (answers[1].status === 'failure') throw new ReviewLineError(NOT_A_TOKEN)
   return tokenMetaOf(token, answers)
 }
 
@@ -627,7 +628,7 @@ async function earnedFrom(
   const { distributor } = deploymentOn(chainId)
   // Keep unusual distributor histories bounded. Rewards that have unlocked can always be collected directly.
   if (pots.some(pot => round > pot.cursor + MAX_UNRESOLVED_ROUNDS)) {
-    throw new Error('reward history is too large to check; use a distributor client to start unlocking')
+    throw new ReviewLineError('reward history is too large to check; use a distributor client to start unlocking')
   }
   const earned = pots.map(() => 0n)
   const next = pots.map(pot => pot.cursor)

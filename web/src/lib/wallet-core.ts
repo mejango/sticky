@@ -7,29 +7,17 @@ import {
   switchChain,
 } from '@wagmi/core'
 import type { JBChainId } from '@bananapus/nana-sdk-core'
-import type { Address, PublicClient } from 'viem'
+import { ReviewLineError, viemWalletAdapter, type ReviewedSendDeps } from '@bananapus/nana-sdk-core/review'
+import type { PublicClient } from 'viem'
 import { wagmiConfig } from '@/providers/Providers'
 import { chainName } from '@/lib/urn'
-import { assertNoViewAs } from '@/lib/viewAs'
 import { isSafeConnection } from '@/lib/safe-connector'
+import { holds } from '@/lib/write-holds'
 
 /**
  * Shared wagmi identity plumbing for transaction and signature boundaries.
  * Product journals and execution policy remain in their owning adapters.
  */
-
-/** The live wallet must still be the one whose exact request was reviewed. */
-export function assertReviewedWallet({ account, connectorUid, chainId, safe, allowCenter = false }: {
-  account: Address; connectorUid: string | undefined; chainId?: number; safe: boolean; allowCenter?: boolean
-}, message = 'Wallet connection changed. Review the transaction again.'): void {
-  assertNoViewAs()
-  const current = getAccount(wagmiConfig)
-  if (current.address?.toLowerCase() !== account.toLowerCase() ||
-      (chainId !== undefined && current.chainId !== chainId) || current.connector?.uid !== connectorUid ||
-      isSafeConnection(wagmiConfig) !== safe || (!allowCenter && current.connector?.id === 'juicebox-center')) {
-    throw new Error(message)
-  }
-}
 
 export function publicClient(chainId: JBChainId): PublicClient {
   const client = getPublicClient(wagmiConfig, { chainId })
@@ -37,43 +25,28 @@ export function publicClient(chainId: JBChainId): PublicClient {
   return client as PublicClient
 }
 
-/**
- * The connected wallet client on `chainId`, switching chains when needed.
- * Throws `changedError` if the account is missing afterwards, differs from
- * `expected`, or (with `requireUnchanged`) differs from the account that was
- * connected before the switch.
- */
-export async function connectedWallet(
-  chainId: JBChainId,
-  {
-    expected,
-    requireUnchanged = false,
-    changedError,
-  }: {
-    expected?: Address
-    requireUnchanged?: boolean
-    changedError: string
-  },
-) {
-  const before = getAccount(wagmiConfig)
-  if (!before.address) throw new Error('Connect a wallet first.')
-  if (before.chainId !== chainId) {
-    await switchChain(wagmiConfig, { chainId }).catch(error => {
-      // Safe apps cannot switch chains; the wagmi error only names the connector.
-      throw /does not support chain switching/.test(String(error))
-        ? new Error(`This wallet cannot switch chains. Open it on ${chainName(chainId)} and try again.`)
-        : error
-    })
-  }
-  const wallet = await getWalletClient(wagmiConfig, { chainId })
-  const account = getAccount(wagmiConfig).address
-  if (
-    !account ||
-    (requireUnchanged &&
-      account.toLowerCase() !== before.address.toLowerCase()) ||
-    (expected && account.toLowerCase() !== expected.toLowerCase())
-  ) {
-    throw new Error(changedError)
-  }
-  return { wallet, account }
+/** Switches the wallet to `chainId`. A Safe app cannot switch: it is told which chain to open on. */
+async function switchTo(chainId: number): Promise<void> {
+  await switchChain(wagmiConfig, { chainId: chainId as JBChainId }).catch(error => {
+    // Safe apps cannot switch chains; the wagmi error only names the connector.
+    throw /does not support chain switching/.test(String(error))
+      ? new ReviewLineError(`This wallet cannot switch chains. Open it on ${chainName(chainId)} and try again.`)
+      : error
+  })
+}
+
+/** Sticky's wallet as core's reviewed sends and signatures use it: the connected wagmi wallet, on the chain each asks for. */
+export const walletAdapter = viemWalletAdapter({
+  walletClient: () => getWalletClient(wagmiConfig),
+  account: () => getAccount(wagmiConfig).address,
+  chainId: () => getAccount(wagmiConfig).chainId,
+  isSafe: () => isSafeConnection(wagmiConfig),
+  switchChain: switchTo,
+})
+
+/** What every reviewed send of Sticky goes through: its wallet, each chain's client, and the app's one write hold. */
+export const reviewedSendDeps: ReviewedSendDeps = {
+  adapter: walletAdapter,
+  clientFor: chainId => publicClient(chainId as JBChainId),
+  hold: holds,
 }

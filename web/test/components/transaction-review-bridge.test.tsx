@@ -10,7 +10,8 @@ vi.mock('wagmi', () => ({ useAccount: () => ({ address: undefined, chainId: unde
 vi.mock('next/image', () => ({ default: (props: Record<string, unknown>) => createElement('img', { ...props, src: 'asset' }) }))
 
 import { TransactionReviewProvider } from '@/components/TransactionReviewProvider'
-import { requestContractTransactionReview, requireTransactionReview, type TransactionReviewRequest } from '@/lib/transaction-review'
+import { type TransactionReviewRequest } from '@bananapus/nana-sdk-core/review'
+import { promptReview } from '../support/review-prompt'
 import { COLLECTOR_ROUTE as ROUTE, COLLECTOR_SOURCE as SOURCE, collectorAddress as A, COLLECTOR_RECEIVER as RECEIVER, localCollectorSource } from '../collector-fixtures'
 
 let container: HTMLDivElement
@@ -26,7 +27,7 @@ afterEach(() => {
 })
 
 const leaf = { index: 0n, beneficiary: pad(RECEIVER), projectTokenCount: 10n ** 18n, terminalTokenAmount: 965n, metadata: zeroHash }
-// The requests BridgeFlow and CollectorFlow hand to useSafeTx, which now always opens this review.
+// The requests BridgeFlow and CollectorFlow review through core's reviewed run, as this review shows them.
 const steps = [
   ['prepare(uint256, bytes32, uint256, address, bytes32)', '965', buildBridgePrepareTx({ chainId: 1, sucker: ROUTE.sourceSucker, projectTokenCount: 10n ** 18n, beneficiary: RECEIVER, minTokensReclaimed: 965n, token: ROUTE.backingToken, metadata: zeroHash })],
   ['toRemote(address)', '123 wei', buildToRemoteTx({ chainId: 1, sucker: ROUTE.sourceSucker, token: ROUTE.backingToken, value: 123n })],
@@ -38,7 +39,7 @@ const steps = [
 it.each(steps)("shows the SDK's decoded review of %s", async (signature, amount, step) => {
   act(() => root.render(<TransactionReviewProvider>{null}</TransactionReviewProvider>))
   await act(async () => {
-    requestContractTransactionReview({ ...step, abi: step.abi as Abi, account: A(40) }).catch(() => {})
+    promptReview({ calls: [{ chainId: step.chainId, to: step.address, data: encodeFunctionData(step as never), value: ('value' in step ? step.value : undefined) ?? 0n, from: A(40), abi: step.abi as Abi, functionName: step.functionName, args: step.args }] }).catch(() => {})
   })
   await act(async () => { await vi.dynamicImportSettled() })
   const text = document.querySelector('dialog')?.textContent ?? ''
@@ -51,9 +52,9 @@ it.each(steps)("shows the SDK's decoded review of %s", async (signature, amount,
 
 it("shows the action's summary rows above every decoded call of its one review", async () => {
   const calls = steps.slice(0, 2).map(([, , step]) => ({ chainId: step.chainId, to: step.address, data: encodeFunctionData(step as never), value: ('value' in step ? step.value : undefined) ?? 0n, from: A(40), abi: step.abi as Abi, functionName: step.functionName, args: step.args }))
-  const request: TransactionReviewRequest = { title: 'Airdrop across chains', rows: [{ label: 'Send', value: '1 SRC on Ethereum', strong: true }, { label: 'Reward address', value: RECEIVER, mono: true }], calls }
+  const request: TransactionReviewRequest = { title: 'Airdrop across chains', context: [{ label: 'Send', value: '1 SRC on Ethereum', strong: true }, { label: 'Reward address', value: RECEIVER, mono: true }], calls }
   act(() => root.render(<TransactionReviewProvider>{null}</TransactionReviewProvider>))
-  await act(async () => { requireTransactionReview(request).catch(() => {}) })
+  await act(async () => { promptReview(request).catch(() => {}) })
   await act(async () => { await vi.dynamicImportSettled() })
   const text = document.querySelector('dialog')?.textContent ?? ''
   expect(text).toContain('Airdrop across chains')

@@ -6,6 +6,7 @@
 
 import type { Address } from 'viem'
 import { withTimeout } from '@/lib/with-timeout'
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 /** DexScreener's names for the production chains it is asked about. A testnet has none, and so no prices. */
 const DEXSCREENER_CHAIN: Record<number, string> = {
@@ -80,9 +81,9 @@ export async function usdPrices(
     const addresses = wanted.slice(start, start + ADDRESSES_PER_REQUEST)
     const pairs = await withTimeout(TIMEOUT_MS, signal, async timed => {
       const response = await fetcher(`${ENDPOINT}/${chain}/${addresses.join(',')}`, { signal: timed })
-      if (!response.ok) throw new Error(`price request failed (${response.status})`)
+      if (!response.ok) throw new ReviewLineError(`price request failed (${response.status})`)
       const body: unknown = await response.json()
-      if (!Array.isArray(body)) throw new Error('price response was not a list')
+      if (!Array.isArray(body)) throw new ReviewLineError('price response was not a list')
       return body as (Pair | null)[]
     })
 

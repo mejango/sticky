@@ -35,6 +35,7 @@ import {
 } from '@/lib/sticky-indexed'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { terminalHistoryKey, withoutMemo } from '@/lib/terminal-history'
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 /** A change to the project's terminal balance, in the staked token's units, at a time in Unix seconds. */
 export type Flow = { timestamp: number; delta: bigint }
@@ -196,7 +197,7 @@ function flowOf(chainId: number, projectId: bigint, log: ScannedLog): Placed | n
   const { eventName, args } = decodeEventLog({ abi: terminalEventsAbi, topics: log.topics, data: log.data })
   if (args.projectId !== projectId) return null
   if (log.blockTimestamp === undefined) {
-    throw new Error(`A terminal log on chain ${chainId} came without its block's time.`)
+    throw new ReviewLineError(`A terminal log on chain ${chainId} came without its block's time.`)
   }
   const delta =
     eventName === 'Pay'

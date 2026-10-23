@@ -10,7 +10,7 @@ vi.mock('wagmi', () => ({ useAccount: () => ({ address: undefined, chainId: unde
 vi.mock('next/image', () => ({ default: (props: Record<string, unknown>) => createElement('img', { ...props, src: 'asset' }) }))
 
 import { TransactionReviewProvider } from '@/components/TransactionReviewProvider'
-import { requireTransactionReview } from '@/lib/transaction-review'
+import { promptReview } from '../support/review-prompt'
 
 const token = '0x3333333333333333333333333333333333333333'
 // The SDK's table, generated from the verified deployment records, is the one the review reads.
@@ -39,7 +39,7 @@ it("uses the SDK's generated family record to review a reserved split on its hom
   }] }]] as const
   act(() => root.render(<TransactionReviewProvider>{null}</TransactionReviewProvider>))
   await act(async () => {
-    requireTransactionReview({ calls: [{
+    promptReview({ calls: [{
       chainId: 1, to: '0x1111111111111111111111111111111111111111', abi,
       functionName: 'setSplitGroupsOf', args, data: encodeFunctionData({ abi, functionName: 'setSplitGroupsOf', args }),
     }] }).catch(() => {})

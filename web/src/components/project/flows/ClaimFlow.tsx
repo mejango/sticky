@@ -9,7 +9,7 @@ import { reviewGate } from '@/components/project/flows/review-gate'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
-import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
+import { reviewedSteps, useReviewedAction, type TxRequest } from '@/hooks/useReviewedAction'
 import { useStepPresses } from '@/hooks/useStepPresses'
 import { useWallet } from '@/hooks/useWallet'
 import { asked } from '@/lib/hook-logs'
@@ -26,6 +26,7 @@ import { refreshAfterCollect, refreshAfterRewardStick } from '@/lib/sticky-refre
 import { groupLabel, hasRewardsToVest, need, readAt, type RewardCard } from '@/lib/sticky-rewards'
 import { chainName } from '@/lib/urn'
 import { useViewAs } from '@/lib/viewAs'
+import { errorLine, ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 const PREPARE_UNREADABLE = 'Could not prepare a claim of rewards; the pot says what could not be read.'
 const CLAIM_UNREADABLE = 'Could not check the claim before sending a step of it; the dialog says so.'
@@ -187,9 +188,9 @@ export function ClaimFlow({
 }) {
   const { address, isConnected, isCenterWallet, openSignIn } = useWallet()
   const { viewAs } = useViewAs()
-  const tx = useSafeTx(chainId)
-  const presses = useStepPresses(tx)
-  const { landed } = presses
+  const tx = useReviewedAction()
+  const presses = useStepPresses(tx, close)
+  const { landed } = tx
   const client = useQueryClient()
   const [plan, setPlan] = useState<Plan | null>(null)
   const [preparing, setPreparing] = useState(false)
@@ -228,7 +229,7 @@ export function ClaimFlow({
       if (signal.aborted) return
       const told = refusalOf(reason)
       if (!(told instanceof Refusal)) console.warn(PREPARE_UNREADABLE, { chainId, projectId }, told)
-      setFailure({ message: asSentence(told instanceof Error ? told.message : String(told)), account: account.toLowerCase() })
+      setFailure({ message: asSentence(errorLine(told)), account: account.toLowerCase() })
     } finally {
       if (!signal.aborted) setPreparing(false)
     }
@@ -243,22 +244,18 @@ export function ClaimFlow({
       ;({ collectable: now } = await stakedRewardGroups(chainId, info, reviewed.account, reviewed.groupIds))
     } catch (reason) {
       console.warn(CLAIM_UNREADABLE, { chainId, projectId }, reason)
-      throw new Error(asSentence(reason instanceof Error ? reason.message : String(reason)), { cause: reason })
+      throw new ReviewLineError(asSentence(errorLine(reason)), { cause: reason })
     }
-    if (now !== reviewed.collectable) throw new Error('Your claimable rewards changed. Review again.')
+    if (now !== reviewed.collectable) throw new ReviewLineError('Your claimable rewards changed. Review again.')
   }
 
   async function confirm() {
     if (!plan || sending) return
     // Every step is sent as the account that reviewed the claim, and the engine refuses it while another is connected.
     const symbol = plan.kind === 'stick' ? info.symbol : card.meta.symbol
-    const outcome = await presses.press(
-      plan.steps,
-      (step, confirmedAt, reviewed) =>
-        tx.send(step, { reviewedAccount: plan.account, reviewed, simulationBlockNumber: confirmedAt, reverify: () => verify(plan) }),
-      { account: plan.account, title: titleOf(plan, symbol), rows: rowsOf(plan, info, card) },
+    await presses.press(
+      { account: plan.account, calls: reviewedSteps(plan.steps, plan.account), title: titleOf(plan, symbol), context: rowsOf(plan, info, card), reverify: () => verify(plan) },
     )
-    if (outcome === 'cancelled') close()
   }
 
   function close() {

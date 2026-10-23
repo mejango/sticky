@@ -3,7 +3,7 @@
 import { QueryClient, QueryClientProvider, notifyManager, type QueryKey } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { encodeFunctionData, erc20Abi, getAddress, zeroAddress, type Address } from 'viem'
+import { erc20Abi, getAddress, zeroAddress, type Address } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import records from '@/lib/sticky-deployments.json'
 import type { StickyPosition } from '@/lib/sticky-holders'
@@ -12,6 +12,7 @@ import { TransactionReviewCancelledError } from '@/lib/transaction-review'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 import { EXTERNAL_WALLET_REQUIRED, WalletAuthContext } from '@/providers/WalletAuthContext'
 import { E18, TOKEN, stickyInfo } from '../home-fixtures'
+import { reviewedActionFake } from '../support/reviewed-action'
 
 // The Transfer flow: who can send Sticky tokens, to whom and how much, what it reads before it asks the wallet, and what
 // it refreshes afterwards. The engine has tests of its own (test/transactions): its hook is a mock here, its dialogs
@@ -29,9 +30,9 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@/hooks/useWallet', () => ({ useWallet: () => ({ ...mocks.wallet, openSignIn: mocks.openSignIn }) }))
 // The engine's hook is a mock; its labels for the phases it reports are its own.
-vi.mock('@/hooks/useSafeTx', async importOriginal => ({
-  ...(await importOriginal<typeof import('@/hooks/useSafeTx')>()),
-  useSafeTx: () => mocks.tx,
+vi.mock('@/hooks/useReviewedAction', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/hooks/useReviewedAction')>()),
+  useReviewedAction: () => mocks.tx,
 }))
 vi.mock('@/lib/sticky-rewards', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/sticky-rewards')>()),
@@ -70,22 +71,7 @@ const position = (staked: bigint): StickyPosition => ({
   timestamp: 1_800_000_000,
 })
 
-const idle = () => ({
-  phase: 'idle',
-  busy: false,
-  hash: null as string | null,
-  error: null as string | null,
-  receipt: null,
-  isSafe: false,
-  safeProposalHash: null,
-  safeNonceGuidance: null as string | null,
-  confirmationUncertain: false,
-  send: vi.fn().mockResolvedValue(null),
-  // The transfer's one decoded review: what it returns is the proof the transfer is sent with.
-  review: vi.fn(async () => ({})),
-  reset: vi.fn(),
-  dismiss: vi.fn(),
-})
+const idle = () => reviewedActionFake()
 const tx = () => mocks.tx as ReturnType<typeof idle>
 
 /** What a read of the holder's Sticky balance answers. */
@@ -413,21 +399,21 @@ describe('the review', () => {
     expect(text).toContain(TRANCHE)
     expect(text).not.toContain('ends your current streak')
     // One decoded review of the one transfer, with its summary, is the only confirmation; the transfer is sent under it.
-    expect(tx().review).toHaveBeenCalledExactlyOnceWith(
-      [expect.objectContaining({ functionName: 'transfer', args: [BOB, 1_500_000_000_000_000_000n] })],
-      {
+    expect(tx().review).toHaveBeenCalledOnce()
+    expect(tx().run).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        calls: [expect.objectContaining({ functionName: 'transfer', args: [BOB, 1_500_000_000_000_000_000n] })],
         account: ALICE,
         title: 'Transfer',
-        rows: [
+        context: [
           { label: 'Transfer', value: '1.5 STICKYART', strong: true },
           { label: 'To', value: BOB, mono: true },
           { label: 'On', value: 'Base Sepolia' },
           { label: 'Effect', value: TRANCHE },
         ],
-      },
+      }),
     )
-    expect(tx().send).toHaveBeenCalledOnce()
-    expect(tx().send.mock.calls[0][1]).toMatchObject({ reviewed: await tx().review.mock.results[0].value })
+    expect(tx().send).toHaveBeenCalledExactlyOnceWith(tx().run.mock.calls[0][0].calls[0], 0)
     // The form waits behind the confirm, in the same card: one dialog, one scrim.
     expect(modal().contains(confirm())).toBe(true)
     expect(document.querySelectorAll('dialog')).toHaveLength(1)
@@ -438,7 +424,7 @@ describe('the review', () => {
     await render()
     await review(BOB, '2')
     expect(confirm()!.textContent).toContain(STREAK)
-    expect((tx().review.mock.calls[0] as unknown as [unknown, { rows: unknown[] }])[1].rows).toContainEqual({ label: 'Streak', value: STREAK })
+    expect(tx().run.mock.calls[0][0].context).toContainEqual({ label: 'Streak', value: STREAK })
   })
 
   it('brings the form back, as it was, when the confirm is cancelled', async () => {
@@ -502,37 +488,31 @@ describe('the send', () => {
     await review(BOB, '1.000000000000000001')
 
     expect(tx().send).toHaveBeenCalledOnce()
-    const [request] = tx().send.mock.calls[0] as [{ chainId: number; address: Address; functionName: string; args: unknown[] }]
-    expect(request).toMatchObject({ chainId: CHAIN, address: STICKY, functionName: 'transfer', args: [BOB, 1_000_000_000_000_000_001n] })
-    expect(encodeFunctionData({ abi: erc20Abi, functionName: 'transfer', args: [BOB, 1_000_000_000_000_000_001n] })).toBe(
-      `0xa9059cbb${word(BOB)}${word(1_000_000_000_000_000_001n)}`,
-    )
-    expect(Object.isFrozen(request)).toBe(true)
-    expect(Object.isFrozen(request.args)).toBe(true)
+    const [call] = tx().send.mock.calls[0]
+    expect(call).toMatchObject({ chainId: CHAIN, to: STICKY, value: 0n, functionName: 'transfer', args: [BOB, 1_000_000_000_000_000_001n] })
+    expect(call.data).toBe(`0xa9059cbb${word(BOB)}${word(1_000_000_000_000_000_001n)}`)
   })
 
   it('names the account that reviewed the transfer, which the engine sends it from and no other', async () => {
     await render()
     await review(BOB, '1')
-    const [, options] = tx().send.mock.calls[0] as [unknown, { reviewedAccount: Address; reviewed: unknown }]
-    expect(options.reviewedAccount).toBe(ALICE)
-    expect(options.reviewed).toBe(await tx().review.mock.results[0].value)
+    expect(tx().run.mock.calls[0][0].account).toBe(ALICE)
   })
 
   it('reads the balance again just before it asks the wallet, and stops if it has fallen below the amount', async () => {
     await render()
     await review(BOB, '1.5')
-    const [request, options] = tx().send.mock.calls[0] as [unknown, { reverify: (request: unknown) => Promise<unknown> }]
+    const { calls: [call], reverify } = tx().run.mock.calls[0][0]
 
     mocks.read.mockClear().mockResolvedValue(balance(2n * E18))
-    await expect(options.reverify(request)).resolves.toBeUndefined()
+    await expect(reverify!(call, 0, undefined)).resolves.toBeUndefined()
     expect(mocks.read).toHaveBeenCalledOnce()
 
     mocks.read.mockResolvedValue(balance(E18))
-    await expect(options.reverify(request)).rejects.toThrow('Your token balance changed. Review the amount.')
+    await expect(reverify!(call, 0, undefined)).rejects.toThrow('Your token balance changed. Review the amount.')
 
     mocks.read.mockRejectedValue(new Error('429'))
-    await expect(options.reverify(request)).rejects.toThrow('Could not read your Sticky balance. Try again.')
+    await expect(reverify!(call, 0, undefined)).rejects.toThrow('Could not read your Sticky balance. Try again.')
   })
 
   it('asks once, and is busy while the engine is', async () => {
@@ -585,7 +565,7 @@ describe('the send', () => {
     // The engine takes nothing it fails: it answers null and shows its error.
     tx().send.mockImplementationOnce(async () => {
       Object.assign(tx(), { phase: 'error', error: 'Transaction cancelled.' })
-      return null
+      throw new Error('Transaction cancelled.')
     })
     await render()
     await review(BOB, '1')
@@ -700,7 +680,7 @@ describe('a wallet that cannot send', () => {
   it('drops a review that was made for another account: the plan is never sent for one that did not make it', async () => {
     // The account changes while the transfer's review is open.
     let approve = () => {}
-    tx().review.mockImplementationOnce(() => new Promise(resolve => (approve = () => resolve({}))))
+    tx().review.mockImplementationOnce(() => new Promise(resolve => (approve = () => resolve())))
     await render()
     await review(BOB, '1')
     expect(confirm()).not.toBeNull()
@@ -708,17 +688,18 @@ describe('a wallet that cannot send', () => {
     await render()
     expect(confirm()).toBeNull()
     expect(buttonIn(modal(), 'Review transfer')).toBeDefined()
+    // The run was reviewed for its account, which core sends from and no other: once approved it reopens nothing here.
+    expect(tx().run.mock.calls[0][0].account).toBe(ALICE)
     await act(async () => approve())
     await settle()
-    // The review approved after the account changed sends nothing.
-    expect(tx().send).not.toHaveBeenCalled()
+    expect(confirm()).toBeNull()
   })
 
   it('drops a failed review once the account switches away, and offers a fresh one when it switches back', async () => {
     // The transfer fails: the engine takes nothing and shows its error.
     tx().send.mockImplementationOnce(async () => {
       Object.assign(tx(), { phase: 'error', error: 'Transaction cancelled.' })
-      return null
+      throw new Error('Transaction cancelled.')
     })
     tx().reset.mockImplementation(() => Object.assign(tx(), { phase: 'idle', error: null }))
     await render()
@@ -739,9 +720,8 @@ describe('a wallet that cannot send', () => {
     await press(modal(), 'Review transfer')
     expect(tx().review).toHaveBeenCalledTimes(2)
     expect(tx().send).toHaveBeenCalledTimes(2)
-    const [request, options] = tx().send.mock.calls[1] as [{ functionName: string; args: readonly unknown[] }, { reviewedAccount: Address; reviewed: unknown }]
-    expect(request).toMatchObject({ functionName: 'transfer', args: [BOB, E18] })
-    expect(options).toMatchObject({ reviewedAccount: ALICE, reviewed: await tx().review.mock.results[1].value })
+    expect(tx().send.mock.calls[1][0]).toMatchObject({ functionName: 'transfer', args: [BOB, E18] })
+    expect(tx().run.mock.calls[1][0].account).toBe(ALICE)
   })
 
   it('is refused, in View as, when the review starts', async () => {

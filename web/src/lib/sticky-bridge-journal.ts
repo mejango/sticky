@@ -1,8 +1,9 @@
 import { decodeFunctionData, isAddress, isHash, maxUint256, parseAbi, zeroAddress, type Address, type Hex } from 'viem'
 import { jbSuckerV6Abi, validateStickyGroupId } from '@bananapus/nana-sdk-core/v6'
-import type { TxRequest } from '@/hooks/useSafeTx'
+import type { TxRequest } from '@/hooks/useReviewedAction'
 import { environmentForChainIds, SUPPORTED_CHAINS } from '@/lib/chains'
 import { bridgeCalldata, bridgeRouteId, type BridgeMovement, type BridgeRoute, type createStickyBridge } from '@/lib/sticky-bridge'
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 export type StoredBridgeWrite = { chainId: number; address: Address; data: Hex; value: string; label: string; parent?: string }
 export type BridgeRecord = {
@@ -59,7 +60,7 @@ const validTokenMeta = (value: BridgeRoute['sourceMeta']) =>
   Number.isInteger(value.decimals) && value.decimals >= 0 && value.decimals <= 36
 
 function watchedKey(homeChainId: number, stickyToken: Address, groupId: bigint): string {
-  if (!supportedChain(homeChainId) || !nonzeroAddress(stickyToken) || validateStickyGroupId(groupId) !== null) throw new Error(WATCH_FAILED)
+  if (!supportedChain(homeChainId) || !nonzeroAddress(stickyToken) || validateStickyGroupId(groupId) !== null) throw new ReviewLineError(WATCH_FAILED)
   return `sticky:bridge:watch:v1:${homeChainId}:${stickyToken.toLowerCase()}:${groupId}`
 }
 /** A route is a bounded recovery hint, with no saved readiness, proof or movement status. */
@@ -69,7 +70,7 @@ function watchedRoute(value: BridgeRoute, homeChainId: number): BridgeRoute {
     environmentForChainIds([value.source.chainId]) !== environmentForChainIds([homeChainId]) ||
     !validProjectId(value.sourceProjectId) || !validProjectId(value.destinationProjectId) ||
     ![value.sourceSucker, value.destinationSucker, value.sourceToken, value.rewardToken, value.backingToken, value.remoteBackingToken, value.terminal].every(nonzeroAddress) ||
-    !validTokenMeta(value.sourceMeta) || !validTokenMeta(value.rewardMeta) || !validTokenMeta(value.backingMeta)) throw new Error(WATCH_FAILED)
+    !validTokenMeta(value.sourceMeta) || !validTokenMeta(value.rewardMeta) || !validTokenMeta(value.backingMeta)) throw new ReviewLineError(WATCH_FAILED)
   const { source, destination, sourceSucker, destinationSucker, sourceProjectId, destinationProjectId,
     sourceToken, rewardToken, backingToken, remoteBackingToken, terminal, sourceMeta, rewardMeta, backingMeta } = value
   return { source: { chainId: source.chainId }, destination: { chainId: destination.chainId },
@@ -83,10 +84,10 @@ export function readWatchedBridgeRoutes(homeChainId: number, stickyToken: Addres
   const raw = storage.getItem(watchedKey(homeChainId, stickyToken, groupId))
   if (raw === null) return []
   let values: BridgeRoute[]
-  try { values = JSON.parse(raw) } catch { throw new Error(WATCH_FAILED) }
-  if (!Array.isArray(values) || values.length > 100) throw new Error(WATCH_FAILED)
+  try { values = JSON.parse(raw) } catch { throw new ReviewLineError(WATCH_FAILED) }
+  if (!Array.isArray(values) || values.length > 100) throw new ReviewLineError(WATCH_FAILED)
   const routes = values.map(value => watchedRoute(value, homeChainId))
-  if (new Set(routes.map(bridgeRouteId)).size !== routes.length) throw new Error(WATCH_FAILED)
+  if (new Set(routes.map(bridgeRouteId)).size !== routes.length) throw new ReviewLineError(WATCH_FAILED)
   return routes
 }
 /** Under `withBridgeLock`, retain the route before submitting. Mutable terminal/display hints never replace its binding. */
@@ -98,13 +99,13 @@ export function saveWatchedBridgeRoute(homeChainId: number, stickyToken: Address
   if (existing) {
     const binding = (value: BridgeRoute) => [value.destinationSucker, value.sourceProjectId, value.destinationProjectId,
       value.sourceToken, value.rewardToken, value.remoteBackingToken].map(part => part.toLowerCase())
-    if (JSON.stringify(binding(existing)) !== JSON.stringify(binding(next))) throw new Error('The saved bridge route has a different endpoint binding. Recover the original route before continuing.')
+    if (JSON.stringify(binding(existing)) !== JSON.stringify(binding(next))) throw new ReviewLineError('The saved bridge route has a different endpoint binding. Recover the original route before continuing.')
     return
   }
-  if (routes.length >= 100) throw new Error('This browser’s saved bridge route history is full. Recover existing transfers before submitting another route.')
+  if (routes.length >= 100) throw new ReviewLineError('This browser’s saved bridge route history is full. Recover existing transfers before submitting another route.')
   const encoded = JSON.stringify([...routes, next])
   storage.setItem(key, encoded)
-  if (storage.getItem(key) !== encoded) throw new Error('Bridge route recovery could not be saved. No new transfer will be submitted.')
+  if (storage.getItem(key) !== encoded) throw new ReviewLineError('Bridge route recovery could not be saved. No new transfer will be submitted.')
 }
 
 export function storeBridgeWrite(request: TxRequest): StoredBridgeWrite {
@@ -123,32 +124,32 @@ export function readBridgeRecords(key: string, storage: BridgeStorage = localSto
   const raw = storage.getItem(key)
   if (raw === null) return []
   let records: BridgeRecord[]
-  try { records = JSON.parse(raw) } catch { throw new Error(FAILED) }
+  try { records = JSON.parse(raw) } catch { throw new ReviewLineError(FAILED) }
   if (!Array.isArray(records) || records.length > 100 || records.some(record =>
     !record || !isHash(record.metadata) || !isAddress(record.owner, { strict: false }) || !/^\d+$/.test(record.amount) || !record.route?.source || !record.route?.destination ||
     !isAddress(record.receiver, { strict: false }) || !isAddress(record.stickyToken, { strict: false }) || !/^\d+$/.test(record.groupId) || !/^\d+$/.test(record.stickyProjectId) ||
     !/^0xaf629bbb[0-9a-f]{320}$/i.test(record.prepareData) || !Number.isFinite(record.createdAt) || !Array.isArray(record.steps) || record.steps.length > 3 || record.steps.some(write => !validWrite(write)) ||
     (record.submission && (!isHash(record.submission.hash) || (record.submission.safeProposal !== undefined && typeof record.submission.safeProposal !== 'boolean'))) ||
     key !== bridgeStorageKey(record.route.destination.chainId, record.stickyToken, BigInt(record.groupId), record.owner)
-  )) throw new Error(FAILED)
+  )) throw new ReviewLineError(FAILED)
   return records
 }
 export function saveBridgeRecords(key: string, records: BridgeRecord[], storage: BridgeStorage = localStorage): void {
-  if (records.length > 100) throw new Error('This browser’s saved bridge history is full. Existing transfers can still be recovered; no new transfer was submitted.')
+  if (records.length > 100) throw new ReviewLineError('This browser’s saved bridge history is full. Existing transfers can still be recovered; no new transfer was submitted.')
   const encoded = JSON.stringify(records)
   storage.setItem(key, encoded)
-  if (storage.getItem(key) !== encoded) throw new Error('Bridge recovery could not be saved. No new transfer will be submitted.')
+  if (storage.getItem(key) !== encoded) throw new ReviewLineError('Bridge recovery could not be saved. No new transfer will be submitted.')
 }
 /** One write lock spans preparation, review and wallet submission, including other tabs. */
 export async function withBridgeLock<T>(work: () => Promise<T>, wait = false): Promise<T> {
-  if (!navigator.locks?.request) throw new Error('This browser cannot safely coordinate cross-chain transfers. Use a current browser with Web Locks support.')
+  if (!navigator.locks?.request) throw new ReviewLineError('This browser cannot safely coordinate cross-chain transfers. Use a current browser with Web Locks support.')
   return navigator.locks.request('sticky-reward-bridge', { mode: 'exclusive', ...(!wait ? { ifAvailable: true } : {}) }, async lock => {
-    if (!lock) throw new Error('A bridge action is already open in another tab.')
+    if (!lock) throw new ReviewLineError('A bridge action is already open in another tab.')
     return work()
   })
 }
 export async function updateBridgeRecords(key: string, update: (records: BridgeRecord[]) => BridgeRecord[], storage: BridgeStorage = localStorage) {
-  if (!navigator.locks?.request) throw new Error('This browser cannot safely save bridge recovery across tabs.')
+  if (!navigator.locks?.request) throw new ReviewLineError('This browser cannot safely save bridge recovery across tabs.')
   return navigator.locks.request('sticky-reward-bridge-storage', { mode: 'exclusive' }, () => {
     const records = update(readBridgeRecords(key, storage))
     saveBridgeRecords(key, records, storage)
@@ -158,7 +159,7 @@ export async function updateBridgeRecords(key: string, update: (records: BridgeR
 export async function updateBridgeRecord(key: string, metadata: Hex, update: (record: BridgeRecord) => BridgeRecord) {
   return updateBridgeRecords(key, records => {
     const at = records.findIndex(record => record.metadata === metadata)
-    if (at < 0) throw new Error('The saved bridge transfer disappeared. Refresh before continuing.')
+    if (at < 0) throw new ReviewLineError('The saved bridge transfer disappeared. Refresh before continuing.')
     records[at] = update(records[at])
     return records
   })
@@ -166,7 +167,7 @@ export async function updateBridgeRecord(key: string, metadata: Hex, update: (re
 export async function discardBridgeDraft(key: string, metadata: Hex) {
   return updateBridgeRecords(key, records => {
     const record = records.find(item => item.metadata === metadata)
-    if (record && (record.submission || record.sourceHash || record.sourceVerified || readPendingBridgeWrite(record.owner)?.metadata === metadata)) throw new Error('This transfer may still execute. Recover its original transaction before cancelling.')
+    if (record && (record.submission || record.sourceHash || record.sourceVerified || readPendingBridgeWrite(record.owner)?.metadata === metadata)) throw new ReviewLineError('This transfer may still execute. Recover its original transaction before cancelling.')
     return records.filter(item => item.metadata !== metadata)
   })
 }
@@ -184,7 +185,7 @@ export async function reconcileBridgeRecord(
   for (const row of rows.filter(item => item.leaf.metadata === record.metadata && item.caller.toLowerCase() === record.owner.toLowerCase())) {
     try { await api.verifySource(record.route, row, record.owner, record.prepareData, submission); found = row; break } catch { /* Keep the historical record until its exact source succeeds. */ }
   }
-  if (found && (found.leaf.projectTokenCount !== BigInt(record.amount) || found.leaf.beneficiary.toLowerCase() !== `0x${record.receiver.slice(2).toLowerCase().padStart(64, '0')}`)) throw new Error('The recovered bridge leaf does not match the saved transfer.')
+  if (found && (found.leaf.projectTokenCount !== BigInt(record.amount) || found.leaf.beneficiary.toLowerCase() !== `0x${record.receiver.slice(2).toLowerCase().padStart(64, '0')}`)) throw new ReviewLineError('The recovered bridge leaf does not match the saved transfer.')
   await updateBridgeRecord(key, record.metadata, current => {
     if (expected) assertPendingBridgeWrite(expected)
     return found
@@ -204,8 +205,8 @@ function readStoredPendingBridgeWrite(owner: Address, storage: BridgeStorage): P
   const raw = storage.getItem(pendingKey(owner))
   if (raw === null || raw === 'null') return null
   let value: PendingBridgeWrite
-  try { value = JSON.parse(raw) } catch { throw new Error(FAILED) }
-  if (!value || (value.id !== undefined && (typeof value.id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.id))) || value.owner?.toLowerCase() !== owner.toLowerCase() || !validWrite(value.request) || (value.hash !== undefined && !isHash(value.hash)) || (value.metadata !== undefined && !isHash(value.metadata)) || (value.safeProposal !== undefined && typeof value.safeProposal !== 'boolean') || ((value.recordKey === undefined) !== (value.metadata === undefined)) || (value.recordKey !== undefined && typeof value.recordKey !== 'string') || (value.intent !== undefined && typeof value.intent !== 'string') || (value.at !== undefined && !Number.isFinite(value.at))) throw new Error(FAILED)
+  try { value = JSON.parse(raw) } catch { throw new ReviewLineError(FAILED) }
+  if (!value || (value.id !== undefined && (typeof value.id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.id))) || value.owner?.toLowerCase() !== owner.toLowerCase() || !validWrite(value.request) || (value.hash !== undefined && !isHash(value.hash)) || (value.metadata !== undefined && !isHash(value.metadata)) || (value.safeProposal !== undefined && typeof value.safeProposal !== 'boolean') || ((value.recordKey === undefined) !== (value.metadata === undefined)) || (value.recordKey !== undefined && typeof value.recordKey !== 'string') || (value.intent !== undefined && typeof value.intent !== 'string') || (value.at !== undefined && !Number.isFinite(value.at))) throw new ReviewLineError(FAILED)
   return value
 }
 export function readPendingBridgeWrite(owner: Address, storage: BridgeStorage = localStorage): PendingBridgeWrite | null {
@@ -218,7 +219,7 @@ export function readPendingBridgeWrite(owner: Address, storage: BridgeStorage = 
 /** Under `withBridgeLock`, require the exact saved snapshot before recovering or clearing its write. */
 export function assertPendingBridgeWrite(expected: PendingBridgeWrite, storage: BridgeStorage = localStorage): void {
   const current = readStoredPendingBridgeWrite(expected.owner, storage)
-  if (JSON.stringify(current) !== JSON.stringify(expected)) throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
+  if (JSON.stringify(current) !== JSON.stringify(expected)) throw new ReviewLineError('The pending bridge transaction changed. Refresh its recovery before continuing.')
 }
 /** Attach only this attempt's actual wallet reply; a repeated commit is harmless. Legacy records need their own evidence. */
 export function savePendingBridgeSubmission(expected: PendingBridgeWrite, hash: Hex, safeProposal?: boolean, storage: BridgeStorage = localStorage): PendingBridgeWrite {
@@ -227,7 +228,7 @@ export function savePendingBridgeSubmission(expected: PendingBridgeWrite, hash: 
   const retained = retainedSubmissions.get(storage)?.get(key)
   if (!expected.id || expected.hash || !isHash(hash) ||
     (retained?.original === JSON.stringify(expected) && retained.submitted !== JSON.stringify(submitted))) {
-    throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
+    throw new ReviewLineError('The pending bridge transaction changed. Refresh its recovery before continuing.')
   }
   const remember = () => {
     if (!retainedSubmissions.has(storage)) retainedSubmissions.set(storage, new Map())
@@ -240,7 +241,7 @@ export function savePendingBridgeSubmission(expected: PendingBridgeWrite, hash: 
     throw reason
   }
   if (JSON.stringify(current) !== JSON.stringify(expected) && JSON.stringify(current) !== JSON.stringify(submitted)) {
-    throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
+    throw new ReviewLineError('The pending bridge transaction changed. Refresh its recovery before continuing.')
   }
   remember()
   savePendingBridgeWrite(expected.owner, submitted, storage)
@@ -254,7 +255,7 @@ export function savePendingBridgeSubmission(expected: PendingBridgeWrite, hash: 
  */
 export async function adoptSettlementHash(owner: Address, id: string | undefined, hash: Hex, storage: BridgeStorage = localStorage, result?: 'success' | 'failed'): Promise<PendingBridgeWrite> {
   const stored = readStoredPendingBridgeWrite(owner, storage)
-  if (!stored || !id || stored.id !== id || !isHash(hash)) throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
+  if (!stored || !id || stored.id !== id || !isHash(hash)) throw new ReviewLineError('The pending bridge transaction changed. Refresh its recovery before continuing.')
   if (stored.safeProposal || (stored.hash && stored.hash.toLowerCase() === hash.toLowerCase())) {
     if (!result || stored.settled === result) return stored
     // A Safe proposal keeps its identity; the authenticated result is recorded beside it before any domain check.
@@ -297,7 +298,7 @@ export function ensurePendingBridgeId(owner: Address, storage: BridgeStorage = l
 export async function endPendingBridgeAttempt(owner: Address, id: string | undefined, storage: BridgeStorage = localStorage): Promise<void> {
   const stored = readStoredPendingBridgeWrite(owner, storage)
   if (!stored) return
-  if (!id || stored.id !== id) throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
+  if (!id || stored.id !== id) throw new ReviewLineError('The pending bridge transaction changed. Refresh its recovery before continuing.')
   // Re-read from storage right now: a saved success is followed to its end, never ended as unknown.
   if (stored.settled === 'success') return
   if (stored.metadata && stored.recordKey) {
@@ -312,7 +313,7 @@ export function retryPendingBridgeSubmission(expected: PendingBridgeWrite, stora
   if (JSON.stringify(current) === JSON.stringify(expected)) return
   const retained = retainedSubmissions.get(storage)?.get(pendingKey(expected.owner))
   if (!retained || JSON.stringify(current) !== retained.original || JSON.stringify(expected) !== retained.submitted || !expected.hash) {
-    throw new Error('The pending bridge transaction changed. Refresh its recovery before continuing.')
+    throw new ReviewLineError('The pending bridge transaction changed. Refresh its recovery before continuing.')
   }
   savePendingBridgeSubmission(JSON.parse(retained.original), expected.hash, expected.safeProposal, storage)
 }
@@ -320,6 +321,6 @@ export function retryPendingBridgeSubmission(expected: PendingBridgeWrite, stora
 export function savePendingBridgeWrite(owner: Address, value: PendingBridgeWrite | null, storage: BridgeStorage = localStorage) {
   const encoded = JSON.stringify(value)
   storage.setItem(pendingKey(owner), encoded)
-  if (storage.getItem(pendingKey(owner)) !== encoded) throw new Error('Bridge recovery could not be saved. No new transfer will be submitted.')
+  if (storage.getItem(pendingKey(owner)) !== encoded) throw new ReviewLineError('Bridge recovery could not be saved. No new transfer will be submitted.')
   if (retainedSubmissions.get(storage)?.get(pendingKey(owner))?.original !== encoded) retainedSubmissions.get(storage)?.delete(pendingKey(owner))
 }

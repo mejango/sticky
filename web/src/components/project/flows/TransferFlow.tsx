@@ -9,7 +9,7 @@ import { ModalShell } from '@/components/ui/ModalShell'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
-import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
+import { reviewedCall, useReviewedAction, type TxRequest } from '@/hooks/useReviewedAction'
 import { useStepPresses } from '@/hooks/useStepPresses'
 import { useStickyPosition } from '@/hooks/useStickyProject'
 import { useWallet } from '@/hooks/useWallet'
@@ -22,6 +22,7 @@ import { refreshAfterTransfer } from '@/lib/sticky-refresh'
 import { need, readAt } from '@/lib/sticky-rewards'
 import type { TransactionReviewRow } from '@/lib/transaction-review'
 import { chainName } from '@/lib/urn'
+import { errorLine, ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 const LOCKED = 'This Sticky token is locked and cannot be transferred.'
 const MORE_THAN_HELD = 'That is more than you hold.'
@@ -41,7 +42,7 @@ async function heldBy(info: StickyProjectInfo, holder: Address): Promise<bigint>
     return need(answer as Answer<bigint>, 'Your Sticky balance')
   } catch (cause) {
     console.warn("Could not read a holder's Sticky balance before a transfer.", { chainId: info.chainId, projectId: Number(info.projectId) }, cause)
-    throw new Error(BALANCE_UNREADABLE, { cause })
+    throw new ReviewLineError(BALANCE_UNREADABLE, { cause })
   }
 }
 
@@ -68,8 +69,8 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
   const projectId = Number(info.projectId)
   const label = stickyLabel(info)
   const { address, isConnected, isCenterWallet, openSignIn } = useWallet()
-  const tx = useSafeTx(chainId)
-  const presses = useStepPresses(tx)
+  const tx = useReviewedAction()
+  const presses = useStepPresses(tx, closeReview)
   const client = useQueryClient()
   const position = useStickyPosition(chainId, projectId, address ?? null, info)
   const amountId = useId()
@@ -126,26 +127,24 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
       setReview({ account, plan: transferTx(info, to, count), whole: count === now, preparing: false, error: null })
       presses.arm()
     } catch (reason) {
-      if (attempt.current === mine) refuse(reason instanceof Error ? reason.message : BALANCE_UNREADABLE)
+      if (attempt.current === mine) refuse(reason instanceof Error ? errorLine(reason) : BALANCE_UNREADABLE)
     }
   }
 
   async function send() {
     if (!plan || !current || sending) return
     const [to, count] = plan.args as readonly [Address, bigint]
-    const outcome = await presses.press(
-      [plan],
-      (step, _confirmedAt, reviewed) =>
-        tx.send(step, {
-          reviewedAccount: current.account,
-          reviewed,
-          reverify: async () => {
-            if ((await heldBy(info, current.account)) < count) throw new Error(BALANCE_CHANGED)
-          },
-        }),
-      { account: current.account, title: 'Transfer', rows: rowsOf(to, count, current.whole) },
+    await presses.press(
+      {
+        account: current.account,
+        calls: [reviewedCall(plan, current.account)],
+        title: 'Transfer',
+        context: rowsOf(to, count, current.whole),
+        reverify: async () => {
+          if ((await heldBy(info, current.account)) < count) throw new ReviewLineError(BALANCE_CHANGED)
+        },
+      },
     )
-    if (outcome === 'cancelled') closeReview()
   }
 
   // A review is the account's that asked for it: once another is connected it is dropped, and nothing already due or

@@ -3,7 +3,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LaunchPlan } from '@/lib/sticky-launch-plan'
 import { STICKY_LAUNCH_KEY, launchAttempt, type StickyLaunchSession } from '@/lib/sticky-launch-session'
-import { checkedItLabel, HELD_EXIT_LABEL, SAVED_ATTEMPT_CHECK_LINE, SAVED_ATTEMPT_CONTINUE_ANYWAY_LABEL, SAVED_ATTEMPT_UNREADABLE_LINE, writeIntentKey } from '@bananapus/nana-sdk-core/review'
+import { checkedItLabel, HELD_EXIT_LABEL, ReviewLineError, SAVED_ATTEMPT_CHECK_LINE, SAVED_ATTEMPT_CONTINUE_ANYWAY_LABEL, SAVED_ATTEMPT_UNREADABLE_LINE, writeIntentKey } from '@bananapus/nana-sdk-core/review'
 import type { Hex } from 'viem'
 import { holds } from '@/lib/write-holds'
 import { openStickyLaunch } from '@/lib/sticky-launch-events'
@@ -219,7 +219,7 @@ describe('global Sticky launch host', () => {
   })
 
   it('a failed preparation opens no review and shows its error inline', async () => {
-    mocks.prepare.mockRejectedValueOnce(new Error('Token not found on Base Sepolia.'))
+    mocks.prepare.mockRejectedValueOnce(new ReviewLineError('Token not found on Base Sepolia.'))
     await mount()
     await show()
     await click('Prepare fixture')
@@ -272,7 +272,7 @@ describe('global Sticky launch host', () => {
 
   it('blocks a corrupt saved record and never offers to discard a published unknown launch', async () => {
     localStorage.setItem(STICKY_LAUNCH_KEY, '{bad')
-    mocks.load.mockImplementationOnce(() => { throw new Error('The saved launch is unreadable.') })
+    mocks.load.mockImplementationOnce(() => { throw new ReviewLineError('The saved launch is unreadable.') })
     await mount()
     await show()
     expect(container.querySelector('[data-create-form]')).toBeNull()

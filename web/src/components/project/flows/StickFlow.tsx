@@ -1,5 +1,6 @@
 'use client'
 
+import { errorLine, ReviewLineError } from '@bananapus/nana-sdk-core/review'
 import { skipToken, useQuery } from '@tanstack/react-query'
 import dynamic from 'next/dynamic'
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
@@ -90,7 +91,7 @@ export function StickFlow({
       try {
         parsed = parseAmount(amountText, info.decimals)
       } catch (reason) {
-        amountError = asSentence(reason instanceof Error ? reason.message : 'enter a valid amount')
+        amountError = asSentence(reason instanceof Error ? errorLine(reason) : 'enter a valid amount')
       }
     }
     if (!forSomeoneElse) return { amount: parsed, amountError, beneficiary: payer, recipientError: null }
@@ -126,13 +127,13 @@ export function StickFlow({
             try {
               await assertCanStickFor(chainId, staked.projectId, sender, beneficiary, { signal })
             } catch (reason) {
-              throw signal.aborted ? reason : new Error(asSentence(told(QUOTE_UNREADABLE, about, reason).message))
+              throw signal.aborted ? reason : new ReviewLineError(asSentence(errorLine(told(QUOTE_UNREADABLE, about, reason))))
             }
           }
           try {
             return await quoteStick(chainId, staked.projectId, staked.stakedToken, value, sender, beneficiary, { signal })
           } catch (reason) {
-            throw signal.aborted ? reason : new Error(`Could not quote: ${told(QUOTE_UNREADABLE, about, reason).message}`)
+            throw signal.aborted ? reason : new ReviewLineError(`Could not quote: ${errorLine(told(QUOTE_UNREADABLE, about, reason))}`)
           }
         }
       : skipToken,
@@ -208,7 +209,7 @@ export function StickFlow({
   else if (quoted.recipientError) hint = quoted.recipientError
   else if (quoted.amount > 0n && quoted.beneficiary !== null && info) {
     if (exceeds(quoted.amount)) hint = MORE_THAN_HELD
-    else if (quote.isError) hint = quote.error.message === shownError ? null : <span className="text-err">{quote.error.message}</span>
+    else if (quote.isError) hint = errorLine(quote.error) === shownError ? null : <span className="text-err">{errorLine(quote.error)}</span>
     else if (quote.data !== undefined) hint = stickQuoteSentence(quote.data, info, forSomeoneElse)
     else if (quote.isFetching) hint = 'Checking the current backing price…'
   }
