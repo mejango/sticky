@@ -7,7 +7,6 @@ RUN npm install --global npm@12.0.1 --no-audit --no-fund
 
 FROM base AS dependencies
 COPY package.json package-lock.json .npmrc ./
-COPY .local-sdk ./.local-sdk
 RUN npm ci --no-audit --no-fund
 
 FROM base AS builder

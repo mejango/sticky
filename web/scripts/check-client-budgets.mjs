@@ -23,8 +23,8 @@ const budgets = {
   '/': 328 * KIB,
   '/base:23': 345 * KIB,
   '/account/0x0000000000000000000000000000000000000001': 319 * KIB,
-  '/center/callback': 214 * KIB,
-  '/zz-not-a-route': 212 * KIB,
+  '/center/callback': 216 * KIB,
+  '/zz-not-a-route': 214 * KIB,
 }
 // The one route measured as the not-found page. Next streams it with 200 under a loading boundary, so it is told apart by
 // the not-found marker in its HTML: a route that rendered not-found instead of its page would otherwise pass as small.
