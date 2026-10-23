@@ -1,3 +1,18 @@
+# sticky-rewards "hundred groups" timeouts under load (2026-10-22)
+
+Two tests in `test/lib/sticky-rewards.test.ts` timed out at 5 s in full `test:ci` runs on a loaded machine (load 40+, also on origin/main) and passed alone in 0.1-0.5 s.
+
+- [x] 1. Profiled the describe (`--cpu-prof`): CPU-dominated (the hostile-token test also waits on the transport's real retry delay, a few hundred ms); each test encodes and decodes some 500 calls through the real reader), and the fake Center (`sticky-reward-fixtures.ts`) spent most of it re-hashing every ABI signature for each call (`decodeFunctionData` against the whole ABI after the selector had already named the function).
+- [x] 2. The fake Center decodes a call's arguments against the function its selector found, and Multicall3 against `aggregate3` alone: test CPU per hundred-groups test 110-200 ms -> 40-80 ms (process.cpuUsage, warm). Every test that uses the fake Center (unstick, fund, receiver, autostick, quotes...) gets the same saving.
+- [x] 3. The describe keeps a 15 s timeout with a ponytail note: it is CPU-bound by design.
+
+## Plan refinement
+- **Objective:** Remove the cause of the flake; no test semantics change.
+- **System fit:** Test fixture only; no app code.
+- **Reuse and simplicity:** viem's `decodeAbiParameters` and `getAbiItem`; a few lines in the fixture, with the aggregate3 selector still checked.
+- **Evidence and unknowns:** CPU profiles before/after in the session scratchpad; the remaining CPU is the reader under test.
+- **Verification:** The nine suites that use the fake Center, then full `npm run check`.
+- **Resource budget:** One small PR stacked on #70.
 # Fund, Claim, Stick, AutoStick, Receiver: one decoded review per user action (2026-10-22)
 
 Follow-up to #70 (stacks on it). jango: one confirmation per user action; the SDK decoded review is it, with the summary rows inside; multi-step actions are reviewed once and sent without re-asking.

@@ -1107,7 +1107,9 @@ describe('what is kept of the reward tokens', () => {
   })
 })
 
-describe('a project funded in a hundred groups', () => {
+// ponytail: CPU-bound by design, each test encodes and decodes some 500 calls through the real reader and the fake
+// Center; 15 s holds it on a loaded machine running the whole suite with coverage. Cheaper fixtures first if it grows.
+describe('a project funded in a hundred groups', { timeout: 15_000 }, () => {
   /** The nth token, each its own contract with its own symbol. */
   const tokenN = (n: number) => getAddress(`0x${n.toString(16).padStart(40, '0')}`)
   const pots = Array.from({ length: 100 }, (_, at) => fundedPot(BigInt(at + 1) * 1000n, tokenN(at + 1), 1n, at))
