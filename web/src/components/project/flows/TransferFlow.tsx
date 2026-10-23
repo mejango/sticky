@@ -10,6 +10,7 @@ import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
+import { useStepPresses } from '@/hooks/useStepPresses'
 import { useStickyPosition } from '@/hooks/useStickyProject'
 import { useWallet } from '@/hooks/useWallet'
 import { isLostRecipient, LOST_RECIPIENT } from '@/lib/sticky-addresses'
@@ -19,6 +20,7 @@ import { formatAmount, stickyLabel } from '@/lib/sticky-format'
 import type { Answer, StickyProjectInfo } from '@/lib/sticky-project'
 import { refreshAfterTransfer } from '@/lib/sticky-refresh'
 import { need, readAt } from '@/lib/sticky-rewards'
+import type { TransactionReviewRow } from '@/lib/transaction-review'
 import { chainName } from '@/lib/urn'
 
 const LOCKED = 'This Sticky token is locked and cannot be transferred.'
@@ -57,8 +59,8 @@ const LABEL = 'mb-[3px] block text-xs font-semibold uppercase tracking-[1px] tex
 
 /**
  * Transferring Sticky tokens to another address, in a modal. Only a token that is not locked can move. The review reads
- * the holder's balance from the token, plans the one transfer, and its confirm replaces the form in the same card; the
- * balance is read again just before the wallet is asked. A wallet that cannot send, Signa or View as, is refused when
+ * the holder's balance from the token, plans the one transfer, and opens its one decoded review with the summary rows;
+ * the card then follows the send. The balance is read again just before the wallet is asked. A wallet that cannot send, Signa or View as, is refused when
  * the review starts. Once the transfer is confirmed, what it changed is read again.
  */
 export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClose: () => void }) {
@@ -67,6 +69,7 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
   const label = stickyLabel(info)
   const { address, isConnected, isCenterWallet, openSignIn } = useWallet()
   const tx = useSafeTx(chainId)
+  const presses = useStepPresses(tx)
   const client = useQueryClient()
   const position = useStickyPosition(chainId, projectId, address ?? null, info)
   const amountId = useId()
@@ -114,12 +117,14 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
 
     const mine = ++attempt.current
     tx.reset()
+    presses.restart()
     setReview({ account, plan: null, whole: false, preparing: true, error: null })
     try {
       const now = await heldBy(info, account)
       if (attempt.current !== mine) return
       if (count > now) return refuse(MORE_THAN_HELD)
       setReview({ account, plan: transferTx(info, to, count), whole: count === now, preparing: false, error: null })
+      presses.arm()
     } catch (reason) {
       if (attempt.current === mine) refuse(reason instanceof Error ? reason.message : BALANCE_UNREADABLE)
     }
@@ -127,17 +132,54 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
 
   async function send() {
     if (!plan || !current || sending) return
-    const [, count] = plan.args as readonly [Address, bigint]
-    await tx.send(plan, {
-      reviewedAccount: current.account,
-      reverify: async () => {
-        if ((await heldBy(info, current.account)) < count) throw new Error(BALANCE_CHANGED)
-      },
-    })
+    const [to, count] = plan.args as readonly [Address, bigint]
+    const outcome = await presses.press(
+      [plan],
+      (step, _confirmedAt, reviewed) =>
+        tx.send(step, {
+          reviewedAccount: current.account,
+          reviewed,
+          reverify: async () => {
+            if ((await heldBy(info, current.account)) < count) throw new Error(BALANCE_CHANGED)
+          },
+        }),
+      { account: current.account, title: 'Transfer', rows: rowsOf(to, count, current.whole) },
+    )
+    if (outcome === 'cancelled') closeReview()
+  }
+
+  // A review is the account's that asked for it: once another is connected it is dropped, and nothing already due or
+  // under review for it is sent. The holder reviews again from the form.
+  const stale = review !== null && current === null
+  useEffect(() => {
+    if (!stale) return
+    attempt.current += 1
+    presses.restart()
+    setReview(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stale])
+
+  // The transfer's one decoded review opens once it is planned.
+  useEffect(() => {
+    if (presses.due && plan && !sending) void send()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presses.due, plan, sending])
+
+  /** The review's rows: what moves, to whom, and what it does to the holder's tranches. */
+  function rowsOf(to: Address, count: bigint, whole: boolean): TransactionReviewRow[] {
+    return [
+      { label: 'Transfer', value: `${formatUnits(count, SHARE_DECIMALS)} ${label}`, strong: true },
+      { label: 'To', value: to, mono: true },
+      { label: 'On', value: chainName(chainId) },
+      { label: 'Effect', value: 'The moved tokens start a new tranche now for the recipient. Your remaining tranches keep their dates.' },
+      ...(whole ? [{ label: 'Streak', value: 'Sending your whole balance ends your current streak.' }] : []),
+    ]
   }
 
   function closeReview() {
     attempt.current += 1
+    // Closed at once: a send already due for this transfer is not made.
+    presses.restart()
     setReview(null)
     if (complete) onClose()
     else tx.dismiss()
@@ -212,22 +254,14 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
           preparing={!plan}
           onClose={closeReview}
           title={complete ? 'Sticky tokens transferred' : 'Confirm transfer'}
-          rows={
-            planTo && planCount !== undefined
-              ? [
-                  { label: 'Transfer', value: `${formatUnits(planCount, SHARE_DECIMALS)} ${label}`, strong: true },
-                  { label: 'To', value: planTo, mono: true },
-                  { label: 'On', value: chainName(chainId) },
-                ]
-              : undefined
-          }
+          rows={planTo && planCount !== undefined ? rowsOf(planTo, planCount, !!current?.whole) : undefined}
           steps={[{ title: plan?.label ?? 'Transfer' }]}
           activeIndex={0}
           stepsIntro={stepsIntro(1, complete ? 1 : 0)}
           complete={complete}
           settled={tx.phase === 'submitted'}
           busy={sending}
-          action={confirmAction(tx.phase, tx.phase === 'error' ? 'Retry' : 'Confirm & transfer')}
+          action={confirmAction(tx.phase, tx.phase === 'error' ? 'Retry' : 'Review again')}
           onConfirm={() => void send()}
           status={
             complete ? (
@@ -239,12 +273,7 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
             )
           }
           error={tx.error}
-        >
-          <div className="space-y-1 text-sm text-muted">
-            <p>The moved tokens start a new tranche now for the recipient. Your remaining tranches keep their dates.</p>
-            {current?.whole ? <p>Sending your whole balance ends your current streak.</p> : null}
-          </div>
-        </TxConfirmDialog>
+        />
       ) : null}
     </ModalShell>
   )

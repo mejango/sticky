@@ -195,27 +195,25 @@ describe('the normal path adds no click, notice or wait', () => {
     expect(seen).toEqual([['Waiting for confirmation…'], ['Waiting for confirmation…'], ['View transaction ↗']])
   })
 
-  it('an unstick (cash-out): one confirm and only the waiting line and the transaction link', async () => {
+  it('an unstick (cash-out): one review and only the waiting line and the transaction link', async () => {
     const info = stickyInfo(CHAIN, BigInt(PROJECT), { stSymbol: 'STICKYCPN' })
     const tree = () => root.render(<QueryClientProvider client={client}><UnstickFlow chainId={CHAIN} projectId={PROJECT} info={info} onClose={() => {}} /></QueryClientProvider>)
     mocks.writeContract.mockResolvedValueOnce(UNSTICK)
     await act(async () => tree())
     await type('Amount of Sticky tokens to unstick', '5')
     await until(() => anyButton('Unstick') && !anyButton('Unstick').disabled, 'the Unstick button')
+    // Unstick is the only click: its one review opens on its own, and the unstick is sent under it.
     await click(anyButton('Unstick'))
-    await until(() => confirmButton() && !confirmButton()!.disabled && confirmButton()!.textContent === 'Confirm & unstick', 'the review')
-    const seen: string[][] = [notices()]
-
-    await click(confirmButton()!)
     await until(() => mocks.writeContract.mock.calls.length === 1 && confirmButton()?.textContent === 'Confirming…', 'the unstick to be sent')
-    seen.push(notices())
+    const seen: string[][] = [notices()]
     await mined(UNSTICK, 4_010n, 'cashOutTokensOf', tree)
     await until(() => title() === 'Unstick confirmed', 'the unstick to be counted')
     seen.push(notices())
 
-    expect(clicks).toBe(2)
-    expect(mocks.requestReview).toHaveBeenCalledTimes(1)
+    expect(clicks).toBe(1)
+    expect(mocks.requireReview).toHaveBeenCalledOnce()
+    expect(mocks.requestReview).not.toHaveBeenCalled()
     expect(mocks.writeContract.mock.calls[0][0]).toMatchObject({ address: TERMINAL, functionName: 'cashOutTokensOf' })
-    expect(seen).toEqual([[], ['Waiting for confirmation…View transaction ↗'], ['View transaction ↗']])
+    expect(seen).toEqual([['Waiting for confirmation…View transaction ↗'], ['View transaction ↗']])
   })
 })

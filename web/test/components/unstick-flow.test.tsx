@@ -14,6 +14,7 @@ import { SAFE_EXEC_ABI } from '@bananapus/nana-sdk-core/safe-service'
 import { HELD_EXIT_LABEL, HELD_FAILED_LINE, writeExitMessage, writeHeldMessage } from '@bananapus/nana-sdk-core/review'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { REVIEWED_ACCOUNT_CHANGED } from '@/lib/contract-write'
+import { TransactionReviewCancelledError } from '@/lib/transaction-review'
 import { feelessAddressesAbi, stickyAutoStickAbi, stickyHookAbi, terminalAbi } from '@/lib/sticky-abis'
 import { unstickTxs } from '@/lib/sticky-builders'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
@@ -27,6 +28,8 @@ const mocks = vi.hoisted(() => ({
   publicClient: { simulateContract: vi.fn(), estimateContractGas: vi.fn(), waitForTransactionReceipt: vi.fn(), getChainId: vi.fn(), getTransaction: vi.fn(), getTransactionReceipt: vi.fn(), getBlock: vi.fn(), getBlockNumber: vi.fn(), getTransactionCount: vi.fn() },
   getAccount: vi.fn(),
   requestReview: vi.fn(),
+  /** The plan's one decoded review of every step left. */
+  requireReview: vi.fn(),
   switchChain: vi.fn(),
   writeContract: vi.fn(),
   confirming: { on: true, status: 'success' as 'success' | 'reverted' },
@@ -60,6 +63,7 @@ vi.mock('@/hooks/useWallet', () => ({
 vi.mock('@/lib/transaction-review', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/transaction-review')>()),
   requestContractTransactionReview: mocks.requestReview,
+  requireTransactionReview: mocks.requireReview,
 }))
 vi.mock('@/hooks/useSafeTx', async importOriginal => {
   const actual = await importOriginal<typeof import('@/hooks/useSafeTx')>()
@@ -182,7 +186,8 @@ beforeEach(() => {
   mocks.safe = { on: false, execution: Promise.withResolvers<string>() }
   mocks.engine.silent = false
   mocks.getAccount.mockImplementation(() => ({ address: mocks.wallet.address, chainId: CHAIN }))
-  mocks.requestReview.mockResolvedValue(true)
+  mocks.requestReview.mockReset().mockResolvedValue(true)
+  mocks.requireReview.mockReset().mockResolvedValue(undefined)
   mocks.switchChain.mockResolvedValue(undefined)
   mocks.publicClient.simulateContract.mockImplementation(async (request: unknown) => ({ request }))
   mocks.publicClient.estimateContractGas.mockResolvedValue(50_000n)
@@ -206,12 +211,7 @@ beforeEach(() => {
     if (!block) throw new Error('Block not found')
     return block
   })
-  mocks.writeContract.mockImplementation(async (request: Write) => {
-    const hash = toHex(hashes += 1, { size: 32 })
-    if (mocks.safe.on) mocks.proposals[hash] = request
-    else mine(hash, request)
-    return hash
-  })
+  mocks.writeContract.mockReset().mockImplementation(walletSends)
   mocks.openSignIn.mockResolvedValue(undefined)
   requestSignIn.mockResolvedValue(undefined)
   vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -319,12 +319,41 @@ function mine(hash: Hex, request: Write, proposalHash?: Hex) {
     }] : [],
   }
 }
+/** The wallet: it takes each write, and the chain mines it at once, unless a Safe only proposes it. */
+async function walletSends(request: Write) {
+  const hash = toHex(hashes += 1, { size: 32 })
+  if (mocks.safe.on) mocks.proposals[hash] = request
+  else mine(hash, request)
+  return hash
+}
+/** The wallet's `n`th write (from 1) goes to `instead`; every other one as usual. */
+function onWrite(n: number, instead: (request: Write) => Promise<Hex>) {
+  mocks.writeContract.mockImplementation((request: Write) =>
+    mocks.writeContract.mock.calls.length === n ? instead(request) : walletSends(request),
+  )
+}
+/** A write the wallet sends and the chain never mines. */
+const unmined = async () => toHex(hashes += 1, { size: 32 })
+/** The first step goes through, and then the engine's lock answers nothing: the plan stops after one step, with nothing
+ * else sent or failed. */
+const stopAfterFirst = () =>
+  onWrite(1, request => {
+    mocks.engine.silent = true
+    return walletSends(request)
+  })
 const writes = () => mocks.writeContract.mock.calls.map(([request]) => request as Write)
 const called = () => writes().map(request => request.functionName)
-/** What the review was asked to show, in order. */
-const reviewed = () => mocks.requestReview.mock.calls.map(([request]) => request.functionName as string)
-/** The account each review was asked for, in order. */
-const reviewedFor = () => mocks.requestReview.mock.calls.map(([request]) => request.account as Address)
+type Shown = { calls: { functionName: string; from: Address; args: readonly unknown[] }[]; title?: string; rows?: unknown[] }
+/** The steps each decoded review showed, by function, in order. */
+const reviews = () => mocks.requireReview.mock.calls.map(([request]) => (request as Shown).calls.map(call => call.functionName))
+/** The account each decoded review showed its steps for. */
+const reviewedFor = () => mocks.requireReview.mock.calls.map(([request]) => (request as Shown).calls[0].from)
+/** Holds the next decoded review open until the test answers it. */
+function holdReview() {
+  const open = Promise.withResolvers<void>()
+  mocks.requireReview.mockReturnValueOnce(open.promise)
+  return { approve: () => act(async () => open.resolve()), cancel: () => act(async () => open.reject(new TransactionReviewCancelledError())) }
+}
 
 /** Opens the review of `amount` and waits for the plan. */
 async function review(amount: string) {
@@ -335,17 +364,15 @@ async function review(amount: string) {
 }
 /** Whether the confirmation lists `count` steps: it lists none while it reads the chain. */
 const planned = (count: number) => () => confirm()?.querySelectorAll('ol li').length === count
-/** Sends the step the confirmation offers, and waits for its button to give way to `next`. */
-async function sendStep(label: string, next?: string) {
-  await press(label, confirm()!)
-  await until(() => (next ? nameOf(confirm()!).includes(next) : confirm()!.textContent!.includes('Unstick confirmed')), `the step after ${label}`)
-}
+/** Waits for every step to have gone through. */
+const done = () => until(() => confirm()?.textContent?.includes('Unstick confirmed') === true, 'the unstick to be confirmed', 400)
 
 describe('a full exit', () => {
   const on = { enabled: true, trusted: true, allowance: 100n }
 
-  it('wallet-action:turn-off-auto-stick wallet-action:take-back-the-auto-stick-adapter-s-trust wallet-action:take-back-the-auto-stick-adapter-s-allowance wallet-action:unstick-sticky-tokens turns auto-stick off, takes back its trust and its allowance, and then unsticks: four transactions, one after another', async () => {
+  it('wallet-action:turn-off-auto-stick wallet-action:take-back-the-auto-stick-adapter-s-trust wallet-action:take-back-the-auto-stick-adapter-s-allowance wallet-action:unstick-sticky-tokens turns auto-stick off, takes back its trust and its allowance, and then unsticks: four transactions, one review, one after another', async () => {
     world(on)
+    const open = holdReview()
     await review('1')
 
     expect(titles()).toEqual([
@@ -355,26 +382,23 @@ describe('a full exit', () => {
       'Unstick',
     ])
     expect(confirm()!.textContent).toContain('4 transactions left.')
-    expect(confirm()!.textContent).toContain('This unsticks everything you hold, so auto-stick is taken apart first.')
-    // Nothing is sent until the first press.
+    expect(rowsOf()).toMatchObject({ 'Auto-stick': 'This unsticks everything you hold, so auto-stick is taken apart first.' })
+    // One decoded review shows all four steps, with the summary rows, and nothing is sent until it is approved.
+    expect(reviews()).toEqual([['setConfigFor', 'setTrustedSenderFor', 'approve', 'cashOutTokensOf']])
+    expect(mocks.requireReview.mock.calls[0][0]).toMatchObject({
+      title: 'Unstick ART',
+      rows: expect.arrayContaining([{ label: 'Unstick', value: '1 STICKYART', strong: true }]),
+    })
     expect(mocks.writeContract).not.toHaveBeenCalled()
 
-    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
-    expect(confirm()!.textContent).toContain('3 transactions left.')
-    // Nothing is wrong between two steps: what is left has not been sent yet.
-    expect(confirm()!.textContent).toContain(
-      "Went through: Turn off auto-stick. Not sent yet: Stop the auto-stick contract from sticking ART for you; Remove the auto-stick contract's ART allowance; Unstick.",
-    )
-    expect(confirm()!.textContent).not.toContain('Did not go through')
-    await sendStep('Remove auto-stick permission', 'Remove auto-stick allowance')
-    await sendStep('Remove auto-stick allowance', 'Confirm & unstick')
-    expect(confirm()!.textContent).toContain('1 transaction left.')
-    await sendStep('Confirm & unstick')
-
+    await open.approve()
+    await done()
     expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor', 'approve', 'cashOutTokensOf'])
-    expect(reviewed()).toEqual(called())
+    // That one review was the only confirmation: no step opened a review of its own.
+    expect(mocks.requireReview).toHaveBeenCalledOnce()
+    expect(mocks.requestReview).not.toHaveBeenCalled()
     // Each step is reviewed, simulated and sent as the holder the plan was made for.
-    expect(reviewedFor()).toEqual([HOLDER, HOLDER, HOLDER, HOLDER])
+    expect(reviewedFor()).toEqual([HOLDER])
     expect(writes().map(request => request.account)).toEqual([HOLDER, HOLDER, HOLDER, HOLDER])
     expect(writes().map(request => [request.address, request.args])).toEqual([
       [ADAPTER, [PROJECT, false, 1_000_000n, 86_400]],
@@ -387,10 +411,7 @@ describe('a full exit', () => {
   it('ends on the confirmed unstick with a link to its transaction, and stays until Done', async () => {
     world(on)
     await review('1')
-    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
-    await sendStep('Remove auto-stick permission', 'Remove auto-stick allowance')
-    await sendStep('Remove auto-stick allowance', 'Confirm & unstick')
-    await sendStep('Confirm & unstick')
+    await done()
 
     const dialog = confirm()!
     expect(dialog.querySelector('h2')!.textContent).toBe('Unstick confirmed')
@@ -431,13 +452,15 @@ describe('a full exit', () => {
 describe('a partial exit', () => {
   it('is a single unstick, whatever auto-stick is doing, and says what the holder keeps', async () => {
     world({ enabled: true, trusted: true, allowance: 100n })
+    const open = holdReview()
     await review('0.4')
 
     expect(titles()).toEqual(['Unstick'])
     expect(confirm()!.textContent).toContain('1 transaction left.')
     expect(rowsOf()).toMatchObject({ Unstick: '0.4 STICKYART', 'You keep': '0.6 STICKYART' })
 
-    await sendStep('Confirm & unstick')
+    await open.approve()
+    await done()
     expect(called()).toEqual(['cashOutTokensOf'])
     expect(writes()[0].args).toEqual([HOLDER, PROJECT, 4n * 10n ** 17n, STAKED, 975_000n, HOLDER, '0x'])
   })
@@ -458,6 +481,7 @@ describe('a partial exit', () => {
     await until(() => formText().includes('could not be read'), 'the refusal')
     expect(formText()).toContain('Your auto-stick settings could not be read.')
     expect(confirm()).toBeNull()
+    expect(mocks.requireReview).not.toHaveBeenCalled()
     expect(mocks.requestReview).not.toHaveBeenCalled()
     expect(mocks.writeContract).not.toHaveBeenCalled()
   })
@@ -479,11 +503,11 @@ describe('the minimum', () => {
     await until(() => confirm()?.textContent?.includes('transaction') === true, 'the plan')
     expect(rowsOf()).toMatchObject({ 'Minimum you receive': '1.95 ART', 'Protocol fee': '0.05 ART', On: 'Base Sepolia' })
 
-    await sendStep('Confirm & unstick')
+    await done()
     expect(writes()[0].functionName).toBe('cashOutTokensOf')
     expect(writes()[0].args[4]).toBe(1_950_000n)
     // What the wallet is asked to approve is the request the review showed.
-    expect(mocks.requestReview.mock.calls[0][0].args[4]).toBe(1_950_000n)
+    expect((mocks.requireReview.mock.calls[0][0] as Shown).calls[0].args[4]).toBe(1_950_000n)
   })
 
   it('says when an unstick returns nothing, names it so, and skips the quote for a full bonus', async () => {
@@ -524,7 +548,7 @@ describe('the preflight', () => {
     })
     expect(shown).toBe(false)
     // The request it asked about is the one the wallet is then given.
-    await sendStep('Confirm & unstick')
+    await done()
     expect(writes()[0].args).toEqual(asked[0].reads![0].args)
   })
 
@@ -537,6 +561,7 @@ describe('the preflight', () => {
 
     expect(form().querySelector('p.text-red-700')!.textContent).toContain('The terminal would refuse this unstick:')
     expect(confirm()).toBeNull()
+    expect(mocks.requireReview).not.toHaveBeenCalled()
     expect(mocks.requestReview).not.toHaveBeenCalled()
     expect(mocks.publicClient.simulateContract).not.toHaveBeenCalled()
     expect(mocks.writeContract).not.toHaveBeenCalled()
@@ -588,18 +613,23 @@ describe('an amount', () => {
   })
 })
 
+/** The wallet refuses its `n`th write. */
+const refuseWrite = (n: number) =>
+  onWrite(n, async () => {
+    throw new UserRejectedRequestError(new Error('The wallet did not send it.'))
+  })
+/** Waits for the first step to go through and the plan to stop there (see `stopAfterFirst`). */
+const firstThrough = () =>
+  until(() => steps()[0]?.state === 'complete' && nameOf(confirm()!).includes('Review again'), 'the first step to go through')
+
 describe('a send that stops halfway', () => {
   const on = { enabled: true, trusted: true, allowance: 100n }
 
   it('says which transactions went through and which did not, and plans again from the chain, never sending one twice', async () => {
     const { set } = world(on)
-    await review('1')
-    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
-    expect(steps().map(step => step.state)).toEqual(['complete', 'active', 'pending', 'pending'])
-
     // The wallet refuses the second.
-    mocks.writeContract.mockRejectedValueOnce(new UserRejectedRequestError(new Error('The wallet did not send it.')))
-    await press('Remove auto-stick permission', confirm()!)
+    refuseWrite(2)
+    await review('1')
     await until(() => nameOf(confirm()!).includes('Retry'), 'the failure')
 
     const dialog = confirm()!
@@ -610,11 +640,13 @@ describe('a send that stops halfway', () => {
     )
     expect(steps().map(step => step.state)).toEqual(['complete', 'active', 'pending', 'pending'])
     expect(nameOf(dialog)).toEqual(['Close', 'Retry'])
+    expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor'])
 
     // The chain says the first went through: auto-stick is off, its trust and allowance stand.
     set({ enabled: false })
+    const open = holdReview()
     await press('Retry', dialog)
-    await until(planned(4), 'the new plan')
+    await until(() => mocks.requireReview.mock.calls.length === 2, 'the new review')
     expect(titles()).toEqual([
       'Turn off auto-stick',
       'Stop the auto-stick contract from sticking ART for you',
@@ -624,41 +656,39 @@ describe('a send that stops halfway', () => {
     expect(steps().map(step => step.state)).toEqual(['complete', 'active', 'pending', 'pending'])
     expect(confirm()!.textContent).toContain('3 transactions left.')
     expect(confirm()!.textContent).not.toContain('Transaction cancelled.')
+    // The new review shows only what is left.
+    expect(reviews()[1]).toEqual(['setTrustedSenderFor', 'approve', 'cashOutTokensOf'])
 
-    await sendStep('Remove auto-stick permission', 'Remove auto-stick allowance')
-    await sendStep('Remove auto-stick allowance', 'Confirm & unstick')
-    await sendStep('Confirm & unstick')
-
+    await open.approve()
+    await done()
     // Turning auto-stick off was sent once, and the refused trust step was tried again.
     expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor', 'setTrustedSenderFor', 'approve', 'cashOutTokensOf'])
-    expect(called().filter(name => name === 'setConfigFor')).toHaveLength(1)
-    expect(confirm()!.querySelector('h2')!.textContent).toBe('Unstick confirmed')
+    expect(mocks.requireReview).toHaveBeenCalledTimes(2)
   })
 
   it('never sends a step again that went through, even when the node it asks has not caught up with it', async () => {
     // The chain keeps saying auto-stick is on, as a node one block behind would.
     world(on)
+    refuseWrite(2)
     await review('1')
-    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
-    mocks.writeContract.mockRejectedValueOnce(new UserRejectedRequestError(new Error('The wallet did not send it.')))
-    await press('Remove auto-stick permission', confirm()!)
     await until(() => nameOf(confirm()!).includes('Retry'), 'the failure')
+    const open = holdReview()
     await press('Retry', confirm()!)
-    await until(planned(4), 'the new plan')
+    await until(() => mocks.requireReview.mock.calls.length === 2, 'the new review')
 
     expect(steps().map(step => step.state)).toEqual(['complete', 'active', 'pending', 'pending'])
-    await sendStep('Remove auto-stick permission', 'Remove auto-stick allowance')
-    await sendStep('Remove auto-stick allowance', 'Confirm & unstick')
-    await sendStep('Confirm & unstick')
+    expect(reviews()[1]).toEqual(['setTrustedSenderFor', 'approve', 'cashOutTokensOf'])
+    await open.approve()
+    await done()
     expect(called().filter(name => name === 'setConfigFor')).toHaveLength(1)
   })
 
   it('holds an uncertain wallet reply after reopening the review without repeating the attempted step, until the person says they checked their wallet', async () => {
     const { set } = world(on)
+    onWrite(2, async () => {
+      throw new Error('Connection lost after sending')
+    })
     await review('1')
-    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
-    mocks.writeContract.mockRejectedValueOnce(new Error('Connection lost after sending'))
-    await press('Remove auto-stick permission', confirm()!)
     await until(() => nameOf(confirm()!).includes('Done'), 'the uncertain send')
 
     expect(confirm()!.textContent).toContain(writeHeldMessage())
@@ -668,46 +698,45 @@ describe('a send that stops halfway', () => {
     expect(steps().map(step => step.state)).toEqual(['complete', 'active', 'pending', 'pending'])
     expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor'])
 
+    // Unstick again reviews what is left, and its first send runs into the hold: nothing goes out.
     await press('Done', confirm()!)
     set({ enabled: false })
     await press('Unstick', form())
-    await until(planned(4), 'the reopened plan')
-    await press('Remove auto-stick permission', confirm()!)
-    await until(() => nameOf(confirm()!).includes('Done'), 'the saved uncertain send')
+    await until(() => mocks.requireReview.mock.calls.length === 2 && nameOf(confirm()!).includes('Done'), 'the saved uncertain send')
 
     expect(confirm()!.textContent).toContain(writeHeldMessage())
     expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor'])
 
     // The exit is the person's: they checked their wallet, so the step can go out again.
     await press(HELD_EXIT_LABEL, confirm()!)
-    await until(() => nameOf(confirm()!).includes('Remove auto-stick permission'), 'the step offered again')
+    await until(() => nameOf(confirm()!).includes('Review again'), 'the step offered again')
     expect(confirm()!.textContent).not.toContain(writeHeldMessage())
-    await press('Remove auto-stick permission', confirm()!)
+    await press('Review again', confirm()!)
     await until(() => called().length === 3, 'the step sent again')
-    expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor', 'setTrustedSenderFor'])
+    expect(called().slice(0, 3)).toEqual(['setConfigFor', 'setTrustedSenderFor', 'setTrustedSenderFor'])
   })
 
   it('counts a transaction that went through once, however often the page renders again after it', async () => {
     world(on)
+    // The second is sent and never mined.
+    onWrite(2, unmined)
     await review('1')
-    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
+    await until(() => called().length === 2, 'the second send')
     // A new query client renders the flow again while the confirmed send still stands.
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     await render()
     await render()
     expect(steps().map(step => step.state)).toEqual(['complete', 'active', 'pending', 'pending'])
     expect(confirm()!.textContent).toContain('3 transactions left.')
-    expect(called()).toEqual(['setConfigFor'])
+    expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor'])
   })
 
   it('counts a step only once the engine has taken it: a send that answers nothing counts nothing, however the page renders after it', async () => {
     world(on)
+    // After the first, the engine's lock is still held: its send answers nothing and changes nothing.
+    stopAfterFirst()
     await review('1')
-    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
-
-    // The engine's lock is still held: its send answers nothing and changes nothing.
-    mocks.engine.silent = true
-    await press('Remove auto-stick permission', confirm()!)
+    await firstThrough()
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     await render()
     await render()
@@ -715,31 +744,47 @@ describe('a send that stops halfway', () => {
     expect(confirm()!.textContent).toContain('3 transactions left.')
     expect(called()).toEqual(['setConfigFor'])
 
-    // Nothing was skipped, and nothing is sent twice.
+    // Nothing was skipped, and nothing is sent twice; the dropped review is asked again for what is left.
     mocks.engine.silent = false
-    await sendStep('Remove auto-stick permission', 'Remove auto-stick allowance')
-    await sendStep('Remove auto-stick allowance', 'Confirm & unstick')
-    await sendStep('Confirm & unstick')
+    await press('Review again', confirm()!)
+    await done()
     expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor', 'approve', 'cashOutTokensOf'])
+    expect(reviews()).toEqual([
+      ['setConfigFor', 'setTrustedSenderFor', 'approve', 'cashOutTokensOf'],
+      ['setTrustedSenderFor', 'approve', 'cashOutTokensOf'],
+    ])
   })
 
-  it('keeps a confirmed step from being sent again in the commit that shows it confirmed, before it is counted', async () => {
+  it('keeps the main button disabled while a step is out, and sends each step once', async () => {
     world(on)
-    await review('1')
     commits.length = 0
-    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
+    await review('1')
+    await done()
 
-    // From the press on, no commit shows the step that is being sent, or that has just been confirmed, as one to press.
-    const shown = commits.filter(commit => commit.startsWith('Turn off auto-stick|'))
-    expect(shown.length).toBeGreaterThan(0)
-    expect(shown.every(commit => commit.endsWith('|disabled'))).toBe(true)
-    expect(called()).toEqual(['setConfigFor'])
+    // No commit offers a press while a step is being checked, signed or confirmed.
+    const out = commits.filter(commit => /^(Double-checking|Confirm in your wallet|Confirming)/.test(commit))
+    expect(out.length).toBeGreaterThan(0)
+    expect(out.filter(commit => commit.endsWith('|enabled'))).toEqual([])
+    expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor', 'approve', 'cashOutTokensOf'])
+    expect(mocks.requireReview).toHaveBeenCalledOnce()
+  })
+
+  it('opens no second review for a press while its one review is open, and sends every step once', async () => {
+    world(on)
+    const open = holdReview()
+    await review('1')
+    await press('Review again', confirm()!)
+    await open.approve()
+    await done()
+    expect(mocks.requireReview).toHaveBeenCalledOnce()
+    expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor', 'approve', 'cashOutTokensOf'])
   })
 
   it('says what went through for the old account when the account changes partway', async () => {
     world(on)
+    stopAfterFirst()
     await review('1')
-    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
+    await firstThrough()
     mocks.wallet = { address: OTHER, isCenterWallet: false }
     await render()
     await until(() => confirm() === null, 'the plan to go')
@@ -752,15 +797,19 @@ describe('a send that stops halfway', () => {
 
   it('stops saying it unsticks everything once a new plan keeps some of the tokens', async () => {
     const { set } = world(on)
+    // Tokens come in once the first step is out: the same amount is now part of what the holder has.
+    onWrite(1, request => {
+      set({ balance: 2n * E18 })
+      return walletSends(request)
+    })
+    const open = holdReview()
     await review('1')
     expect(confirm()!.textContent).toContain('This unsticks everything you hold')
-    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
-    expect(confirm()!.textContent).toContain('This unsticks everything you hold')
-
-    // Tokens came in: the same amount is now part of what the holder has.
-    set({ balance: 2n * E18 })
-    await press('Remove auto-stick permission', confirm()!)
+    await open.approve()
     await until(() => nameOf(confirm()!).includes('Retry'), 'the stop')
+    expect(confirm()!.textContent).toContain('This unsticks everything you hold')
+    expect(called()).toEqual(['setConfigFor'])
+
     await press('Retry', confirm()!)
     await until(planned(2), 'the new plan')
     expect(rowsOf()).toMatchObject({ 'You keep': '1 STICKYART' })
@@ -769,10 +818,8 @@ describe('a send that stops halfway', () => {
 
   it('says which transaction it is waiting for, and which are still to send', async () => {
     world(on)
+    onWrite(2, unmined)
     await review('1')
-    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
-    mocks.confirming.on = false
-    await press('Remove auto-stick permission', confirm()!)
     await until(() => confirm()!.textContent!.includes('Waiting for confirmation'), 'the wait')
     expect(confirm()!.textContent).toContain(
       "Went through: Turn off auto-stick. Waiting for: Stop the auto-stick contract from sticking ART for you. Not sent yet: Remove the auto-stick contract's ART allowance; Unstick.",
@@ -781,14 +828,12 @@ describe('a send that stops halfway', () => {
 
   it('goes on from the one that failed when the unstick itself is what the terminal refuses at the end', async () => {
     const { set } = world(on)
+    // The preflight passed; now the terminal refuses: the simulation stops the send.
+    mocks.publicClient.simulateContract.mockImplementation(async (request: Write) => {
+      if (request.functionName === 'cashOutTokensOf') throw new Error('JBMultiTerminal_UnderMinTokensReclaimed')
+      return { request }
+    })
     await review('1')
-    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
-    await sendStep('Remove auto-stick permission', 'Remove auto-stick allowance')
-    await sendStep('Remove auto-stick allowance', 'Confirm & unstick')
-
-    // The preflight passed earlier; now the terminal refuses: the simulation stops the send.
-    mocks.publicClient.simulateContract.mockRejectedValueOnce(new Error('JBMultiTerminal_UnderMinTokensReclaimed'))
-    await press('Confirm & unstick', confirm()!)
     await until(() => nameOf(confirm()!).includes('Retry'), 'the failure')
     expect(confirm()!.textContent).toContain('JBMultiTerminal_UnderMinTokensReclaimed')
     expect(confirm()!.textContent).toContain(
@@ -797,9 +842,11 @@ describe('a send that stops halfway', () => {
     expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor', 'approve'])
 
     // Everything is taken apart now, and the terminal pays what it did.
+    mocks.publicClient.simulateContract.mockImplementation(async (request: unknown) => ({ request }))
     set({ enabled: false, trusted: false, allowance: 0n })
+    const open = holdReview()
     await press('Retry', confirm()!)
-    await until(planned(4), 'the new plan')
+    await until(() => mocks.requireReview.mock.calls.length === 2, 'the new review')
     expect(titles()).toEqual([
       'Turn off auto-stick',
       'Stop the auto-stick contract from sticking ART for you',
@@ -807,14 +854,17 @@ describe('a send that stops halfway', () => {
       'Unstick',
     ])
     expect(steps().map(step => step.state)).toEqual(['complete', 'complete', 'complete', 'active'])
-    await sendStep('Confirm & unstick')
+    expect(reviews()[1]).toEqual(['cashOutTokensOf'])
+    await open.approve()
+    await done()
     expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor', 'approve', 'cashOutTokensOf'])
   })
 
   it('tells what went through when the confirmation is closed before the rest', async () => {
     world(on)
+    stopAfterFirst()
     await review('1')
-    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
+    await firstThrough()
     await press('Close', confirm()!)
     expect(confirm()).toBeNull()
     expect(formText()).toContain(
@@ -824,8 +874,9 @@ describe('a send that stops halfway', () => {
 
   it('takes Escape as closing the confirmation first, which brings the form back, and the flow only after that', async () => {
     world(on)
+    stopAfterFirst()
     await review('1')
-    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
+    await firstThrough()
     const escape = () =>
       act(async () => {
         window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
@@ -843,9 +894,8 @@ describe('a send that stops halfway', () => {
   // either keeps the send's tracking on screen.
   it('stays open on Escape while a step is being sent', async () => {
     world(on)
-    await review('1')
     mocks.confirming.on = false
-    await press('Turn off auto-stick', confirm()!)
+    await review('1')
     await until(() => confirm()!.textContent!.includes('Waiting for confirmation'), 'the wait')
 
     await act(async () => {
@@ -856,23 +906,34 @@ describe('a send that stops halfway', () => {
     expect(called()).toEqual(['setConfigFor'])
   })
 
-  it('does not send a step the holder cancelled in the review, and offers the same step again', async () => {
+  it('closes on a review the holder cancelled, sends nothing, and reviews the same steps again on the next Unstick', async () => {
     world(on)
+    const open = holdReview()
     await review('1')
-    mocks.requestReview.mockResolvedValueOnce(false)
-    await press('Turn off auto-stick', confirm()!)
+    await open.cancel()
+    await until(() => confirm() === null, 'the review to close')
     expect(mocks.writeContract).not.toHaveBeenCalled()
-    expect(nameOf(confirm()!)).toContain('Turn off auto-stick')
-    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
-    expect(called()).toEqual(['setConfigFor'])
+    expect(formText()).not.toContain('Went through')
+
+    await press('Unstick', form())
+    await done()
+    expect(reviews()).toEqual([
+      ['setConfigFor', 'setTrustedSenderFor', 'approve', 'cashOutTokensOf'],
+      ['setConfigFor', 'setTrustedSenderFor', 'approve', 'cashOutTokensOf'],
+    ])
+    expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor', 'approve', 'cashOutTokensOf'])
   })
 
   it('counts a step that reverted onchain as not gone through, and plans again from the chain', async () => {
     const { set } = world(on)
+    // The second is mined, and reverts.
+    onWrite(2, async request => {
+      mocks.confirming.status = 'reverted'
+      const hash = await walletSends(request)
+      mocks.confirming.status = 'success'
+      return hash
+    })
     await review('1')
-    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
-    mocks.confirming.status = 'reverted'
-    await press('Remove auto-stick permission', confirm()!)
     await until(() => nameOf(confirm()!).includes('Retry'), 'the revert')
 
     // A canonical revert settles at once, with the settled line.
@@ -882,12 +943,10 @@ describe('a send that stops halfway', () => {
     )
     expect(steps().map(step => step.state)).toEqual(['complete', 'active', 'pending', 'pending'])
 
-    mocks.confirming.status = 'success'
     set({ enabled: false })
     await press('Retry', confirm()!)
-    await until(planned(4), 'the new plan')
-    await sendStep('Remove auto-stick permission', 'Remove auto-stick allowance')
-    expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor', 'setTrustedSenderFor'])
+    await done()
+    expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor', 'setTrustedSenderFor', 'approve', 'cashOutTokensOf'])
   })
 
   it('waits on a Safe proposal without going on, and the SDK follows it with Safe\'s service: no transaction to link yet', async () => {
@@ -901,7 +960,6 @@ describe('a send that stops halfway', () => {
       return new Promise<Response>(() => {})
     }))
     await review('1')
-    await press('Turn off auto-stick', confirm()!)
     await until(() => nameOf(confirm()!).includes('Done'), 'the proposal')
 
     // A proposal is not a confirmed step: it can be dismissed, but no dependent step can be sent.
@@ -916,9 +974,8 @@ describe('a send that stops halfway', () => {
 
   it('does not go on while a send is unconfirmed, and never sends its step again', async () => {
     world(on)
-    await review('1')
     mocks.confirming.on = false
-    await press('Turn off auto-stick', confirm()!)
+    await review('1')
     await until(() => confirm()!.textContent!.includes('Waiting for confirmation'), 'the wait')
     const dialog = confirm()!
     expect(dialog.querySelector('a')).not.toBeNull()
@@ -931,20 +988,27 @@ describe('a send that stops halfway', () => {
 
 describe('a confirmation that was closed partway', () => {
   const on = { enabled: true, trusted: true, allowance: 100n }
+  /** The first step goes through and the confirmation is closed before the rest; the engine answers again after. */
+  async function closedAfterFirst() {
+    stopAfterFirst()
+    await review('1')
+    await firstThrough()
+    await press('Close', confirm()!)
+    expect(confirm()).toBeNull()
+    mocks.engine.silent = false
+  }
 
   it.each([
     ['has caught up with it', { enabled: false }],
     ['is still behind it', {}],
   ])('keeps what went through: Unstick again plans only what is left when the chain %s', async (_when, chain) => {
     const { set } = world(on)
-    await review('1')
-    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
-    await press('Close', confirm()!)
-    expect(confirm()).toBeNull()
+    await closedAfterFirst()
 
     set(chain)
+    const open = holdReview()
     await press('Unstick', form())
-    await until(planned(4), 'the new plan')
+    await until(() => mocks.requireReview.mock.calls.length === 2, 'the new review')
     expect(steps()).toEqual([
       { title: 'Turn off auto-stick', state: 'complete' },
       { title: 'Stop the auto-stick contract from sticking ART for you', state: 'active' },
@@ -952,40 +1016,38 @@ describe('a confirmation that was closed partway', () => {
       { title: 'Unstick', state: 'pending' },
     ])
     expect(confirm()!.textContent).toContain('3 transactions left.')
-    expect(nameOf(confirm()!)).toContain('Remove auto-stick permission')
+    expect(reviews()[1]).toEqual(['setTrustedSenderFor', 'approve', 'cashOutTokensOf'])
 
-    await sendStep('Remove auto-stick permission', 'Remove auto-stick allowance')
-    await sendStep('Remove auto-stick allowance', 'Confirm & unstick')
-    await sendStep('Confirm & unstick')
+    await open.approve()
+    await done()
     expect(called()).toEqual(['setConfigFor', 'setTrustedSenderFor', 'approve', 'cashOutTokensOf'])
   })
 
   it('does not carry it to another account', async () => {
     world(on)
-    await review('1')
-    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
-    await press('Close', confirm()!)
+    await closedAfterFirst()
 
     mocks.wallet = { address: OTHER, isCenterWallet: false }
     await render()
+    holdReview()
     await press('Unstick', form())
-    await until(planned(4), 'the plan for the other account')
+    await until(() => mocks.requireReview.mock.calls.length === 2, 'the review for the other account')
     expect(steps().map(step => step.state)).toEqual(['active', 'pending', 'pending', 'pending'])
     expect(titles()[0]).toBe('Turn off auto-stick')
+    expect(reviewedFor()).toEqual([HOLDER, OTHER])
   })
 
   it('forgets it when the account changes, even if the first account comes back', async () => {
     world(on)
-    await review('1')
-    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
-    await press('Close', confirm()!)
+    await closedAfterFirst()
 
     mocks.wallet = { address: OTHER, isCenterWallet: false }
     await render()
     mocks.wallet = { address: HOLDER, isCenterWallet: false }
     await render()
+    holdReview()
     await press('Unstick', form())
-    await until(planned(4), 'the new plan')
+    await until(() => mocks.requireReview.mock.calls.length === 2, 'the new review')
     // The chain still says auto-stick is on, and nothing is known to have gone through for this account now.
     expect(steps().map(step => step.state)).toEqual(['active', 'pending', 'pending', 'pending'])
   })
@@ -993,13 +1055,14 @@ describe('a confirmation that was closed partway', () => {
   it('starts again once the unstick itself is confirmed and the confirmation is done', async () => {
     world({ enabled: false })
     await review('1')
-    await sendStep('Confirm & unstick')
+    await done()
     await press('Done', confirm()!)
     expect(closed).toHaveBeenCalledOnce()
     // The flow is still mounted here, as a host that keeps it open would leave it: nothing went through for it now.
     expect(formText()).not.toContain('Went through')
+    holdReview()
     await press('Unstick', form())
-    await until(planned(1), 'the new plan')
+    await until(() => mocks.requireReview.mock.calls.length === 2, 'the new review')
     expect(steps().map(step => step.state)).toEqual(['active'])
   })
 })
@@ -1009,9 +1072,10 @@ describe('before each send', () => {
 
   it('reads the balance again, and stops with nothing sent when it is no longer the one reviewed', async () => {
     const { set } = world(on)
+    const open = holdReview()
     await review('1')
     set({ balance: 2n * E18 })
-    await press('Turn off auto-stick', confirm()!)
+    await open.approve()
     await until(() => nameOf(confirm()!).includes('Retry'), 'the stop')
     expect(confirm()!.textContent).toContain('Your Sticky token balance changed. Review the unstick again.')
     expect(mocks.publicClient.simulateContract).not.toHaveBeenCalled()
@@ -1026,9 +1090,10 @@ describe('before each send', () => {
 
   it('reads the quote again for the unstick, and stops when the terminal now pays less than the minimum', async () => {
     const { set } = world({ enabled: false })
+    const open = holdReview()
     await review('1')
     set({ gross: 900_000n })
-    await press('Confirm & unstick', confirm()!)
+    await open.approve()
     await until(() => nameOf(confirm()!).includes('Retry'), 'the stop')
     expect(confirm()!.textContent).toContain('The terminal now pays 0.8775 ART, less than the 0.975 you reviewed. Review the unstick again.')
     expect(mocks.writeContract).not.toHaveBeenCalled()
@@ -1036,15 +1101,17 @@ describe('before each send', () => {
     set({ unstick: 877_500n })
     await press('Retry', confirm()!)
     await until(() => rowsOf()['Minimum you receive'] === '0.8775 ART', 'the new minimum')
-    await sendStep('Confirm & unstick')
+    await done()
     expect(writes()[0].args[4]).toBe(877_500n)
   })
 
   it('takes a payout that rose as a reason to send the reviewed minimum, which it still beats', async () => {
     const { set } = world({ enabled: false })
+    const open = holdReview()
     await review('1')
     set({ gross: 1_100_000n })
-    await sendStep('Confirm & unstick')
+    await open.approve()
+    await done()
     expect(writes()[0].args[4]).toBe(975_000n)
   })
 })
@@ -1060,6 +1127,7 @@ describe('the wallet', () => {
     expect(form().querySelector('p.text-red-700')!.textContent).toBe(`${EXTERNAL_WALLET_REQUIRED} Connect a wallet`)
     expect(confirm()).toBeNull()
     expect(chain.requests).toHaveLength(0)
+    expect(mocks.requireReview).not.toHaveBeenCalled()
     expect(mocks.requestReview).not.toHaveBeenCalled()
     await press('Connect a wallet', form())
     expect(requestSignIn).toHaveBeenCalledWith({ walletsOnly: true })
@@ -1075,12 +1143,12 @@ describe('the wallet', () => {
 
     mocks.wallet = { address: OTHER, isCenterWallet: false }
     await render()
-    await until(() => confirm()?.textContent?.includes('1 transaction left') === true, 'the plan for the new account')
+    await until(() => confirm()?.textContent?.includes('transaction') === true, 'the plan for the new account')
 
     const balances = chain.reads().filter(read => read.functionName === 'balanceOf')
     expect(balances.map(read => read.args[0])).toEqual([OTHER])
     expect(rowsOf()).toMatchObject({ Unstick: '0.5 STICKYART' })
-    await sendStep('Confirm & unstick')
+    await done()
     expect(writes()[0].args).toEqual([OTHER, PROJECT, 5n * 10n ** 17n, STAKED, 975_000n, OTHER, '0x'])
   })
 
@@ -1097,6 +1165,7 @@ describe('the wallet', () => {
     expect(chain.requests).toHaveLength(0)
 
     mocks.wallet = { address: HOLDER, isCenterWallet: false }
+    holdReview()
     await render()
     await until(() => confirm()?.textContent?.includes('1 transaction left') === true, 'the plan')
   })
@@ -1112,27 +1181,34 @@ describe('the wallet', () => {
     expect(chain.requests).toHaveLength(0)
   })
 
-  it('drops a plan whose account has gone, and sends nothing for it', async () => {
+  it('drops a plan whose account has gone, and sends nothing for it, even once its open review is approved', async () => {
     world({ enabled: true, trusted: true, allowance: 100n })
+    const open = holdReview()
     await review('1')
     mocks.wallet = { address: OTHER, isCenterWallet: false }
     await render()
     await until(() => confirm() === null, 'the plan to go')
     expect(formText()).toContain('Connected account changed. Review the unstick again.')
+
+    await open.approve()
+    await act(async () => void (await new Promise(resolve => setTimeout(resolve, 50))))
+    expect(confirm()).toBeNull()
+    expect(mocks.publicClient.simulateContract).not.toHaveBeenCalled()
     expect(mocks.writeContract).not.toHaveBeenCalled()
   })
 })
 
 describe('an account switched after the review', () => {
   const on = { enabled: true, trusted: true, allowance: 100n }
-  /** The wallet's account changes, and a click is handled before the page has rendered it. */
+  /** The wallet's account changes, and a send is made before the page has rendered it. */
   const switchWalletOnly = () => mocks.getAccount.mockImplementation(() => ({ address: OTHER, chainId: CHAIN }))
 
-  it('wallet-action:turn-off-auto-stick refuses a step that a click sends before the page shows the new account, before a review opens', async () => {
+  it('wallet-action:turn-off-auto-stick refuses a step sent before the page shows the new account', async () => {
     world(on)
+    const open = holdReview()
     await review('1')
     switchWalletOnly()
-    await press('Turn off auto-stick', confirm()!)
+    await open.approve()
     await until(() => confirm()!.textContent!.includes(REVIEWED_ACCOUNT_CHANGED), 'the refusal')
 
     expect(mocks.requestReview).not.toHaveBeenCalled()
@@ -1142,15 +1218,15 @@ describe('an account switched after the review', () => {
 
   it('wallet-action:unstick-sticky-tokens sends none of the later steps from an account switched to after an earlier one went through', async () => {
     world(on)
+    onWrite(1, request => {
+      switchWalletOnly()
+      return walletSends(request)
+    })
     await review('1')
-    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
-    mocks.requestReview.mockClear()
-
-    switchWalletOnly()
-    await press('Remove auto-stick permission', confirm()!)
     await until(() => confirm()!.textContent!.includes(REVIEWED_ACCOUNT_CHANGED), 'the refusal')
 
     expect(called()).toEqual(['setConfigFor'])
+    expect(mocks.requireReview).toHaveBeenCalledOnce()
     expect(mocks.requestReview).not.toHaveBeenCalled()
     // What went through for the holder is still said.
     expect(confirm()!.textContent).toContain('Went through: Turn off auto-stick.')
@@ -1158,17 +1234,18 @@ describe('an account switched after the review', () => {
 
   it('wallet-action:take-back-the-auto-stick-adapter-s-trust refuses a step whose review was open while the wallet switched accounts, and drops the plan', async () => {
     world(on)
+    stopAfterFirst()
     await review('1')
-    await sendStep('Turn off auto-stick', 'Remove auto-stick permission')
-    const open = Promise.withResolvers<boolean>()
-    mocks.requestReview.mockReturnValueOnce(open.promise)
-    await press('Remove auto-stick permission', confirm()!)
-    await until(() => mocks.requestReview.mock.calls.length === 2, 'the review to open')
+    await firstThrough()
+    mocks.engine.silent = false
+    const open = holdReview()
+    await press('Review again', confirm()!)
+    await until(() => mocks.requireReview.mock.calls.length === 2, 'the review to open')
 
     mocks.wallet = { address: OTHER, isCenterWallet: false }
     mocks.getAccount.mockImplementation(() => ({ address: OTHER, chainId: CHAIN }))
     await render()
-    await act(async () => open.resolve(true))
+    await open.approve()
     await until(() => confirm() === null, 'the plan to go')
 
     expect(called()).toEqual(['setConfigFor'])
@@ -1216,7 +1293,7 @@ describe('after a confirmed send', () => {
     readAgain()
     const timers = vi.spyOn(globalThis, 'setTimeout')
     await review('1')
-    await sendStep('Confirm & unstick')
+    await done()
     expect(invalidated()).toEqual(UNSTICK)
     readAgain()
 
@@ -1237,12 +1314,15 @@ describe('after a confirmed send', () => {
   it("reads only the holder's auto-stick again after a step that takes it apart, and everything the unstick changed after the unstick", async () => {
     world({ enabled: true })
     readAgain()
+    stopAfterFirst()
     await review('1')
-    await sendStep('Turn off auto-stick', 'Confirm & unstick')
+    await firstThrough()
     expect(invalidated()).toEqual(['auto-stick', 'trusted'])
     readAgain()
 
-    await sendStep('Confirm & unstick')
+    mocks.engine.silent = false
+    await press('Review again', confirm()!)
+    await done()
     expect(invalidated()).toEqual(expect.arrayContaining(UNSTICK))
     expect(invalidated().filter(name => !UNSTICK.includes(name) && name !== 'trusted')).toEqual([])
   })

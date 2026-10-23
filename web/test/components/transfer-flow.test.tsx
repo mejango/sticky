@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import records from '@/lib/sticky-deployments.json'
 import type { StickyPosition } from '@/lib/sticky-holders'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
+import { TransactionReviewCancelledError } from '@/lib/transaction-review'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 import { EXTERNAL_WALLET_REQUIRED, WalletAuthContext } from '@/providers/WalletAuthContext'
 import { E18, TOKEN, stickyInfo } from '../home-fixtures'
@@ -80,6 +81,8 @@ const idle = () => ({
   safeNonceGuidance: null as string | null,
   confirmationUncertain: false,
   send: vi.fn().mockResolvedValue(null),
+  // The transfer's one decoded review: what it returns is the proof the transfer is sent with.
+  review: vi.fn(async () => ({})),
   reset: vi.fn(),
   dismiss: vi.fn(),
 })
@@ -163,6 +166,8 @@ const errorText = () => modal().querySelector('p.wrap-anywhere')?.textContent ??
 const statusLine = () => confirm()?.querySelector('p.text-bluebs-700')?.textContent ?? null
 const stepStates = () => [...(confirm()?.querySelectorAll('ol li') ?? [])].map(item => item.getAttribute('data-state'))
 const primary = () => confirm()!.querySelector<HTMLButtonElement>('footer button.btn-primary')!
+const TRANCHE = 'The moved tokens start a new tranche now for the recipient. Your remaining tranches keep their dates.'
+const STREAK = 'Sending your whole balance ends your current streak.'
 
 /** Fills the form and asks for the review. */
 async function review(recipient: string, amount: string) {
@@ -405,9 +410,24 @@ describe('the review', () => {
     expect(text).toContain(BOB)
     expect(text).toContain('Base Sepolia')
     expect(text).toContain('1 transaction left.')
-    expect(text).toContain('The moved tokens start a new tranche now for the recipient. Your remaining tranches keep their dates.')
+    expect(text).toContain(TRANCHE)
     expect(text).not.toContain('ends your current streak')
-    expect(buttonIn(confirm(), 'Confirm & transfer')).toBeDefined()
+    // One decoded review of the one transfer, with its summary, is the only confirmation; the transfer is sent under it.
+    expect(tx().review).toHaveBeenCalledExactlyOnceWith(
+      [expect.objectContaining({ functionName: 'transfer', args: [BOB, 1_500_000_000_000_000_000n] })],
+      {
+        account: ALICE,
+        title: 'Transfer',
+        rows: [
+          { label: 'Transfer', value: '1.5 STICKYART', strong: true },
+          { label: 'To', value: BOB, mono: true },
+          { label: 'On', value: 'Base Sepolia' },
+          { label: 'Effect', value: TRANCHE },
+        ],
+      },
+    )
+    expect(tx().send).toHaveBeenCalledOnce()
+    expect(tx().send.mock.calls[0][1]).toMatchObject({ reviewed: await tx().review.mock.results[0].value })
     // The form waits behind the confirm, in the same card: one dialog, one scrim.
     expect(modal().contains(confirm())).toBe(true)
     expect(document.querySelectorAll('dialog')).toHaveLength(1)
@@ -417,7 +437,8 @@ describe('the review', () => {
   it('says a transfer of the whole balance ends the streak', async () => {
     await render()
     await review(BOB, '2')
-    expect(confirm()!.textContent).toContain('Sending your whole balance ends your current streak.')
+    expect(confirm()!.textContent).toContain(STREAK)
+    expect((tx().review.mock.calls[0] as unknown as [unknown, { rows: unknown[] }])[1].rows).toContainEqual({ label: 'Streak', value: STREAK })
   })
 
   it('brings the form back, as it was, when the confirm is cancelled', async () => {
@@ -430,6 +451,17 @@ describe('the review', () => {
     expect(field('Amount')!.value).toBe('1')
     expect(field('Recipient')!.closest('[hidden]')).toBeNull()
     expect(tx().dismiss).toHaveBeenCalledOnce()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('brings the form back, with nothing sent, when its decoded review is closed', async () => {
+    tx().review.mockRejectedValueOnce(new TransactionReviewCancelledError())
+    await render()
+    await review(BOB, '1')
+    expect(confirm()).toBeNull()
+    expect(tx().send).not.toHaveBeenCalled()
+    expect(field('Recipient')!.value).toBe(BOB)
+    expect(field('Recipient')!.closest('[hidden]')).toBeNull()
     expect(onClose).not.toHaveBeenCalled()
   })
 
@@ -468,7 +500,6 @@ describe('the send', () => {
   it('wallet-action:transfer-sticky-tokens sends exactly the reviewed transfer of Sticky tokens: the token, the recipient and 18 decimals, in a request that cannot change', async () => {
     await render()
     await review(BOB, '1.000000000000000001')
-    await press(confirm(), 'Confirm & transfer')
 
     expect(tx().send).toHaveBeenCalledOnce()
     const [request] = tx().send.mock.calls[0] as [{ chainId: number; address: Address; functionName: string; args: unknown[] }]
@@ -483,15 +514,14 @@ describe('the send', () => {
   it('names the account that reviewed the transfer, which the engine sends it from and no other', async () => {
     await render()
     await review(BOB, '1')
-    await press(confirm(), 'Confirm & transfer')
-    const [, options] = tx().send.mock.calls[0] as [unknown, { reviewedAccount: Address }]
+    const [, options] = tx().send.mock.calls[0] as [unknown, { reviewedAccount: Address; reviewed: unknown }]
     expect(options.reviewedAccount).toBe(ALICE)
+    expect(options.reviewed).toBe(await tx().review.mock.results[0].value)
   })
 
   it('reads the balance again just before it asks the wallet, and stops if it has fallen below the amount', async () => {
     await render()
     await review(BOB, '1.5')
-    await press(confirm(), 'Confirm & transfer')
     const [request, options] = tx().send.mock.calls[0] as [unknown, { reverify: (request: unknown) => Promise<unknown> }]
 
     mocks.read.mockClear().mockResolvedValue(balance(2n * E18))
@@ -530,7 +560,8 @@ describe('the send', () => {
     await render()
     await review(BOB, '1')
     expect(statusLine()).toBeNull()
-    expect(primary().textContent).toBe('Confirm & transfer')
+    // The engine took nothing (its mock answers null): the card offers the review again.
+    expect(primary().textContent).toBe('Review again')
     tx().busy = true
     for (const [phase, line, button] of [
       ['simulating', 'Double-checking the transaction…', 'Double-checking the transaction…'],
@@ -551,14 +582,19 @@ describe('the send', () => {
   })
 
   it('shows the engine\'s error in the confirm, and offers to try again', async () => {
+    // The engine takes nothing it fails: it answers null and shows its error.
+    tx().send.mockImplementationOnce(async () => {
+      Object.assign(tx(), { phase: 'error', error: 'Transaction cancelled.' })
+      return null
+    })
     await render()
     await review(BOB, '1')
-    tx().phase = 'error'
-    tx().error = 'Transaction cancelled.'
     await render()
     expect(confirm()!.textContent).toContain('Transaction cancelled.')
     await press(confirm(), 'Retry')
-    expect(tx().send).toHaveBeenCalledOnce()
+    // The failed send dropped the review: the retry is its own decoded review.
+    expect(tx().send).toHaveBeenCalledTimes(2)
+    expect(tx().review).toHaveBeenCalledTimes(2)
   })
 })
 
@@ -662,6 +698,9 @@ describe('a wallet that cannot send', () => {
   })
 
   it('drops a review that was made for another account: the plan is never sent for one that did not make it', async () => {
+    // The account changes while the transfer's review is open.
+    let approve = () => {}
+    tx().review.mockImplementationOnce(() => new Promise(resolve => (approve = () => resolve({}))))
     await render()
     await review(BOB, '1')
     expect(confirm()).not.toBeNull()
@@ -669,7 +708,40 @@ describe('a wallet that cannot send', () => {
     await render()
     expect(confirm()).toBeNull()
     expect(buttonIn(modal(), 'Review transfer')).toBeDefined()
+    await act(async () => approve())
+    await settle()
+    // The review approved after the account changed sends nothing.
     expect(tx().send).not.toHaveBeenCalled()
+  })
+
+  it('drops a failed review once the account switches away, and offers a fresh one when it switches back', async () => {
+    // The transfer fails: the engine takes nothing and shows its error.
+    tx().send.mockImplementationOnce(async () => {
+      Object.assign(tx(), { phase: 'error', error: 'Transaction cancelled.' })
+      return null
+    })
+    tx().reset.mockImplementation(() => Object.assign(tx(), { phase: 'idle', error: null }))
+    await render()
+    await review(BOB, '1')
+    await render()
+    expect(confirm()!.textContent).toContain('Transaction cancelled.')
+
+    // A -> B -> A: the old review is gone, and the form is back.
+    mocks.wallet = { address: CAROL, isConnected: true, isCenterWallet: false }
+    await render()
+    mocks.wallet = { address: ALICE, isConnected: true, isCenterWallet: false }
+    await render()
+    expect(confirm()).toBeNull()
+    expect(buttonIn(modal(), 'Review transfer')).toBeDefined()
+
+    // Reviewing again opens a fresh decoded review, and the transfer is sent under it.
+    tx().send.mockResolvedValueOnce(`0x${'c3'.repeat(32)}`)
+    await press(modal(), 'Review transfer')
+    expect(tx().review).toHaveBeenCalledTimes(2)
+    expect(tx().send).toHaveBeenCalledTimes(2)
+    const [request, options] = tx().send.mock.calls[1] as [{ functionName: string; args: readonly unknown[] }, { reviewedAccount: Address; reviewed: unknown }]
+    expect(request).toMatchObject({ functionName: 'transfer', args: [BOB, E18] })
+    expect(options).toMatchObject({ reviewedAccount: ALICE, reviewed: await tx().review.mock.results[1].value })
   })
 
   it('is refused, in View as, when the review starts', async () => {
