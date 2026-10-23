@@ -527,11 +527,14 @@ function ReviewModal({
   const rows = model.context
   const [agreed, setAgreed] = useState(false)
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
-  // Core refuses a confirm once its simulation saw a revert: the dialog says so and offers only Cancel.
-  const [wouldFail, setWouldFail] = useState(false)
+  // Core refuses a confirm once its simulation saw a revert: the dialog says why when core decoded it, and offers only
+  // Cancel.
+  const [wouldFail, setWouldFail] = useState<string | null>(null)
   useEffect(() => {
     let live = true
-    pending.simulation?.then(simulated => { if (live) setWouldFail(simulated.status === 'failed') }, () => undefined)
+    pending.simulation?.then(simulated => {
+      if (live && simulated.status === 'failed') setWouldFail(simulated.explained ? simulated.message : SIMULATION_FAILED_LINE)
+    }, () => undefined)
     return () => { live = false }
   }, [pending.simulation])
 
@@ -680,7 +683,7 @@ function ReviewModal({
               agree to {isAuthorization ? 'authorize' : 'send'} this exact call.
             </span>
           </label>
-          {wouldFail ? <p role="alert" className="mt-3 text-sm text-red-700">{SIMULATION_FAILED_LINE}</p> : null}
+          {wouldFail ? <p role="alert" className="mt-3 text-sm text-red-700">{wouldFail}</p> : null}
           <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             <button
               type="button"
@@ -692,7 +695,7 @@ function ReviewModal({
             <button
               type="button"
               onClick={async () => { if (await feeReview.confirm()) onFinish(true) }}
-              disabled={!agreed || wouldFail || feeReview.busy || checkingProject}
+              disabled={!agreed || wouldFail !== null || feeReview.busy || checkingProject}
               className="btn-primary min-h-[44px] px-5 text-sm"
             >
               {checkingProject ? 'Checking project link…' : feeReview.confirmLabel ?? model.confirmLabel ??

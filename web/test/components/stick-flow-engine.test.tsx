@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { jbMultiTerminalAbi } from '@bananapus/nana-sdk-core'
-import { HELD_EXIT_LABEL, registerReviewHandler, REVIEWED_ACCOUNT_CHANGED_LINE, writeHeldMessage, type ReviewModel, NETWORK_ERROR_LINE } from '@bananapus/nana-sdk-core/review'
+import { HELD_EXIT_LABEL, registerReviewHandler, REVIEWED_ACCOUNT_CHANGED_LINE, writeHeldMessage, type ReviewModel } from '@bananapus/nana-sdk-core/review'
 import { QueryClient, QueryClientProvider, notifyManager } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -82,6 +82,8 @@ vi.mock('@/lib/sticky-quotes', async importOriginal => ({
 vi.mock('@/lib/sticky-allowance', () => ({ readBalanceAndAllowance: mocks.funds }))
 
 import { StickFlow } from '@/components/project/flows/StickFlow'
+/** Core's line for a simulated revert it does not decode (not exported from /review in local.9). */
+const REVERT_UNKNOWN_LINE = 'This transaction would fail. Check the amounts and try again.'
 // The review loads when Stick is first pressed; the tests' fake clock cannot wait for a module to load.
 beforeAll(() => import('@/components/project/flows/StickSend'))
 
@@ -299,7 +301,7 @@ describe('the stick flow on the real engine', () => {
     })
     await mined(APPROVAL, 4_001n)
     await until(() => confirmButton()?.textContent === 'Retry', 'the stick to fail')
-    expect(dialog()!.textContent).toContain(NETWORK_ERROR_LINE)
+    expect(dialog()!.textContent).toContain(`Stick cannot run on chain 84532: ${REVERT_UNKNOWN_LINE}`)
     expect(stepStates()).toEqual(['complete', 'active'])
     expect(mocks.sendTransaction).toHaveBeenCalledTimes(1)
 

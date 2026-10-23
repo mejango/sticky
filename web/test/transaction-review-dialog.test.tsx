@@ -146,4 +146,17 @@ describe('transaction review dialog', () => {
     const confirm = dialog.querySelector<HTMLButtonElement>('footer button.btn-primary')
     expect(confirm?.disabled).toBe(true)
   })
+
+  it('says why a send would fail when core decoded its revert', async () => {
+    const payment = REVIEW_REQUESTS['pay with 721 metadata'].calls[0]
+    const { TransactionReviewDialog } = await import('@/components/TransactionReviewDialog')
+    const simulation = Promise.resolve({ status: 'failed' as const, message: 'This project is not accepting payments right now.', explained: true })
+    await act(async () => root.render(
+      <TransactionReviewDialog
+        pending={{ kind: 'review', id: 1, model: buildReviewModel({ calls: [payment] } as TransactionReviewRequest), simulation, resolve: () => {} }}
+        onFinish={() => {}}
+      />,
+    ))
+    expect(document.querySelector('dialog [role="alert"]')?.textContent).toBe('This project is not accepting payments right now.')
+  })
 })
