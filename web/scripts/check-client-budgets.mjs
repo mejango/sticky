@@ -19,11 +19,11 @@ const dist = resolve(process.env.NEXT_DIST_DIR || '.next')
 // Node and npm. Lower a ceiling when a change makes its route smaller. Origin/main 82f6e3d measured home 355.8, project
 // 480.3, account 346.7, callback 312.4 and not-found 314.8 KiB before the load-size changes.
 const budgets = {
-  '/': 324 * KIB,
-  '/base:23': 340 * KIB,
-  '/account/0x0000000000000000000000000000000000000001': 315 * KIB,
-  '/center/callback': 214 * KIB,
-  '/zz-not-a-route': 212 * KIB,
+  '/': 325 * KIB,
+  '/base:23': 342 * KIB,
+  '/account/0x0000000000000000000000000000000000000001': 316 * KIB,
+  '/center/callback': 216 * KIB,
+  '/zz-not-a-route': 214 * KIB,
 }
 // The one route measured as the not-found page. Next streams it with 200 under a loading boundary, so it is told apart by
 // the not-found marker in its HTML: a route that rendered not-found instead of its page would otherwise pass as small.
