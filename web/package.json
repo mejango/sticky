@@ -22,7 +22,7 @@
     "deployments:sync": "node scripts/sync-deployments.mjs",
     "deployments:check": "node scripts/sync-deployments.mjs --check",
     "budget": "node scripts/check-client-budgets.mjs",
-    "audit:prod": "npm audit --omit=dev --audit-level=high",
+    "audit:prod": "node scripts/audit-production.mjs",
     "check": "npm run audit:prod && npm run lint && npm run ts:check && npm run deployments:check && npm run schema:check:offline && npm run transaction:check && npm run wallet:check && npm run test:ci && npm run build && npm run budget && npm run test:browser"
   },
   "dependencies": {
@@ -74,7 +74,8 @@
     "nanoid": "3.3.18",
     "postcss": "$postcss",
     "sharp": "0.35.5",
-    "ws": "8.21.1"
+    "ws": "8.21.1",
+    "zod@4": "4.6.7"
   },
   "engines": {
     "node": "26.12.x",
