@@ -1,3 +1,24 @@
+# Launch: one press opens the decoded review (2026-10-22)
+
+Stacks on #73. The create form's launch press saved the launch, then a second press ("Continue launch" or "Request sponsored launch") opened the SDK review: two confirmations for one action.
+
+- [x] 1. The form's press saves the launch and runs it in one host action, so the SDK's decoded review is the only confirmation; the form's button reads "Launch". Validation and preparation errors stay inline (the host's alert), and no review opens.
+- [x] 2. A sponsored launch opens its sponsored review at once; closing it leaves the saved launch with "Request sponsored launch" and "Pay for launch myself". The session buttons stay for resuming a saved launch.
+- [x] 3. Codex pass 1: `run()` still opened up to three in-app reviews (launch, listing, creation). `ports.review` now returns the reviewed calls as text; listing and creation in the same run skip their own review only when their calls match it. `List on Juicebox Center` alone and resumed sends still review. The wallet's listing signature and send stay.
+- [x] 3b. Codex pass 2: the approval is taken before the review and checked after it (plan and wallet unchanged), carries the Safe execution gas so a Safe launch's one review shows `safeTxGas: 0`, and creation compares it with the calls of the request it built, in the same tick.
+- [x] 3c. Codex pass 3: the listing compared the caller's live plan at sign time, while the SDK had already built the envelope. It now publishes, signs, compares and shows one private copy.
+- [x] 3d. Codex pass 4: the listing signed with the caller's live owner, and a sponsored approval covered a wallet-paid creation after a failed listing. The listing signs with its copy's owner and chain; the approval names sponsored or paid, and creation accepts only a paid one.
+- [x] 4. Tests: one press prepares then runs once (self-paid, sponsored), a failed preparation opens no review, the happy path is two clicks; through the real adapter, a self-paid and a sponsored launch each open exactly one review; listing or creation without the matching proof reviews on its own; a Safe launch's one review shows its gas; a plan or wallet change during the review is refused; a listing signs the copy its approval came from, with its owner; a sponsored approval does not skip a paid creation's review.
+- [x] 5. Full `npm run check`; two Codex passes; PR stacked on #73, no merge.
+
+## Plan refinement
+- **Objective:** One confirmation for launching: the SDK decoded review. No SDK bump.
+- **System fit:** Same controller (`prepare`, then `run`, each exclusive); recovery, journal and sponsor paths unchanged.
+- **Reuse and simplicity:** The host's existing `launch` action wraps both calls; the reviewed-calls text passes through `run` as an argument, with no stored state, so it cannot outlive the press.
+- **Evidence and unknowns:** Self-payers on a sponsorable launch now close the sponsored review to pick self-pay (previously one press before review); the free sponsored path is the default.
+- **Verification:** Launch host, happy path and create form suites, then full `npm run check`.
+- **Resource budget:** One small PR on #73.
+
 # Trust, Transfer, Unstick: one decoded review per user action (2026-10-22)
 
 Stacks on #72. Finishes the set: no Sticky action confirms twice.

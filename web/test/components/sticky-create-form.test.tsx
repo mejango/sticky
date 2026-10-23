@@ -87,7 +87,7 @@ describe('Sticky create form boundaries', () => {
     mocks.blocker.mockReturnValue('not deployed')
     await fill('Networks', 'testnet')
     expect(container.querySelectorAll('input[name="home-chain"]:checked')).toHaveLength(0)
-    expect([...container.querySelectorAll('button')].find(item => item.textContent === 'Prepare launch')?.disabled).toBe(true)
+    expect([...container.querySelectorAll('button')].find(item => item.textContent === 'Launch')?.disabled).toBe(true)
     await submit()
     expect(mocks.plan).not.toHaveBeenCalled()
   })

@@ -113,6 +113,15 @@ function matchingIntent(session: StickyLaunchSession, intent: JBCenterIntent): J
   return intent
 }
 
+/** The launch calls as the wallet will run them: a Safe executes them with safeTxGas 0. */
+const launchCalls = (plan: LaunchPlan, safe: boolean) => reviewCalls(plan).map(call => ({ ...call, ...(safe ? { safeTxGas: 0n } : {}) }))
+/**
+ * What one review approved, as text: a later step in the same run skips its own review only for exactly these calls,
+ * wallet and way of paying. A sponsored approval never covers a creation the wallet pays for.
+ */
+const approvalOf = (calls: ReturnType<typeof launchCalls>, authority: ReturnType<typeof reviewedWallet>, sponsored: boolean) =>
+  JSON.stringify({ calls, connector: authority.connectorUid, sponsored }, (_key, value: unknown) => typeof value === 'bigint' ? value.toString() : value)
+
 function reviewCalls(plan: LaunchPlan) {
   return plan.targets.map(target => ({
     chainId: target.chainId, from: plan.owner, to: target.call.target, data: target.call.data,
@@ -224,11 +233,16 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
     async review(plan, sponsored) {
       phase('Checking the launch on its home chain.')
       await checkLaunch(plan)
-      await requireTransactionReview({ calls: reviewCalls(plan), title: 'Review Sticky launch',
+      const authority = reviewedWallet(plan.owner)
+      const calls = launchCalls(plan, authority.safe)
+      const approval = approvalOf(calls, authority, sponsored)
+      await requireTransactionReview({ calls, title: 'Review Sticky launch',
         kind: sponsored ? 'authorization' : 'transaction',
         description: sponsored ? 'Approve listing and sponsored creation on the home chain.' : 'Review creation on the home chain before listing or payment.',
         confirmLabel: 'Continue' })
-      guard(plan.owner)
+      const after = reviewedWallet(plan.owner)
+      if (approvalOf(launchCalls(plan, after.safe), after, sponsored) !== approval) throw new Error('The launch or wallet changed during its review. Review it again.')
+      return approval
     },
     async quote(plan, rememberUuid, beforePublish) {
       await checkLaunch(plan)
@@ -286,7 +300,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       if (!payment) throw new Error('Choose a payment option from this launch quote.')
       return payment
     },
-    async sendDirect(session, callbacks) {
+    async sendDirect(session, callbacks, reviewed) {
       const { plan } = session
       requireSingleHomeChain(plan.targets)
       const [target] = plan.targets
@@ -296,12 +310,15 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       const client = clientFor(target.chainId)
       const authority = reviewedWallet(plan.owner)
       const viaSafe = authority.safe
+      // Taken with the request above: the review is skipped only if the approval matches the calls this request carries.
+      const shown = launchCalls(plan, viaSafe)
+      const approved = reviewed === approvalOf(shown, authority, false)
       let wallet: Awaited<ReturnType<typeof connectedWallet>>['wallet'] | undefined
       const hash = await launchHold(session, 'direct', viaSafe).send(client, async gate => {
         const hold = gated(gate, callbacks)
         return submitReviewedContractWrite({ request, expectedAccount: plan.owner,
         currentAccount: () => getAccount(wagmiConfig).address,
-        review: () => requireTransactionReview({ title: 'Review Sticky creation', calls: reviewCalls(plan).map(call => ({ ...call, ...(viaSafe ? { safeTxGas: 0n } : {}) })) }),
+        review: async () => { if (!approved) await requireTransactionReview({ title: 'Review Sticky creation', calls: shown }) },
         switchChain: async chainId => { ({ wallet } = await connectedWallet(chainId as JBChainId, { expected: plan.owner, requireUnchanged: true, changedError: 'Connect the wallet that prepared this launch.' })) },
         reverify: () => checkLaunch(plan),
         simulate: async reviewed => {
@@ -462,20 +479,23 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       return attempts.canDiscard(saved.attempt)
     },
     verifyDeployment: verifyStickyLaunchDeployment,
-    async publishListing(plan) {
+    async publishListing(plan, reviewed) {
       requireSingleHomeChain(plan.targets)
       const authority = reviewedWallet(plan.owner)
-      const intent = await publishStickyListing(plan, async message => {
+      // One copy is published, signed, compared with the approval and shown, so none of them can differ.
+      const signed = structuredClone(plan)
+      const approved = [false, true].some(sponsored => reviewed === approvalOf(launchCalls(signed, authority.safe), authority, sponsored))
+      const intent = await publishStickyListing(signed, async message => {
         assertReviewedWallet(authority)
-        await requireTransactionReview({ title: 'Publish Sticky listing', kind: 'authorization',
+        if (!approved) await requireTransactionReview({ title: 'Publish Sticky listing', kind: 'authorization',
           description: 'Authorize the exact saved launch calls and metadata for this listing.', confirmLabel: 'Publish',
-          calls: reviewCalls(plan) })
+          calls: reviewCalls(signed) })
         assertReviewedWallet(authority)
-        const { wallet } = await connectedWallet(plan.targets[0].chainId as JBChainId, { expected: plan.owner, requireUnchanged: true, changedError: 'Connect the wallet that prepared this launch.' })
+        const { wallet } = await connectedWallet(signed.targets[0].chainId as JBChainId, { expected: signed.owner, requireUnchanged: true, changedError: 'Connect the wallet that prepared this launch.' })
         requireSingleHomeChain(plan.targets)
-        assertReviewedWallet({ ...authority, chainId: plan.targets[0].chainId })
-        const signature = await wallet.signMessage({ account: plan.owner, message })
-        assertReviewedWallet({ ...authority, chainId: plan.targets[0].chainId })
+        assertReviewedWallet({ ...authority, chainId: signed.targets[0].chainId })
+        const signature = await wallet.signMessage({ account: signed.owner, message })
+        assertReviewedWallet({ ...authority, chainId: signed.targets[0].chainId })
         return signature
       })
       return intent.id

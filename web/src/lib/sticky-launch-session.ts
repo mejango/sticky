@@ -199,16 +199,17 @@ export type LaunchSettlement = { hash: Hex; result: 'success' | 'failed' }
 export type StickyLaunchPorts = {
   store: ReturnType<typeof createStickyLaunchStore>
   guard: (owner: `0x${string}`) => void
-  review: (plan: LaunchPlan, sponsored: boolean) => Promise<void>
+  /** The launch's one decoded review. Its result names the reviewed calls: listing and creation in the same run skip their own review only for exactly those calls. */
+  review: (plan: LaunchPlan, sponsored: boolean) => Promise<string>
   quote: (plan: LaunchPlan, rememberUuid: (uuid: string) => void, beforePublish: () => void) => Promise<RelayrQuote>
   status: (session: StickyLaunchSession) => Promise<Record<number, Hex[]>>
   choosePayment: (session: StickyLaunchSession) => Promise<RelayrPayment>
-  sendDirect: (session: StickyLaunchSession, callbacks: SubmissionCallbacks) => Promise<void>
+  sendDirect: (session: StickyLaunchSession, callbacks: SubmissionCallbacks, reviewed?: string) => Promise<void>
   sendPayment: (session: StickyLaunchSession, callbacks: SubmissionCallbacks) => Promise<void>
   verifyPayment: (session: StickyLaunchSession) => Promise<boolean>
   requireRetry: (session: StickyLaunchSession, kind: 'direct' | 'payment', purpose: 'retry' | 'retire') => Promise<void>
   verifyDeployment: (session: StickyLaunchSession, target: LaunchTarget, hash: Hex) => Promise<LaunchResult | null>
-  publishListing: (plan: LaunchPlan) => Promise<string>
+  publishListing: (plan: LaunchPlan, reviewed?: string) => Promise<string>
   sponsor: (session: StickyLaunchSession, beforeRequest: () => void) => Promise<void>
   record: (session: StickyLaunchSession, chainId: number, result: LaunchResult) => Promise<boolean>
   /** Whether the SDK lets the saved attempt of this launch be discarded (its followed success retired first). */
@@ -234,12 +235,12 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     busy = true
     try { return await run() } finally { busy = false }
   }
-  async function listing(session: StickyLaunchSession) {
+  async function listing(session: StickyLaunchSession, reviewed?: string) {
     requireSingleHomeChain(session.plan.targets)
     if (session.listing.intentId || session.listing.state === 'unavailable') return session
     try {
       ports.guard(session.plan.owner)
-      const intentId = await ports.publishListing(session.plan)
+      const intentId = await ports.publishListing(session.plan, reviewed)
       return save({ ...session, listing: { ...session.listing, state: 'published', intentId, error: undefined } })
     } catch (error) {
       return save({ ...session, listing: { ...session.listing, state: 'unlisted', error: error instanceof Error ? error.message : 'Listing unavailable.' } })
@@ -351,10 +352,10 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
       if (launchComplete(session)) return session
       ports.guard(session.plan.owner)
       if (session.direct?.started || session.payment?.started || (session.listing.requested && !session.listing.selfPaid)) return session
-      await ports.review(session.plan, session.mode === 'center')
+      const reviewed = await ports.review(session.plan, session.mode === 'center')
       ports.guard(session.plan.owner)
       requireSingleHomeChain(session.plan.targets)
-      session = await listing(session)
+      session = await listing(session, reviewed)
       if (session.mode === 'center') {
         if (!session.listing.intentId) {
           session = save({ ...session, mode: 'direct' })
@@ -371,7 +372,7 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
         }
       }
       if (session.mode === 'direct') {
-        await ports.sendDirect(session, callbacks('direct'))
+        await ports.sendDirect(session, callbacks('direct'), reviewed)
         return refreshSession(load())
       }
       if (!session.published) {
