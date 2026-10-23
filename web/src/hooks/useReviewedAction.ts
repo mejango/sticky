@@ -5,13 +5,11 @@ import { useQueryClient } from '@tanstack/react-query'
 import type { JBChainId } from '@bananapus/nana-sdk-core'
 import { encodeFunctionData, keccak256, stringToHex, type Abi, type Address, type Hex, type TransactionReceipt } from 'viem'
 import {
-  discardReviewedSequence,
-  findReviewedSequence,
   HELD_CONFIRMING_LINE,
   openStepHold,
   REVIEWED_ACCOUNT_CHANGED_LINE,
-  waitForTrackedReceipt,
-  WRITE_HOLD_REVERTED_LINE,
+  ReviewedCallRevertedError,
+  ReviewLineError,
   WRITE_HOLD_UNCHECKED_LINE,
   type ReviewContextRow,
   type ReviewedAction,
@@ -26,6 +24,7 @@ import { isSafeConnection, SAFE_NONCE_GUIDANCE, useSafeConnection } from '@/lib/
 import { holdIntent } from '@/lib/sticky-hold-intent'
 import { refreshAfterConfirmedWrite } from '@/lib/sticky-refresh'
 import { getViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
+import { loadReviewEngine } from '@/lib/review-engine'
 import { publicClient, reviewedSendDeps } from '@/lib/wallet-core'
 import { exitWarning, followDetached, holds } from '@/lib/write-holds'
 import { wagmiConfig } from '@/providers/Providers'
@@ -152,12 +151,17 @@ export function useReviewedAction() {
   const [result, setResult] = useState<ReviewedResult | null>(null)
   /** How many of the run's steps confirmed, from its progress: it outlives a failure, which resets core's state. */
   const [landed, setLanded] = useState(0)
-  /** The user's exit could not be checked: the hold keeps the write. */
+  /** The user's exit could not be checked: the hold keeps the write. Or the account changed while the review was open. */
   const [exitError, setExitError] = useState<string | null>(null)
   const inFlight = useRef(false)
   /** Counts account changes: a run reviewed before one sends nothing after it, even once the account is back. */
   const accountEpoch = useRef(0)
-  useEffect(() => { accountEpoch.current += 1 }, [address])
+  /** Ends the open run's review when the account changes: its plan was built for the account before. */
+  const aborts = useRef(new Set<AbortController>())
+  useEffect(() => {
+    accountEpoch.current += 1
+    for (const abort of aborts.current) abort.abort()
+  }, [address])
   /** Whether the page that runs the action is still open: a run whose page has gone sends no later step. */
   const open = useRef(true)
   useEffect(() => {
@@ -170,13 +174,14 @@ export function useReviewedAction() {
   const runner = useReviewedRun({
     account: address,
     ...reviewedSendDeps,
-    onProgress: progress => setLanded(progress.phase === 'done' ? progress.total : progress.step),
+    engine: loadReviewEngine,
     guard: () => {
-      if (isCenterWallet) throw new Error(EXTERNAL_WALLET_REQUIRED)
-      if (getViewAs()) throw new Error(VIEW_AS_WRITE_BLOCKED)
+      if (isCenterWallet) throw new ReviewLineError(EXTERNAL_WALLET_REQUIRED)
+      if (getViewAs()) throw new ReviewLineError(VIEW_AS_WRITE_BLOCKED)
     },
   })
 
+  /** Null when the run was cancelled or failed: a failure shows as `error`. */
   const run = async (action: ReviewedRun): Promise<ReviewedResult | null> => {
     if (inFlight.current || !action.calls.length) return null
     inFlight.current = true
@@ -186,44 +191,49 @@ export function useReviewedAction() {
     setExitError(null)
     const viaSafe = isSafeConnection(wagmiConfig)
     const { onReleased: _released, onCancelled, reverify, ...sent } = action
-    /** The direct transactions this run sent, by step. */
-    const hashes: Hex[] = []
     last.current = { action, chainId: action.calls[0].chainId, proposed: null }
     const epoch = accountEpoch.current
+    const abort = new AbortController()
+    aborts.current.add(abort)
     try {
       const description = [action.description, holds.reviewLine(), viaSafe ? SAFE_NONCE_GUIDANCE : null].filter(Boolean).join('\n\n')
-      const done = await runner.run({
+      const ran = await runner.run({
         ...sent,
+        signal: abort.signal,
         ...(action.calls.length > 1 ? { scope: sequenceScope(action.calls) } : {}),
         ...(description ? { description } : {}),
         ...(viaSafe && !action.confirmLabel ? { confirmLabel: 'Agree & continue to Safe' } : {}),
         ...(reverify ? {
-          reverify: async (call: ReviewedCall, index: number) => {
-            // Core simulates this step on the block the step before it confirmed in: the check reads there too. Its
-            // receipt is core's own wait's, which follows a sped-up or replaced send to the transaction that was mined.
-            const before = hashes[index - 1]
-            await reverify(call, index, before ? (await waitForTrackedReceipt(publicClient(call.chainId as JBChainId), before)).blockNumber : undefined)
-          },
+          // Core simulates this step on the block the step before it confirmed in: the check reads there too.
+          reverify: (call: ReviewedCall, index: number, prior) => reverify(call, index, prior?.blockNumber),
         } : {}),
         // Core's last check before each wallet prompt, after every await.
         assertWriteState: () => {
-          if (!open.current) throw new Error(PAGE_CLOSED_LINE)
-          if (accountEpoch.current !== epoch) throw new Error(REVIEWED_ACCOUNT_CHANGED_LINE)
+          if (!open.current) throw new ReviewLineError(PAGE_CLOSED_LINE)
+          if (accountEpoch.current !== epoch) throw new ReviewLineError(REVIEWED_ACCOUNT_CHANGED_LINE)
           action.assertWriteState?.()
         },
         onSubmitted: async (call, step, hash, how) => {
-          if (!how.safe) hashes[step] = hash
           setSubmission({ hash, safe: how.safe })
           await action.onSubmitted?.(call, step, hash, how)
         },
+        onConfirmed: async (call, step, receipt) => {
+          setLanded(step + 1)
+          await action.onConfirmed?.(call, step, receipt)
+        },
       })
+      const done = ran?.status === 'failed' ? null : ran
+      // The account changed while the review was open: core withdrew it, and the action says why.
+      if (!ran && abort.signal.aborted) {
+        setExitError(REVIEWED_ACCOUNT_CHANGED_LINE)
+        return null
+      }
       if (done?.status === 'proposed' && last.current?.action === action) last.current.proposed = action.calls[done.step] ?? null
       setResult(done)
-      // ponytail: a resumed run whose last step settled while away reports no progress (SDK request): done is every step.
-      if (done?.status === 'done') setLanded(action.calls.length)
       if (!done && onCancelled) setEnded({ onCancelled })
       return done
     } finally {
+      aborts.current.delete(abort)
       inFlight.current = false
     }
   }
@@ -244,7 +254,7 @@ export function useReviewedAction() {
         : runner.phase === 'receipt' ? 'pending'
           : runner.phase !== 'idle' ? runner.phase
             : shown ? (shown.phase === 'confirming' && !heldSafe ? 'pending' : 'submitted')
-              : runner.error ? 'error'
+              : runner.error || exitError ? 'error'
                 : 'idle'
 
   const onReleased = last.current?.action.onReleased
@@ -253,11 +263,9 @@ export function useReviewedAction() {
     const ran = last.current?.action
     void runner.exitAction?.run().then(async released => {
       if (!released) return
-      // ponytail: core keeps the sequence's released step as uncertain and refuses its calls until it is discarded (SDK
-      // request); the person's exit is that discard, and the flow plans from the chain again.
-      const saved = ran && address && ran.calls.length > 1 ? findReviewedSequence(sequenceScope(ran.calls), address) : null
-      if (saved) await discardReviewedSequence(saved).catch(() => undefined)
-      // The hold's line was the run's error: once released, the action is offered again with nothing failed.
+      // The person's exit drops the sequence of the released step, so the flow plans from the chain again; discarding
+      // also resets the run, whose error was the hold's line.
+      if (ran && ran.calls.length > 1) await runner.discard(sequenceScope(ran.calls)).catch(() => undefined)
       runner.reset()
       void Promise.resolve(onReleased?.()).catch(() => undefined)
     }, () => setExitError(WRITE_HOLD_UNCHECKED_LINE))
@@ -311,7 +319,7 @@ export function useReviewedAction() {
     /** The value the failed run threw, with its cause chain, for a flow's own decoder. */
     failure: runner.failure,
     /** A step was mined and reverted: its receipt says so, not why. */
-    reverted: phase === 'error' && runner.failure instanceof Error && runner.failure.message === WRITE_HOLD_REVERTED_LINE,
+    reverted: phase === 'error' && runner.failure instanceof ReviewedCallRevertedError,
     /** How many of the run's steps confirmed: the confirm is on the one after them. */
     landed,
     hash,

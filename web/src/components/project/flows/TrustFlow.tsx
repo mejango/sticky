@@ -20,6 +20,7 @@ import { refreshAfterTrust } from '@/lib/sticky-refresh'
 import { need, readAt } from '@/lib/sticky-rewards'
 import type { TransactionReviewRow } from '@/lib/transaction-review'
 import { chainName } from '@/lib/urn'
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 const ALREADY_TRUSTED = 'This sender is already trusted.'
 const NOT_TRUSTED = 'This sender is not trusted.'
@@ -38,7 +39,7 @@ async function trustedBy(chainId: number, projectId: number, hook: Address, hold
     return need(answer as Answer<boolean>, 'Whether this sender is trusted')
   } catch (cause) {
     console.warn('Could not read whether a sender is trusted before changing it.', { chainId, projectId }, cause)
-    throw new Error(TRUST_UNREADABLE, { cause })
+    throw new ReviewLineError(TRUST_UNREADABLE, { cause })
   }
 }
 
@@ -126,7 +127,7 @@ export function TrustFlow({
         context: rowsOf(target),
         reverify: async () => {
           if ((await trustedBy(chainId, projectId, plan.address, current.account, target)) === trusting) {
-            throw new Error(trusting ? ALREADY_TRUSTED : NOT_TRUSTED)
+            throw new ReviewLineError(trusting ? ALREADY_TRUSTED : NOT_TRUSTED)
           }
         },
       },

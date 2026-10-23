@@ -22,6 +22,7 @@ import { refreshAfterTransfer } from '@/lib/sticky-refresh'
 import { need, readAt } from '@/lib/sticky-rewards'
 import type { TransactionReviewRow } from '@/lib/transaction-review'
 import { chainName } from '@/lib/urn'
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 const LOCKED = 'This Sticky token is locked and cannot be transferred.'
 const MORE_THAN_HELD = 'That is more than you hold.'
@@ -41,7 +42,7 @@ async function heldBy(info: StickyProjectInfo, holder: Address): Promise<bigint>
     return need(answer as Answer<bigint>, 'Your Sticky balance')
   } catch (cause) {
     console.warn("Could not read a holder's Sticky balance before a transfer.", { chainId: info.chainId, projectId: Number(info.projectId) }, cause)
-    throw new Error(BALANCE_UNREADABLE, { cause })
+    throw new ReviewLineError(BALANCE_UNREADABLE, { cause })
   }
 }
 
@@ -140,7 +141,7 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
         title: 'Transfer',
         context: rowsOf(to, count, current.whole),
         reverify: async () => {
-          if ((await heldBy(info, current.account)) < count) throw new Error(BALANCE_CHANGED)
+          if ((await heldBy(info, current.account)) < count) throw new ReviewLineError(BALANCE_CHANGED)
         },
       },
     )

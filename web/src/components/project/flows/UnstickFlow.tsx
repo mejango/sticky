@@ -1,5 +1,6 @@
 'use client'
 
+import { errorLine, ReviewLineError } from '@bananapus/nana-sdk-core/review'
 import { withApprovalParent } from '@/lib/sticky-hold-intent'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
@@ -177,12 +178,12 @@ function reviewRows(info: StickyProjectInfo, { count, balance, quote, steps }: P
 
 /** Stops a send that no longer fits what was reviewed: the holder's balance, and for the unstick, what it pays. */
 async function stillFits(info: StickyProjectInfo, plan: Plan, step: TxRequest): Promise<void> {
-  if ((await heldBy(info, plan.holder)) !== plan.balance) throw new Error(BALANCE_CHANGED)
+  if ((await heldBy(info, plan.holder)) !== plan.balance) throw new ReviewLineError(BALANCE_CHANGED)
   if (step.functionName !== 'cashOutTokensOf') return
   const { chainId, projectId, stakedToken, decimals, symbol } = info
   const { net } = await quoteUnstick(chainId, projectId, stakedToken, plan.holder, plan.count)
   if (net < plan.quote.net) {
-    throw new Error(
+    throw new ReviewLineError(
       `The terminal now pays ${formatUnits(net, decimals)} ${symbol}, less than the ` +
         `${formatUnits(plan.quote.net, decimals)} you reviewed. Review the unstick again.`,
     )
@@ -324,7 +325,7 @@ export function UnstickFlow({
     } catch (reason) {
       if (controller.signal.aborted) return
       if (!(reason instanceof Refusal)) console.warn(PLAN_UNREADABLE, { chainId, projectId }, reason)
-      setError(reason instanceof Error ? sentence(reason.message) : 'The unstick could not be planned.')
+      setError(sentence(errorLine(reason)))
     } finally {
       if (preparation.current === controller) {
         preparation.current = null

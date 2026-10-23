@@ -11,7 +11,7 @@ import { act, Profiler, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { decodeFunctionData, encodeAbiParameters, encodeFunctionData, erc20Abi, getAddress, toEventSelector, toHex, UserRejectedRequestError, zeroAddress, type Abi, type Address, type Hex, type TransactionReceipt } from 'viem'
 import { SAFE_EXEC_ABI } from '@bananapus/nana-sdk-core/safe-service'
-import { HELD_EXIT_LABEL, registerReviewHandler, REVIEWED_ACCOUNT_CHANGED_LINE, writeExitMessage, writeHeldMessage, WRITE_HOLD_REVERTED_LINE, type ReviewModel } from '@bananapus/nana-sdk-core/review'
+import { HELD_EXIT_LABEL, registerReviewHandler, REVIEWED_ACCOUNT_CHANGED_LINE, writeExitMessage, writeHeldMessage, WRITE_HOLD_REVERTED_LINE, type ReviewModel, NETWORK_ERROR_LINE } from '@bananapus/nana-sdk-core/review'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { feelessAddressesAbi, stickyAutoStickAbi, stickyHookAbi, terminalAbi } from '@/lib/sticky-abis'
 import { unstickTxs } from '@/lib/sticky-builders'
@@ -865,7 +865,8 @@ describe('a send that stops halfway', () => {
     })
     await review('1')
     await until(() => nameOf(confirm()!).includes('Retry'), 'the failure')
-    expect(confirm()!.textContent).toContain('JBMultiTerminal_UnderMinTokensReclaimed')
+    // A node's revert text is never shown: the line says to try again.
+    expect(confirm()!.textContent).toContain(NETWORK_ERROR_LINE)
     expect(confirm()!.textContent).toContain(
       'Went through: Turn off auto-stick; Stop the auto-stick contract from sticking ART for you; Remove the auto-stick contract\'s ART allowance. Did not go through: Unstick.',
     )

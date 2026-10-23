@@ -1,3 +1,5 @@
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
+
 /** The most digits before the decimal point that fit in a uint256: 2^256 has 78. */
 const MAX_WHOLE_DIGITS = 78
 
@@ -11,15 +13,15 @@ export const SHARE_DECIMALS = 18
  * are for the holder and start in lowercase, to be used as the start of a sentence or after a prefix.
  */
 export function parseAmount(text: string, decimals: number): bigint {
-  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) throw new Error('invalid token decimals')
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) throw new ReviewLineError('invalid token decimals')
   const input = text.trim()
-  if (!/^(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$/.test(input)) throw new Error('enter a valid amount')
+  if (!/^(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$/.test(input)) throw new ReviewLineError('enter a valid amount')
   const [whole, fraction = ''] = input.split('.')
-  if (fraction.length > decimals) throw new Error(`this token supports at most ${decimals} decimal places`)
+  if (fraction.length > decimals) throw new ReviewLineError(`this token supports at most ${decimals} decimal places`)
   // Checked before the digits become a number, so that a long paste is never built into a huge one.
-  if (whole.replace(/^0+/, '').length > MAX_WHOLE_DIGITS) throw new Error('that amount is too large')
+  if (whole.replace(/^0+/, '').length > MAX_WHOLE_DIGITS) throw new ReviewLineError('that amount is too large')
   const amount = BigInt(whole || '0') * 10n ** BigInt(decimals) + BigInt(fraction.padEnd(decimals, '0') || '0')
-  if (amount >= 1n << 256n) throw new Error('that amount is too large')
+  if (amount >= 1n << 256n) throw new ReviewLineError('that amount is too large')
   return amount
 }
 

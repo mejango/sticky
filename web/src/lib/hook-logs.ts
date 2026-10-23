@@ -17,6 +17,7 @@ import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
 import { stickyHookAbi } from '@/lib/sticky-abis'
 import { deploymentOn } from '@/lib/sticky-addresses'
 import { sleep } from '@/lib/with-timeout'
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 /** A log that is in a block, so it has a block, a hash and an index. Center also sends the block's
  * timestamp with it, which viem keeps as `blockTimestamp`. */
@@ -118,7 +119,7 @@ export async function asked<T>(what: string, work: () => Promise<T>, signal: Abo
     return await untilAborted(work(), signal)
   } catch (cause) {
     if (signal?.aborted) throw cause
-    throw new Error(`${what} could not be read.`, { cause })
+    throw new ReviewLineError(`${what} could not be read.`, { cause })
   }
 }
 

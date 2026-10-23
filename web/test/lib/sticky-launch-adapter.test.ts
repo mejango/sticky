@@ -25,7 +25,7 @@ vi.mock('@/providers/Providers', () => ({ wagmiConfig: {} }))
 vi.mock('@wagmi/core', () => ({ getAccount: () => fake.account }))
 vi.mock('@/lib/viewAs', () => ({ assertNoViewAs: fake.guard }))
 vi.mock('@/lib/transaction-review', () => ({
-  requireTransactionReview: fake.review, requireFundingChainSelection: fake.choose,
+  requireFundingChainSelection: fake.choose,
   fundingChainLabel: (chain: string, amount: bigint) => `${chain} ${amount}`,
 }))
 // Core sends and signs for real, over this wallet and chain: the deployer's creation goes to `write`, a payment to `send`.
@@ -488,8 +488,7 @@ describe('Sticky launch browser boundaries', () => {
     expect(fake.write.mock.calls[0][0].gas).toBe(0n)
   })
 
-  // A sponsored review shows the listing message alone: a message signature cannot carry the creation's decoded calls
-  // yet (SDK request).
+  // A sponsored review shows the listing message with the creation it lets Center sponsor, decoded.
   it.each(['self-paid', 'sponsored'] as const)('one %s launch press opens one review: listing and creation follow it without another', async capability => {
     const controller = createBrowserStickyLaunchController()
     fake.publish.mockImplementation(async (_plan, sign) => { await sign('Exact SDK listing message'); return { id: 'listing' } })
@@ -501,6 +500,7 @@ describe('Sticky launch browser boundaries', () => {
     expect(fake.review.mock.calls[0][0]).toMatchObject(capability === 'self-paid'
       ? { title: 'Create and list Sticky token', signatures: [expect.objectContaining({ kind: 'message' })] }
       : { title: 'Publish Sticky listing', message: 'Exact SDK listing message' })
+    if (capability === 'sponsored') expect(fake.review.mock.calls[0][0].signatures).toEqual([expect.objectContaining({ kind: 'message', calls: [expect.objectContaining({ functionName: 'deployStickyFor' })] })])
     expect(fake.sign).toHaveBeenCalledOnce()
     if (capability === 'self-paid') expect(fake.write).toHaveBeenCalledOnce()
     else expect(fake.sponsor).toHaveBeenCalledOnce()

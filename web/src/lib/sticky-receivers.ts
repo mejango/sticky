@@ -12,6 +12,7 @@ import { stickyRewardReceiverFactoryAbi } from '@/lib/sticky-abis'
 import { deploymentOn } from '@/lib/sticky-addresses'
 import type { Answer } from '@/lib/sticky-project'
 import { need, readAt } from '@/lib/sticky-rewards'
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 type Cancel = { signal?: AbortSignal }
 
@@ -46,7 +47,7 @@ export async function readReceiver(
     signal,
   )) as Answer<Address>[]
   if (!isAddressEqual(need(settlesInto, "the factory's distributor"), distributor)) {
-    throw new Error('the reward receiver factory uses a different distributor')
+    throw new ReviewLineError('the reward receiver factory uses a different distributor')
   }
   const address = need(predicted, 'the reward address')
   const code = await asked(

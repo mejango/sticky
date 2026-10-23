@@ -1,5 +1,6 @@
 'use client'
 
+import { errorLine } from '@bananapus/nana-sdk-core/review'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useId, useRef, useState } from 'react'
 import { formatUnits, type Address } from 'viem'
@@ -69,7 +70,7 @@ async function arrivalsOf(
   } catch (reason) {
     const told = refusalOf(reason)
     if (signal.aborted || !(told instanceof Refusal)) throw reason
-    return { refused: asSentence(told.message) }
+    return { refused: asSentence(errorLine(told)) }
   }
   return { meta, amount: await readArrivals(chainId, receiver, token, { signal }) }
 }
@@ -300,7 +301,7 @@ export function ReceiverFlow({
           <StakeAgeFields minWeeks={minWeeks} maxWeeks={maxWeeks} onMinWeeks={setMinWeeks} onMaxWeeks={setMaxWeeks} />
           {receiver.isError ? (
             <p role="alert" className="text-err">
-              {asSentence(receiver.error.message)}{' '}
+              {asSentence(errorLine(receiver.error))}{' '}
               <button type="button" className="btn-link font-semibold" onClick={() => void receiver.refetch()}>
                 Try again
               </button>

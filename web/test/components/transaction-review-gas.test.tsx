@@ -13,10 +13,8 @@ vi.mock('next/image', () => ({
 }))
 
 import { TransactionReviewProvider } from '@/components/TransactionReviewProvider'
-import {
-  requireTransactionReview,
-  type TransactionReviewCall,
-} from '@/lib/transaction-review'
+import { type TransactionReviewCall } from '@bananapus/nana-sdk-core/review'
+import { promptReview } from '../support/review-prompt'
 
 let container: HTMLDivElement
 let root: Root
@@ -38,7 +36,7 @@ async function reviewAll(
 ) {
   act(() => root.render(<TransactionReviewProvider>{null}</TransactionReviewProvider>))
   await act(async () => {
-    requireTransactionReview({
+    promptReview({
       kind,
       calls: calls.map(fields => ({
         chainId: 1,

@@ -40,6 +40,7 @@ import {
 } from '@/lib/sticky-rewards'
 import { chainName } from '@/lib/urn'
 import { useViewAs } from '@/lib/viewAs'
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 const PREPARE_UNREADABLE = 'Could not prepare an airdrop; its form says what could not be read.'
 const BALANCE_UNREADABLE = 'Could not check the balance before sending a step of an airdrop; the dialog says so.'
@@ -238,9 +239,9 @@ function SameChainFundFlow({
       ;({ balance } = await fundsOf(chainId, sent, account, stickyDeployment(chainId)!.distributor))
     } catch (reason) {
       console.warn(BALANCE_UNREADABLE, { chainId, projectId }, reason)
-      throw new Error(asSentence(reason instanceof Error ? reason.message : String(reason)), { cause: reason })
+      throw new ReviewLineError(asSentence(reason instanceof Error ? reason.message : String(reason)), { cause: reason })
     }
-    if (balance < value) throw new Error(`Your ${meta.symbol} balance changed. Review the amount.`)
+    if (balance < value) throw new ReviewLineError(`Your ${meta.symbol} balance changed. Review the amount.`)
   }
 
   async function confirm() {

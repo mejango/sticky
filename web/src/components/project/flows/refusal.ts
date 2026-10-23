@@ -1,6 +1,8 @@
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
+
 /** What a holder asked for and cannot have, or an answer the chain gave: said to them, and no failure of the page's own,
  * so the console is not told of it. */
-export class Refusal extends Error {}
+export class Refusal extends ReviewLineError {}
 
 /**
  * `reason` as a refusal when it is an error that carries no cause, and as it is otherwise. A read that failed to be made

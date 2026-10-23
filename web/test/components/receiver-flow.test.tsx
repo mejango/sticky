@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 import { NATIVE_TOKEN } from '@bananapus/nana-sdk-core'
 import { QueryClient, QueryClientProvider, notifyManager, type QueryKey } from '@tanstack/react-query'
 import { act } from 'react'
@@ -217,7 +218,7 @@ describe('the reward address', () => {
   })
 
   it('Wrong factory: a factory whose DISTRIBUTOR() differs from the deployment\'s distributor is refused before review', async () => {
-    mocks.receiver.mockRejectedValue(new Error('the reward receiver factory uses a different distributor'))
+    mocks.receiver.mockRejectedValue(new ReviewLineError('the reward receiver factory uses a different distributor'))
     await open()
     expect(panel().querySelector('[role="alert"]')?.textContent).toContain('The reward receiver factory uses a different distributor.')
     expect(shown()).toEqual({})
@@ -403,7 +404,7 @@ describe('the panel', () => {
     expect(confirm()).toBeNull()
     expect(mocks.tx.send).not.toHaveBeenCalled()
 
-    mocks.receiver.mockRejectedValue(new Error('the reward address could not be read.', { cause: new Error('429') }))
+    mocks.receiver.mockRejectedValue(new ReviewLineError('the reward address could not be read.', { cause: new Error('429') }))
     await act(async () => void (await client.invalidateQueries()))
     await settled()
     const alert = panel().querySelector('[role="alert"]')!

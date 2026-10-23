@@ -10,7 +10,7 @@ import { TransactionReviewCancelledError } from '@/lib/transaction-review'
 import { bridgeCalldata } from '@/lib/sticky-bridge'
 import { createPendingBridgeWrite, readPendingBridgeWrite, readWatchedBridgeRoutes, savePendingBridgeWrite, storeBridgeWrite } from '@/lib/sticky-bridge-journal'
 import type { CollectorSource } from '@/lib/sticky-collector'
-import { checkedItLabel, HELD_EXIT_LABEL, WRITE_HOLD_PENDING_LINE } from '@bananapus/nana-sdk-core/review'
+import { checkedItLabel, HELD_EXIT_LABEL, WRITE_HOLD_PENDING_LINE, NETWORK_ERROR_LINE } from '@bananapus/nana-sdk-core/review'
 import { holds } from '@/lib/write-holds'
 import { holdIntent } from '@/lib/sticky-hold-intent'
 import { heldChain, heldWrite } from '../support/held-chain'
@@ -378,7 +378,7 @@ describe('permissionless collector delivery', () => {
     mocks.read.mockRejectedValue(new Error('Queue RPC unavailable'))
     await render()
     expect(text()).toContain('Executed transaction hash')
-    expect(text()).toContain('Queue RPC unavailable')
+    expect(text()).toContain(NETWORK_ERROR_LINE)
     expect(button('Review delivery').disabled).toBe(true)
   })
 

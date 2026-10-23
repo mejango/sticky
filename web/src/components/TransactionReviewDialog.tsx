@@ -8,7 +8,6 @@ import {
   type V4PlanStep,
 } from '@bananapus/nana-sdk-core/review/decode'
 import {
-  buildReviewModel,
   type ReviewArgument,
   type ReviewCallModel,
   type ReviewSignatureModel,
@@ -511,8 +510,7 @@ function ReviewModal({
   pending: PendingReview
   onFinish: (approved: boolean) => void
 }) {
-  const { request } = pending
-  const model = useMemo(() => pending.model ?? buildReviewModel(pending.request), [pending])
+  const { model } = pending
   const feeCalls = useMemo(() => model.calls.map(call => ({
     chainId: call.chainId,
     to: call.to,
@@ -522,14 +520,14 @@ function ReviewModal({
     ...(call.functionName ? { functionName: call.functionName } : {}),
   })), [model])
   const feeReview = useFeeBuybackReview(feeCalls)
-  /** The action's summary rows: a request's own, or the ones core's model carries. */
-  const rows = request?.rows?.length ? request.rows : model.context
+  /** The action's summary rows, as core's model carries them. */
+  const rows = model.context
   const [agreed, setAgreed] = useState(false)
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
 
   const copyPrompt = async () => {
     try {
-      await navigator.clipboard.writeText(buildTransactionReviewPrompt(pending.model ?? pending.request))
+      await navigator.clipboard.writeText(buildTransactionReviewPrompt(model))
       setCopyState('copied')
     } catch {
       setCopyState('failed')

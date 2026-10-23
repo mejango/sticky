@@ -1,5 +1,7 @@
 'use client'
 
+import { errorLine, ReviewLineError } from '@bananapus/nana-sdk-core/review'
+import { asSentence } from '@/lib/sticky-format'
 import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { formatUnits, isAddressEqual, type Address } from 'viem'
@@ -11,7 +13,6 @@ import { useStepPresses } from '@/hooks/useStepPresses'
 import { useWallet } from '@/hooks/useWallet'
 import { readBalanceAndAllowance } from '@/lib/sticky-allowance'
 import { approveSteps, stickTx, type TxRequest } from '@/lib/sticky-builders'
-import { asSentence } from '@/lib/sticky-format'
 import { withApprovalParent } from '@/lib/sticky-hold-intent'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { assertCanStickFor, quoteStick } from '@/lib/sticky-quotes'
@@ -110,7 +111,7 @@ export function StickSend({
           { token: info.stakedToken, owner: account, spender: terminal },
           { signal },
         )
-        if (balance < value) throw new Error(MORE_THAN_HELD)
+        if (balance < value) throw new ReviewLineError(MORE_THAN_HELD)
         const minted = await quoteStick(chainId, info.projectId, info.stakedToken, value, account, beneficiary, { signal })
         const steps = withApprovalParent([
           ...approveSteps(chainId, info.stakedToken, terminal, allowance, value, {
@@ -125,7 +126,7 @@ export function StickSend({
         latest.current.presses.arm()
       } catch (reason) {
         if (!signal.aborted) {
-          const message = asSentence(told(REVIEW_UNREADABLE, { chainId, projectId }, reason).message)
+          const message = asSentence(errorLine(told(REVIEW_UNREADABLE, { chainId, projectId }, reason)))
           latest.current.onFailure(message, account.toLowerCase())
         }
       } finally {
@@ -139,9 +140,9 @@ export function StickSend({
   async function verify({ info: staked, terminal: spender, account: owner, amount: value }: Plan) {
     const { balance } = await readBalanceAndAllowance(chainId, { token: staked.stakedToken, owner, spender }).catch(reason => {
       const unreadable = told(BALANCE_UNREADABLE, { chainId, projectId }, reason)
-      throw new Error(asSentence(unreadable.message), { cause: unreadable })
+      throw new ReviewLineError(asSentence(errorLine(unreadable)), { cause: unreadable })
     })
-    if (balance < value) throw new Error(`Your ${staked.symbol} balance changed. Review the amount.`)
+    if (balance < value) throw new ReviewLineError(`Your ${staked.symbol} balance changed. Review the amount.`)
   }
 
   async function confirm() {

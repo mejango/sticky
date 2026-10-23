@@ -9,6 +9,7 @@ import { untilAborted } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
 import { stickyHookAbi } from '@/lib/sticky-abis'
 import { deploymentOn } from '@/lib/sticky-addresses'
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 /** How many tranches a page holds. */
 export const TRANCHES_PER_PAGE = 50
@@ -73,7 +74,7 @@ export async function readTranchePage(
     }),
     signal,
   )
-  if (BigInt(read.length) !== end - start) throw new Error('The RPC returned an incomplete tranche page.')
+  if (BigInt(read.length) !== end - start) throw new ReviewLineError('The RPC returned an incomplete tranche page.')
   return {
     tranches: read.map(({ amount, timestamp }) => ({ amount, timestamp })),
     total,

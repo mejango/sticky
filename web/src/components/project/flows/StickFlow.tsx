@@ -1,5 +1,6 @@
 'use client'
 
+import { errorLine, ReviewLineError } from '@bananapus/nana-sdk-core/review'
 import { skipToken, useQuery } from '@tanstack/react-query'
 import dynamic from 'next/dynamic'
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
@@ -126,13 +127,13 @@ export function StickFlow({
             try {
               await assertCanStickFor(chainId, staked.projectId, sender, beneficiary, { signal })
             } catch (reason) {
-              throw signal.aborted ? reason : new Error(asSentence(told(QUOTE_UNREADABLE, about, reason).message))
+              throw signal.aborted ? reason : new ReviewLineError(asSentence(errorLine(told(QUOTE_UNREADABLE, about, reason))))
             }
           }
           try {
             return await quoteStick(chainId, staked.projectId, staked.stakedToken, value, sender, beneficiary, { signal })
           } catch (reason) {
-            throw signal.aborted ? reason : new Error(`Could not quote: ${told(QUOTE_UNREADABLE, about, reason).message}`)
+            throw signal.aborted ? reason : new ReviewLineError(`Could not quote: ${errorLine(told(QUOTE_UNREADABLE, about, reason))}`)
           }
         }
       : skipToken,

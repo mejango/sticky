@@ -13,13 +13,12 @@ import type { Address } from 'viem'
 import { registerReviewHandler, type ReviewModel } from '@bananapus/nana-sdk-core/review'
 import { useAccount } from 'wagmi'
 import { ModalDialog } from '@/components/ui/ModalShell'
+import { loadReviewEngine } from '@/lib/review-engine'
 import { useProjectReviewScope, type ProjectReviewScope } from '@/providers/ProjectRouteContext'
 import { useProjectRouteBlocked } from '@/providers/ProjectRouteBlockedContext'
 import {
   registerFundingChainSelectionHandler,
-  registerTransactionReviewHandler,
   type FundingChainOption,
-  type TransactionReviewRequest,
 } from '@/lib/transaction-review'
 
 export type PendingReview = {
@@ -28,12 +27,9 @@ export type PendingReview = {
   resolve: (approved: boolean) => void
   scope?: ProjectReviewScope | null
   account?: Address
-} & (
-  /** A boolean review of the request itself. */
-  | { request: TransactionReviewRequest; model?: undefined }
   /** Core's prompt: the model it bound, confirmed only by its own confirmation. */
-  | { model: ReviewModel; request?: undefined }
-)
+  model: ReviewModel
+}
 
 export type PendingFundingChainSelection = {
   kind: 'funding'
@@ -56,6 +52,16 @@ export type TransactionReviewDialogProps = {
 function cancelPendingDialog(pending: PendingDialog) {
   if (pending.kind === 'review') pending.resolve(false)
   else pending.resolve(null)
+}
+
+let dialogLoad: Promise<typeof import('./TransactionReviewDialog')> | undefined
+/** The dialog's one download, shared by its preload and the first review; a failed one is tried again next time. */
+function loadDialog() {
+  dialogLoad ??= import('./TransactionReviewDialog').catch(error => {
+    dialogLoad = undefined
+    throw error
+  })
+  return dialogLoad
 }
 
 /**
@@ -95,33 +101,6 @@ export function TransactionReviewProvider({ children }: PropsWithChildren) {
     setActive(pending)
   }, [])
 
-  const enqueue = useCallback(
-    (request: TransactionReviewRequest) =>
-      new Promise<boolean>(resolve => {
-        const snapshot: TransactionReviewRequest = {
-          ...request,
-          calls: request.calls.map(call => ({
-            ...call,
-            // The connected wallet sends a transaction. An authorization is sent
-            // by a relayer, a Safe or a sponsor, so only a call that names its
-            // own sender shows one.
-            from: call.from ?? (request.kind === 'authorization' ? undefined : accountRef.current),
-            args: call.args ? [...call.args] : undefined,
-          })),
-        }
-        const pending: PendingReview = {
-          kind: 'review',
-          id: nextId.current++,
-          request: snapshot,
-          resolve,
-          scope: scopeRef.current,
-          account: accountRef.current,
-        }
-        enqueueDialog(pending)
-      }),
-    [enqueueDialog],
-  )
-
   const enqueueFundingChainSelection = useCallback(
     (options: readonly FundingChainOption[], initialChainId: number | null) =>
       new Promise<number | null>(resolve => {
@@ -138,17 +117,26 @@ export function TransactionReviewProvider({ children }: PropsWithChildren) {
     [enqueueDialog],
   )
 
-  useEffect(() => registerTransactionReviewHandler(enqueue), [enqueue])
-  useEffect(
-    () =>
-      registerReviewHandler(async prompt => {
-        const approved = await new Promise<boolean>(resolve => {
-          enqueueDialog({ kind: 'review', id: nextId.current++, model: prompt.model, resolve, scope: scopeRef.current, account: accountRef.current })
-        })
-        return approved ? prompt.confirmation : null
-      }),
-    [enqueueDialog],
-  )
+  // The review engine and its dialog load on the first intent (a press or a focus anywhere) or once the page is idle,
+  // so the first review opens without a wait.
+  useEffect(() => {
+    let loaded = false
+    const load = () => {
+      if (loaded) return
+      loaded = true
+      void loadReviewEngine().catch(() => undefined)
+      void loadDialog().catch(() => undefined)
+    }
+    const idle = window.requestIdleCallback?.(load) ?? window.setTimeout(load, 2_000)
+    document.addEventListener('pointerdown', load, { capture: true, once: true })
+    document.addEventListener('focusin', load, { capture: true, once: true })
+    return () => {
+      if (window.cancelIdleCallback) window.cancelIdleCallback(idle)
+      else window.clearTimeout(idle)
+      document.removeEventListener('pointerdown', load, { capture: true })
+      document.removeEventListener('focusin', load, { capture: true })
+    }
+  }, [])
   useEffect(
     () => registerFundingChainSelectionHandler(enqueueFundingChainSelection),
     [enqueueFundingChainSelection],
@@ -218,13 +206,33 @@ export function TransactionReviewProvider({ children }: PropsWithChildren) {
     else current.resolve(typeof result === 'number' ? result : null)
   }, [])
 
+  useEffect(
+    () =>
+      registerReviewHandler(async prompt => {
+        const approved = await new Promise<boolean>(resolve => {
+          const pending: PendingReview = { kind: 'review', id: nextId.current++, model: prompt.model, resolve, scope: scopeRef.current, account: accountRef.current }
+          // Core withdrew the prompt (the run's account changed): its dialog closes, or it leaves the queue.
+          prompt.signal.addEventListener('abort', () => {
+            if (activeRef.current === pending) void finish(pending.id, null)
+            else {
+              queueRef.current = queueRef.current.filter(queued => queued !== pending)
+              resolve(false)
+            }
+          }, { once: true })
+          enqueueDialog(pending)
+        })
+        return approved ? prompt.confirmation : null
+      }),
+    [enqueueDialog, finish],
+  )
+
   // Keep the global queue ready immediately, but fetch the full decoder and
   // review UI only when a request arrives. Loading never authorizes a call;
   // cancellation, unmount, or a failed download resolves it as declined.
   useEffect(() => {
     if (!active || Dialog) return
     let cancelled = false
-    void import('./TransactionReviewDialog').then(
+    void loadDialog().then(
       module => {
         if (!cancelled) setDialog(() => module.TransactionReviewDialog)
       },

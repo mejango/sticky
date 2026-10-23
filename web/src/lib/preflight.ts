@@ -1,4 +1,5 @@
 import { BaseError, ContractFunctionRevertedError, type Address } from 'viem'
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 import type { TxRequest } from '@/hooks/useReviewedAction'
 import { untilAborted } from '@/lib/hook-logs'
 import { jbCenterPublicClient } from '@/lib/jbcenter-public-client'
@@ -32,6 +33,6 @@ export async function preflight(step: TxRequest, account: Address, signal: Abort
     )
   } catch (cause) {
     if (signal.aborted) throw cause
-    throw new Error(`${refusal}: ${reasonOf(cause)}`, { cause })
+    throw new ReviewLineError(`${refusal}: ${reasonOf(cause)}`, { cause })
   }
 }

@@ -3,17 +3,10 @@
   "sites": [
     {
       "file": "src/components/TransactionReviewProvider.tsx",
-      "line": 141,
-      "api": "registerTransactionReviewHandler",
-      "boundary": "Old-review handler: the provider queues the SDK's remaining boolean review requests into the one review dialog. Every Sticky send now reviews through core's registerReviewHandler; removed in K4.",
-      "test": "test/components/transaction-review-decoded.test.tsx"
-    },
-    {
-      "file": "src/lib/hook-logs.ts",
-      "line": 265,
-      "api": "request",
-      "boundary": "eth_getLogs on a Center public client: a log scan, never a wallet RPC.",
-      "test": "test/lib/hook-logs-center.test.ts"
+      "line": 211,
+      "api": "registerReviewHandler",
+      "boundary": "The page's one review handler: it answers core's prompt only with the person's choice in the review dialog, cancels on a scope or account change, and closes when core withdraws the prompt.",
+      "test": "test/components/transaction-review-scope.test.tsx"
     },
     {
       "file": "src/lib/jbcenter-public-client.ts",
@@ -21,48 +14,6 @@
       "api": "request",
       "boundary": "The page reader's transport adds the page's abort signal to each public RPC read; never a wallet RPC.",
       "test": "test/data/jbcenter-browser.test.ts"
-    },
-    {
-      "file": "src/lib/jbcenter-public-client.ts",
-      "line": 53,
-      "api": "request",
-      "boundary": "eth_blockNumber on the page reader: a public read of the head, never a wallet RPC.",
-      "test": "test/data/jbcenter-browser.test.ts"
-    },
-    {
-      "file": "src/lib/project-handles.ts",
-      "line": 301,
-      "api": "request",
-      "boundary": "eth_call on a public client with a return-size cap: a read, never a wallet RPC.",
-      "test": "test/lib/project-handles.test.ts"
-    },
-    {
-      "file": "src/lib/sticky-bridge-journal.ts",
-      "line": 145,
-      "api": "request",
-      "boundary": "navigator.locks.request on the sticky-reward-bridge lock: cross-tab bridge coordination, never a wallet RPC.",
-      "test": "test/lib/sticky-bridge-journal.test.ts"
-    },
-    {
-      "file": "src/lib/sticky-bridge-journal.ts",
-      "line": 152,
-      "api": "request",
-      "boundary": "navigator.locks.request on the bridge record storage lock: cross-tab storage coordination, never a wallet RPC.",
-      "test": "test/lib/sticky-bridge-journal.test.ts"
-    },
-    {
-      "file": "src/lib/sticky-bridge.ts",
-      "line": 213,
-      "api": "request",
-      "boundary": "eth_getLogs on the source chain's public client to find queued bridge leaves: a read, never a wallet RPC.",
-      "test": "test/lib/sticky-bridge.test.ts"
-    },
-    {
-      "file": "src/lib/sticky-launch-adapter.ts",
-      "line": 492,
-      "api": "request",
-      "boundary": "navigator.locks.request on the sticky-launch-write lock: cross-tab launch coordination, never a wallet RPC.",
-      "test": "test/lib/sticky-launch-adapter.test.ts"
     },
     {
       "file": "src/providers/lazy-center-connector.ts",

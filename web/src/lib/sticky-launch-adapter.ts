@@ -449,7 +449,9 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       // One copy is published, signed and shown, so none of them can differ.
       const signed = structuredClone(plan)
       const intent = await publishStickyListing(signed, async message => {
-        const [signature] = await signReviewed([{ kind: 'message', chainId: signed.targets[0].chainId, message }], {
+        // The review shows the creation the listing lets Center sponsor, decoded, beside the message.
+        const calls = signed.targets.map(({ call }) => ({ chainId: call.chain, to: call.target, data: call.data, value: BigInt(call.value) }))
+        const [signature] = await signReviewed([{ kind: 'message', chainId: signed.targets[0].chainId, message, calls }], {
           account: signed.owner,
           title: 'Publish Sticky listing',
           description: 'Your signature lists this exact launch on Center, so Center can sponsor its creation.',

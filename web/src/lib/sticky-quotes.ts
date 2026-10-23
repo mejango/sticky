@@ -14,6 +14,7 @@ import { deploymentOn } from '@/lib/sticky-addresses'
 import { formatAmount } from '@/lib/sticky-format'
 import { backingOfShares, capped, type Answer, type StickyProjectInfo } from '@/lib/sticky-project'
 import { need, readAt } from '@/lib/sticky-rewards'
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 type Cancel = { signal?: AbortSignal }
 
@@ -72,11 +73,11 @@ export async function quoteStick(
     signal,
   )
   if (!/^0x(?:[0-9a-fA-F]{64}){13,}$/.test(answer) || word(answer, 11) !== HOOK_LIST_AT || word(answer, 10) !== 0n) {
-    throw new Error('the terminal did not return a valid Sticky mint quote')
+    throw new ReviewLineError('the terminal did not return a valid Sticky mint quote')
   }
   const count = word(answer, 9)
   if (count === 0n) {
-    throw new Error('this amount is too small or cannot be priced precisely enough at the current backing price')
+    throw new ReviewLineError('this amount is too small or cannot be priced precisely enough at the current backing price')
   }
   return count
 }
@@ -115,7 +116,7 @@ export async function assertCanStickFor(
     signal,
   )) as Answer<boolean>[]
   if (!need(granter, 'your standing as a granter of the project') && !need(trusted, "the holder's trust in you")) {
-    throw new Error('this holder must trust your address before you can stick for them')
+    throw new ReviewLineError('this holder must trust your address before you can stick for them')
   }
 }
 
@@ -185,11 +186,11 @@ export async function quoteUnstick(
   const feeFreeSurplus = need(rule[0] as Answer<bigint>, 'the fee-free surplus')
   const registry = need(rule[1] as Answer<Address>, "the terminal's registry of feeless addresses")
   if (!/^0x(?:[0-9a-fA-F]{64}){13}$/.test(answer) || word(answer, 11) !== HOOK_LIST_AT || word(answer, 12) !== 0n) {
-    throw new Error('the terminal did not return a valid unstick quote')
+    throw new ReviewLineError('the terminal did not return a valid unstick quote')
   }
   const gross = word(answer, 9)
   const tax = word(answer, 10)
-  if (tax > MAX_TAX) throw new Error('the terminal did not return a valid unstick quote')
+  if (tax > MAX_TAX) throw new ReviewLineError('the terminal did not return a valid unstick quote')
   const [feelessAnswer] = await asked(
     "the holder's fee status",
     () =>

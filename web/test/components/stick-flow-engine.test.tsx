@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { jbMultiTerminalAbi } from '@bananapus/nana-sdk-core'
-import { HELD_EXIT_LABEL, registerReviewHandler, REVIEWED_ACCOUNT_CHANGED_LINE, writeHeldMessage, type ReviewModel } from '@bananapus/nana-sdk-core/review'
+import { HELD_EXIT_LABEL, registerReviewHandler, REVIEWED_ACCOUNT_CHANGED_LINE, writeHeldMessage, type ReviewModel, NETWORK_ERROR_LINE } from '@bananapus/nana-sdk-core/review'
 import { QueryClient, QueryClientProvider, notifyManager } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -299,7 +299,7 @@ describe('the stick flow on the real engine', () => {
     })
     await mined(APPROVAL, 4_001n)
     await until(() => confirmButton()?.textContent === 'Retry', 'the stick to fail')
-    expect(dialog()!.textContent).toContain('price moved')
+    expect(dialog()!.textContent).toContain(NETWORK_ERROR_LINE)
     expect(stepStates()).toEqual(['complete', 'active'])
     expect(mocks.sendTransaction).toHaveBeenCalledTimes(1)
 

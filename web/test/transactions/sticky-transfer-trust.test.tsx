@@ -11,7 +11,7 @@ import { QueryClient, QueryClientProvider, notifyManager } from '@tanstack/react
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { decodeFunctionData, getAddress, type Address, type Hex } from 'viem'
-import { registerReviewHandler, REVIEWED_ACCOUNT_CHANGED_LINE, type ReviewModel } from '@bananapus/nana-sdk-core/review'
+import { registerReviewHandler, REVIEWED_ACCOUNT_CHANGED_LINE, type ReviewModel, NETWORK_ERROR_LINE } from '@bananapus/nana-sdk-core/review'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stickyHookAbi, stickyTokenAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
@@ -350,7 +350,7 @@ describe('a transfer', () => {
     await reviewed('1')
     await settle()
     expect(mocks.sendTransaction).not.toHaveBeenCalled()
-    expect(confirm().textContent).toContain('execution reverted')
+    expect(confirm().textContent).toContain(NETWORK_ERROR_LINE)
   })
 
   it('wallet-action:transfer-sticky-tokens sends nothing once the account that reviewed it is no longer connected: its review goes, and nothing is asked of the wallet', async () => {

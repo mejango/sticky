@@ -3,6 +3,7 @@ import { asked, freshHead } from '@/lib/hook-logs'
 import { SUPPORTED_CHAINS } from '@/lib/chains'
 import type { Answer } from '@/lib/sticky-project'
 import { need, readAt } from '@/lib/sticky-rewards'
+import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
 
 /**
  * What `owner` holds of a token and has allowed `spender` to take of it, read together at a head that is asked for
@@ -40,7 +41,7 @@ export async function readNativeBalance(
   { signal }: { signal?: AbortSignal } = {},
 ): Promise<bigint> {
   const multicall3 = SUPPORTED_CHAINS.find(chain => chain.id === chainId)?.contracts?.multicall3?.address
-  if (!multicall3) throw new Error(`chain ${chainId} has no Multicall3 to read a balance from`)
+  if (!multicall3) throw new ReviewLineError(`chain ${chainId} has no Multicall3 to read a balance from`)
   const [balance] = (await asked(
     'the balance',
     async () =>

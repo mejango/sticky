@@ -5,7 +5,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { encodeErrorResult, getAddress, isAddress, zeroAddress, type Hex } from 'viem'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { HELD_FAILED_LINE } from '@bananapus/nana-sdk-core/review'
+import { HELD_FAILED_LINE, ReviewLineError } from '@bananapus/nana-sdk-core/review'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import { TransactionReviewCancelledError } from '@/lib/transaction-review'
 import type { StickyPosition } from '@/lib/sticky-holders'
@@ -275,7 +275,7 @@ describe('the amount', () => {
   })
 
   it('blocks the button when the quote fails, and says why', async () => {
-    mocks.quote.mockRejectedValue(new Error('this amount is too small or cannot be priced precisely enough at the current backing price'))
+    mocks.quote.mockRejectedValue(new ReviewLineError('this amount is too small or cannot be priced precisely enough at the current backing price'))
     await render()
     await typeAmount('0.000001')
     expect(hint()).toBe('Could not quote: this amount is too small or cannot be priced precisely enough at the current backing price')
@@ -295,7 +295,7 @@ describe('the amount', () => {
 
   it('tells the console why a quote could not be read, and shows only what could not be read', async () => {
     const cause = new Error('429 from Center')
-    mocks.quote.mockRejectedValue(new Error('the terminal\'s stick preview could not be read.', { cause }))
+    mocks.quote.mockRejectedValue(new ReviewLineError('the terminal\'s stick preview could not be read.', { cause }))
     await render()
     await typeAmount('5')
 
@@ -838,7 +838,7 @@ describe('the review', () => {
     const { calls: [call], reverify } = mocks.tx.run.mock.calls[0][0]
 
     const cause = new Error('429')
-    const unreadable = new Error('the balance and the allowance could not be read.', { cause })
+    const unreadable = new ReviewLineError('the balance and the allowance could not be read.', { cause })
     mocks.funds.mockRejectedValue(unreadable)
     await expect(reverify!(call, 0, undefined)).rejects.toMatchObject({
       message: 'The balance and the allowance could not be read.',
@@ -859,7 +859,7 @@ describe('the review', () => {
 
   it('names what could not be read, and warns with its cause, when the review cannot read the chain', async () => {
     const cause = new Error('429')
-    mocks.funds.mockRejectedValue(new Error('the balance and the allowance could not be read.', { cause }))
+    mocks.funds.mockRejectedValue(new ReviewLineError('the balance and the allowance could not be read.', { cause }))
     await render()
     await review()
     expect(dialog()).toBeNull()
@@ -870,7 +870,7 @@ describe('the review', () => {
   it('refuses a quote that fails on the review, and sends nothing', async () => {
     await render()
     await typeAmount('5')
-    mocks.quote.mockRejectedValue(new Error('the terminal\'s stick preview could not be read.'))
+    mocks.quote.mockRejectedValue(new ReviewLineError('the terminal\'s stick preview could not be read.'))
     await click(flowButton('Stick'))
     await settled()
     expect(dialog()).toBeNull()
@@ -1063,7 +1063,7 @@ describe('sticking for someone else', () => {
   })
 
   it('refuses a recipient who has not trusted the sender, in the hint and on the button, before the review', async () => {
-    mocks.canStick.mockRejectedValue(new Error('this holder must trust your address before you can stick for them'))
+    mocks.canStick.mockRejectedValue(new ReviewLineError('this holder must trust your address before you can stick for them'))
     await render({ forSomeoneElse: true })
     await fill(FRIEND)
 
@@ -1078,7 +1078,7 @@ describe('sticking for someone else', () => {
     await fill(FRIEND)
     expect(hint()).toBe('They get at least 9.87 STICKYCPN')
 
-    mocks.canStick.mockRejectedValue(new Error('this holder must trust your address before you can stick for them'))
+    mocks.canStick.mockRejectedValue(new ReviewLineError('this holder must trust your address before you can stick for them'))
     await click(flowButton('Review stick'))
     await settled()
 
@@ -1135,7 +1135,7 @@ describe('sticking for someone else', () => {
   /** FRIEND trusts BOB and nobody else. */
   const trustsBob = () =>
     mocks.canStick.mockImplementation(async (_chainId: number, _projectId: bigint, sender: string) => {
-      if (sender !== BOB) throw new Error('this holder must trust your address before you can stick for them')
+      if (sender !== BOB) throw new ReviewLineError('this holder must trust your address before you can stick for them')
     })
 
   it('says a refusal once when the review is pressed before the quote under the amount has settled', async () => {
@@ -1234,7 +1234,7 @@ describe('sticking for someone else', () => {
 
     mocks.wallet = { ...mocks.wallet, address: BOB }
     await rerender()
-    await act(async () => checking.reject(new Error('this holder must trust your address before you can stick for them')))
+    await act(async () => checking.reject(new ReviewLineError('this holder must trust your address before you can stick for them')))
     await settled()
     expect(dialog()).toBeNull()
     expect(alerts()).toEqual([])

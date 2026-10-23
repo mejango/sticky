@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TxRequest } from '@/hooks/useReviewedAction'
 import { bridgeCalldata, type BridgeMovement, type BridgeRoute } from '@/lib/sticky-bridge'
 import { bridgeStorageKey, createPendingBridgeWrite, readBridgeRecords, readPendingBridgeWrite, saveBridgeRecords, savePendingBridgeWrite, saveWatchedBridgeRoute, storeBridgeWrite } from '@/lib/sticky-bridge-journal'
-import { checkedItLabel, HELD_EXIT_LABEL, SAVED_ATTEMPT_CHECK_LINE, WRITE_HOLD_PENDING_LINE } from '@bananapus/nana-sdk-core/review'
+import { checkedItLabel, HELD_EXIT_LABEL, SAVED_ATTEMPT_CHECK_LINE, WRITE_HOLD_PENDING_LINE, NETWORK_ERROR_LINE } from '@bananapus/nana-sdk-core/review'
 import { holds } from '@/lib/write-holds'
 import { TransactionReviewCancelledError } from '@/lib/transaction-review'
 import { holdIntent } from '@/lib/sticky-hold-intent'
@@ -533,7 +533,7 @@ describe('reviewed durable bridge workflow', () => {
     savePendingBridgeWrite(OWNER, { owner: OWNER, request: storeBridgeWrite(queuedRequest()), hash: HASH })
     mocks.receiver.mockRejectedValue(new Error('RPC unavailable')); await render()
     expect(text()).toContain('Executed transaction hash')
-    expect(text()).toContain('RPC unavailable')
+    expect(text()).toContain(NETWORK_ERROR_LINE)
     expect(button('Review transfer').disabled).toBe(true)
   })
   it('never opens the wallet if durable intent storage fails', async () => {
@@ -589,7 +589,7 @@ describe('reviewed durable bridge workflow', () => {
     mocks.verifyWrite.mockRejectedValue(new Error('The failed transaction is not finalized'))
     await render(); await press('Check transaction')
     expect(readPendingBridgeWrite(OWNER)?.hash).toBe(HASH)
-    expect(text()).toContain('not finalized')
+    expect(text()).toContain(NETWORK_ERROR_LINE)
   })
   it('monitors collector leaves at a fixed reward group without preparing another wallet transfer', async () => {
     mocks.movements.mockResolvedValue([movement('claimed')])
@@ -642,7 +642,7 @@ describe('reviewed durable bridge workflow', () => {
     await render(INFO, { groupId: 0n })
     expect(mocks.movements.mock.calls.map(([route]) => route.sourceSucker)).toEqual([broken.sourceSucker, ROUTE.sourceSucker])
     expect(text()).toContain('Arrived. Ready to claim')
-    expect(text()).toContain('Old route unavailable')
+    expect(text()).toContain(NETWORK_ERROR_LINE)
   })
 
   it('hides the previous pool’s arrivals immediately when a new home-pool read stalls', async () => {

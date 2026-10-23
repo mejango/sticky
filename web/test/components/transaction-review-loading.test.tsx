@@ -4,6 +4,7 @@ import { act, createElement, useEffect } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TransactionReviewDialogProps } from '@/components/TransactionReviewProvider'
+import { promptReview } from '../support/review-prompt'
 
 vi.mock('wagmi', () => ({ useAccount: () => ({ address: undefined }) }))
 
@@ -25,7 +26,7 @@ function ControlledDialog({ pending, onFinish }: TransactionReviewDialogProps) {
     return () => { unmounted(pending.id) }
   }, [pending, onFinish])
   return createElement('div', { 'data-loaded-review': pending.id },
-    createElement('p', null, pending.kind === 'review' ? (pending.request?.title ?? pending.model?.title) : 'Funding choice'),
+    createElement('p', null, pending.kind === 'review' ? pending.model.title : 'Funding choice'),
     createElement('button', { onClick: () => onFinish(pending.kind === 'review' ? true : 8453) },
       pending.kind === 'review' ? 'Approve review' : 'Choose Base'),
     createElement('button', { onClick: () => onFinish(null) }, 'Cancel loaded review'),
@@ -60,7 +61,7 @@ afterEach(async () => {
 })
 
 function requestReview(title: string) {
-  return api.requireTransactionReview({ title,
+  return promptReview({ title,
     calls: [{ chainId: 1, to: '0x1111111111111111111111111111111111111111', data: '0x' }],
   })
 }
@@ -83,6 +84,20 @@ async function completeDownload() {
 }
 
 describe('lazy transaction review lifecycle', () => {
+  it('downloads the review on the first press anywhere, so the first review opens without a second download', async () => {
+    expect(download).not.toHaveBeenCalled()
+    await act(async () => { document.body.dispatchEvent(new Event('pointerdown', { bubbles: true })) })
+    expect(download).toHaveBeenCalledTimes(1)
+    await completeDownload()
+    let review!: Promise<unknown>
+    await act(async () => { review = requestReview('First review').catch(error => error) })
+    await act(async () => { await vi.dynamicImportSettled() })
+    expect(container.querySelector('[data-loaded-review]')).not.toBeNull()
+    expect(download).toHaveBeenCalledTimes(1)
+    await act(async () => button('Cancel loaded review').click())
+    await review
+  })
+
   it('registers synchronously and offers only cancellation while the decoder is downloading', async () => {
     expect(download).not.toHaveBeenCalled()
     expect(container.textContent).toContain('Application content')
@@ -129,7 +144,7 @@ describe('lazy transaction review lifecycle', () => {
     expect(lastApproved).not.toHaveBeenCalled()
     await act(async () => { await vi.dynamicImportSettled() })
     expect(container.textContent).toContain('Funding choice')
-    expect(mounted.mock.calls.every(([pending]) => pending.kind !== 'review' || pending.request.title !== 'Canceled review')).toBe(true)
+    expect(mounted.mock.calls.every(([pending]) => pending.kind !== 'review' || pending.model.title !== 'Canceled review')).toBe(true)
     await act(async () => button('Choose Base').click())
     await expect(funding).resolves.toBe(8453)
     expect(container.textContent).toContain('Last review')
@@ -186,7 +201,7 @@ describe('lazy transaction review lifecycle', () => {
   })
 
   it('ignores an old dialog completion callback after the queue advances', async () => {
-    let first!: Promise<void>
+    let first!: Promise<unknown>
     let second!: Promise<unknown>
     const secondApproved = vi.fn()
     await act(async () => {
