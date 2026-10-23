@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from 'react'
 import { erc20Abi, formatUnits, type Address } from 'viem'
 import { Refusal, refusalOf } from '@/components/project/flows/refusal'
 import { reviewGate } from '@/components/project/flows/review-gate'
-import { TxConfirmDialog, type TxConfirmRow } from '@/components/ui/TxConfirmDialog'
+import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { useSafeTx, type TxRequest } from '@/hooks/useSafeTx'
@@ -14,6 +14,7 @@ import { useStepPresses } from '@/hooks/useStepPresses'
 import { useWallet } from '@/hooks/useWallet'
 import { asked } from '@/lib/hook-logs'
 import { preflight } from '@/lib/preflight'
+import type { TransactionReviewRow } from '@/lib/transaction-review'
 import { stickyDistributorAbi, stickyHookAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import { stakedRewardGroups } from '@/lib/sticky-autostick'
@@ -125,7 +126,7 @@ async function planClaimAndStick(
 }
 
 /** The review's rows, every figure exact. */
-function rowsOf(plan: Plan, info: StickyProjectInfo, card: RewardCard): TxConfirmRow[] {
+function rowsOf(plan: Plan, info: StickyProjectInfo, card: RewardCard): TransactionReviewRow[] {
   const on = { label: 'On', value: chainName(info.chainId) }
   if (plan.kind === 'stick') {
     return [
@@ -147,12 +148,9 @@ function rowsOf(plan: Plan, info: StickyProjectInfo, card: RewardCard): TxConfir
   ]
 }
 
-/** What the button that sends a step says. */
-function actionOf(step: TxRequest | undefined, plan: Plan): string {
-  if (plan.kind === 'collect') return plan.collectable > 0n ? 'Confirm & collect' : 'Confirm & start vesting'
-  if (step?.functionName === 'approve') return 'Confirm & approve'
-  if (step?.functionName === 'setTrustedSenderFor') return 'Confirm & trust'
-  return 'Confirm & stick'
+/** What the claim is called, in its review and while it is sent. */
+function titleOf(plan: Plan | null, symbol: string): string {
+  return plan?.kind === 'stick' ? `Claim & stick ${symbol} rewards` : `Claim ${symbol} rewards`
 }
 
 /**
@@ -163,8 +161,9 @@ function actionOf(step: TxRequest | undefined, plan: Plan): string {
  *
  * A review reads the pot, or the staked token's rewards across `groups` and the adapter's standing, and refuses a claim
  * of nothing before it opens. Claim & stick lists an approval of the claim to the adapter when the allowance does not
- * cover it, a trust of the adapter when neither the holder nor the project lets it stick, and the claim; each step is
- * sent on its own press, from the account that reviewed it, and the claim is read again before each. A wallet that
+ * cover it, a trust of the adapter when neither the holder nor the project lets it stick, and the claim; every step is
+ * shown in one decoded review and then sent as the one before confirms, from the account that reviewed it, and the
+ * claim is read again before each. A wallet that
  * cannot send, Signa or View as, is refused when a review starts, under the buttons.
  */
 export function ClaimFlow({
@@ -221,7 +220,10 @@ export function ClaimFlow({
     try {
       const next =
         kind === 'stick' ? await planClaimAndStick(info, groups, account, signal) : await planCollect(info, card, account, signal)
-      if (!signal.aborted) setPlan(next)
+      if (!signal.aborted) {
+        setPlan(next)
+        presses.arm()
+      }
     } catch (reason) {
       if (signal.aborted) return
       const told = refusalOf(reason)
@@ -249,17 +251,30 @@ export function ClaimFlow({
   async function confirm() {
     if (!plan || sending) return
     // Every step is sent as the account that reviewed the claim, and the engine refuses it while another is connected.
-    await presses.press(plan.steps, (step, confirmedAt) =>
-      tx.send(step, { reviewedAccount: plan.account, simulationBlockNumber: confirmedAt, reverify: () => verify(plan) }),
+    const symbol = plan.kind === 'stick' ? info.symbol : card.meta.symbol
+    const outcome = await presses.press(
+      plan.steps,
+      (step, confirmedAt, reviewed) =>
+        tx.send(step, { reviewedAccount: plan.account, reviewed, simulationBlockNumber: confirmedAt, reverify: () => verify(plan) }),
+      { account: plan.account, title: titleOf(plan, symbol), rows: rowsOf(plan, info, card) },
     )
+    if (outcome === 'cancelled') close()
   }
 
   function close() {
     reading.current?.abort()
+    // Closed at once: a step already due for this action is not sent.
+    presses.restart()
     setPlan(null)
     setPreparing(false)
     if (tx.phase !== 'success') tx.dismiss()
   }
+
+  // The claim's one decoded review opens once it is planned, and each step it showed is sent as the one before confirms.
+  useEffect(() => {
+    if (presses.due && plan && !sending) void confirm()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presses.due, plan, sending])
 
   useEffect(() => {
     setFailure(current => (current?.account === null ? null : current))
@@ -319,12 +334,12 @@ export function ClaimFlow({
           open
           preparing={!plan}
           onClose={close}
-          title={complete ? doneTitle : plan?.kind === 'stick' ? `Claim & stick ${symbol} rewards` : `Claim ${symbol} rewards`}
+          title={complete ? doneTitle : titleOf(plan, symbol)}
           rows={plan ? rowsOf(plan, info, card) : undefined}
           steps={plan ? plan.steps.map((step, at) => ({ key: String(at), title: step.label ?? step.functionName })) : []}
           activeIndex={plan ? landed : -1}
           stepsIntro={plan ? stepsIntro(plan.steps.length, landed) : undefined}
-          action={confirmAction(tx.phase, tx.phase === 'error' ? 'Retry' : plan ? actionOf(plan.steps[landed], plan) : 'Confirm')}
+          action={confirmAction(tx.phase, tx.phase === 'error' ? 'Retry' : 'Review again')}
           cancelLabel={landed > 0 ? 'Close' : 'Cancel'}
           onConfirm={() => void confirm()}
           busy={sending}

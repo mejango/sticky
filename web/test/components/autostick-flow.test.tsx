@@ -76,6 +76,7 @@ type EngineState = {
   safeProposalHash: null
   safeNonceGuidance: null
   send: ReturnType<typeof vi.fn>
+  review: ReturnType<typeof vi.fn>
   reset: ReturnType<typeof vi.fn<() => void>>
   dismiss: ReturnType<typeof vi.fn>
 }
@@ -131,6 +132,8 @@ const engine = (): EngineState => {
       state.receipt = null
       return HASH
     }),
+    // The change's one decoded review: what it returns is the proof each step is sent with.
+    review: vi.fn(async () => ({})),
     dismiss: vi.fn(() => state.reset()),
     reset: vi.fn(() => {
       state.phase = 'idle'
@@ -229,7 +232,6 @@ const pressed = (within: ParentNode | null) =>
 const errorText = () => document.querySelector('p.wrap-anywhere')?.textContent ?? null
 const steps = () =>
   [...(confirm()?.querySelectorAll('ol li') ?? [])].map(item => item.textContent!.replace(/^(?:\d+|✓)Step \d+ of \d+: /, ''))
-const primary = () => confirm()!.querySelector<HTMLButtonElement>('footer button.btn-primary')!
 const rowsOf = () =>
   Object.fromEntries(
     [...confirm()!.querySelectorAll('.grid > span')].reduce<string[][]>((pairs, cell, at) => {
@@ -254,13 +256,16 @@ async function confirmed(block: bigint) {
   mocks.tx.receipt = { blockNumber: block }
   await rerender()
 }
-/** Sends every step of the open review, each confirmed in a block of its own. */
+/** Confirms every step of the open review, each in a block of its own: the one decoded review showed them all, and each
+ * is sent, without asking again, once the one before it confirms. */
 async function sendAll() {
-  for (let block = 10n; confirm() && !confirm()!.textContent!.includes('All transactions confirmed.'); block += 1n) {
-    await act(async () => primary().click())
-    await settled()
-    await confirmed(block)
-  }
+  for (let block = 10n; confirm() && !confirm()!.textContent!.includes('All transactions confirmed.'); block += 1n) await confirmed(block)
+  const proof = await mocks.tx.review.mock.results[0].value
+  expect(mocks.tx.review).toHaveBeenCalledExactlyOnceWith(
+    mocks.tx.send.mock.calls.map(([request]) => request),
+    expect.objectContaining({ account: ALICE, title: expect.any(String), rows: expect.any(Array) }),
+  )
+  expect(mocks.tx.send.mock.calls.every(([, options]) => options.reviewed === proof)).toBe(true)
 }
 
 describe('the actions', () => {
@@ -327,7 +332,6 @@ describe('turning it on', () => {
       'Turn on auto-stick',
     ])
     expect(rowsOf()).toMatchObject({ 'Auto-stick when': 'at least 2.5 ART is ready', 'At most': 'once every 30d 0h', Allowance: 'Unlimited' })
-    expect(primary().textContent).toBe('Confirm & approve')
     await sendAll()
     expect(calls()).toEqual([
       [ART, 'approve', [ADAPTER, maxUint256]],
@@ -355,7 +359,6 @@ describe('turning it on', () => {
       'Turn on auto-stick',
     ])
     expect(rowsOf().Allowance).toBe('50 ART')
-    expect(primary().textContent).toBe('Confirm & turn off')
     await sendAll()
     expect(calls()).toEqual([
       [ADAPTER, 'setConfigFor', [12n, false, 1_000_000n, WEEK]],
@@ -450,7 +453,6 @@ describe('the other actions', () => {
       'Stop the auto-stick contract from sticking ART for you',
       "Remove the auto-stick contract's ART allowance",
     ])
-    expect(primary().textContent).toBe('Confirm & turn off')
     await sendAll()
     expect(calls()).toEqual([
       [ADAPTER, 'setConfigFor', [12n, false, 1_000_000n, WEEK]],
@@ -472,7 +474,6 @@ describe('the other actions', () => {
     await render(on({ status: AS_STATUS.NOT_TRUSTED, personallyTrusted: false }))
     await press(card(), 'Repair permission')
     expect(steps()).toEqual(['Allow the auto-stick contract to stick ART for you'])
-    expect(primary().textContent).toBe('Confirm & trust')
     await sendAll()
     expect(calls()).toEqual([[HOOK, 'setTrustedSenderFor', [12n, ADAPTER, true]]])
     expect(confirm()!.textContent).toContain('Auto-stick permission restored')
@@ -556,6 +557,7 @@ describe('the other actions', () => {
     invalidate.mockClear()
     await act(async () => root.unmount())
     root = createRoot(host)
+    mocks.tx = engine()
     await render(on())
     await press(card(), 'Stick ready rewards now')
     await sendAll()
@@ -566,8 +568,11 @@ describe('the other actions', () => {
     const invalidate = vi.spyOn(client, 'invalidateQueries')
     await render(on({ allowance: 9n }))
     await press(card(), 'Turn off auto-stick')
-    await act(async () => primary().click())
-    await settled()
+    // The first step goes through; the wallet turns down the second, and the review is closed there.
+    mocks.tx.send.mockImplementationOnce(async () => {
+      Object.assign(mocks.tx, { phase: 'error', busy: false, error: 'Transaction cancelled.' })
+      return null
+    })
     await confirmed(10n)
     expect(invalidate).not.toHaveBeenCalled()
     await press(confirm(), 'Close')
@@ -597,7 +602,6 @@ describe('leftover permissions', () => {
     expect(mocks.read).toHaveBeenCalledWith(CHAIN, 12n, ALICE, expect.objectContaining({ info: INFO, groups: [0n, 4000n, 4008n] }))
     expect(steps()).toEqual(['Stop the auto-stick contract from sticking ART for you', "Remove the auto-stick contract's ART allowance"])
     expect(rowsOf().Effect).toBe('The auto-stick contract can no longer stick for you or move your ART.')
-    expect(primary().textContent).toBe('Confirm & remove permission')
     await sendAll()
     expect(calls()).toEqual([
       [HOOK, 'setTrustedSenderFor', [12n, ADAPTER, false]],
@@ -612,10 +616,10 @@ describe('leftover permissions', () => {
     await press(card(), 'Remove leftover permissions')
     expect(steps()).toEqual(["Remove the auto-stick contract's ART allowance"])
     expect(rowsOf().Effect).toBe('The auto-stick contract can no longer move your ART.')
-    expect(primary().textContent).toBe('Confirm & remove allowance')
 
     await act(async () => root.unmount())
     root = createRoot(host)
+    mocks.tx = engine()
     await render(off({ personallyTrusted: true }))
     await press(card(), 'Remove leftover permissions')
     expect(rowsOf().Effect).toBe('The auto-stick contract can no longer stick for you.')
@@ -648,11 +652,6 @@ describe('leftover permissions', () => {
 
 describe('a step, read again before it is sent', () => {
   const CHANGED = 'Auto-stick changed since this review. Review it again.'
-  /** Presses the open review's next step, as the engine takes it. */
-  const pressNext = async () => {
-    await act(async () => primary().click())
-    await settled()
-  }
   /** What auto-stick rests on now, as the read before a step finds it. */
   const reads = (state: { enabled: boolean; personallyTrusted: boolean; allowance: bigint }) =>
     mocks.standing.mockResolvedValue(state)
@@ -666,7 +665,6 @@ describe('a step, read again before it is sent', () => {
       'Allow the auto-stick contract to stick ART for you',
       'Turn on auto-stick',
     ])
-    await pressNext()
     // Nothing has changed: the approval goes on.
     await expect(reverify(0)).resolves.toBeUndefined()
     expect(mocks.standing).toHaveBeenLastCalledWith(CHAIN, 12n, ALICE, { stakedToken: ART, block: undefined })
@@ -677,7 +675,6 @@ describe('a step, read again before it is sent', () => {
     // The approval confirms in block 10, and the trust step reads where it landed. The allowance after the plan's own
     // approval is not compared: a token may store less than it was asked to.
     await confirmed(10n)
-    await pressNext()
     reads({ ...standing(off()), allowance: 0n })
     await expect(reverify(1)).resolves.toBeUndefined()
     expect(mocks.standing).toHaveBeenLastCalledWith(CHAIN, 12n, ALICE, { stakedToken: ART, block: 10n })
@@ -691,15 +688,12 @@ describe('a step, read again before it is sent', () => {
     await render(off())
     await press(card(), 'Turn on auto-stick')
     await press(modal(), 'Turn on auto-stick')
-    await pressNext()
     await expect(reverify(0)).resolves.toBeUndefined()
     await confirmed(10n)
     reads({ enabled: false, personallyTrusted: false, allowance: CLAMPED })
-    await pressNext()
     await expect(reverify(1)).resolves.toBeUndefined()
     await confirmed(11n)
     reads({ enabled: false, personallyTrusted: true, allowance: CLAMPED })
-    await pressNext()
     await expect(reverify(2)).resolves.toBeUndefined()
     await confirmed(12n)
     expect(confirm()!.textContent).toContain('All transactions confirmed.')
@@ -711,12 +705,10 @@ describe('a step, read again before it is sent', () => {
     await press(card(), 'Turn on auto-stick')
     await press(modal(), 'Turn on auto-stick')
     for (const [at, block] of [[0, 10n], [1, 11n]] as const) {
-      await pressNext()
       reads({ enabled: false, personallyTrusted: false, allowance: maxUint256 })
       await expect(reverify(at)).resolves.toBeUndefined()
       await confirmed(block)
     }
-    await pressNext()
     // The trust step went through: the turn-on expects the adapter trusted, and stops when it is not (taken back elsewhere).
     reads({ enabled: false, personallyTrusted: true, allowance: maxUint256 })
     await expect(reverify(2)).resolves.toBeUndefined()
@@ -729,11 +721,9 @@ describe('a step, read again before it is sent', () => {
     const left = off({ personallyTrusted: true, allowance: 5_000_000n })
     await render(left)
     await press(card(), 'Remove leftover permissions')
-    await pressNext()
     reads(standing(left))
     await expect(reverify(0)).resolves.toBeUndefined()
     await confirmed(10n)
-    await pressNext()
     // The untrust went through: the allowance's removal expects the adapter untrusted.
     reads({ ...standing(left), personallyTrusted: false })
     await expect(reverify(1)).resolves.toBeUndefined()
@@ -749,11 +739,9 @@ describe('a step, read again before it is sent', () => {
     await type('Allowance cap (ART)', '50')
     await press(modal(), 'Turn on auto-stick')
     expect(steps()).toEqual(['Turn off auto-stick', 'Allow the auto-stick contract to move eligible ART rewards', 'Turn on auto-stick'])
-    await pressNext()
     reads(standing(short))
     await expect(reverify(0)).resolves.toBeUndefined()
     await confirmed(10n)
-    await pressNext()
     reads({ ...standing(short), enabled: false })
     await expect(reverify(1)).resolves.toBeUndefined()
     // Turned on again elsewhere after this review turned it off: the new allowance would serve settings it never showed.
@@ -766,7 +754,6 @@ describe('a step, read again before it is sent', () => {
     await render(kept)
     await press(card(), 'Settings')
     await press(modal(), 'Save settings')
-    await pressNext()
     reads({ ...standing(kept), allowance: 49_000_000n })
     await expect(reverify(0)).resolves.toBeUndefined()
     reads({ ...standing(kept), enabled: false })
@@ -777,7 +764,6 @@ describe('a step, read again before it is sent', () => {
     mocks.tx = engine()
     await render(kept)
     await press(card(), 'Start unlocking')
-    await pressNext()
     reads({ ...standing(kept), allowance: 0n })
     await expect(reverify(0)).resolves.toBeUndefined()
     reads({ ...standing(kept), enabled: false })
@@ -789,7 +775,6 @@ describe('a step, read again before it is sent', () => {
     const ready = on({ allowance: 600n })
     await render(ready)
     await press(card(), 'Stick ready rewards now')
-    await pressNext()
     reads({ ...standing(ready), allowance: 500n })
     await expect(reverify(0)).resolves.toBeUndefined()
     reads({ ...standing(ready), allowance: 499n })
@@ -802,7 +787,6 @@ describe('a step, read again before it is sent', () => {
     const left = off({ personallyTrusted: true, allowance: 5_000_000n })
     await render(left)
     await press(card(), 'Remove leftover permissions')
-    await pressNext()
     await expect(reverify(0)).resolves.toBeUndefined()
     // Turned back on elsewhere, auto-stick still uses the trust and the allowance this would take away.
     reads({ ...standing(left), enabled: true })
@@ -812,7 +796,6 @@ describe('a step, read again before it is sent', () => {
   it('stops a step whose auto-stick cannot be read, says why, and tells the console', async () => {
     await render(on())
     await press(card(), 'Turn off auto-stick')
-    await pressNext()
     const cause = new Error('429')
     mocks.standing.mockRejectedValue(new Error('your auto-stick could not be read.', { cause }))
     await expect(reverify(0)).rejects.toThrow('Your auto-stick could not be read.')
@@ -845,10 +828,12 @@ describe('a wallet that cannot send', () => {
 
   it('names the account that reviewed the change on every step, whichever account is connected by then', async () => {
     await render(on())
+    let approve = () => {}
+    mocks.tx.review.mockImplementationOnce(() => new Promise(resolve => (approve = () => resolve({}))))
     await press(card(), 'Turn off auto-stick')
     mocks.wallet = { ...mocks.wallet, address: CAROL }
     await rerender()
-    await act(async () => primary().click())
+    await act(async () => approve())
     await settled()
     expect(sent(0)[1].reviewedAccount).toBe(ALICE)
   })

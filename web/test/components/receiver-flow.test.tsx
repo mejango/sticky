@@ -8,6 +8,7 @@ import { erc20Abi, getAddress, type Abi, type Address, type Hex } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stickyRewardReceiverFactoryAbi } from '@/lib/sticky-abis'
 import { stickyDeployment } from '@/lib/sticky-addresses'
+import { TransactionReviewCancelledError } from '@/lib/transaction-review'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 import { EXTERNAL_WALLET_REQUIRED, WalletAuthContext } from '@/providers/WalletAuthContext'
 import { stickyInfo } from '../home-fixtures'
@@ -41,6 +42,7 @@ type EngineState = {
   safeProposalHash: null
   safeNonceGuidance: null
   send: ReturnType<typeof vi.fn>
+  review: ReturnType<typeof vi.fn>
   reset: ReturnType<typeof vi.fn<() => void>>
   dismiss: ReturnType<typeof vi.fn>
 }
@@ -87,6 +89,8 @@ const engine = (): EngineState => {
       state.receipt = null
       return HASH
     }),
+    // The step's one decoded review: what it returns is the proof the step is sent with.
+    review: vi.fn(async () => ({})),
     dismiss: vi.fn(() => state.reset()),
     reset: vi.fn(() => {
       state.phase = 'idle'
@@ -273,18 +277,25 @@ describe('creating it', () => {
     expect(steps()).toEqual(['Create reward address'])
     expect(rowsOf()).toEqual({ Who: 'Staked 4+ weeks', 'Reward address': RECEIVER, On: 'Base Sepolia' })
 
-    await press(confirm(), 'Confirm & create')
     const [request, options] = sent(0)
     expect(request).toBe(tried)
     expect(request).toMatchObject({ abi: stickyRewardReceiverFactoryAbi, functionName: 'deployReceiverFor', args: [INFO.stToken, 4000n] })
-    expect(options.reviewedAccount).toBe(ALICE)
+    expect(options).toMatchObject({ reviewedAccount: ALICE, reviewed: await mocks.tx.review.mock.results[0].value })
+    expect(mocks.tx.review).toHaveBeenCalledExactlyOnceWith([tried], {
+      account: ALICE,
+      title: 'Create reward address',
+      rows: [
+        { label: 'Who', value: 'Staked 4+ weeks' },
+        expect.objectContaining({ label: 'Reward address', value: RECEIVER }),
+        { label: 'On', value: 'Base Sepolia' },
+      ],
+    })
   })
 
   it('says it is created, links it, and reads the reward address again', async () => {
     const invalidate = vi.spyOn(client, 'invalidateQueries')
     await open()
     await press(panel(), 'Create onchain')
-    await press(confirm(), 'Confirm & create')
     await confirmed()
     expect(confirm()!.textContent).toContain('Reward address created')
     expect(invalidate.mock.calls.map(([filters]) => filters!.queryKey as QueryKey)).toEqual([['sticky-project', CHAIN, PROJECT, 'receiver']])
@@ -334,7 +345,6 @@ describe('settling it', () => {
     })
     expect(mocks.preflight.mock.calls[0][0]).toMatchObject({ functionName: 'settleFor', args: [INFO.stToken, 0n, USDC] })
 
-    await press(confirm(), 'Confirm & settle')
     expect(sent(0)[0]).toMatchObject({ address: FACTORY, functionName: 'settleFor', args: [INFO.stToken, 0n, USDC] })
     expect(sent(0)[1].reviewedAccount).toBe(ALICE)
     invalidate.mockClear()
@@ -422,8 +432,8 @@ describe('the panel', () => {
 
   it('closes a review on Cancel with nothing sent, and reads the address again on Try again after a failed read', async () => {
     await open()
+    mocks.tx.review.mockRejectedValueOnce(new TransactionReviewCancelledError())
     await press(panel(), 'Create onchain')
-    await press(confirm(), 'Cancel')
     expect(confirm()).toBeNull()
     expect(mocks.tx.send).not.toHaveBeenCalled()
 
@@ -466,10 +476,13 @@ describe('a wallet that cannot send', () => {
 
   it('names the account that reviewed it on its step, whichever account is connected by then', async () => {
     await open()
+    let approve = () => {}
+    mocks.tx.review.mockImplementationOnce(() => new Promise(resolve => (approve = () => resolve({}))))
     await press(panel(), 'Create onchain')
     mocks.wallet = { ...mocks.wallet, address: CAROL }
     await render()
-    await press(confirm(), 'Confirm & create')
+    await act(async () => approve())
+    await settled()
     expect(sent(0)[1].reviewedAccount).toBe(ALICE)
   })
 })

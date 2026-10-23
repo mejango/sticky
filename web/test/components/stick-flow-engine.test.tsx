@@ -8,12 +8,13 @@ import { encodeFunctionData, getAddress, toHex, UserRejectedRequestError, type A
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { REVIEWED_ACCOUNT_CHANGED } from '@/lib/contract-write'
 import { stickyDeployment } from '@/lib/sticky-addresses'
+import { TransactionReviewCancelledError } from '@/lib/transaction-review'
 import { TOKEN, stickyInfo } from '../home-fixtures'
 
 // The stick flow on the real transaction engine: `useSafeTx` runs as it does in the app, and only wagmi, the wallet, the
-// reads and the engine's own review are mocks. stick-flow.test.tsx mocks the engine, so it cannot see what the flow does
-// with the engine's real phases and its lock: a double click, a step that fails or is cancelled, and a click made after
-// React has committed a confirmation and before the effects that let the engine go of it have run.
+// reads and the engine's own reviews are mocks. stick-flow.test.tsx mocks the engine, so it cannot see what the flow does
+// with the engine's real phases and its lock: the one review of the whole stick, a step that fails or is refused, an
+// account that changes, and the stick sent on its own once the approval confirms, as a browser schedules it.
 
 const CHAIN = 84532
 const PROJECT = 23
@@ -31,6 +32,8 @@ const mocks = vi.hoisted(() => ({
   publicClient: { getBlockNumber: vi.fn(async () => 100n), getTransactionCount: vi.fn(async () => 7), simulateContract: vi.fn(), estimateContractGas: vi.fn(), getChainId: vi.fn(), getTransaction: vi.fn(), getTransactionReceipt: vi.fn(), getBlock: vi.fn() },
   getAccount: vi.fn(),
   requestReview: vi.fn(),
+  /** The action's one decoded review of every step. */
+  requireReview: vi.fn(),
   switchChain: vi.fn(),
   writeContract: vi.fn(),
   /** The receipts the chain has, by lowercase hash. */
@@ -58,6 +61,7 @@ vi.mock('@/hooks/useWallet', () => ({ useWallet: () => mocks.wallet }))
 vi.mock('@/lib/transaction-review', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/transaction-review')>()),
   requestContractTransactionReview: mocks.requestReview,
+  requireTransactionReview: mocks.requireReview,
 }))
 vi.mock('@/providers/Providers', () => ({ wagmiConfig: {} }))
 vi.mock('@/lib/safe-connector', async importOriginal => ({
@@ -101,7 +105,8 @@ beforeEach(() => {
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   mocks.wallet = { isConnected: true, address: ALICE, isCenterWallet: false, openSignIn: vi.fn() }
   mocks.getAccount.mockImplementation(() => ({ address: ALICE, chainId: CHAIN }))
-  mocks.requestReview.mockResolvedValue(true)
+  mocks.requestReview.mockReset().mockResolvedValue(true)
+  mocks.requireReview.mockReset().mockResolvedValue(undefined)
   mocks.switchChain.mockResolvedValue(undefined)
   mocks.publicClient.simulateContract.mockImplementation(async (request: { address: string; functionName: string; account: string }) => ({
     request: { ...request },
@@ -196,8 +201,9 @@ const typeInto = (label: string, value: string) => {
   })
 }
 
-/** An amount typed, the review opened, and its plan listed. With `gift`, the recipient is FRIEND. */
+/** An amount typed, Stick pressed, and the plan listed, its one review opened. With `gift`, the recipient is FRIEND. */
 async function openReview() {
+  const reviews = mocks.requireReview.mock.calls.length
   if (acting) await act(async () => root.render(tree()))
   else root.render(tree())
   await until(() => host.querySelector('input'), 'the Stick card')
@@ -206,8 +212,11 @@ async function openReview() {
   const label = gift ? 'Review stick' : 'Stick'
   await until(() => flowButton(label) && !flowButton(label).disabled, 'the Stick button to open')
   await inAct(() => flowButton(label).click())
-  await until(() => confirmButton() && !confirmButton()!.disabled, 'the review to list its steps')
+  await until(() => stepStates().length > 0 && mocks.requireReview.mock.calls.length > reviews, 'the review to list its steps')
 }
+/** The calls review `at` showed, as the account that reviewed them. */
+const reviewed = (at = 0) =>
+  (mocks.requireReview.mock.calls[at][0] as { calls: { functionName: string; from: Address }[] }).calls.map(call => [call.functionName, call.from])
 /** The chain has mined `hash` in `block`, and the flow renders again. */
 async function mined(hash: Hex, block: bigint) {
   const request = mocks.writeContract.mock.calls.find(([request]) => request.functionName === (hash === APPROVAL ? 'approve' : 'pay'))?.[0]
@@ -229,30 +238,22 @@ async function mined(hash: Hex, block: bigint) {
 }
 
 describe('the stick flow on the real engine', () => {
-  it('wallet-action:approve-the-staked-token-for-a-stick wallet-action:stick sends one wallet call for a double click, and never sends a step again once it has landed', async () => {
+  it('wallet-action:approve-the-staked-token-for-a-stick wallet-action:stick shows the whole stick in one review, sends each step once as the one before confirms, and never asks again', async () => {
     mocks.writeContract.mockResolvedValueOnce(APPROVAL).mockResolvedValueOnce(STICK)
     await openReview()
-    expect(confirmButton()!.textContent).toBe('Confirm & approve')
-
-    // Two clicks in one task: the second meets the engine's lock.
-    await act(async () => {
-      confirmButton()!.click()
-      confirmButton()!.click()
+    await until(() => mocks.writeContract.mock.calls.length === 1, 'the approval to be sent')
+    expect(reviewed()).toEqual([['approve', ALICE], ['pay', ALICE]])
+    expect(mocks.requireReview.mock.calls[0][0]).toMatchObject({
+      title: 'Stick',
+      rows: expect.arrayContaining([{ label: 'Stick', value: '5 CPN', strong: true }]),
     })
-    await until(() => confirmButton()?.disabled && mocks.writeContract.mock.calls.length > 0, 'the approval to be sent')
+    // A press while a step is out sends nothing more.
+    await act(async () => confirmButton()!.click())
     expect(mocks.writeContract).toHaveBeenCalledTimes(1)
-    expect(mocks.requestReview).toHaveBeenCalledTimes(1)
 
     await mined(APPROVAL, 4_001n)
-    await until(() => confirmButton()?.textContent === 'Confirm & stick', 'the approval to be counted')
-    expect(stepStates()).toEqual(['complete', 'active'])
-    expect(confirmButton()!.disabled).toBe(false)
-
-    await act(async () => {
-      confirmButton()!.click()
-      confirmButton()!.click()
-    })
     await until(() => mocks.writeContract.mock.calls.length === 2, 'the stick to be sent')
+    expect(stepStates()).toEqual(['complete', 'active'])
     expect(writes()).toEqual(['approve', 'pay'])
     // The stick is simulated at the block of the approval, not at a head that may not have it.
     const [, stickSimulation] = mocks.publicClient.simulateContract.mock.calls
@@ -261,20 +262,19 @@ describe('the stick flow on the real engine', () => {
     await mined(STICK, 4_005n)
     await until(() => title() === 'Stick confirmed', 'the stick to be counted')
     expect(mocks.writeContract).toHaveBeenCalledTimes(2)
+    // One confirmation for the whole stick: no step opened a review of its own.
+    expect(mocks.requireReview).toHaveBeenCalledOnce()
+    expect(mocks.requestReview).not.toHaveBeenCalled()
   })
 
-  it('retries a stick whose simulation failed on its own, never with the approval that landed', async () => {
+  it('reviews only the stick again for a Retry after its simulation failed, never the approval that landed', async () => {
     mocks.writeContract.mockResolvedValueOnce(APPROVAL).mockResolvedValueOnce(STICK)
     await openReview()
-    await act(async () => confirmButton()!.click())
-    await until(() => confirmButton()?.disabled && mocks.writeContract.mock.calls.length > 0, 'the approval to be sent')
-    await mined(APPROVAL, 4_001n)
-    await until(() => confirmButton()?.textContent === 'Confirm & stick', 'the approval to be counted')
-
+    await until(() => mocks.writeContract.mock.calls.length === 1, 'the approval to be sent')
     mocks.publicClient.simulateContract.mockImplementationOnce(async () => {
       throw new Error('execution reverted: price moved')
     })
-    await act(async () => confirmButton()!.click())
+    await mined(APPROVAL, 4_001n)
     await until(() => confirmButton()?.textContent === 'Retry', 'the stick to fail')
     expect(dialog()!.textContent).toContain('price moved')
     expect(stepStates()).toEqual(['complete', 'active'])
@@ -283,26 +283,21 @@ describe('the stick flow on the real engine', () => {
     await act(async () => confirmButton()!.click())
     await until(() => mocks.writeContract.mock.calls.length === 2, 'the stick to be sent')
     expect(writes()).toEqual(['approve', 'pay'])
+    expect(mocks.requireReview).toHaveBeenCalledTimes(2)
+    expect(reviewed(1)).toEqual([['pay', ALICE]])
+    expect(mocks.requestReview).not.toHaveBeenCalled()
   })
 
-  it('keeps an approval counted when the exact review of the stick is cancelled, and sends the stick on the next click', async () => {
-    mocks.writeContract.mockResolvedValueOnce(APPROVAL).mockResolvedValueOnce(STICK)
-    await openReview()
-    await act(async () => confirmButton()!.click())
-    await until(() => confirmButton()?.disabled && mocks.writeContract.mock.calls.length > 0, 'the approval to be sent')
-    await mined(APPROVAL, 4_001n)
-    await until(() => confirmButton()?.textContent === 'Confirm & stick', 'the approval to be counted')
-
-    mocks.requestReview.mockResolvedValueOnce(false)
-    await act(async () => confirmButton()!.click())
-    await until(() => mocks.requestReview.mock.calls.length === 2 && confirmButton() && !confirmButton()!.disabled, 'the review to be cancelled')
-    expect(stepStates()).toEqual(['complete', 'active'])
-    expect(confirmButton()!.textContent).toBe('Confirm & stick')
-    expect(mocks.writeContract).toHaveBeenCalledTimes(1)
-
-    await act(async () => confirmButton()!.click())
-    await until(() => mocks.writeContract.mock.calls.length === 2, 'the stick to be sent')
-    expect(writes()).toEqual(['approve', 'pay'])
+  it('closes with nothing sent when its one review is cancelled', async () => {
+    mocks.requireReview.mockRejectedValueOnce(new TransactionReviewCancelledError())
+    await act(async () => root.render(tree()))
+    await until(() => host.querySelector('input'), 'the Stick card')
+    await typeInto('Amount of underlying tokens to stick', '5')
+    await until(() => flowButton('Stick') && !flowButton('Stick').disabled, 'the Stick button to open')
+    await act(async () => flowButton('Stick').click())
+    await until(() => mocks.requireReview.mock.calls.length === 1 && !dialog(), 'the review to be cancelled')
+    expect(mocks.requestReview).not.toHaveBeenCalled()
+    expect(mocks.writeContract).not.toHaveBeenCalled()
   })
 
   it("says so while the wallet's prompt is open, on the button and under the step, then waits for the chain", async () => {
@@ -310,9 +305,7 @@ describe('the stick flow on the real engine', () => {
     mocks.writeContract.mockReturnValueOnce(prompt.promise)
     await openReview()
     const statusLine = () => dialog()?.querySelector('p.text-bluebs-700')?.textContent ?? null
-    expect(statusLine()).toBeNull()
 
-    await act(async () => confirmButton()!.click())
     await until(() => mocks.writeContract.mock.calls.length === 1, 'the wallet to be asked')
     expect(statusLine()).toBe('Confirm in your wallet…')
     expect(confirmButton()!.textContent).toBe('Confirm in your wallet…')
@@ -323,22 +316,21 @@ describe('the stick flow on the real engine', () => {
     expect(confirmButton()!.textContent).toBe('Confirming…')
   })
 
-  it('sends the approval again, and only the approval, when the wallet refused it', async () => {
+  it('reviews and sends the approval again, and only the approval, when the wallet refused it', async () => {
     mocks.writeContract.mockRejectedValueOnce(new UserRejectedRequestError(new Error('User rejected the request.'))).mockResolvedValueOnce(APPROVAL)
     await openReview()
-    await act(async () => confirmButton()!.click())
     await until(() => confirmButton()?.textContent === 'Retry', 'the approval to be refused')
     expect(stepStates()).toEqual(['active', 'pending'])
 
     await act(async () => confirmButton()!.click())
     await until(() => mocks.writeContract.mock.calls.length === 2, 'the approval to be sent again')
     expect(writes()).toEqual(['approve', 'approve'])
+    expect(reviewed(1)).toEqual([['approve', ALICE], ['pay', ALICE]])
   })
 
   it('retains an ambiguous approval across dismissal and reopening without offering another wallet submission', async () => {
     mocks.writeContract.mockRejectedValueOnce(new Error('Connection lost after sending'))
     await openReview()
-    await act(async () => confirmButton()!.click())
     await until(() => confirmButton()?.textContent === 'Done', 'the unresolved approval to be held')
     expect(stepStates()).toEqual(['active', 'pending'])
     expect(dialog()!.textContent).toContain(writeHeldMessage())
@@ -347,7 +339,6 @@ describe('the stick flow on the real engine', () => {
     await act(async () => confirmButton()!.click())
     await until(() => !dialog(), 'the held review to close')
     await openReview()
-    await act(async () => confirmButton()!.click())
     await until(() => confirmButton()?.textContent === 'Done', 'the original unresolved approval to be restored')
     expect(writes()).toEqual(['approve'])
     expect(stepStates()).toEqual(['active', 'pending'])
@@ -363,28 +354,33 @@ describe('a stick for someone else on the real engine', () => {
     // The review asked the hook again whether the sender may stick for the recipient.
     expect(mocks.canStick).toHaveBeenLastCalledWith(CHAIN, BigInt(PROJECT), ALICE, FRIEND, expect.anything())
 
-    await act(async () => confirmButton()!.click())
     await until(() => mocks.writeContract.mock.calls.length === 1, 'the stick to be sent')
     const pay = { address: TERMINAL, functionName: 'pay', args: [BigInt(PROJECT), TOKEN, 5n * CPN, FRIEND, MINTED, '', '0x'] }
-    expect(mocks.requestReview).toHaveBeenCalledOnce()
-    expect(mocks.requestReview.mock.calls[0][0]).toMatchObject({ ...pay, account: ALICE })
+    expect(mocks.requireReview).toHaveBeenCalledOnce()
+    expect(mocks.requireReview.mock.calls[0][0]).toMatchObject({
+      title: 'Stick for someone else',
+      calls: [expect.objectContaining({ chainId: CHAIN, functionName: 'pay', args: pay.args, from: ALICE })],
+      rows: expect.arrayContaining([{ label: 'For', value: FRIEND, mono: true }]),
+    })
+    expect(mocks.requestReview).not.toHaveBeenCalled()
     expect(mocks.publicClient.simulateContract.mock.calls[0][0]).toMatchObject({ ...pay, account: ALICE })
     expect(writes()).toEqual(['pay'])
   })
 
   // The plan is the reviewing account's: its trust check and its quote were for that sender. The flow hands the engine
-  // that account with every step, and the engine refuses, before it opens a review, to send it from any other.
-  it('wallet-action:stick-for-someone-else sends nothing when the wallet switches accounts between the review and the confirm, and the dialog says why', async () => {
+  // that account with every step, and the engine refuses to send it from any other.
+  it('wallet-action:stick-for-someone-else sends nothing when the wallet switches accounts while the review is open, and the dialog says why', async () => {
     gift = true
     mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 5n * CPN })
+    const review = Promise.withResolvers<void>()
+    mocks.requireReview.mockReturnValueOnce(review.promise)
     await openReview()
 
     await switchTo(BOB)
-    await act(async () => confirmButton()!.click())
-    await pump()
+    await act(async () => review.resolve())
+    await until(() => confirmButton()?.textContent === 'Retry', 'the refusal')
 
     expect(dialog()!.textContent).toContain(REVIEWED_ACCOUNT_CHANGED)
-    expect(confirmButton()!.textContent).toBe('Retry')
     expect(mocks.requestReview).not.toHaveBeenCalled()
     expect(mocks.publicClient.simulateContract).not.toHaveBeenCalled()
     expect(mocks.writeContract).not.toHaveBeenCalled()
@@ -394,9 +390,11 @@ describe('a stick for someone else on the real engine', () => {
     gift = true
     mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 5n * CPN })
     mocks.writeContract.mockResolvedValueOnce(STICK)
+    const review = Promise.withResolvers<void>()
+    mocks.requireReview.mockReturnValueOnce(review.promise)
     await openReview()
     await switchTo(BOB)
-    await act(async () => confirmButton()!.click())
+    await act(async () => review.resolve())
     await until(() => confirmButton()?.textContent === 'Retry', 'the refusal')
     expect(mocks.writeContract).not.toHaveBeenCalled()
 
@@ -405,6 +403,7 @@ describe('a stick for someone else on the real engine', () => {
     await until(() => mocks.writeContract.mock.calls.length === 1, 'the stick to be sent')
     expect(senders()).toEqual([ALICE])
     expect(writes()).toEqual(['pay'])
+    expect(reviewed(1)).toEqual([['pay', ALICE]])
   })
 })
 
@@ -412,121 +411,83 @@ describe('a stick whose account changes after its review, on the real engine', (
   it('wallet-action:approve-the-staked-token-for-a-stick wallet-action:stick sends the stick from no account but the one that approved, once it has landed', async () => {
     mocks.writeContract.mockResolvedValueOnce(APPROVAL)
     await openReview()
-    await act(async () => confirmButton()!.click())
-    await until(() => confirmButton()?.disabled && mocks.writeContract.mock.calls.length > 0, 'the approval to be sent')
-    await mined(APPROVAL, 4_001n)
-    await until(() => confirmButton()?.textContent === 'Confirm & stick', 'the approval to be counted')
-    mocks.requestReview.mockClear()
+    await until(() => mocks.writeContract.mock.calls.length === 1, 'the approval to be sent')
 
     await switchTo(BOB)
-    await act(async () => confirmButton()!.click())
-    await pump()
+    await mined(APPROVAL, 4_001n)
+    await until(() => dialog()!.textContent!.includes(REVIEWED_ACCOUNT_CHANGED), 'the stick to be refused')
 
     // Only ALICE's approval reached the wallet, and the dialog is where it was.
     expect(writes()).toEqual(['approve'])
     expect(senders()).toEqual([ALICE])
     expect(mocks.requestReview).not.toHaveBeenCalled()
-    expect(dialog()!.textContent).toContain(REVIEWED_ACCOUNT_CHANGED)
     expect(stepStates()).toEqual(['complete', 'active'])
   })
 
-  // The wallet's account changes, and a click is handled before the page has rendered it: the page still shows the
-  // account that reviewed the plan, and the wallet is already another's.
+  // The wallet's account changes while the review is open, and the page has not rendered it yet: the page still shows
+  // the account that reviewed the plan, and the wallet is already another's.
   it.each([
     ['a stick', false],
     ['a stick for someone else', true],
-  ])('wallet-action:stick wallet-action:stick-for-someone-else refuses %s that a click sends before the page shows the new account, before the review opens', async (_, forSomeoneElse) => {
+  ])('wallet-action:stick wallet-action:stick-for-someone-else refuses %s once its review closes, while the page still shows the old account', async (_, forSomeoneElse) => {
     gift = forSomeoneElse
     mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 5n * CPN })
+    const review = Promise.withResolvers<void>()
+    mocks.requireReview.mockReturnValueOnce(review.promise)
     await openReview()
 
     mocks.getAccount.mockImplementation(() => ({ address: BOB, chainId: CHAIN }))
-    await act(async () => confirmButton()!.click())
-    await pump()
+    await act(async () => review.resolve())
+    await until(() => dialog()!.textContent!.includes(REVIEWED_ACCOUNT_CHANGED), 'the refusal')
 
-    expect(dialog()!.textContent).toContain(REVIEWED_ACCOUNT_CHANGED)
     expect(mocks.requestReview).not.toHaveBeenCalled()
     expect(mocks.publicClient.simulateContract).not.toHaveBeenCalled()
     expect(mocks.writeContract).not.toHaveBeenCalled()
   })
-
-  it('wallet-action:stick refuses a stick whose review was open while the wallet switched accounts', async () => {
-    mocks.funds.mockResolvedValue({ balance: 100n * CPN, allowance: 5n * CPN })
-    const review = Promise.withResolvers<boolean>()
-    mocks.requestReview.mockReturnValueOnce(review.promise)
-    await openReview()
-    await act(async () => confirmButton()!.click())
-    await until(() => mocks.requestReview.mock.calls.length === 1, 'the review to open')
-
-    await switchTo(BOB)
-    await act(async () => review.resolve(true))
-    await pump()
-
-    expect(mocks.publicClient.simulateContract).not.toHaveBeenCalled()
-    expect(mocks.writeContract).not.toHaveBeenCalled()
-    expect(dialog()!.textContent).toContain(REVIEWED_ACCOUNT_CHANGED)
-  })
 })
 
-// React commits a confirmation, which enables the button again, and runs the effects of that commit a task later. The
-// engine lets go of its lock in one of those effects, so a click between the two reaches an engine that still holds it
-// and is answered with nothing. Nothing is what the dialog must show of it: not the next step, and not a stick that was
-// never sent.
-describe('a click between the commit of a confirmation and the effects that follow it', () => {
+// React commits a confirmation, and runs the effects of that commit a task later; the engine lets go of its lock in one
+// of them. The stick is sent from an effect that follows the confirmation, so it must find the engine let go of: sent
+// once, as the browser schedules it, with no click and no second review.
+describe('the stick after its approval confirms, as a browser schedules it', () => {
   beforeEach(() => {
     acting = false
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', false)
   })
 
-  /** Sends the approval, has the chain mine it, and lets `clickAfter` click the button when its next commit opens it. */
-  async function confirmApproval(clickAfter: (click: () => void) => void) {
-    if (!mocks.writeContract.getMockImplementation()) mocks.writeContract.mockResolvedValueOnce(APPROVAL)
+  it('is sent once, on its own, never the approval again', async () => {
+    mocks.writeContract.mockResolvedValueOnce(APPROVAL).mockResolvedValueOnce(STICK)
     await openReview()
-    confirmButton()!.click()
-    await until(() => mocks.writeContract.mock.calls.length === 1 && confirmButton()?.disabled, 'the approval to be sent')
+    await until(() => mocks.writeContract.mock.calls.length === 1, 'the approval to be sent')
+    await mined(APPROVAL, 4_001n)
+    await until(() => mocks.writeContract.mock.calls.length === 2, 'the stick to be sent')
+    // Time for anything else the confirmation started.
+    await sleep(100)
+    expect(writes()).toEqual(['approve', 'pay'])
+    expect(title()).toBe('Confirm stick')
+    expect(mocks.requireReview).toHaveBeenCalledOnce()
+    expect(mocks.requestReview).not.toHaveBeenCalled()
+  })
 
-    let clicks = 0
+  it('is not sent when Close is pressed in the commit that shows the approval confirmed', async () => {
+    mocks.writeContract.mockResolvedValueOnce(APPROVAL).mockResolvedValueOnce(STICK)
+    await openReview()
+    await until(() => mocks.writeContract.mock.calls.length === 1, 'the approval to be sent')
+    // Close is clicked from the very mutation that marks the approval confirmed, before that commit's effects run.
+    let closed = false
     const observer = new MutationObserver(() => {
-      const button = confirmButton()
-      if (button && !button.disabled && clicks === 0) {
-        clicks += 1
-        clickAfter(() => button.click())
+      const close = [...(dialog()?.querySelectorAll('footer button') ?? [])].find(button => button.textContent === 'Close') as HTMLButtonElement | undefined
+      if (!closed && stepStates()[0] === 'complete' && close && !close.disabled) {
+        closed = true
+        close.click()
       }
     })
     observer.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true })
     await mined(APPROVAL, 4_001n)
-    await until(() => clicks === 1, 'the button to open')
+    await until(() => closed, 'Close to be pressed')
     observer.disconnect()
-    // Time for the effects of that commit, and for whatever the click started.
     await sleep(100)
-  }
-
-  it('is not taken for the stick that was never sent, and skips nothing', async () => {
-    // The click comes in the microtask after the commit. The engine either still holds its lock for the step that just
-    // confirmed (and answers nothing), or has counted it and sends the stick: never the approval again, never a skip.
-    mocks.writeContract.mockResolvedValueOnce(APPROVAL).mockResolvedValueOnce(STICK)
-    await confirmApproval(click => click())
-
-    expect(title()).toBe('Confirm stick')
-    expect(stepStates()).toEqual(['complete', 'active'])
-    if (writes().length === 1) {
-      expect(confirmButton()!.textContent).toBe('Confirm & stick')
-      confirmButton()!.click()
-      await until(() => mocks.writeContract.mock.calls.length === 2, 'the stick to be sent')
-    }
-    expect(writes()).toEqual(['approve', 'pay'])
-    expect(title()).toBe('Confirm stick')
-  })
-
-  it('control: a click a task later, when the engine has let go, sends the stick', async () => {
-    await confirmApproval(click =>
-      setTimeout(() => {
-        mocks.writeContract.mockResolvedValueOnce(STICK)
-        click()
-      }, 10),
-    )
-    await until(() => mocks.writeContract.mock.calls.length === 2, 'the stick to be sent')
-    expect(writes()).toEqual(['approve', 'pay'])
-    expect(title()).toBe('Confirm stick')
+    expect(writes()).toEqual(['approve'])
+    expect(dialog()).toBeNull()
   })
 })

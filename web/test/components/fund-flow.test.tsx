@@ -7,6 +7,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { erc20Abi, getAddress, type Abi, type Address, type Hex } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stickyDistributorAbi } from '@/lib/sticky-abis'
+import { TransactionReviewCancelledError } from '@/lib/transaction-review'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import { clearViewAs, setViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 import { EXTERNAL_WALLET_REQUIRED, WalletAuthContext } from '@/providers/WalletAuthContext'
@@ -43,6 +44,7 @@ type EngineState = {
   safeProposalHash: null
   safeNonceGuidance: null
   send: ReturnType<typeof vi.fn>
+  review: ReturnType<typeof vi.fn>
   reset: ReturnType<typeof vi.fn<() => void>>
   dismiss: ReturnType<typeof vi.fn>
 }
@@ -92,6 +94,8 @@ const engine = (): EngineState => {
       state.receipt = null
       return FUND_HASH
     }),
+    // The action's one decoded review: what it returns is the proof each step is sent with.
+    review: vi.fn(async () => ({})),
     dismiss: vi.fn(() => state.reset()),
     reset: vi.fn(() => {
       state.phase = 'idle'
@@ -264,23 +268,26 @@ describe('the review', () => {
     expect(steps()).toEqual(['Approve 5 ART', 'Fund stuck holders'])
     expect(stepStates()).toEqual(['active', 'pending'])
     expect(confirm()!.textContent).toContain('2 transactions left.')
-    expect(primary().textContent).toBe('Confirm & approve')
 
-    await press(confirm(), 'Confirm & approve')
+    // One decoded review for the whole airdrop, with its summary, then each step without asking again.
+    expect(mocks.tx.review).toHaveBeenCalledExactlyOnceWith(
+      [expect.objectContaining({ functionName: 'approve' }), expect.objectContaining({ functionName: 'fund' })],
+      { account: ALICE, title: 'Airdrop', rows: expect.arrayContaining([{ label: 'Send', value: '5 ART', strong: true }]) },
+    )
+    const proof = await mocks.tx.review.mock.results[0].value
     const [approval, approvalOptions] = sent(0)
     expect(approval).toMatchObject({ chainId: CHAIN, address: ART, functionName: 'approve', args: [DISTRIBUTOR, 5n * E6] })
-    expect(approvalOptions).toMatchObject({ reviewedAccount: ALICE, simulationBlockNumber: undefined })
+    expect(approvalOptions).toMatchObject({ reviewedAccount: ALICE, simulationBlockNumber: undefined, reviewed: proof })
 
     await confirmed(APPROVAL_HASH, 100n)
     expect(stepStates()).toEqual(['complete', 'active'])
-    expect(primary().textContent).toBe('Confirm & send')
-    await press(confirm(), 'Confirm & send')
+    expect(mocks.tx.review).toHaveBeenCalledOnce()
     const [fund, fundOptions] = sent(1)
     expect(fund).toMatchObject({ chainId: CHAIN, address: DISTRIBUTOR, abi: stickyDistributorAbi, functionName: 'fund', args: [INFO.stToken, ART, 5n * E6, 0n] })
     expect(fund.value).toBeUndefined()
     expect(Object.isFrozen(fund)).toBe(true)
     // The airdrop is simulated where its approval is.
-    expect(fundOptions).toMatchObject({ reviewedAccount: ALICE, simulationBlockNumber: 100n })
+    expect(fundOptions).toMatchObject({ reviewedAccount: ALICE, simulationBlockNumber: 100n, reviewed: proof })
   })
 
   it('wallet-action:send-an-airdrop native ETH reward funding attaches exact value and never approves a sentinel', async () => {
@@ -291,7 +298,6 @@ describe('the review', () => {
     expect(steps()).toEqual(['Fund stuck holders'])
     expect(rowsOf().Send).toBe('0.000000000000000001 ETH')
 
-    await press(confirm(), 'Confirm & send')
     const [fund] = sent(0)
     expect(fund).toMatchObject({ address: DISTRIBUTOR, functionName: 'fund', args: [INFO.stToken, NATIVE_TOKEN, 1n, 0n], value: 1n })
     expect(mocks.tx.send).toHaveBeenCalledOnce()
@@ -312,9 +318,7 @@ describe('the review', () => {
       Project: 'STICKYART #12',
       On: 'Base Sepolia',
     })
-    await press(confirm(), 'Confirm & approve')
     await confirmed(APPROVAL_HASH, 100n)
-    await press(confirm(), 'Confirm & send')
     expect(sent(1)[0].args).toEqual([INFO.stToken, ART, 5n * E6, 4008n])
   })
 
@@ -363,6 +367,7 @@ describe('the review', () => {
 
     await act(async () => root.unmount())
     root = createRoot(host)
+    mocks.tx = engine()
     mocks.funds.mockResolvedValue({ balance: 100n * E6, allowance: 2n * E6 })
     await review()
     expect(steps()).toEqual(['Reset ART allowance', 'Approve 5 ART', 'Fund stuck holders'])
@@ -445,7 +450,6 @@ describe('the send', () => {
   ])('ends the approval review on Done without funding when a Safe says: %s', async notice => {
     const invalidate = vi.spyOn(client, 'invalidateQueries')
     await review()
-    await press(confirm(), 'Confirm & approve')
     mocks.tx.phase = 'submitted'
     mocks.tx.busy = false
     mocks.tx.notice = notice
@@ -471,13 +475,13 @@ describe('the send', () => {
     // The review stays for the account it was made for, and the engine refuses another.
     mocks.wallet = { ...mocks.wallet, address: CAROL }
     await render()
-    await press(confirm(), 'Confirm & approve')
     expect(sent(0)[1].reviewedAccount).toBe(ALICE)
+    await confirmed(APPROVAL_HASH, 100n)
+    expect(sent(1)[1].reviewedAccount).toBe(ALICE)
   })
 
   it('reads the balance again before each step, and stops one that no longer fits', async () => {
     await review()
-    await press(confirm(), 'Confirm & approve')
     const [request, { reverify }] = sent(0)
     mocks.funds.mockClear()
     await expect(reverify()).resolves.toBeUndefined()
@@ -489,7 +493,6 @@ describe('the send', () => {
 
   it('stops a step whose balance cannot be read, says why, and tells the console', async () => {
     await review({ token: 'ETH', amount: '0.5' })
-    await press(confirm(), 'Confirm & send')
     const { reverify } = sent(0)[1]
     await expect(reverify()).resolves.toBeUndefined()
     expect(mocks.native).toHaveBeenLastCalledWith(CHAIN, ALICE, { signal: undefined })
@@ -500,13 +503,18 @@ describe('the send', () => {
   })
 
   it('shows the engine\'s error with a way to send the same step again', async () => {
+    // The engine takes nothing it fails: it answers null and shows its error.
+    mocks.tx.send.mockImplementationOnce(async () => {
+      Object.assign(mocks.tx, { phase: 'error', busy: false, error: 'Transaction cancelled.' })
+      return null
+    })
     await review()
-    mocks.tx.phase = 'error'
-    mocks.tx.error = 'Transaction cancelled.'
     await render()
     expect(confirm()!.textContent).toContain('Transaction cancelled.')
     await press(confirm(), 'Retry')
-    expect(sent(0)[0].functionName).toBe('approve')
+    // The failed send dropped the review: the retry is its own decoded review.
+    expect(sent(1)[0].functionName).toBe('approve')
+    expect(mocks.tx.review).toHaveBeenCalledTimes(2)
   })
 
   it('says it went through, links it, reads the pots again, checks the token and stays open until Done', async () => {
@@ -514,7 +522,6 @@ describe('the send', () => {
     const keys = (): QueryKey[] => invalidate.mock.calls.map(([filters]) => filters!.queryKey!)
     mocks.funds.mockResolvedValue({ balance: 100n * E6, allowance: 5n * E6 })
     await review({ token: USDC })
-    await press(confirm(), 'Confirm & send')
     await confirmed(FUND_HASH, 101n)
 
     const dialog = confirm()!
@@ -536,8 +543,9 @@ describe('the send', () => {
   })
 
   it('brings the form back as it was when the review is cancelled', async () => {
+    mocks.tx.review.mockRejectedValueOnce(new TransactionReviewCancelledError())
     await review({ amount: '7' })
-    await press(confirm(), 'Cancel')
+    expect(mocks.tx.send).not.toHaveBeenCalled()
     expect(confirm()).toBeNull()
     expect((field('Amount') as HTMLInputElement).value).toBe('7')
     expect(onClose).not.toHaveBeenCalled()
