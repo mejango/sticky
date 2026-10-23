@@ -11,7 +11,7 @@ import { act, Profiler, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { decodeFunctionData, encodeAbiParameters, encodeFunctionData, erc20Abi, getAddress, toEventSelector, toHex, UserRejectedRequestError, zeroAddress, type Abi, type Address, type Hex, type TransactionReceipt } from 'viem'
 import { SAFE_EXEC_ABI } from '@bananapus/nana-sdk-core/safe-service'
-import { HELD_EXIT_LABEL, registerReviewHandler, REVIEWED_ACCOUNT_CHANGED_LINE, writeExitMessage, writeHeldMessage, WRITE_HOLD_REVERTED_LINE, type ReviewModel } from '@bananapus/nana-sdk-core/review'
+import { HELD_EXIT_LABEL, registerReviewHandler, REVIEWED_ACCOUNT_CHANGED_LINE, writeExitMessage, writeHeldMessage, WRITE_HOLD_REVERTED_LINE, type ReviewModel, REVERT_UNKNOWN_LINE } from '@bananapus/nana-sdk-core/review'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { feelessAddressesAbi, stickyAutoStickAbi, stickyHookAbi, terminalAbi } from '@/lib/sticky-abis'
 import { unstickTxs } from '@/lib/sticky-builders'
@@ -71,8 +71,6 @@ vi.mock('@/lib/safe-connector', async importOriginal => ({
 }))
 
 import { UnstickFlow } from '@/components/project/flows/UnstickFlow'
-/** Core's line for a simulated revert it does not decode (not exported from /review in local.9). */
-const REVERT_UNKNOWN_LINE = 'This transaction would fail. Check the amounts and try again.'
 
 const E18 = 10n ** 18n
 const HOOK = deployment.hook
@@ -868,7 +866,7 @@ describe('a send that stops halfway', () => {
     await review('1')
     await until(() => nameOf(confirm()!).includes('Retry'), 'the failure')
     // A node's revert text is never shown: core's line names the step and says to check the amounts.
-    expect(confirm()!.textContent).toContain(`Unstick cannot run on chain 84532: ${REVERT_UNKNOWN_LINE}`)
+    expect(confirm()!.textContent).toContain(`Unstick cannot run on Base Sepolia: ${REVERT_UNKNOWN_LINE}`)
     expect(confirm()!.textContent).toContain(
       'Went through: Turn off auto-stick; Stop the auto-stick contract from sticking ART for you; Remove the auto-stick contract\'s ART allowance. Did not go through: Unstick.',
     )

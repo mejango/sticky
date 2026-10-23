@@ -17,4 +17,4 @@ next-env.d.ts
 
 # Temporary: the unpublished SDK 4.0.0 tarball until 4.0.0 is on npm.
 .local-sdk/*
-!.local-sdk/bananapus-nana-sdk-core-4.0.0-local.10.tgz
+!.local-sdk/bananapus-nana-sdk-core-4.0.0-local.12.tgz
