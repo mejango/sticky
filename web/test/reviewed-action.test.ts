@@ -8,7 +8,7 @@
 import { QueryClient } from '@tanstack/react-query'
 import { createElement, createRef, forwardRef, useImperativeHandle } from 'react'
 import TestRenderer, { act } from 'react-test-renderer'
-import { decodeFunctionData, numberToHex, type Abi, type Address, type Hex } from 'viem'
+import { decodeFunctionData, encodeFunctionData, erc20Abi, numberToHex, type Abi, type Address, type Hex } from 'viem'
 import { jbMultiTerminalAbi } from '@bananapus/nana-sdk-core'
 import { registerReviewHandler, ReviewLineError, type ReviewedCall } from '@bananapus/nana-sdk-core/review'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -79,10 +79,12 @@ const walletClient = {
   }),
 }
 
+let currentWallet = walletClient
+
 vi.mock('@wagmi/core', async importOriginal => ({
   ...(await importOriginal<typeof import('@wagmi/core')>()),
   getAccount: () => ({ address: '0x2222222222222222222222222222222222222222', chainId: 84532 }),
-  getWalletClient: async () => walletClient,
+  getWalletClient: async () => currentWallet,
   getPublicClient: () => client,
   switchChain: vi.fn(),
 }))
@@ -114,6 +116,7 @@ const Harness = forwardRef<Action>(function Harness(_, ref) {
 const unregister: (() => void)[] = []
 afterEach(() => {
   while (unregister.length) unregister.pop()!()
+  currentWallet = walletClient
   walletSends.length = 0
   walletClient.sendTransaction.mockClear()
   clearViewAs()
@@ -179,6 +182,34 @@ describe('useReviewedAction', () => {
     )
     const state = byIntent.peek()
     expect(state.status === 'clear' && state.settled?.result).toBe('success')
+  })
+
+  it.each(['direct', 'approval'] as const)('uses the current same-account wallet after awaited %s preparation', async kind => {
+    confirmEveryReview()
+    const { stick } = baseline
+    const prepared = Promise.withResolvers<void>()
+    const entered = Promise.withResolvers<void>()
+    const replacement = { ...walletClient, sendTransaction: vi.fn(walletClient.sendTransaction) }
+    const data = kind === 'approval'
+      ? encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args: [stick.to as Address, 10n] })
+      : stick.data as Hex
+    const { ref, unmount } = await mount()
+    let running!: ReturnType<Action['run']>
+    await act(async () => {
+      running = ref.current!.run({
+        account: ALICE,
+        calls: [{ chainId: stick.chainId, to: stick.to as Address, data, value: 0n }],
+        beforeWallet: async () => { entered.resolve(); await prepared.promise },
+      })
+      await entered.promise
+    })
+    expect(walletClient.sendTransaction).not.toHaveBeenCalled()
+    currentWallet = replacement
+    await act(async () => { prepared.resolve(); await running })
+    expect(replacement.sendTransaction).toHaveBeenCalledOnce()
+    expect(replacement.sendTransaction.mock.calls[0][0]).toMatchObject({ account: ALICE, chain: { id: stick.chainId }, data })
+    expect(ref.current!.phase).toBe('success')
+    await unmount()
   })
 
   it('runs every step under one review: each reverified at the block the one before confirmed in, journaled around its send, and counted', async () => {

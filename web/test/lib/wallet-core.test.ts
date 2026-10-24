@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   getPublicClient: vi.fn(),
   getWalletClient: vi.fn(),
   switchChain: vi.fn(),
+  safe: false,
 }))
 
 vi.mock('@wagmi/core', () => ({
@@ -14,6 +15,7 @@ vi.mock('@wagmi/core', () => ({
   getWalletClient: mocks.getWalletClient,
   switchChain: mocks.switchChain,
 }))
+vi.mock('@/lib/safe-connector', () => ({ isSafeConnection: () => mocks.safe }))
 vi.mock('@/providers/Providers', () => ({ wagmiConfig: { tag: 'config' } }))
 
 import { publicClient, reviewedSendDeps, walletAdapter } from '@/lib/wallet-core'
@@ -21,6 +23,7 @@ import { publicClient, reviewedSendDeps, walletAdapter } from '@/lib/wallet-core
 const ALICE = '0x1111111111111111111111111111111111111111' as Address
 
 beforeEach(() => {
+  mocks.safe = false
   mocks.getAccount.mockImplementation(() => ({ address: ALICE, chainId: 1 }))
   mocks.switchChain.mockResolvedValue(undefined)
 })
@@ -29,6 +32,20 @@ describe('walletAdapter', () => {
   it('reads the connected account and chain', () => {
     expect(walletAdapter.account()).toBe(ALICE)
     expect(walletAdapter.chainId()).toBe(1)
+  })
+
+  it.each(['account', 'chain', 'Safe route'] as const)('refuses a changed %s while resolving the current wallet', async changed => {
+    const sendTransaction = vi.fn()
+    const resolving = Promise.withResolvers<{ sendTransaction: typeof sendTransaction }>()
+    mocks.getWalletClient.mockReturnValueOnce(resolving.promise)
+    const sending = walletAdapter.sendTransaction({ chainId: 1, to: ALICE, data: '0x', value: 0n })
+    const rejected = expect(sending).rejects.toThrow(/changed/)
+    if (changed === 'account') mocks.getAccount.mockReturnValue({ address: '0x2222222222222222222222222222222222222222', chainId: 1 })
+    if (changed === 'chain') mocks.getAccount.mockReturnValue({ address: ALICE, chainId: 10 })
+    if (changed === 'Safe route') mocks.safe = true
+    resolving.resolve({ sendTransaction })
+    await rejected
+    expect(sendTransaction).not.toHaveBeenCalled()
   })
 
   it('switches through wagmi, and names the chain a wallet that cannot switch must be opened on', async () => {
