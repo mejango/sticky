@@ -153,6 +153,39 @@
         "Pay for a multichain Sticky launch",
         "Authorize Sticky listing"
       ]
+    },
+    "src/lib/review-engine.ts": {
+      "calls": 1,
+      "actions": [
+        "Turn off auto-stick",
+        "Approve the auto-stick adapter's allowance",
+        "Trust the auto-stick adapter",
+        "Turn on auto-stick",
+        "Change auto-stick settings",
+        "Take back the auto-stick adapter's trust",
+        "Take back the auto-stick adapter's allowance",
+        "Stick ready rewards now",
+        "Start unlocking rewards",
+        "Approve a bridge transfer",
+        "Queue cross-chain rewards",
+        "Send queued rewards across chains",
+        "Claim arriving rewards",
+        "Collect rewards or start vesting",
+        "Approve the staked token for a claim and stick",
+        "Claim and stick rewards",
+        "Deliver queued rewards",
+        "Settle queued rewards",
+        "Approve a reward token for an airdrop",
+        "Send an airdrop",
+        "Create a reward address",
+        "Settle arrivals into airdrops",
+        "Approve the staked token for a stick",
+        "Stick",
+        "Stick for someone else",
+        "Transfer Sticky tokens",
+        "Trust or untrust a sender",
+        "Unstick Sticky tokens"
+      ]
     }
   }
 }

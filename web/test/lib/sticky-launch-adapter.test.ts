@@ -11,6 +11,7 @@ import type { StickyLaunchPorts, StickyLaunchSession } from '@/lib/sticky-launch
 import { memoryStorage } from '../memory-storage'
 
 const fake = vi.hoisted(() => ({
+  actualWallet: false,
   account: { address: '' as Address, chainId: 8453, connector: { id: 'injected', uid: 'reviewed-wallet' } }, safe: false,
   ports: undefined as unknown as StickyLaunchPorts,
   revalidate: vi.fn(), review: vi.fn(), choose: vi.fn(), guard: vi.fn(),
@@ -22,7 +23,7 @@ const fake = vi.hoisted(() => ({
 }))
 
 vi.mock('@/providers/Providers', () => ({ wagmiConfig: {} }))
-vi.mock('@wagmi/core', () => ({ getAccount: () => fake.account }))
+vi.mock('@wagmi/core', () => ({ getAccount: () => fake.account, getWalletClient: fake.connected, getPublicClient: vi.fn(), switchChain: vi.fn() }))
 vi.mock('@/lib/viewAs', () => ({ assertNoViewAs: fake.guard }))
 vi.mock('@/lib/transaction-review', () => ({
   requireFundingChainSelection: fake.choose,
@@ -31,6 +32,7 @@ vi.mock('@/lib/transaction-review', () => ({
 // Core sends and signs for real, over this wallet and chain: the deployer's creation goes to `write`, a payment to `send`.
 vi.mock('@/lib/wallet-core', async () => {
   const { holds } = await import('@/lib/write-holds')
+  const actual = await vi.importActual<typeof import('@/lib/wallet-core')>('@/lib/wallet-core')
   const client = {
     simulateContract: fake.simulate, estimateContractGas: fake.estimate, estimateGas: fake.estimate,
     getCode: fake.getCode, getTransactionReceipt: fake.receipt, waitForTransactionReceipt: fake.receipt, getTransaction: fake.transaction,
@@ -49,7 +51,7 @@ vi.mock('@/lib/wallet-core', async () => {
     chainId: () => fake.account.chainId,
     isSafe: () => fake.safe,
     switchChain: async (chainId: number) => { fake.account.chainId = chainId },
-    sendTransaction: (tx: { to: Address }) => (tx.to.toLowerCase() === '0x3333333333333333333333333333333333333333' ? fake.write : fake.send)(tx),
+    sendTransaction: (tx: Parameters<typeof actual.walletAdapter.sendTransaction>[0]) => fake.actualWallet ? actual.walletAdapter.sendTransaction(tx) : (tx.to.toLowerCase() === '0x3333333333333333333333333333333333333333' ? fake.write : fake.send)(tx),
     signMessage: (message: string) => fake.sign({ account: fake.account.address, message }),
     signTypedData: async () => { throw new Error('no typed data here') },
   }
@@ -155,6 +157,8 @@ beforeEach(() => {
   vi.stubGlobal('localStorage', memoryStorage())
   fake.account = { address: OWNER, chainId: 8453, connector: { id: 'injected', uid: 'reviewed-wallet' } }
   fake.safe = false
+  fake.actualWallet = false
+  fake.connected.mockResolvedValue({ chain: { id: 8453 }, sendTransaction: async (tx: { chain: { id: number } }) => fake.send({ ...tx, chainId: tx.chain.id }) })
   fake.revalidate.mockResolvedValue(undefined)
   fake.review.mockResolvedValue(undefined)
   fake.choose.mockResolvedValue(8453)
@@ -305,6 +309,43 @@ describe('Sticky launch browser boundaries', () => {
     expect(noted.beforeWrite).toHaveBeenCalledOnce()
     expect(noted.rejected).toHaveBeenCalledOnce()
     expect(fake.write).not.toHaveBeenCalled()
+  })
+
+  it.each(['direct', 'payment'] as const)('clears the %s journal and SDK hold when actual adapter acquisition aborts before invocation', async kind => {
+    fake.actualWallet = true
+    const entered = deferred()
+    const waiting = Promise.withResolvers<unknown>()
+    fake.connected.mockImplementationOnce(() => { entered.resolve(); return waiting.promise })
+    const saved = kind === 'direct' ? session() : paymentSession()
+    const noted = callbacks()
+    const send = () => kind === 'direct' ? fake.ports.sendDirect(saved, noted) : fake.ports.sendPayment(saved, noted)
+    const pending = send()
+    const rejected = expect(pending).rejects.toThrow('The connected account changed. Review again.')
+    await entered.promise
+    fake.account.address = TOKEN
+    waiting.resolve({ chain: { id: 8453 }, sendTransaction: fake.send })
+    await rejected
+    expect(noted.beforeWrite).toHaveBeenCalledOnce()
+    expect(noted.rejected).toHaveBeenCalledOnce()
+    expect(noted.submitted).not.toHaveBeenCalled()
+    expect(fake.send).not.toHaveBeenCalled()
+    fake.account.address = OWNER
+    // Reusing the exact same quote/call proves the SDK hold was cleared, not just the app journal.
+    await send()
+    expect(fake.send).toHaveBeenCalledOnce()
+  })
+
+  it('retains a fee-payment hold and journal after the actual adapter invokes a wallet that times out', async () => {
+    fake.actualWallet = true
+    fake.send.mockRejectedValueOnce(new Error('wallet transport timeout'))
+    const saved = paymentSession()
+    const noted = callbacks()
+    await expect(fake.ports.sendPayment(saved, noted)).rejects.toThrow('timeout')
+    expect(noted.beforeWrite).toHaveBeenCalledOnce()
+    expect(noted.rejected).not.toHaveBeenCalled()
+    expect(fake.send).toHaveBeenCalledOnce()
+    await expect(fake.ports.sendPayment(saved, callbacks())).rejects.toThrow()
+    expect(fake.send).toHaveBeenCalledOnce()
   })
 
   it('clears an explicit wallet rejection but retains an unknown no-hash submission', async () => {

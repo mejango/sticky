@@ -58,7 +58,7 @@ const chain = {
   },
 }
 vi.mock('@wagmi/core', () => ({
-  getAccount: () => ({ address: OWNER, chainId: 1 }),
+  getAccount: () => ({ address: OWNER, chainId: 1, connector: { uid: 'test', id: 'test' } }),
   getPublicClient: () => chain,
   switchChain: vi.fn(),
   getWalletClient: async () => ({ chain: { id: 1 }, sendTransaction: mocks.sendTransaction }),

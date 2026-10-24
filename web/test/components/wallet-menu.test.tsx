@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   writeText: vi.fn(),
   pathname: '/',
   search: '',
+  balanceError: false,
   balance: undefined as { value: bigint; symbol: string } | undefined,
 }))
 
@@ -25,7 +26,7 @@ vi.mock('next/link', () => ({
 }))
 vi.mock('wagmi', () => ({
   useEnsName: () => ({ data: undefined }),
-  useBalance: () => ({ data: mocks.balance }),
+  useBalance: () => ({ data: mocks.balance, isError: mocks.balanceError }),
 }))
 vi.mock('@/providers/preload-center', () => ({ preloadSignIn: vi.fn() }))
 vi.mock('@/providers/Providers', () => ({ IS_DETERMINISTIC_BROWSER: false }))
@@ -42,6 +43,7 @@ beforeEach(() => {
   mocks.pathname = '/'
   mocks.search = ''
   mocks.balance = undefined
+  mocks.balanceError = false
   mocks.writeText.mockResolvedValue(undefined)
   vi.stubGlobal('navigator', Object.assign(Object.create(navigator), { clipboard: { writeText: mocks.writeText } }))
   host = document.createElement('div')
@@ -169,6 +171,18 @@ describe('the account menu', () => {
 })
 
 describe('the balance amounts', () => {
+  it.each([
+    [false, 'Loading…'],
+    [true, 'Unavailable'],
+  ])('keeps an unread balance unknown when failed=%s', async (failed, expected) => {
+    mocks.pathname = '/base:23'
+    mocks.balanceError = failed
+    await render()
+    await openMenu()
+    expect(panel()!.querySelector('dl')!.textContent).toBe(`ETH${expected}`)
+    expect(panel()!.querySelector('dl')!.textContent).not.toContain('0 ETH')
+  })
+
   const balanceShown = async (value: bigint) => {
     mocks.pathname = '/base:23'
     mocks.balance = { value, symbol: 'ETH' }
