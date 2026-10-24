@@ -6,6 +6,8 @@ discovery data only. `npm run transaction:check` reads this table and
 `test/transaction-sites.json`. Every write site names the actions it sends, and
 every action here names the tests that cover it.
 
+The shared review engine forwards these flow actions to core, then preserves a readable local refusal after core has cleared a proven unsent attempt. Its wallet adapter acquires the current connector and invokes immediately after checking the reviewed account, chain and Safe route. `lib/wallet-acquisition.test.ts`, `reviewed-action.test.ts` and `lib/sticky-launch-adapter.test.ts` cover acquisition races, signature refusal lines, unsent cleanup and ambiguous payment recovery.
+
 Legend:
 
 - **E**: exact request or calldata encode/decode assertions

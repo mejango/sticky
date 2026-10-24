@@ -80,11 +80,13 @@ const walletClient = {
 }
 
 let currentWallet = walletClient
+let connectedAccount: Address = ALICE
+let acquireWallet = async () => currentWallet
 
 vi.mock('@wagmi/core', async importOriginal => ({
   ...(await importOriginal<typeof import('@wagmi/core')>()),
-  getAccount: () => ({ address: '0x2222222222222222222222222222222222222222', chainId: 84532 }),
-  getWalletClient: async () => currentWallet,
+  getAccount: () => ({ address: connectedAccount, chainId: 84532, connector: { uid: 'test', id: 'test' } }),
+  getWalletClient: () => acquireWallet(),
   getPublicClient: () => client,
   switchChain: vi.fn(),
 }))
@@ -117,6 +119,8 @@ const unregister: (() => void)[] = []
 afterEach(() => {
   while (unregister.length) unregister.pop()!()
   currentWallet = walletClient
+  connectedAccount = ALICE
+  acquireWallet = async () => currentWallet
   walletSends.length = 0
   walletClient.sendTransaction.mockClear()
   clearViewAs()
@@ -182,6 +186,54 @@ describe('useReviewedAction', () => {
     )
     const state = byIntent.peek()
     expect(state.status === 'clear' && state.settled?.result).toBe('success')
+  })
+
+  it.each(['review state', 'View as'] as const)('reruns the final %s guard after wallet acquisition and clears only the unsent attempt', async kind => {
+    confirmEveryReview()
+    const { stick } = baseline
+    const entered = Promise.withResolvers<void>()
+    const waiting = Promise.withResolvers<typeof walletClient>()
+    acquireWallet = () => { entered.resolve(); return waiting.promise }
+    let fresh = true
+    const onUnsent = vi.fn(async () => {})
+    const { ref, unmount } = await mount()
+    let running!: ReturnType<Action['run']>
+    await act(async () => {
+      running = ref.current!.run({ account: ALICE, calls: [{ chainId: stick.chainId, to: stick.to as Address, data: stick.data as Hex }], onUnsent,
+        assertWriteState: () => { if (!fresh) throw new ReviewLineError('This review expired. Review again.') },
+      })
+      await entered.promise
+    })
+    if (kind === 'View as') setViewAs('0x3333333333333333333333333333333333333333')
+    else fresh = false
+    await act(async () => { waiting.resolve(walletClient); await running })
+    expect(walletSends).toEqual([])
+    expect(onUnsent).toHaveBeenCalledOnce()
+    expect(ref.current!.held).toBeNull()
+    expect(ref.current!.error).toBe(kind === 'View as' ? VIEW_AS_WRITE_BLOCKED : 'This review expired. Review again.')
+    await unmount()
+  })
+
+  it('clears the SDK hold and journal on a proven acquisition abort, preserving the actual UI reason', async () => {
+    confirmEveryReview()
+    const { stick } = baseline
+    const entered = Promise.withResolvers<void>()
+    const waiting = Promise.withResolvers<typeof walletClient>()
+    acquireWallet = () => { entered.resolve(); return waiting.promise }
+    const onUnsent = vi.fn(async () => {})
+    const { ref, unmount } = await mount()
+    let running!: ReturnType<Action['run']>
+    await act(async () => {
+      running = ref.current!.run({ account: ALICE, calls: [{ chainId: stick.chainId, to: stick.to as Address, data: stick.data as Hex }], onUnsent })
+      await entered.promise
+    })
+    connectedAccount = '0x3333333333333333333333333333333333333333'
+    await act(async () => { waiting.resolve(walletClient); await running })
+    expect(walletSends).toEqual([])
+    expect(onUnsent).toHaveBeenCalledOnce()
+    expect(ref.current!.held).toBeNull()
+    expect(ref.current!.error).toBe('The connected account changed. Review again.')
+    await unmount()
   })
 
   it.each(['direct', 'approval'] as const)('uses the current same-account wallet after awaited %s preparation', async kind => {
@@ -315,18 +367,20 @@ describe('useReviewedAction', () => {
     confirmEveryReview()
     const { stick, unstick } = baseline
     const calls = [stick, unstick].map((sent, at) => ({ chainId: sent.chainId, to: sent.to as Address, data: sent.data as Hex, value: BigInt(sent.value), ...(at ? { dependsOnPrior: true } : {}) }))
+    const onUnsent = vi.fn(async () => {})
     walletClient.sendTransaction.mockRejectedValueOnce(new Error('Connection lost after sending'))
     const { ref, unmount } = await mount()
     await act(async () => {
-      expect(await ref.current!.run({ account: ALICE, calls })).toBeNull()
+      expect(await ref.current!.run({ account: ALICE, calls, onUnsent })).toBeNull()
     })
     expect(ref.current!.held?.exit).toBeTypeOf('function')
+    expect(onUnsent).not.toHaveBeenCalled()
     // The person checked their wallet: nothing went out.
     await act(async () => ref.current!.held!.exit!())
     await vi.waitFor(() => expect(ref.current!.held).toBeNull())
     let result: Awaited<ReturnType<Action['run']>> = null
     await act(async () => {
-      result = await ref.current!.run({ account: ALICE, calls })
+      result = await ref.current!.run({ account: ALICE, calls, onUnsent })
     })
     expect(result!.status).toBe('done')
     expect(walletSends).toHaveLength(2)

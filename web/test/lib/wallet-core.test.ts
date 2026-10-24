@@ -24,7 +24,7 @@ const ALICE = '0x1111111111111111111111111111111111111111' as Address
 
 beforeEach(() => {
   mocks.safe = false
-  mocks.getAccount.mockImplementation(() => ({ address: ALICE, chainId: 1 }))
+  mocks.getAccount.mockImplementation(() => ({ address: ALICE, chainId: 1, connector: { uid: 'test', id: 'test' } }))
   mocks.switchChain.mockResolvedValue(undefined)
 })
 

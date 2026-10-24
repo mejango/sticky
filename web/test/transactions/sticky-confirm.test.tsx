@@ -35,7 +35,7 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@wagmi/core', () => ({
-  getAccount: mocks.getAccount, getPublicClient: () => mocks.publicClient, switchChain: vi.fn(),
+  getAccount: (...args: unknown[]) => ({ connector: { uid: 'test', id: 'test' }, ...mocks.getAccount(...args) }), getPublicClient: () => mocks.publicClient, switchChain: vi.fn(),
   getWalletClient: async () => ({ chain: { id: 8453 }, sendTransaction: mocks.sendTransaction }),
 }))
 vi.mock('@/hooks/useWallet', () => ({
