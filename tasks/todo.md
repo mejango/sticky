@@ -58,3 +58,19 @@ Final lint, types, transaction inventory (10 actions, four direct reviewed forwa
 Independent Astra approved the frozen source and independently passed 33 acquisition/hook tests. Approved SHA256: wallet-core.ts ea304fc0cdf954af65d4da1814008f2d76cae1aa2a35fa251c94cc8ed94a8ff8, review-engine.ts 98e7661a54e28de9ba9765998c4429529762678ec29c598f38fec8f0508a74a8. No application changes followed approval.
 
 At the parent's explicit landing-efficiency instruction, the incomplete local full coverage rerun was stopped at35/173files; it is not a final full-suite result. The already-running production browser check remains pending at candidate commit. Exact-head full coverage and browser GitHub CI must pass before merge. The earlier3811/172 proof belongs to the pre-acquisition-fix head and is not claimed for this candidate. Parent owns publication and merge; this checkout performs neither.
+
+# Scoped client follow-up — 2026-10-27
+
+## Plan refinement
+- **Objective:** Preserve frozen bridge minimum and accept fresh quotes satisfying it while retaining identity/context guards. User authorizes client push and merge after confidence gates; parent owns release.
+- **System fit:** Contract source-token context, minimum-output bounds and REVDeployer split policy own behavior. Preserve raw economics, saved recovery, final wallet guards and smooth UX; contracts/SDK/dependencies unchanged.
+- **Reuse and simplicity:** Use existing domain owners and UI flavor guards, one home per rule. Separate any behavior-preserving extraction before changes. Parent alone owns task notes.
+- **Evidence and unknowns:** Current main pinned, prior actual-source repro confirms symptom; authoritative contract semantics checked. Original dirty trees preserved in isolated checkout. No live transaction or deployment claim.
+- **Verification:** Owner adds focused actual-consumer regression, static checks then staggered production artifact checks. Independent Astra approval and mandatory exact-head full CI precede matched-head merge with readback.
+- **Resource budget:** One owner per client, max2 test workers each, Node26/npm12 physical locked dependencies. No broad census, dependency changes or redundant full local suites; parent coordinates expensive builds and publication.
+
+- [x] Implement scoped fixes and focused regressions.
+- [x] Complete independent review and local preflight.
+- [ ] Publish, pass exact-head full CI and merge with readback.
+
+Review: Preserve the exact reviewed bridge floor before every step, including approval; accept beneficial/within-bound quote changes, retain full payload/route/authority/recovery checks. New reviews still require a positive derived floor, saved floor1 remains valid against net1. Owner and independent Astra each pass111 tests/2files onNode26. Typecheck, full lint, deployment/schema/inventories, audit, production build and all five unchanged route budgets pass. Astra-approved runtimeSHA: sticky-bridge.ts6e07e1f7693517c374fdd4fd038790d0f6387394b2c611826d7a76c84fd884e2; BridgeFlow.tsx404b034303c2634f82b7d2922548c53fc5425f2eb70054fb5907acc730387189. No contract/SDK/dependency changes. Existing lock has an account peer-range mismatch also present at baseline;734 installed package versions match lock. Full clean-install exact-head CI required before authorized matched-head merge.
