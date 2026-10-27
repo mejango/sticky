@@ -96,13 +96,15 @@ export const bridgeWriteHasUniqueReference = (data: Hex) => ['0xaf629bbb', '0xcb
 export const bridgeCalldata = (request: TxRequest) => encodeFunctionData({ ...request })
 
 /** Same protected output as the legacy flow, with protocol fee math owned by the SDK. */
-export function bridgeMinimumOutput(gross: bigint, tax: bigint, feeFree: bigint, feeless: boolean, slippageBps = 100n) {
+export function bridgeMinimumOutput(gross: bigint, tax: bigint, feeFree: bigint, feeless: boolean, slippageBps = 100n, reviewedMinimum?: bigint) {
   if (gross <= 0n || tax < 0n || tax > 10_000n || feeFree < 0n || slippageBps < 0n || slippageBps > 500n) {
     throw new ReviewLineError('A nonzero live bridge quote and at most 5% slippage are required.')
   }
   const net = gross - cashOutProtocolFee({ reclaimAmount: gross, cashOutTaxRate: tax, feeFreeSurplus: feeFree, beneficiaryIsFeeless: feeless })
-  const minimum = net * (10_000n - slippageBps) / 10_000n
-  if (minimum <= 0n) throw new ReviewLineError('The protected bridge output rounds to zero.')
+  // Revalidation keeps the reviewed floor, even if a new percentage floor would round to zero.
+  const minimum = reviewedMinimum ?? net * (10_000n - slippageBps) / 10_000n
+  if (minimum <= 0n) throw new ReviewLineError(reviewedMinimum === undefined ? 'The protected bridge output rounds to zero.' : 'A positive reviewed bridge minimum is required.')
+  if (net < minimum) throw new ReviewLineError('The bridge quote fell below your reviewed minimum. Close and review the transfer again.')
   return { net, minimum }
 }
 
@@ -260,7 +262,7 @@ export function createStickyBridge(clientFor: (chainId: number) => PublicClient 
       return { ...item, status, proof }
     }))
   }
-  async function prepare({ route, amount, owner, receiver, metadata }: { route: BridgeRoute; amount: bigint; owner: Address; receiver: Address; metadata: Hex }): Promise<BridgePreparation> {
+  async function prepare({ route, amount, owner, receiver, metadata, reviewedMinimum }: { route: BridgeRoute; amount: bigint; owner: Address; receiver: Address; metadata: Hex; reviewedMinimum?: bigint }): Promise<BridgePreparation> {
     address(owner); address(receiver)
     if (amount <= 0n || !isHash(metadata) || metadata === zeroHash) throw new ReviewLineError('A positive bridge amount and unique transfer reference are required.')
     await validateRoute(route, { sending: true, preparing: true })
@@ -278,7 +280,7 @@ export function createStickyBridge(clientFor: (chainId: number) => PublicClient 
     ])
     if (balance < amount) throw new ReviewLineError('The origin wallet does not have enough project tokens.')
     const feeless = await read<boolean>(source, feelessRegistry, 'isFeelessFor', [sourceSucker, projectId, sourceSucker])
-    const quote = bridgeMinimumOutput(preview[1], preview[2], feeFree, feeless)
+    const quote = bridgeMinimumOutput(preview[1], preview[2], feeFree, feeless, 100n, reviewedMinimum)
     const steps = withApprovalParent([
       ...approveSteps(source.chainId, sourceToken, sourceSucker, allowance, amount, { ...route.sourceMeta, mode: 'covering', label: 'Approve bridge transfer' }),
       { ...buildBridgePrepareTx({ chainId: source.chainId, sucker: sourceSucker, projectTokenCount: amount, beneficiary: receiver, minTokensReclaimed: quote.minimum, token: backingToken, metadata }), label: 'Queue cross-chain rewards' },

@@ -38,7 +38,7 @@ import { BridgeFlow } from '@/components/project/flows/BridgeFlow'
 let root: Root, host: HTMLDivElement, client: QueryClient, approved: boolean
 let chain = heldChain(1), destination = heldChain(10)
 const onClose = vi.fn(), onFunded = vi.fn()
-const queuedRequest = (metadata = H(99)) => ({ ...buildBridgePrepareTx({ chainId: 1, sucker: ROUTE.sourceSucker, projectTokenCount: 10n ** 18n, beneficiary: RECEIVER, minTokensReclaimed: 965n, token: ROUTE.backingToken, metadata }), label: 'Queue cross-chain rewards' })
+const queuedRequest = (metadata = H(99), minimum = 965n) => ({ ...buildBridgePrepareTx({ chainId: 1, sucker: ROUTE.sourceSucker, projectTokenCount: 10n ** 18n, beneficiary: RECEIVER, minTokensReclaimed: minimum, token: ROUTE.backingToken, metadata }), label: 'Queue cross-chain rewards' })
 const movement = (status: BridgeMovement['status']): BridgeMovement => ({ leaf: { index: 0n, beneficiary: pad(RECEIVER), projectTokenCount: 10n ** 18n, terminalTokenAmount: 965n, metadata: H(99) }, leafHash: H(98), sourceHash: HASH, blockNumber: 100n, caller: OWNER, status, proof: Array<Hex>(32).fill(zeroHash) } as unknown as BridgeMovement)
 /** The receipts the run waits on, in order: `confirmed` gives the next one. */
 let receipts: (() => void)[] = []
@@ -218,6 +218,57 @@ describe('reviewed durable bridge workflow', () => {
     expect(readPendingBridgeWrite(OWNER)).toBeNull()
     expect(text()).toContain('Ready to send')
   })
+  it.each([[1000n, 990n], [970n, 960n]])('keeps the frozen prepare after approval when backing changes to %s', async (net, minimum) => {
+    await review(); await press('Review transfer')
+    const record = readBridgeRecords(KEY)[0]
+    approved = true
+    mocks.prepare.mockImplementation(async ({ metadata, reviewedMinimum }: { metadata: Hex; reviewedMinimum?: bigint }) => ({
+      net, minimum: reviewedMinimum ?? minimum, steps: [queuedRequest(metadata, reviewedMinimum ?? minimum)],
+    }))
+    await confirmed()
+    await vi.waitFor(() => expect(mocks.walletWrite).toHaveBeenCalledTimes(2))
+    expect(mocks.prepare).toHaveBeenLastCalledWith(expect.objectContaining({ reviewedMinimum: 965n, amount: 10n ** 18n, receiver: RECEIVER, metadata: record.metadata }))
+    const sent = mocks.walletWrite.mock.calls[1][0]
+    expect(sent.data).toBe(record.prepareData)
+    expect(readBridgeRecords(KEY)[0].prepareData).toBe(record.prepareData)
+    expect(mocks.tx.review).toHaveBeenCalledOnce()
+  })
+  it('stops before the prepare when the owner reports backing below the reviewed minimum', async () => {
+    await review(); await press('Review transfer'); approved = true
+    const record = readBridgeRecords(KEY)[0]
+    mocks.prepare.mockRejectedValueOnce(new Error('The bridge quote fell below your reviewed minimum. Close and review the transfer again.'))
+    await confirmed()
+    expect(mocks.walletWrite).toHaveBeenCalledOnce()
+    expect(text()).toContain('below your reviewed minimum')
+    expect(readBridgeRecords(KEY)[0].prepareData).toBe(record.prepareData)
+  })
+  it('checks the reviewed prepare floor before spending gas on its approval', async () => {
+    mocks.tx.review.mockImplementationOnce(async () => {
+      mocks.prepare.mockRejectedValueOnce(new Error('The bridge quote fell below your reviewed minimum. Close and review the transfer again.'))
+    })
+    await review(); await press('Review transfer')
+    expect(mocks.prepare).toHaveBeenLastCalledWith(expect.objectContaining({ reviewedMinimum: 965n }))
+    expect(mocks.walletWrite).not.toHaveBeenCalled()
+    expect(readPendingBridgeWrite(OWNER)).toBeNull()
+    expect(text()).toContain('below your reviewed minimum')
+  })
+  it.each(['amount', 'beneficiary', 'token', 'metadata', 'target', 'chain', 'value'] as const)('still rejects changed prepare %s after approval', async field => {
+    await review(); await press('Review transfer'); approved = true
+    mocks.prepare.mockImplementation(async ({ metadata, reviewedMinimum }: { metadata: Hex; reviewedMinimum?: bigint }) => {
+      const request = queuedRequest(metadata, reviewedMinimum)
+      const args = [...request.args]
+      if (field === 'amount') args[0] = 2n * 10n ** 18n
+      if (field === 'beneficiary') args[1] = pad(A(999))
+      if (field === 'token') args[3] = A(999)
+      if (field === 'metadata') args[4] = H(999)
+      return { net: 1000n, minimum: reviewedMinimum ?? 990n, steps: [{ ...request, args,
+        ...(field === 'target' ? { address: A(999) } : {}), ...(field === 'chain' ? { chainId: 10 } : {}), ...(field === 'value' ? { value: 1n } : {}),
+      }] }
+    })
+    await confirmed()
+    expect(mocks.walletWrite).toHaveBeenCalledOnce()
+    expect(text()).toContain('saved bridge step or quote changed')
+  })
   it('wallet-action:send-queued-rewards-across-chains Send queued rewards across chains: reviews and sends the exact transport budget', async () => {
     mocks.movements.mockResolvedValue([movement('queued')]); await find(); await press('Refresh bridge status'); await press('Send across chains'); expect(text()).toContain('Bridge transport budget0.0000000000000001 ETH')
     expect(mocks.walletWrite).toHaveBeenCalledWith(expect.objectContaining({ functionName: 'toRemote', value: 100n, chainId: 1 }))
@@ -276,13 +327,21 @@ describe('reviewed durable bridge workflow', () => {
   })
   it('reviews the steps left again, together, when a transfer is resumed', async () => {
     await review(); await press('Review transfer'); approved = true
+    const metadata = readBridgeRecords(KEY)[0].metadata
     // The approval confirmed while this page was away: the queue step is resumed from the saved transfer.
     await act(async () => root.unmount()); root = createRoot(host)
     Object.assign(mocks.tx, { phase: 'idle', hash: null })
     await render(); await press('Check transaction')
+    mocks.prepare.mockImplementation(async ({ metadata, reviewedMinimum }: { metadata: Hex; reviewedMinimum?: bigint }) => ({
+      net: 1000n, minimum: reviewedMinimum ?? 990n, steps: [queuedRequest(metadata, reviewedMinimum ?? 990n)],
+    }))
     await press('Continue transfer')
     expect(mocks.tx.review).toHaveBeenCalledTimes(2)
     expect(mocks.tx.review.mock.calls[1][0].calls.map(call => call.functionName)).toEqual(['prepare'])
+    expect(mocks.walletWrite).toHaveBeenCalledTimes(2)
+    // Continuing opens a new review with its refreshed floor; the original transfer reference is retained.
+    expect(mocks.walletWrite.mock.calls[1][0].data).toBe(mocks.tx.review.mock.calls[1][0].calls[0].data)
+    expect(mocks.walletWrite.mock.calls[1][0].args).toEqual([10n ** 18n, pad(RECEIVER), 990n, ROUTE.backingToken, metadata])
   })
   it('retains a submitted Safe approval without advancing steps or reporting success', async () => {
     await review(); mocks.tx.isSafe = true; await press('Review transfer'); Object.assign(mocks.tx, { phase: 'submitted', notice: 'Awaiting Safe confirmations' }); await render()

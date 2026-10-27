@@ -223,7 +223,10 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
   async function verifyReview(current: Review) {
     assertCurrent(current.identity)
     if (current.record) {
-      const live = await bridge.prepare({ route: current.route, owner: current.owner, amount: BigInt(current.record.amount), receiver: current.receiver, metadata: current.record.metadata })
+      const reviewedPrepare = restoreBridgeWrite(current.record.steps.at(-1)!)
+      const live = await bridge.prepare({ route: current.route, owner: current.owner, amount: BigInt(current.record.amount), receiver: current.receiver, metadata: current.record.metadata,
+        reviewedMinimum: reviewedPrepare.args[2] as bigint,
+      })
       const reviewed = storeBridgeWrite(current.request)
       if (!live.steps.some(step => {
         const candidate = storeBridgeWrite(step)
