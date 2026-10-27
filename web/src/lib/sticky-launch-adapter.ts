@@ -2,12 +2,11 @@
 
 import { stickyDeployerAbi, type JBChainId } from '@bananapus/nana-sdk-core'
 import { JBCenterRequestError, type JBCenterIntent } from '@bananapus/nana-sdk-core/jbcenter'
-import { errorLine, intent, isDefiniteWalletRejection, ReviewLineError, launchIntent, payRelayrReviewed, sendReviewed, signReviewed, waitForTrackedReceipt, type ReviewedCall, type ReviewedResult, type ReviewedSignature, type WriteHoldClient } from '@bananapus/nana-sdk-core/review'
+import { errorLine, intent, ReviewLineError, launchIntent, payRelayrReviewed, sendReviewed, signReviewed, waitForTrackedReceipt, type ReviewedCall, type ReviewedResult, type ReviewedSignature, type WriteHoldClient } from '@bananapus/nana-sdk-core/review'
 import { safeExecutionRunsCalls } from '@bananapus/nana-sdk-core/safe-service'
 import {
   RELAYR_API,
   RELAYR_UUID_RE,
-  RelayrPaymentNotSentError,
   bindRelayrQuote,
   readRelayrBundle,
   relayrBundleRequest,
@@ -15,6 +14,7 @@ import {
   relayrDestinationRecords,
   relayrPaymentDetails,
   relayrPaymentOptions,
+  relayrPaymentAttemptOutcome,
   requireRelayrBundleUnpaid,
   requireRelayrPaymentRetry,
   verifyRelayrPayment,
@@ -353,9 +353,9 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
           callbacks.submitted(hash, safe ? sent : undefined)
         },
       }, { ...reviewedSendDeps, onProgress: () => phase('Confirm payment in your wallet.') }).catch(error => {
-        // Only the wallet's own refusal (4001), or core's final gate before the wallet, says nothing was sent; any other
+        // Only what core reads as unpaid (the wallet's 4001, a refusal before the wallet) says nothing was sent; any other
         // failure keeps the submission started.
-        if (!sent && (isDefiniteWalletRejection(error) || error instanceof RelayrPaymentNotSentError)) journal.onUnsent()
+        if (!sent && relayrPaymentAttemptOutcome(error, { sending: true, paid: false }) === 'unpaid') journal.onUnsent()
         throw error
       })
       const execution = 'safeTxHash' in paid ? await safeExecution(details.chainId, paid.safeTxHash, callbacks) : paid.hash

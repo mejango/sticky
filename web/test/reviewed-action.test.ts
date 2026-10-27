@@ -86,7 +86,7 @@ let acquireWallet = async () => currentWallet
 vi.mock('@wagmi/core', async importOriginal => ({
   ...(await importOriginal<typeof import('@wagmi/core')>()),
   getAccount: () => ({ address: connectedAccount, chainId: 84532, connector: { uid: 'test', id: 'test' } }),
-  getWalletClient: () => acquireWallet(),
+  getWalletClient: async () => (await import('./support/viem-wallet')).viemWallet(await acquireWallet(), () => 84532),
   getPublicClient: () => client,
   switchChain: vi.fn(),
 }))

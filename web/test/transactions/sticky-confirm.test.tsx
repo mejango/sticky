@@ -36,7 +36,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@wagmi/core', () => ({
   getAccount: (...args: unknown[]) => ({ connector: { uid: 'test', id: 'test' }, ...mocks.getAccount(...args) }), getPublicClient: () => mocks.publicClient, switchChain: vi.fn(),
-  getWalletClient: async () => ({ chain: { id: 8453 }, sendTransaction: mocks.sendTransaction }),
+  getWalletClient: async () => (await import('../support/viem-wallet')).viemWallet({ sendTransaction: mocks.sendTransaction }, () => 8453),
 }))
 vi.mock('@/hooks/useWallet', () => ({
   useWallet: () => ({ isConnected: true, address: ALICE, isCenterWallet: false }),
@@ -91,7 +91,7 @@ beforeEach(() => {
     while (!mocks.receipt) await new Promise(resolve => setTimeout(resolve, 5))
     return mocks.receipt
   })
-  mocks.publicClient.getTransaction.mockImplementation(async () => ({ ...walletReceipt(), hash: HASH, chainId: 8453, input: call.data, value: 0n }))
+  mocks.publicClient.getTransaction.mockImplementation(async () => ({ ...walletReceipt(), hash: HASH, chainId: 8453, input: call.data, value: 0n, nonce: 7 }))
   mocks.publicClient.getBlock.mockResolvedValue({ number: 12n, hash: BLOCK_HASH })
   mocks.sendTransaction.mockReset().mockResolvedValue(HASH)
   host = document.createElement('div')

@@ -21,34 +21,6 @@
       "api": "request",
       "boundary": "The Signa connector's read callback forwards public reads to the Center RPC transport for Base; Signa's own wallet signs and refuses writes here.",
       "test": "test/providers/lazy-center-connector.test.ts"
-    },
-    {
-      "file": "src/lib/wallet-core.ts",
-      "line": 108,
-      "api": "sendTransaction",
-      "boundary": "The app adapter acquires the explicitly current connector, retries replacement during acquisition, and invokes after synchronous reviewed account, chain and Safe-route checks. Only proven pre-invocation failures release the SDK hold.",
-      "test": "test/lib/wallet-acquisition.test.ts"
-    },
-    {
-      "file": "src/lib/wallet-core.ts",
-      "line": 110,
-      "api": "signTypedData",
-      "boundary": "The app adapter acquires the explicitly current connector, retries replacement during acquisition, and invokes after synchronous reviewed account, chain and Safe-route checks. Only proven pre-invocation failures release the SDK hold.",
-      "test": "test/lib/wallet-acquisition.test.ts"
-    },
-    {
-      "file": "src/lib/wallet-core.ts",
-      "line": 111,
-      "api": "signMessage",
-      "boundary": "The app adapter acquires the explicitly current connector, retries replacement during acquisition, and invokes after synchronous reviewed account, chain and Safe-route checks. Only proven pre-invocation failures release the SDK hold.",
-      "test": "test/lib/wallet-acquisition.test.ts"
-    },
-    {
-      "file": "src/lib/wallet-core.ts",
-      "line": 113,
-      "api": "sendCalls",
-      "boundary": "The app adapter acquires the explicitly current connector, retries replacement during acquisition, and invokes after synchronous reviewed account, chain and Safe-route checks. Only proven pre-invocation failures release the SDK hold.",
-      "test": "test/lib/wallet-acquisition.test.ts"
     }
   ]
 }

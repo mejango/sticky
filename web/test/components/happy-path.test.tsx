@@ -42,7 +42,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@wagmi/core', () => ({
   getAccount: (...args: unknown[]) => ({ connector: { uid: 'test', id: 'test' }, ...mocks.getAccount(...args) }), getPublicClient: () => mocks.publicClient, switchChain: vi.fn(),
-  getWalletClient: async () => ({ chain: { id: 84532 }, sendTransaction: mocks.sendTransaction }),
+  getWalletClient: async () => (await import('../support/viem-wallet')).viemWallet({ sendTransaction: mocks.sendTransaction }, () => 84532),
 }))
 vi.mock('wagmi', () => ({ usePublicClient: () => mocks.publicClient }))
 vi.mock('@/hooks/useWallet', () => ({ useWallet: () => ({ isConnected: true, address: ALICE, isCenterWallet: false, openSignIn: vi.fn() }) }))
@@ -173,7 +173,7 @@ async function mined(hash: Hex, block: bigint, render: () => void) {
   mocks.blocks[String(block)] = { hash: blockHash, number: block, timestamp: 1_790_000_000n + block }
   mocks.transactions[hash.toLowerCase()] = {
     hash, chainId: CHAIN, from: ALICE, to: request.to, input: request.data,
-    value: request.value, blockHash, blockNumber: block, transactionIndex: 0,
+    value: request.value, blockHash, blockNumber: block, transactionIndex: 0, nonce: 7,
   }
   mocks.receipts[hash.toLowerCase()] = {
     transactionHash: hash, status: 'success', blockNumber: block, blockHash, transactionIndex: 0,

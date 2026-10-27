@@ -7,8 +7,8 @@ import {
   switchChain,
 } from '@wagmi/core'
 import type { JBChainId } from '@bananapus/nana-sdk-core'
-import { ReviewLineError, type WalletAdapter, type ReviewedSendDeps } from '@bananapus/nana-sdk-core/review'
-import type { Address, PublicClient } from 'viem'
+import { ReviewLineError, viemWalletAdapter, type WalletAdapter, type ReviewedSendDeps } from '@bananapus/nana-sdk-core/review'
+import type { PublicClient, WalletClient } from 'viem'
 import { wagmiConfig } from '@/providers/Providers'
 import { chainName } from '@/lib/urn'
 import { isSafeConnection } from '@/lib/safe-connector'
@@ -36,82 +36,23 @@ async function switchTo(chainId: number): Promise<void> {
   })
 }
 
-/** Only this app's proven pre-invocation refusals may release an SDK write hold. */
-class WalletNotInvokedError extends ReviewLineError {
-  readonly walletNotInvoked = true
-  readonly code: number | undefined
-  constructor(message: string, releaseHold: boolean, readonly acquisitionCause?: unknown) {
-    super(message)
-    this.code = releaseHold ? 4001 : undefined
-  }
-}
-
-/** After SDK cleanup, retain the refusal line without misclassifying it as a wallet cancellation. */
-export function readableWalletFailure(error: unknown): never {
-  if (error instanceof WalletNotInvokedError && error.code === 4001) {
-    throw Object.assign(new ReviewLineError(error.message), { acquisitionCause: error })
-  }
-  throw error
-}
-
-/** Acquire the current connector, then check and invoke in the same continuation. */
-async function withCurrentWallet<T>(chainId: number | undefined,
-  invoke: (wallet: Awaited<ReturnType<typeof getWalletClient>>, account: Address) => Promise<T>,
-  releaseHold = false,
-  finalGuard?: () => void,
-): Promise<T> {
-  const notSent = (message: string, cause?: unknown) => new WalletNotInvokedError(message, releaseHold, cause)
-  const reviewed = getAccount(wagmiConfig)
-  if (!reviewed.address) throw notSent('Connect a wallet first.')
-  const account = reviewed.address
-  const chain = chainId ?? reviewed.chainId
-  const safe = isSafeConnection(wagmiConfig)
-  const unchanged = () => {
-    try { assertNoViewAs(); finalGuard?.() } catch (error) {
-      throw notSent(error instanceof Error ? error.message : 'The reviewed action changed. Review again.', error)
-    }
-    const current = getAccount(wagmiConfig)
-    if (current.address?.toLowerCase() !== account.toLowerCase()) {
-      throw notSent('The connected account changed. Review again.')
-    }
-    if (chain === undefined || current.chainId !== chain || isSafeConnection(wagmiConfig) !== safe || !current.connector?.uid) {
-      throw notSent('Wallet connection changed. Review the transaction again.')
-    }
-    return current.connector
-  }
-  // ponytail: three acquisitions; a continuously changing connector needs another review.
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const connector = unchanged()
-    let wallet: Awaited<ReturnType<typeof getWalletClient>>
-    try {
-      wallet = await getWalletClient(wagmiConfig, { account, connector, chainId: chain as JBChainId })
-    } catch (error) {
-      if (unchanged().uid !== connector.uid) continue
-      throw notSent('Your wallet connection could not be confirmed. Review again.', error)
-    }
-    if (unchanged().uid !== connector.uid) continue
-    // No await or callback separates the final checks from the actual wallet method.
-    return invoke(wallet, account)
-  }
-  throw notSent('Wallet connection changed. Review the transaction again.')
-}
-
-/** Sticky owns the final invocation; returning a client to an awaiting adapter can make it stale again. */
+/** Core's wallet adapter over the connected wagmi connector, checked again as each request reaches the wallet. */
 export function createWalletAdapter(finalGuard?: () => void): WalletAdapter {
-  return {
-    kind: 'wallet',
+  return viemWalletAdapter({
+    walletClient: () => {
+      const { address, chainId, connector } = getAccount(wagmiConfig)
+      return getWalletClient(wagmiConfig, { account: address, chainId: chainId as JBChainId, connector }) as Promise<WalletClient>
+    },
     account: () => getAccount(wagmiConfig).address,
     chainId: () => getAccount(wagmiConfig).chainId,
     isSafe: () => isSafeConnection(wagmiConfig),
     switchChain: switchTo,
-    sendTransaction: ({ chainId, ...tx }) => withCurrentWallet(chainId, (wallet, account) =>
-      wallet.sendTransaction({ ...tx, account, chain: wallet.chain?.id === chainId ? wallet.chain : { id: chainId } }), true, finalGuard),
-    signTypedData: typedData => withCurrentWallet(typedData.domain?.chainId === undefined ? undefined : Number(typedData.domain.chainId),
-      (wallet, account) => wallet.signTypedData({ ...typedData, account }), false, finalGuard),
-    signMessage: message => withCurrentWallet(undefined, (wallet, account) => wallet.signMessage({ account, message }), false, finalGuard),
-    sendCalls: (chainId, calls) => withCurrentWallet(chainId, (wallet, account) =>
-      wallet.sendCalls({ account, chain: wallet.chain?.id === chainId ? wallet.chain : { id: chainId }, calls: calls.map(({ to, data, value }) => ({ to, data, value })) }).then((result: { id: string }) => result.id), true, finalGuard),
-  }
+    connector: () => getAccount(wagmiConfig).connector?.uid,
+    check: () => {
+      assertNoViewAs()
+      finalGuard?.()
+    },
+  })
 }
 
 export const walletAdapter = createWalletAdapter()

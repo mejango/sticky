@@ -1,4 +1,4 @@
-import { registerReviewHandler, signReviewed, ReviewLineError, type ReviewedSignature } from '@bananapus/nana-sdk-core/review'
+import { registerReviewHandler, signReviewed, ReviewLineError, WalletNotInvokedError, type ReviewedSignature } from '@bananapus/nana-sdk-core/review'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { encodeFunctionData, erc20Abi, type Address } from 'viem'
 
@@ -18,12 +18,14 @@ import { walletAdapter } from '@/lib/wallet-core'
 const ACCOUNT = '0x1111111111111111111111111111111111111111' as Address
 const HASH = `0x${'12'.repeat(32)}` as const
 const SIGNATURE = `0x${'12'.repeat(65)}` as const
+let chainRead: (() => void) | undefined
+let walletError: unknown
 const external = new Set(['eth_sendTransaction', 'personal_sign', 'eth_signTypedData_v4', 'wallet_sendCalls'])
 
 function connector(uid: string, pause?: { at: string; entered: () => void; wait: Promise<void> }) {
   const request = vi.fn(async ({ method }: { method: string }) => {
-    if (method === 'eth_chainId') return '0x1'
-    if (method === 'eth_sendTransaction') return HASH
+    if (method === 'eth_chainId') { chainRead?.(); return '0x1' }
+    if (method === 'eth_sendTransaction') { if (walletError) throw walletError; return HASH }
     if (method === 'personal_sign' || method === 'eth_signTypedData_v4') return SIGNATURE
     if (method === 'wallet_sendCalls') return 'batch'
     throw new Error(`Unexpected wallet method ${method}`)
@@ -51,7 +53,7 @@ const actions = {
 }
 const invoked = (wallet: ReturnType<typeof connector>) => wallet.request.mock.calls.filter(([request]) => external.has(request.method))
 
-beforeEach(() => { state.safe = false; state.config.state.connections.clear() })
+beforeEach(() => { state.safe = false; state.config.state.connections.clear(); chainRead = undefined; walletError = undefined })
 
 describe('the actual wagmi acquisition boundary', () => {
   it.each(Object.entries(actions).flatMap(([kind, send]) => ['getChainId', 'getProvider'].map(at => ({ kind, send, at }))))(
@@ -80,7 +82,7 @@ describe('the actual wagmi acquisition boundary', () => {
       })
     }
     select(wallets[0])
-    await expect(actions.payment()).rejects.toMatchObject({ code: 4001, walletNotInvoked: true })
+    await expect(actions.payment()).rejects.toBeInstanceOf(WalletNotInvokedError)
     for (const wallet of wallets) expect(invoked(wallet)).toEqual([])
     expect(wallets[2].getProvider).toHaveBeenCalledOnce()
   })
@@ -90,7 +92,7 @@ describe('the actual wagmi acquisition boundary', () => {
     const failure = new Error('Provider unavailable')
     vi.spyOn(wallet, 'getProvider').mockRejectedValue(failure)
     select(wallet)
-    await expect(actions.payment()).rejects.toMatchObject({ code: 4001, walletNotInvoked: true, acquisitionCause: failure })
+    await expect(actions.payment()).rejects.toMatchObject({ name: 'WalletNotInvokedError', cause: failure })
     expect(invoked(wallet)).toEqual([])
   })
 
@@ -124,7 +126,7 @@ describe('the actual wagmi acquisition boundary', () => {
     const current = connector('current')
     select(old)
     const pending = actions.payment()
-    const rejected = expect(pending).rejects.toMatchObject({ code: 4001, walletNotInvoked: true })
+    const rejected = expect(pending).rejects.toBeInstanceOf(WalletNotInvokedError)
     await entered.promise
     select(current, changed === 'account' ? '0x2222222222222222222222222222222222222222' : ACCOUNT, changed === 'chain' ? 10 : 1)
     if (changed === 'Safe route') state.safe = true
@@ -133,5 +135,31 @@ describe('the actual wagmi acquisition boundary', () => {
     await rejected
     expect(invoked(old)).toEqual([])
     expect(invoked(current)).toEqual([])
+  })
+})
+
+// viem awaits its own chain read after the client loads and before it sends: a change there is caught at the provider request.
+describe('a change during viem\'s chain read before the send', () => {
+  it.each(['connector', 'account', 'Safe route'] as const)('invokes nothing when the %s changes', async changed => {
+    const old = connector('old')
+    const current = connector('current')
+    select(old)
+    chainRead = () => {
+      chainRead = undefined
+      if (changed === 'connector') select(current)
+      else if (changed === 'account') select(connector('old'), '0x2222222222222222222222222222222222222222')
+      else state.safe = true
+    }
+    await expect(actions.payment()).rejects.toBeInstanceOf(WalletNotInvokedError)
+    expect(invoked(old)).toEqual([])
+    expect(invoked(current)).toEqual([])
+  })
+
+  it('sends once, never retrying a wallet error that may have broadcast', async () => {
+    const wallet = connector('old')
+    select(wallet)
+    walletError = { code: -32603, message: 'Internal error' }
+    await expect(actions.payment()).rejects.not.toBeInstanceOf(WalletNotInvokedError)
+    expect(invoked(wallet)).toHaveLength(1)
   })
 })
