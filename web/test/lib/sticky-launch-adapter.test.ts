@@ -91,7 +91,7 @@ vi.mock('@bananapus/nana-sdk-core/review/relayr', async original => ({
 
 import { createBrowserStickyLaunchController } from '@/lib/sticky-launch-adapter'
 import { attempts } from '@/lib/write-holds'
-import { createSavedAttemptRecovery, createWriteHold, registerReviewHandler, ReviewedReceiptUnverifiedError } from '@bananapus/nana-sdk-core/review'
+import { createSavedAttemptRecovery, createWriteHold, registerReviewHandler } from '@bananapus/nana-sdk-core/review'
 import { browserWriteRecoveryModel } from '../support/write-recovery'
 import { buildStickyEnvelope } from '@/lib/sticky-listing'
 
@@ -252,6 +252,29 @@ describe('Sticky launch browser boundaries', () => {
     expect(noted.beforeWrite).toHaveBeenCalledOnce()
     expect(noted.rejected).not.toHaveBeenCalled()
   })
+
+  it('a creation still confirming is followed to its end, and its listing published with the signature it carried, from one review', async () => {
+    const noted = callbacks()
+    const listing = { published: vi.fn(), failed: vi.fn() }
+    const signature = `0x${'5e'.repeat(65)}` as Hex
+    fake.sign.mockResolvedValue(signature)
+    fake.publish.mockImplementation(async (_plan, sign) => ({ id: 'listing', signed: await sign('Exact SDK listing message') }))
+    const landed = fake.receipt.getMockImplementation()!
+    let reads = 0
+    // The wallet's receipt arrives; the hold's first read of it lags.
+    fake.receipt.mockImplementation(async (...args) => {
+      reads += 1
+      if (reads === 2) throw new Error('lagging node')
+      return landed(...args)
+    })
+    await fake.ports.sendDirect(session(), noted, listing)
+    expect(fake.review).toHaveBeenCalledOnce()
+    expect(fake.write).toHaveBeenCalledOnce()
+    expect(fake.sign).toHaveBeenCalledOnce()
+    expect(await fake.publish.mock.results[0].value).toEqual({ id: 'listing', signed: signature })
+    expect(listing.published).toHaveBeenCalledWith('listing')
+    expect(listing.failed).not.toHaveBeenCalled()
+  }, 20_000)
 
   it.each(['account', 'view-as', 'external-wallet'] as const)('rechecks %s after the review before the wallet opens', async kind => {
     const noted = callbacks()
@@ -474,9 +497,10 @@ describe('Sticky launch browser boundaries', () => {
       await expect(again.send(found.client, async () => { await fake.write(); return HASH })).rejects.toMatchObject({ name: expect.stringMatching(/^WriteHold(Busy)?Error$|^WriteHeldError$/) })
 
       wallet.resolve(HASH)
-      // This node never shows the transaction it sent, so its receipt stays unverified and the launch stays held.
-      await expect(first).rejects.toBeInstanceOf(ReviewedReceiptUnverifiedError)
+      // This node never shows the transaction it sent, so its receipt stays unverified: the launch stays
+      // held, and the send stays pending while it is followed.
       await expect(tab.recovery.recover(found.attempt, found.client)).resolves.toMatchObject({ status: 'held' })
+      await expect(Promise.race([first.then(() => 'ended', () => 'ended'), new Promise(done => setTimeout(done, 200, 'pending'))])).resolves.toBe('pending')
       expect(fake.write).toHaveBeenCalledOnce()
     })
 
@@ -510,9 +534,10 @@ describe('Sticky launch browser boundaries', () => {
       await vi.waitFor(() => expect(fake.write).toHaveBeenCalledOnce())
       await expect(tab.recovery.retire(found.attempt, { by: 'check', outcome: shown })).resolves.toMatchObject({ retired: false })
       wallet.resolve(HASH)
-      // This node never shows the transaction it sent, so its receipt stays unverified and the launch stays held.
-      await expect(first).rejects.toBeInstanceOf(ReviewedReceiptUnverifiedError)
+      // This node never shows the transaction it sent, so its receipt stays unverified: the launch stays
+      // held, and the send stays pending while it is followed.
       await expect(tab.recovery.recover(found.attempt, found.client)).resolves.toMatchObject({ status: 'held' })
+      await expect(Promise.race([first.then(() => 'ended', () => 'ended'), new Promise(done => setTimeout(done, 200, 'pending'))])).resolves.toBe('pending')
       expect(fake.write).toHaveBeenCalledOnce()
     })
 

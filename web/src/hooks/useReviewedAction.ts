@@ -224,8 +224,9 @@ export function useReviewedAction() {
           await action.onConfirmed?.(call, step, receipt)
         },
       })
-      // A receipt still verifying is sent and pending: the hook's `receipt` phase shows it and ends done.
-      const done = ran?.status === 'failed' || ran?.status === 'receipt' ? null : ran
+      // A receipt still verifying is sent and pending (the hook's `receipt` phase) until its hold ends the run.
+      const settled = ran?.status === 'receipt' ? await ran.ended() : ran
+      const done = settled?.status === 'failed' ? null : settled
       // The account changed while the review was open: core withdrew it, and the action says why.
       if (!ran && abort.signal.aborted) {
         setExitError(REVIEWED_ACCOUNT_CHANGED_LINE)
@@ -234,7 +235,7 @@ export function useReviewedAction() {
       if (done?.status === 'done') setLanded(action.calls.length)
       if (done?.status === 'proposed' && last.current?.action === action) last.current.proposed = action.calls[done.step] ?? null
       setResult(done)
-      if (!done && ran?.status !== 'receipt' && onCancelled) setEnded({ onCancelled })
+      if (!done && onCancelled) setEnded({ onCancelled })
       return done
     } finally {
       aborts.current.delete(abort)

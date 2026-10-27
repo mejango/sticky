@@ -121,6 +121,7 @@ afterEach(() => {
   currentWallet = walletClient
   connectedAccount = ALICE
   acquireWallet = async () => currentWallet
+  client.getTransactionReceipt.mockImplementation(async ({ hash }: { hash: Hex }) => receipt(hash))
   walletSends.length = 0
   walletClient.sendTransaction.mockClear()
   clearViewAs()
@@ -338,6 +339,26 @@ describe('useReviewedAction', () => {
     expect(ref.current!.phase).toBe('success')
     await unmount()
   })
+
+  it('keeps a send whose receipt is still confirming pending, and returns done once its hold verifies it', async () => {
+    confirmEveryReview()
+    client.getTransactionReceipt.mockImplementation(async () => { throw new Error('lagging node') })
+    const { ref, unmount } = await mount()
+    const { stick } = baseline
+    let ended: unknown = 'pending'
+    await act(async () => {
+      void ref.current!.run({ account: ALICE, calls: [{ chainId: stick.chainId, to: stick.to as Address, data: stick.data as Hex, value: BigInt(stick.value), intent: `lag-${crypto.randomUUID()}` }] })
+        .then(value => { ended = value })
+    })
+    await vi.waitFor(() => expect(ref.current!.phase).toBe('pending'))
+    expect(ended).toBe('pending')
+    client.getTransactionReceipt.mockImplementation(async ({ hash }: { hash: Hex }) => receipt(hash))
+    // The hold's next look, a few seconds on, verifies it.
+    await act(async () => { await vi.waitFor(() => expect(ended).not.toBe('pending'), { timeout: 15_000, interval: 100 }) })
+    expect(ended).toMatchObject({ status: 'done', hashes: [expect.any(String)] })
+    expect(ref.current!.phase).toBe('success')
+    await unmount()
+  }, 20_000)
 
   it('sends no later step once the page that ran it has gone, and frees that step', async () => {
     confirmEveryReview()
