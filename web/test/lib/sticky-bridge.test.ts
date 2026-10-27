@@ -21,7 +21,7 @@ const SEL = {
 }
 const initial = {
   trailingLogData: false, finalityReorg: false, safe: false, safeFailed: false, reverted: false, finalized: 100n, proposal: H(707), sourceCredits: false,
-  delivered: true, executed: false, membership: 1n, allowance: 0n, balance: 10_000n, mapping: BRIDGE_NATIVE_TOKEN, token: A(32), sourceChain: 1n,
+  delivered: true, executed: false, membership: 1n, allowance: 0n, balance: 10_000n, reclaim: 1000n, mapping: BRIDGE_NATIVE_TOKEN, token: A(32), sourceChain: 1n,
   transport: 'ccip', successfulBudget: 10n ** 15n, incomplete: false, badHash: false, badBranch: false, badAddress: false, badExecution: false,
   badPeer: false, badDecimals: false, emptyCode: false, disabled: false, changedReverse: false, migratedTerminal: false, nonProject: false,
   rejectClaim: false, wrongInput: false, missingReceiptLog: false, reorged: false, wrongBlockTx: false, caller: A(40), conflict: false,
@@ -84,7 +84,7 @@ function fixture(changes: Partial<typeof initial> = {}) {
       if (selector === SEL.symbol) return `${abi(32, 3)}${Buffer.from('TOK').toString('hex').padEnd(64, '0')}`
       if (selector === SEL.balanceOf) return abi(state.balance)
       if (selector === SEL.allowance) return abi(state.allowance)
-      if (selector === SEL.previewCashOutFrom) return abi(...Array<number>(9).fill(0), 1000, 1000, 384, 0)
+      if (selector === SEL.previewCashOutFrom) return abi(...Array<number>(9).fill(0), state.reclaim, 1000, 384, 0)
       if (selector === SEL.feeFreeSurplusOf) return abi(0)
       if (selector === SEL.FEELESS_ADDRESSES) return abi(A(60))
       if (selector === SEL.isFeelessFor) return abi(0)
@@ -178,6 +178,39 @@ describe('Sticky bridge, legacy acceptance preserved through SDK owners', () => 
     expect(bridgeCalldata(plan.steps[0])).toBe(`${SEL.approve}${word(f.route.sourceSucker)}${word(0)}`)
     f.state.allowance = 1000n
     expect((await f.api.prepare({ ...f, amount: 1000n })).steps).toHaveLength(1)
+  })
+  it.each([1010n, 990n])('keeps reviewed prepare bytes when fresh gross backing is %s and still covers the floor', async reclaim => {
+    const f = fixture()
+    const reviewed = await f.api.prepare({ ...f, amount: 1000n })
+    f.state.reclaim = reclaim
+    f.state.allowance = 1000n
+    const fresh = await f.api.prepare({ ...f, amount: 1000n, reviewedMinimum: reviewed.minimum })
+    expect(fresh.net).toBeGreaterThanOrEqual(reviewed.minimum)
+    expect(fresh.minimum).toBe(reviewed.minimum)
+    expect(fresh.steps).toHaveLength(1)
+    expect(bridgeCalldata(fresh.steps[0])).toBe(bridgeCalldata(reviewed.steps.at(-1)!))
+  })
+  it('refuses a fresh net below the reviewed floor and a nonpositive floor', async () => {
+    const f = fixture({ reclaim: 988n })
+    await expect(f.api.prepare({ ...f, amount: 1000n, reviewedMinimum: 965n })).rejects.toThrow('below your reviewed minimum')
+    await expect(f.api.prepare({ ...f, amount: 1000n, reviewedMinimum: 0n })).rejects.toThrow('positive reviewed bridge minimum')
+  })
+  it('can retain a one-unit reviewed minimum when a new percentage floor would round to zero', async () => {
+    const f = fixture({ reclaim: 2n })
+    const reviewed = await f.api.prepare({ ...f, amount: 1000n })
+    expect(reviewed.minimum).toBe(1n)
+    f.state.reclaim = 1n
+    await expect(f.api.prepare({ ...f, amount: 1000n })).rejects.toThrow('rounds to zero')
+    const fresh = await f.api.prepare({ ...f, amount: 1000n, reviewedMinimum: reviewed.minimum })
+    expect(fresh).toMatchObject({ net: 1n, minimum: 1n })
+    expect(bridgeCalldata(fresh.steps.at(-1)!)).toBe(bridgeCalldata(reviewed.steps.at(-1)!))
+  })
+  it.each([
+    ['peer', { badPeer: true }, 'peer'], ['token', { token: A(999) }, 'project token'],
+    ['accounting context', { badDecimals: true }, 'accounting contexts'], ['terminal', { migratedTerminal: true }, 'terminal changed'],
+  ] as const)('still refuses changed %s when retaining a reviewed minimum', async (_name, changes, message) => {
+    const f = fixture(changes)
+    await expect(f.api.prepare({ ...f, amount: 1000n, reviewedMinimum: 965n })).rejects.toThrow(message)
   })
   it('refuses zero amount, missing reference, insufficient balance and disabled routes', async () => {
     const f = fixture({ balance: 0n })
