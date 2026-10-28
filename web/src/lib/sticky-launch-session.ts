@@ -34,6 +34,8 @@ export type StickyLaunchSession = {
     selfPaid?: boolean
     error?: string
     recorded: Record<number, Hex>
+    /** The listing message the wallet signed with a creation still confirming: published from it once the creation is. */
+    signed?: { message: string; signature: Hex }
   }
   error?: string
 }
@@ -74,7 +76,9 @@ export function validateStickyLaunch(value: unknown): StickyLaunchSession {
       (session.listing.state === 'published' && !session.listing.intentId) ||
       (session.listing.requested !== undefined && typeof session.listing.requested !== 'boolean') ||
       (session.listing.selfPaid !== undefined && typeof session.listing.selfPaid !== 'boolean') ||
-      (session.listing.requested && session.listing.selfPaid)) {
+      (session.listing.requested && session.listing.selfPaid) ||
+      (session.listing.signed !== undefined && (typeof session.listing.signed.message !== 'string' ||
+        !/^0x[0-9a-fA-F]+$/.test(session.listing.signed.signature)))) {
     throw new ReviewLineError('The saved launch publication is invalid. Keep its recovery data.')
   }
   for (const history of [session.directAttempts, session.paymentAttempts]) {
@@ -195,7 +199,12 @@ export type SubmissionCallbacks = {
 }
 
 /** What became of a listing signed with the creation: published under its id, or not, and why. */
-export type ListingCallbacks = { published: (intentId: string) => void; failed: (message: string) => void }
+export type ListingCallbacks = {
+  published: (intentId: string) => void
+  failed: (message: string) => void
+  /** The wallet signed the listing, but its creation is still confirming: kept to publish once it is. */
+  signed: (message: string, signature: Hex) => void
+}
 
 /** The hold's authenticated result for a launch submission. */
 export type LaunchSettlement = { hash: Hex; result: 'success' | 'failed' }
@@ -217,6 +226,8 @@ export type StickyLaunchPorts = {
   verifyDeployment: (session: StickyLaunchSession, target: LaunchTarget, hash: Hex) => Promise<LaunchResult | null>
   /** Signs the listing under its own review and publishes it: its id. */
   publishListing: (plan: LaunchPlan) => Promise<string>
+  /** Publishes the listing from the signature the wallet already gave, asking nothing: its id. */
+  publishSignedListing: (plan: LaunchPlan, signed: { message: string; signature: Hex }) => Promise<string>
   sponsor: (session: StickyLaunchSession, beforeRequest: () => void) => Promise<void>
   record: (session: StickyLaunchSession, chainId: number, result: LaunchResult) => Promise<boolean>
   /** Whether the SDK lets the saved attempt of this launch be discarded (its followed success retired first). */
@@ -247,6 +258,29 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
   const listed: ListingCallbacks = {
     published: intentId => { const session = load(); save({ ...session, listing: { ...session.listing, state: 'published', intentId, error: undefined } }) },
     failed: message => { const session = load(); save({ ...session, listing: { ...session.listing, state: 'unlisted', error: message } }) },
+    signed: (message, signature) => { const session = load(); save({ ...session, listing: { ...session.listing, signed: { message, signature } } }) },
+  }
+  /**
+   * `session` as saved after an await: its listing (the signature, the publication) is the latest
+   * one saved, never this older snapshot's, since another tab may have saved it meanwhile.
+   */
+  const fresh = (session: StickyLaunchSession): StickyLaunchSession => {
+    const latest = ports.store.load()
+    return latest?.plan.id === session.plan.id ? { ...session, listing: latest.listing } : session
+  }
+  /** A launch recovered with its listing signed before the creation confirmed: that listing is published now. */
+  async function publishSigned(session: StickyLaunchSession) {
+    const { signed } = session.listing
+    if (!signed || session.listing.intentId || !launchComplete(session)) return session
+    try {
+      const intentId = await ports.publishSignedListing(session.plan, signed)
+      const latest = fresh(session)
+      return save({ ...latest, listing: { ...latest.listing, state: 'published', intentId, signed: undefined, error: undefined } })
+    } catch (error) {
+      // Kept: the next check publishes it again.
+      const latest = fresh(session)
+      return save({ ...latest, listing: { ...latest.listing, error: error instanceof Error ? errorLine(error) : 'Listing will need another check.' } })
+    }
   }
   async function listing(session: StickyLaunchSession) {
     requireSingleHomeChain(session.plan.targets)
@@ -271,9 +305,9 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
         for (const target of current.plan.targets) {
           candidates[target.chainId] = [...new Set([...candidates[target.chainId], ...(found[target.chainId] ?? [])])]
         }
-        current = save({ ...current, candidates, error: undefined })
+        current = save({ ...fresh(current), candidates, error: undefined })
       } catch (error) {
-        current = save({ ...current, error: error instanceof Error ? errorLine(error) : 'Could not check the saved launch.' })
+        current = save({ ...fresh(current), error: error instanceof Error ? errorLine(error) : 'Could not check the saved launch.' })
       }
     }
     // Previously confirmed receipts must remain canonical; one unavailable chain cannot renew old proof.
@@ -290,12 +324,12 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     const latest = ports.store.load()
     const kept = <T extends LaunchSubmission>(mine: T | undefined, theirs: T | undefined): T | undefined =>
       mine && theirs?.settled && !mine.settled && theirs.hash ? { ...mine, hash: theirs.hash, settled: theirs.settled } : mine
-    current = save({ ...current, results, proven: { ...latest?.proven, ...current.proven, ...results },
+    current = save({ ...fresh(current), results, proven: { ...latest?.proven, ...current.proven, ...results },
       direct: kept(current.direct, latest?.direct), payment: kept(current.payment, latest?.payment) })
     if (current.payment?.hash) {
       let confirmed = false
       try { confirmed = await ports.verifyPayment(current) } catch { /* Unknown funding keeps its exact intent. */ }
-      current = save({ ...current, payment: { ...current.payment, confirmed } })
+      current = save({ ...fresh(current), payment: { ...current.payment, confirmed } })
     }
     if (current.listing.intentId && current.plan.targets.length === 1) {
       for (const target of current.plan.targets) {
@@ -303,9 +337,11 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
         if (!result || current.listing.recorded[target.chainId] === result.hash) continue
         try {
           if (await ports.record(current, target.chainId, result)) {
+            current = fresh(current)
             current = save({ ...current, listing: { ...current.listing, recorded: { ...current.listing.recorded, [target.chainId]: result.hash } } })
           }
         } catch (error) {
+          current = fresh(current)
           current = save({ ...current, listing: { ...current.listing, error: error instanceof Error ? errorLine(error) : 'Listing will need another check.' } })
         }
       }
@@ -364,7 +400,7 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
       const saved = load()
       requireSingleHomeChain(saved.plan.targets)
       let session = await refreshSession(saved)
-      if (launchComplete(session)) return session
+      if (launchComplete(session)) return publishSigned(session)
       ports.guard(session.plan.owner)
       if (session.direct?.started || session.payment?.started || (session.listing.requested && !session.listing.selfPaid)) return session
       if (session.mode === 'center') {
@@ -408,12 +444,12 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
       await ports.sendPayment(session, callbacks('payment'))
       return refreshSession(load())
     }),
-    refresh: () => exclusively(() => refreshSession(load())),
+    refresh: () => exclusively(async () => publishSigned(await refreshSession(load()))),
     retry: () => exclusively(async () => {
       const saved = load()
       requireSingleHomeChain(saved.plan.targets)
       const session = await refreshSession(saved)
-      if (launchComplete(session)) return session
+      if (launchComplete(session)) return publishSigned(session)
       ports.guard(session.plan.owner)
       const kind = session.payment?.started ? 'payment' : 'direct'
       const submitted = session[kind]

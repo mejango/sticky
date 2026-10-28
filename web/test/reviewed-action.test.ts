@@ -86,7 +86,7 @@ let acquireWallet = async () => currentWallet
 vi.mock('@wagmi/core', async importOriginal => ({
   ...(await importOriginal<typeof import('@wagmi/core')>()),
   getAccount: () => ({ address: connectedAccount, chainId: 84532, connector: { uid: 'test', id: 'test' } }),
-  getWalletClient: () => acquireWallet(),
+  getWalletClient: async () => (await import('./support/viem-wallet')).viemWallet(await acquireWallet(), () => 84532),
   getPublicClient: () => client,
   switchChain: vi.fn(),
 }))
@@ -121,6 +121,7 @@ afterEach(() => {
   currentWallet = walletClient
   connectedAccount = ALICE
   acquireWallet = async () => currentWallet
+  client.getTransactionReceipt.mockImplementation(async ({ hash }: { hash: Hex }) => receipt(hash))
   walletSends.length = 0
   walletClient.sendTransaction.mockClear()
   clearViewAs()
@@ -314,23 +315,17 @@ describe('useReviewedAction', () => {
     await unmount()
   })
 
-  it('leaves a sequence open when the held step that settles is not its last, and resumes from the step after it', async () => {
+  it('continues a sequence whose step the site could not record once its hold settles it, in the same run', async () => {
     confirmEveryReview()
     const { stick, unstick } = baseline
     const calls = [stick, unstick].map((sent, at) => ({ chainId: sent.chainId, to: sent.to as Address, data: sent.data as Hex, value: BigInt(sent.value), ...(at ? { dependsOnPrior: true } : {}) }))
-    // The first step's journal fails once it is sent: core stops the run with that step held, and its follower finds it
-    // mined.
+    // Each step's journal fails once it is sent: core holds that step unverified, its follower finds it mined, and the
+    // run goes on to the next step without another send of it.
     const onSubmitted = vi.fn(async () => { throw new ReviewLineError('The launch record could not be saved.') })
     const { ref, unmount } = await mount()
-    await act(async () => {
-      await ref.current!.run({ account: ALICE, calls, onSubmitted })
-    })
-    await vi.waitFor(() => expect(ref.current!.landed).toBe(1), { timeout: 5_000 })
-    expect(ref.current!.phase).toBe('idle')
-    expect(walletSends).toHaveLength(1)
     let result: Awaited<ReturnType<Action['run']>> = null
     await act(async () => {
-      result = await ref.current!.run({ account: ALICE, calls })
+      result = await ref.current!.run({ account: ALICE, calls, onSubmitted })
     })
     expect(result!.status).toBe('done')
     expect(walletSends).toHaveLength(2)
@@ -338,6 +333,26 @@ describe('useReviewedAction', () => {
     expect(ref.current!.phase).toBe('success')
     await unmount()
   })
+
+  it('keeps a send whose receipt is still confirming pending, and returns done once its hold verifies it', async () => {
+    confirmEveryReview()
+    client.getTransactionReceipt.mockImplementation(async () => { throw new Error('lagging node') })
+    const { ref, unmount } = await mount()
+    const { stick } = baseline
+    let ended: unknown = 'pending'
+    await act(async () => {
+      void ref.current!.run({ account: ALICE, calls: [{ chainId: stick.chainId, to: stick.to as Address, data: stick.data as Hex, value: BigInt(stick.value), intent: `lag-${crypto.randomUUID()}` }] })
+        .then(value => { ended = value })
+    })
+    await vi.waitFor(() => expect(ref.current!.phase).toBe('pending'))
+    expect(ended).toBe('pending')
+    client.getTransactionReceipt.mockImplementation(async ({ hash }: { hash: Hex }) => receipt(hash))
+    // The hold's next look, a few seconds on, verifies it.
+    await act(async () => { await vi.waitFor(() => expect(ended).not.toBe('pending'), { timeout: 15_000, interval: 100 }) })
+    expect(ended).toMatchObject({ status: 'done', hashes: [expect.any(String)] })
+    expect(ref.current!.phase).toBe('success')
+    await unmount()
+  }, 20_000)
 
   it('sends no later step once the page that ran it has gone, and frees that step', async () => {
     confirmEveryReview()

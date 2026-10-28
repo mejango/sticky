@@ -61,7 +61,7 @@ vi.mock('@wagmi/core', () => ({
   getAccount: () => ({ address: OWNER, chainId: 1, connector: { uid: 'test', id: 'test' } }),
   getPublicClient: () => chain,
   switchChain: vi.fn(),
-  getWalletClient: async () => ({ chain: { id: 1 }, sendTransaction: mocks.sendTransaction }),
+  getWalletClient: async () => (await import('../support/viem-wallet')).viemWallet({ sendTransaction: mocks.sendTransaction }, () => 1),
 }))
 vi.mock('wagmi', () => ({ usePublicClient: () => chain }))
 vi.mock('@/hooks/useWallet', () => ({ useWallet: () => ({ address: OWNER, isConnected: true, isCenterWallet: false, openSignIn: vi.fn() }) }))

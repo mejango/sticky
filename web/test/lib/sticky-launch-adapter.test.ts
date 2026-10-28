@@ -1,4 +1,5 @@
 import { stickyDeployerAbi } from '@bananapus/nana-sdk-core'
+import { viemWallet } from '../support/viem-wallet'
 import { JBCenterRequestError } from '@bananapus/nana-sdk-core/jbcenter'
 import {
   RELAYR_NATIVE_TOKEN, RELAYR_PAYMENT_ADDRESS, RELAYR_PAYMENT_GAS,
@@ -90,7 +91,7 @@ vi.mock('@bananapus/nana-sdk-core/review/relayr', async original => ({
 
 import { createBrowserStickyLaunchController } from '@/lib/sticky-launch-adapter'
 import { attempts } from '@/lib/write-holds'
-import { createSavedAttemptRecovery, createWriteHold, registerReviewHandler } from '@bananapus/nana-sdk-core/review'
+import { ReviewedReceiptUnverifiedError, createSavedAttemptRecovery, createWriteHold, registerReviewHandler } from '@bananapus/nana-sdk-core/review'
 import { browserWriteRecoveryModel } from '../support/write-recovery'
 import { buildStickyEnvelope } from '@/lib/sticky-listing'
 
@@ -158,18 +159,18 @@ beforeEach(() => {
   fake.account = { address: OWNER, chainId: 8453, connector: { id: 'injected', uid: 'reviewed-wallet' } }
   fake.safe = false
   fake.actualWallet = false
-  fake.connected.mockResolvedValue({ chain: { id: 8453 }, sendTransaction: async (tx: { chain: { id: number } }) => fake.send({ ...tx, chainId: tx.chain.id }) })
+  fake.connected.mockImplementation(async () => viemWallet({ sendTransaction: tx => fake.send({ ...tx, chainId: tx.chain.id }) }, () => fake.account.chainId))
   fake.revalidate.mockResolvedValue(undefined)
   fake.review.mockResolvedValue(undefined)
   fake.choose.mockResolvedValue(8453)
   fake.simulate.mockImplementation(async request => ({ request }))
   fake.estimate.mockResolvedValue(100_000n)
-  fake.write.mockResolvedValue(HASH)
   // The chain shows what the wallet sent, mined in block 10.
   let sent: { chainId: number; to: Address; data: Hex; value: bigint } | undefined
   fake.send.mockImplementation(async tx => { sent = tx; return HASH })
+  fake.write.mockImplementation(async tx => { sent = tx; return HASH })
   fake.sign.mockResolvedValue('0x1234')
-  fake.receipt.mockImplementation(async () => ({ transactionHash: HASH, blockNumber: 10n, blockHash: BLOCK, status: 'success', from: OWNER, to: sent?.to, logs: [] }))
+  fake.receipt.mockImplementation(async () => ({ transactionHash: HASH, blockNumber: 10n, blockHash: BLOCK, transactionIndex: 0, status: 'success', from: OWNER, to: sent?.to, logs: [] }))
   fake.transaction.mockImplementation(async () => sent
     ? { hash: HASH, chainId: sent.chainId, from: OWNER, to: sent.to, input: sent.data, value: sent.value, nonce: 7, blockHash: BLOCK, blockNumber: 10n, transactionIndex: 0 }
     : { hash: HASH })
@@ -194,7 +195,7 @@ beforeEach(() => {
   unregister = registerReviewHandler(async prompt => { await fake.review(prompt.model); return prompt.confirmation })
 })
 let unregister = () => {}
-afterEach(() => unregister())
+afterEach(() => { unregister(); vi.useRealTimers() })
 
 describe('Sticky launch browser boundaries', () => {
   it('enforces one home chain at every publication boundary', async () => {
@@ -241,7 +242,7 @@ describe('Sticky launch browser boundaries', () => {
     const noted = callbacks()
     fake.receipt.mockImplementation(async () => {
       expect(noted.submitted).toHaveBeenCalledWith(HASH, undefined)
-      return { transactionHash: HASH, blockNumber: 10n, status: 'success' }
+      return { transactionHash: HASH, blockNumber: 10n, blockHash: BLOCK, transactionIndex: 0, status: 'success', from: OWNER, to: DEPLOYER, logs: [] }
     })
     await fake.ports.sendDirect(saved, noted)
     expect(fake.review).toHaveBeenCalledWith(expect.objectContaining({ title: 'Create Sticky token', calls: [expect.objectContaining({
@@ -250,6 +251,64 @@ describe('Sticky launch browser boundaries', () => {
     expect(fake.write).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ chainId: 8453, to: DEPLOYER, data: saved.plan.targets[0].call.data, value: 2n }))
     expect(noted.beforeWrite).toHaveBeenCalledOnce()
     expect(noted.rejected).not.toHaveBeenCalled()
+  })
+
+  it('a creation still confirming is followed to its end, and its listing published with the signature it carried, from one review', async () => {
+    const noted = callbacks()
+    const listing = { published: vi.fn(), failed: vi.fn(), signed: vi.fn() }
+    const signature = `0x${'5e'.repeat(65)}` as Hex
+    fake.sign.mockResolvedValue(signature)
+    fake.publish.mockImplementation(async (_plan, sign) => ({ id: 'listing', signed: await sign('Exact SDK listing message') }))
+    const landed = fake.receipt.getMockImplementation()!
+    let reads = 0
+    // The wallet's receipt arrives; the hold's first read of it lags.
+    fake.receipt.mockImplementation(async (...args) => {
+      reads += 1
+      if (reads === 2) throw new Error('lagging node')
+      return landed(...args)
+    })
+    await fake.ports.sendDirect(session(), noted, listing)
+    expect(fake.review).toHaveBeenCalledOnce()
+    expect(fake.write).toHaveBeenCalledOnce()
+    expect(fake.sign).toHaveBeenCalledOnce()
+    expect(await fake.publish.mock.results[0].value).toEqual({ id: 'listing', signed: signature })
+    expect(listing.published).toHaveBeenCalledWith('listing')
+    expect(listing.failed).not.toHaveBeenCalled()
+  }, 20_000)
+
+  it('a creation unconfirmed past the follow keeps its signed listing, so recovery publishes it with no new signature', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const noted = callbacks()
+    const listing = { published: vi.fn(), failed: vi.fn(), signed: vi.fn() }
+    const signature = `0x${'5e'.repeat(65)}` as Hex
+    fake.sign.mockResolvedValue(signature)
+    fake.publish.mockImplementation(async (_plan, sign) => ({ id: 'listing', signed: await sign('Exact SDK listing message') }))
+    const landed = fake.receipt.getMockImplementation()!
+    let reads = 0
+    // The wallet's receipt arrives; every later read lags past the default follow.
+    fake.receipt.mockImplementation(async (...args) => {
+      reads += 1
+      if (reads >= 2) throw new Error('lagging node')
+      return landed(...args)
+    })
+    const sent = fake.ports.sendDirect(session(), noted, listing)
+    const refused = expect(sent).rejects.toBeInstanceOf(ReviewedReceiptUnverifiedError)
+    await vi.advanceTimersByTimeAsync(130_000)
+    await refused
+    expect(fake.write).toHaveBeenCalledOnce()
+    expect(fake.sign).toHaveBeenCalledOnce()
+    expect(listing.signed).toHaveBeenCalledExactlyOnceWith('Exact SDK listing message', signature)
+    expect(listing.failed).not.toHaveBeenCalled()
+    expect(listing.published).not.toHaveBeenCalled()
+  }, 20_000)
+
+  it('publishes a saved listing signature without asking the wallet, and refuses one for a different message', async () => {
+    const signature = `0x${'5e'.repeat(65)}` as Hex
+    fake.publish.mockImplementation(async (_plan, sign) => ({ id: 'listing', signed: await sign('Exact SDK listing message') }))
+    await expect(fake.ports.publishSignedListing(session().plan, { message: 'Exact SDK listing message', signature })).resolves.toBe('listing')
+    expect(await fake.publish.mock.results[0].value).toEqual({ id: 'listing', signed: signature })
+    await expect(fake.ports.publishSignedListing(session().plan, { message: 'An older message', signature })).rejects.toThrow('changed since it was signed')
+    expect(fake.sign).not.toHaveBeenCalled()
   })
 
   it.each(['account', 'view-as', 'external-wallet'] as const)('rechecks %s after the review before the wallet opens', async kind => {
@@ -323,7 +382,7 @@ describe('Sticky launch browser boundaries', () => {
     const rejected = expect(pending).rejects.toThrow('The connected account changed. Review again.')
     await entered.promise
     fake.account.address = TOKEN
-    waiting.resolve({ chain: { id: 8453 }, sendTransaction: fake.send })
+    waiting.resolve(viemWallet({ sendTransaction: fake.send }, () => 8453))
     await rejected
     expect(noted.beforeWrite).toHaveBeenCalledOnce()
     expect(noted.rejected).toHaveBeenCalledOnce()
@@ -473,8 +532,10 @@ describe('Sticky launch browser boundaries', () => {
       await expect(again.send(found.client, async () => { await fake.write(); return HASH })).rejects.toMatchObject({ name: expect.stringMatching(/^WriteHold(Busy)?Error$|^WriteHeldError$/) })
 
       wallet.resolve(HASH)
-      await first
+      // This node never shows the transaction it sent, so its receipt stays unverified: the launch stays
+      // held, and the send stays pending while it is followed.
       await expect(tab.recovery.recover(found.attempt, found.client)).resolves.toMatchObject({ status: 'held' })
+      await expect(Promise.race([first.then(() => 'ended', () => 'ended'), new Promise(done => setTimeout(done, 200, 'pending'))])).resolves.toBe('pending')
       expect(fake.write).toHaveBeenCalledOnce()
     })
 
@@ -508,8 +569,10 @@ describe('Sticky launch browser boundaries', () => {
       await vi.waitFor(() => expect(fake.write).toHaveBeenCalledOnce())
       await expect(tab.recovery.retire(found.attempt, { by: 'check', outcome: shown })).resolves.toMatchObject({ retired: false })
       wallet.resolve(HASH)
-      await first
+      // This node never shows the transaction it sent, so its receipt stays unverified: the launch stays
+      // held, and the send stays pending while it is followed.
       await expect(tab.recovery.recover(found.attempt, found.client)).resolves.toMatchObject({ status: 'held' })
+      await expect(Promise.race([first.then(() => 'ended', () => 'ended'), new Promise(done => setTimeout(done, 200, 'pending'))])).resolves.toBe('pending')
       expect(fake.write).toHaveBeenCalledOnce()
     })
 
@@ -534,7 +597,6 @@ describe('Sticky launch browser boundaries', () => {
     const controller = createBrowserStickyLaunchController()
     fake.publish.mockImplementation(async (_plan, sign) => { await sign('Exact SDK listing message'); return { id: 'listing' } })
     fake.intent.mockResolvedValue({ id: 'listing', publisher: OWNER, envelope: buildStickyEnvelope(plan()), deployments: [], deploys: [] })
-    fake.receipt.mockResolvedValue({ transactionHash: HASH, blockNumber: 10n, status: 'success' })
     await controller.prepare(plan(), capability)
     await controller.run()
     expect(fake.review).toHaveBeenCalledOnce()
@@ -546,6 +608,30 @@ describe('Sticky launch browser boundaries', () => {
     if (capability === 'self-paid') expect(fake.write).toHaveBeenCalledOnce()
     else expect(fake.sponsor).toHaveBeenCalledOnce()
   })
+
+  it('a creation whose receipt watcher is exhausted keeps its listing signature, and recovery publishes it with no new signature', async () => {
+    const controller = createBrowserStickyLaunchController()
+    const signature = `0x${'5e'.repeat(65)}` as Hex
+    fake.sign.mockResolvedValue(signature)
+    fake.publish.mockImplementation(async (_plan, sign) => ({ id: 'listing', signed: await sign('Exact SDK listing message') }))
+    const landed = fake.receipt.getMockImplementation()!
+    // The watcher and every fallback read fail until the node recovers.
+    fake.receipt.mockRejectedValue(new Error('lagging node'))
+    await controller.prepare(plan(), 'self-paid')
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const running = controller.run().then(() => 'done', (error: unknown) => error)
+    await vi.advanceTimersByTimeAsync(400_000)
+    expect(await running).toBeInstanceOf(ReviewedReceiptUnverifiedError)
+    vi.useRealTimers()
+    expect(controller.load()?.listing.signed).toEqual({ message: 'Exact SDK listing message', signature })
+    fake.receipt.mockImplementation(landed)
+    fake.verifyDeployment.mockImplementation(async (_session, _target, hash) => ({ hash, token: TOKEN, projectId: '10' }))
+    await controller.refresh()
+    expect(controller.load()?.listing).toMatchObject({ state: 'published', intentId: 'listing' })
+    expect(await fake.publish.mock.results.at(-1)!.value).toEqual({ id: 'listing', signed: signature })
+    expect(fake.sign).toHaveBeenCalledOnce()
+    expect(fake.write).toHaveBeenCalledOnce()
+  }, 20_000)
 
   it('the one review of a Safe launch shows the Safe execution gas the wallet will run', async () => {
     fake.safe = true

@@ -2,12 +2,11 @@
 
 import { stickyDeployerAbi, type JBChainId } from '@bananapus/nana-sdk-core'
 import { JBCenterRequestError, type JBCenterIntent } from '@bananapus/nana-sdk-core/jbcenter'
-import { errorLine, intent, isDefiniteWalletRejection, ReviewLineError, launchIntent, payRelayrReviewed, sendReviewed, signReviewed, waitForTrackedReceipt, type ReviewedCall, type ReviewedResult, type ReviewedSignature, type WriteHoldClient } from '@bananapus/nana-sdk-core/review'
+import { errorLine, HELD_CONFIRMING_LINE, intent, ReviewedReceiptUnverifiedError, ReviewLineError, launchIntent, payRelayrReviewed, sendReviewed, signReviewed, waitForTrackedReceipt, type ReviewedCall, type ReviewedResult, type ReviewedSignature, type WriteHoldClient } from '@bananapus/nana-sdk-core/review'
 import { safeExecutionRunsCalls } from '@bananapus/nana-sdk-core/safe-service'
 import {
   RELAYR_API,
   RELAYR_UUID_RE,
-  RelayrPaymentNotSentError,
   bindRelayrQuote,
   readRelayrBundle,
   relayrBundleRequest,
@@ -15,6 +14,7 @@ import {
   relayrDestinationRecords,
   relayrPaymentDetails,
   relayrPaymentOptions,
+  relayrPaymentAttemptOutcome,
   requireRelayrBundleUnpaid,
   requireRelayrPaymentRetry,
   verifyRelayrPayment,
@@ -295,6 +295,8 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
         beforeWallet: async () => { await journal.beforeWallet(); requireSingleHomeChain(plan.targets); guard(plan.owner) },
         onUnsent: journal.onUnsent,
         onSubmitted: (_call, _step, hash, { safe }) => journal.onSubmitted(hash, safe),
+        // A creation still confirming is followed in the run; after the bound the launch goes to its recovery check.
+        follow: { onConfirming: () => phase(HELD_CONFIRMING_LINE) },
       }, { ...reviewedSendDeps, onProgress: ({ phase: step }) => phase(step === 'signing' ? 'Confirm creation in your wallet.' : step === 'receipt' ? 'Waiting for the creation to confirm.' : 'Checking the launch transaction.') })
       let result: ReviewedResult | undefined
       if (listing) {
@@ -303,7 +305,12 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
         try {
           const intent = await publishStickyListing(structuredClone(plan), async message => {
             asked = true
-            result = await send([{ kind: 'message', chainId: target.chainId, message }])
+            result = await send([{ kind: 'message', chainId: target.chainId, message }]).catch((error: unknown) => {
+              // Sent and still confirming past the follow: its listing signature is kept, to publish once it confirms.
+              const [signature] = error instanceof ReviewedReceiptUnverifiedError ? error.held?.signatures ?? [] : []
+              if (signature) listing.signed(message, signature)
+              throw error
+            })
             const [signature] = result.signatures ?? []
             if (!signature) throw new ReviewLineError('The listing was not signed.')
             return signature
@@ -353,9 +360,9 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
           callbacks.submitted(hash, safe ? sent : undefined)
         },
       }, { ...reviewedSendDeps, onProgress: () => phase('Confirm payment in your wallet.') }).catch(error => {
-        // Only the wallet's own refusal (4001), or core's final gate before the wallet, says nothing was sent; any other
+        // Only what core reads as unpaid (the wallet's 4001, a refusal before the wallet) says nothing was sent; any other
         // failure keeps the submission started.
-        if (!sent && (isDefiniteWalletRejection(error) || error instanceof RelayrPaymentNotSentError)) journal.onUnsent()
+        if (!sent && relayrPaymentAttemptOutcome(error, { sending: true, paid: false }) === 'unpaid') journal.onUnsent()
         throw error
       })
       const execution = 'safeTxHash' in paid ? await safeExecution(details.chainId, paid.safeTxHash, callbacks) : paid.hash
@@ -443,6 +450,14 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       return attempts.canDiscard(saved.attempt)
     },
     verifyDeployment: verifyStickyLaunchDeployment,
+    async publishSignedListing(plan, signed) {
+      requireSingleHomeChain(plan.targets)
+      const intent = await publishStickyListing(structuredClone(plan), async message => {
+        if (message !== signed.message) throw new ReviewLineError('The listing changed since it was signed. List it again.')
+        return signed.signature
+      })
+      return intent.id
+    },
     async publishListing(plan) {
       requireSingleHomeChain(plan.targets)
       guard(plan.owner)

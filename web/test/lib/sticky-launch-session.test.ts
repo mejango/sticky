@@ -39,7 +39,7 @@ function fixture(chainIds = [84532], capability: 'sponsored' | 'self-paid' | 'un
     verifyPayment: vi.fn(async () => true), verifyDeployment: vi.fn(async () => null),
     requireRetry: vi.fn(async () => {}),
     canDiscard: vi.fn(async () => true),
-    publishListing: vi.fn(async () => 'listing-identity'), sponsor: vi.fn(async (_session, beforeRequest) => { await beforeRequest() }),
+    publishListing: vi.fn(async () => 'listing-identity'), publishSignedListing: vi.fn(async () => 'signed-listing-identity'), sponsor: vi.fn(async (_session, beforeRequest) => { await beforeRequest() }),
     record: vi.fn(async () => true), changed: vi.fn(),
   }
   const controller = createStickyLaunchController(ports)
@@ -304,6 +304,58 @@ describe('durable Sticky launch controller', () => {
     expect(f.ports.requireRetry).not.toHaveBeenCalled()
     expect(f.store.load()?.direct).toEqual({ started: true })
     expect(f.store.load()?.directAttempts).toBeUndefined()
+  })
+
+  it('publishes a listing signed before an unconfirmed creation once that creation is recovered, with no new signature', async () => {
+    const f = fixture()
+    const signed = { message: 'Exact SDK listing message', signature: `0x${'5e'.repeat(65)}` as Hex }
+    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks, listing) => {
+      await callbacks.beforeWrite(); callbacks.submitted(H1)
+      listing!.signed(signed.message, signed.signature)
+      throw new Error('The creation was sent; its confirmation is still pending.')
+    })
+    await expect(f.controller.run()).rejects.toThrow()
+    expect(f.store.load()?.listing).toMatchObject({ state: 'pending', signed })
+    vi.mocked(f.ports.verifyDeployment).mockImplementation(async (_session, _target, candidate) => ({ hash: candidate, token: address('8'), projectId: '10' }))
+    const recovered = await f.controller.refresh()
+    expect(f.ports.publishSignedListing).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: f.prepared.plan.id }), signed)
+    expect(f.ports.publishListing).not.toHaveBeenCalled()
+    expect(f.ports.sendDirect).toHaveBeenCalledOnce()
+    expect(recovered.listing).toMatchObject({ state: 'published', intentId: 'signed-listing-identity' })
+    expect(recovered.listing.signed).toBeUndefined()
+    await f.controller.run()
+    expect(f.ports.publishSignedListing).toHaveBeenCalledOnce()
+  })
+
+  it("keeps a listing signed in one tab while another tab's refresh was awaiting its proof, and publishes it once", async () => {
+    const f = fixture()
+    const signed = { message: 'Exact SDK listing message', signature: `0x${'5e'.repeat(65)}` as Hex }
+    let paused!: () => void, release!: () => void, sign!: () => void
+    const waiting = new Promise<void>(resolve => { paused = resolve })
+    const released = new Promise<void>(resolve => { release = resolve })
+    const signing = new Promise<void>(resolve => { sign = resolve })
+    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks, listing) => {
+      await callbacks.beforeWrite(); callbacks.submitted(H1)
+      await signing
+      listing!.signed(signed.message, signed.signature)
+      throw new Error('The creation was sent; its confirmation is still pending.')
+    })
+    const tabA = f.controller.run()
+    await vi.waitFor(() => expect(f.store.load()?.direct?.hash).toBe(H1))
+    // Tab B's refresh pauses on its deployment proof while tab A saves the signature.
+    const tabB = createStickyLaunchController({ ...f.ports, verifyDeployment: vi.fn(async () => { paused(); await released; return null }) })
+    const refreshing = tabB.refresh()
+    await waiting
+    sign()
+    await expect(tabA).rejects.toThrow()
+    release()
+    await refreshing
+    expect(f.store.load()?.listing.signed).toEqual(signed)
+    vi.mocked(f.ports.verifyDeployment).mockImplementation(async (_session, _target, candidate) => ({ hash: candidate, token: address('8'), projectId: '10' }))
+    await f.controller.refresh()
+    expect(f.ports.publishSignedListing).toHaveBeenCalledExactlyOnceWith(expect.anything(), signed)
+    expect(f.store.load()?.listing).toMatchObject({ state: 'published', intentId: 'signed-listing-identity' })
+    expect(f.ports.sendDirect).toHaveBeenCalledOnce()
   })
 
   it('saves a settlement the SDK followed into the journal, so the launch is never sent again', async () => {
