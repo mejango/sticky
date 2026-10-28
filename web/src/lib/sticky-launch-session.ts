@@ -260,16 +260,26 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     failed: message => { const session = load(); save({ ...session, listing: { ...session.listing, state: 'unlisted', error: message } }) },
     signed: (message, signature) => { const session = load(); save({ ...session, listing: { ...session.listing, signed: { message, signature } } }) },
   }
+  /**
+   * `session` as saved after an await: its listing (the signature, the publication) is the latest
+   * one saved, never this older snapshot's, since another tab may have saved it meanwhile.
+   */
+  const fresh = (session: StickyLaunchSession): StickyLaunchSession => {
+    const latest = ports.store.load()
+    return latest?.plan.id === session.plan.id ? { ...session, listing: latest.listing } : session
+  }
   /** A launch recovered with its listing signed before the creation confirmed: that listing is published now. */
   async function publishSigned(session: StickyLaunchSession) {
     const { signed } = session.listing
     if (!signed || session.listing.intentId || !launchComplete(session)) return session
     try {
       const intentId = await ports.publishSignedListing(session.plan, signed)
-      return save({ ...session, listing: { ...session.listing, state: 'published', intentId, signed: undefined, error: undefined } })
+      const latest = fresh(session)
+      return save({ ...latest, listing: { ...latest.listing, state: 'published', intentId, signed: undefined, error: undefined } })
     } catch (error) {
       // Kept: the next check publishes it again.
-      return save({ ...session, listing: { ...session.listing, error: error instanceof Error ? errorLine(error) : 'Listing will need another check.' } })
+      const latest = fresh(session)
+      return save({ ...latest, listing: { ...latest.listing, error: error instanceof Error ? errorLine(error) : 'Listing will need another check.' } })
     }
   }
   async function listing(session: StickyLaunchSession) {
@@ -295,9 +305,9 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
         for (const target of current.plan.targets) {
           candidates[target.chainId] = [...new Set([...candidates[target.chainId], ...(found[target.chainId] ?? [])])]
         }
-        current = save({ ...current, candidates, error: undefined })
+        current = save({ ...fresh(current), candidates, error: undefined })
       } catch (error) {
-        current = save({ ...current, error: error instanceof Error ? errorLine(error) : 'Could not check the saved launch.' })
+        current = save({ ...fresh(current), error: error instanceof Error ? errorLine(error) : 'Could not check the saved launch.' })
       }
     }
     // Previously confirmed receipts must remain canonical; one unavailable chain cannot renew old proof.
@@ -314,12 +324,12 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     const latest = ports.store.load()
     const kept = <T extends LaunchSubmission>(mine: T | undefined, theirs: T | undefined): T | undefined =>
       mine && theirs?.settled && !mine.settled && theirs.hash ? { ...mine, hash: theirs.hash, settled: theirs.settled } : mine
-    current = save({ ...current, results, proven: { ...latest?.proven, ...current.proven, ...results },
+    current = save({ ...fresh(current), results, proven: { ...latest?.proven, ...current.proven, ...results },
       direct: kept(current.direct, latest?.direct), payment: kept(current.payment, latest?.payment) })
     if (current.payment?.hash) {
       let confirmed = false
       try { confirmed = await ports.verifyPayment(current) } catch { /* Unknown funding keeps its exact intent. */ }
-      current = save({ ...current, payment: { ...current.payment, confirmed } })
+      current = save({ ...fresh(current), payment: { ...current.payment, confirmed } })
     }
     if (current.listing.intentId && current.plan.targets.length === 1) {
       for (const target of current.plan.targets) {
@@ -327,9 +337,11 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
         if (!result || current.listing.recorded[target.chainId] === result.hash) continue
         try {
           if (await ports.record(current, target.chainId, result)) {
+            current = fresh(current)
             current = save({ ...current, listing: { ...current.listing, recorded: { ...current.listing.recorded, [target.chainId]: result.hash } } })
           }
         } catch (error) {
+          current = fresh(current)
           current = save({ ...current, listing: { ...current.listing, error: error instanceof Error ? errorLine(error) : 'Listing will need another check.' } })
         }
       }

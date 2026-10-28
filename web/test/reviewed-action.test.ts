@@ -315,23 +315,17 @@ describe('useReviewedAction', () => {
     await unmount()
   })
 
-  it('leaves a sequence open when the held step that settles is not its last, and resumes from the step after it', async () => {
+  it('continues a sequence whose step the site could not record once its hold settles it, in the same run', async () => {
     confirmEveryReview()
     const { stick, unstick } = baseline
     const calls = [stick, unstick].map((sent, at) => ({ chainId: sent.chainId, to: sent.to as Address, data: sent.data as Hex, value: BigInt(sent.value), ...(at ? { dependsOnPrior: true } : {}) }))
-    // The first step's journal fails once it is sent: core stops the run with that step held, and its follower finds it
-    // mined.
+    // Each step's journal fails once it is sent: core holds that step unverified, its follower finds it mined, and the
+    // run goes on to the next step without another send of it.
     const onSubmitted = vi.fn(async () => { throw new ReviewLineError('The launch record could not be saved.') })
     const { ref, unmount } = await mount()
-    await act(async () => {
-      await ref.current!.run({ account: ALICE, calls, onSubmitted })
-    })
-    await vi.waitFor(() => expect(ref.current!.landed).toBe(1), { timeout: 5_000 })
-    expect(ref.current!.phase).toBe('idle')
-    expect(walletSends).toHaveLength(1)
     let result: Awaited<ReturnType<Action['run']>> = null
     await act(async () => {
-      result = await ref.current!.run({ account: ALICE, calls })
+      result = await ref.current!.run({ account: ALICE, calls, onSubmitted })
     })
     expect(result!.status).toBe('done')
     expect(walletSends).toHaveLength(2)

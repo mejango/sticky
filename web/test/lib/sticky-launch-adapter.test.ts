@@ -609,6 +609,30 @@ describe('Sticky launch browser boundaries', () => {
     else expect(fake.sponsor).toHaveBeenCalledOnce()
   })
 
+  it('a creation whose receipt watcher is exhausted keeps its listing signature, and recovery publishes it with no new signature', async () => {
+    const controller = createBrowserStickyLaunchController()
+    const signature = `0x${'5e'.repeat(65)}` as Hex
+    fake.sign.mockResolvedValue(signature)
+    fake.publish.mockImplementation(async (_plan, sign) => ({ id: 'listing', signed: await sign('Exact SDK listing message') }))
+    const landed = fake.receipt.getMockImplementation()!
+    // The watcher and every fallback read fail until the node recovers.
+    fake.receipt.mockRejectedValue(new Error('lagging node'))
+    await controller.prepare(plan(), 'self-paid')
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const running = controller.run().then(() => 'done', (error: unknown) => error)
+    await vi.advanceTimersByTimeAsync(400_000)
+    expect(await running).toBeInstanceOf(ReviewedReceiptUnverifiedError)
+    vi.useRealTimers()
+    expect(controller.load()?.listing.signed).toEqual({ message: 'Exact SDK listing message', signature })
+    fake.receipt.mockImplementation(landed)
+    fake.verifyDeployment.mockImplementation(async (_session, _target, hash) => ({ hash, token: TOKEN, projectId: '10' }))
+    await controller.refresh()
+    expect(controller.load()?.listing).toMatchObject({ state: 'published', intentId: 'listing' })
+    expect(await fake.publish.mock.results.at(-1)!.value).toEqual({ id: 'listing', signed: signature })
+    expect(fake.sign).toHaveBeenCalledOnce()
+    expect(fake.write).toHaveBeenCalledOnce()
+  }, 20_000)
+
   it('the one review of a Safe launch shows the Safe execution gas the wallet will run', async () => {
     fake.safe = true
     const controller = createBrowserStickyLaunchController()

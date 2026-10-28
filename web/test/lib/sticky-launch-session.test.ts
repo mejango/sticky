@@ -327,6 +327,37 @@ describe('durable Sticky launch controller', () => {
     expect(f.ports.publishSignedListing).toHaveBeenCalledOnce()
   })
 
+  it("keeps a listing signed in one tab while another tab's refresh was awaiting its proof, and publishes it once", async () => {
+    const f = fixture()
+    const signed = { message: 'Exact SDK listing message', signature: `0x${'5e'.repeat(65)}` as Hex }
+    let paused!: () => void, release!: () => void, sign!: () => void
+    const waiting = new Promise<void>(resolve => { paused = resolve })
+    const released = new Promise<void>(resolve => { release = resolve })
+    const signing = new Promise<void>(resolve => { sign = resolve })
+    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks, listing) => {
+      await callbacks.beforeWrite(); callbacks.submitted(H1)
+      await signing
+      listing!.signed(signed.message, signed.signature)
+      throw new Error('The creation was sent; its confirmation is still pending.')
+    })
+    const tabA = f.controller.run()
+    await vi.waitFor(() => expect(f.store.load()?.direct?.hash).toBe(H1))
+    // Tab B's refresh pauses on its deployment proof while tab A saves the signature.
+    const tabB = createStickyLaunchController({ ...f.ports, verifyDeployment: vi.fn(async () => { paused(); await released; return null }) })
+    const refreshing = tabB.refresh()
+    await waiting
+    sign()
+    await expect(tabA).rejects.toThrow()
+    release()
+    await refreshing
+    expect(f.store.load()?.listing.signed).toEqual(signed)
+    vi.mocked(f.ports.verifyDeployment).mockImplementation(async (_session, _target, candidate) => ({ hash: candidate, token: address('8'), projectId: '10' }))
+    await f.controller.refresh()
+    expect(f.ports.publishSignedListing).toHaveBeenCalledExactlyOnceWith(expect.anything(), signed)
+    expect(f.store.load()?.listing).toMatchObject({ state: 'published', intentId: 'signed-listing-identity' })
+    expect(f.ports.sendDirect).toHaveBeenCalledOnce()
+  })
+
   it('saves a settlement the SDK followed into the journal, so the launch is never sent again', async () => {
     const f = fixture()
     vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); throw new Error('reload before the hash was saved') })
