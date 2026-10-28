@@ -2,7 +2,7 @@
 
 import { stickyDeployerAbi, type JBChainId } from '@bananapus/nana-sdk-core'
 import { JBCenterRequestError, type JBCenterIntent } from '@bananapus/nana-sdk-core/jbcenter'
-import { errorLine, HELD_CONFIRMING_LINE, intent, ReviewLineError, launchIntent, payRelayrReviewed, sendReviewed, signReviewed, waitForTrackedReceipt, type ReviewedCall, type ReviewedResult, type ReviewedSignature, type WriteHoldClient } from '@bananapus/nana-sdk-core/review'
+import { errorLine, HELD_CONFIRMING_LINE, intent, ReviewedReceiptUnverifiedError, ReviewLineError, launchIntent, payRelayrReviewed, sendReviewed, signReviewed, waitForTrackedReceipt, type ReviewedCall, type ReviewedResult, type ReviewedSignature, type WriteHoldClient } from '@bananapus/nana-sdk-core/review'
 import { safeExecutionRunsCalls } from '@bananapus/nana-sdk-core/safe-service'
 import {
   RELAYR_API,
@@ -305,7 +305,12 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
         try {
           const intent = await publishStickyListing(structuredClone(plan), async message => {
             asked = true
-            result = await send([{ kind: 'message', chainId: target.chainId, message }])
+            result = await send([{ kind: 'message', chainId: target.chainId, message }]).catch((error: unknown) => {
+              // Sent and still confirming past the follow: its listing signature is kept, to publish once it confirms.
+              const [signature] = error instanceof ReviewedReceiptUnverifiedError ? error.held?.signatures ?? [] : []
+              if (signature) listing.signed(message, signature)
+              throw error
+            })
             const [signature] = result.signatures ?? []
             if (!signature) throw new ReviewLineError('The listing was not signed.')
             return signature
@@ -445,6 +450,14 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       return attempts.canDiscard(saved.attempt)
     },
     verifyDeployment: verifyStickyLaunchDeployment,
+    async publishSignedListing(plan, signed) {
+      requireSingleHomeChain(plan.targets)
+      const intent = await publishStickyListing(structuredClone(plan), async message => {
+        if (message !== signed.message) throw new ReviewLineError('The listing changed since it was signed. List it again.')
+        return signed.signature
+      })
+      return intent.id
+    },
     async publishListing(plan) {
       requireSingleHomeChain(plan.targets)
       guard(plan.owner)

@@ -91,7 +91,7 @@ vi.mock('@bananapus/nana-sdk-core/review/relayr', async original => ({
 
 import { createBrowserStickyLaunchController } from '@/lib/sticky-launch-adapter'
 import { attempts } from '@/lib/write-holds'
-import { createSavedAttemptRecovery, createWriteHold, registerReviewHandler } from '@bananapus/nana-sdk-core/review'
+import { ReviewedReceiptUnverifiedError, createSavedAttemptRecovery, createWriteHold, registerReviewHandler } from '@bananapus/nana-sdk-core/review'
 import { browserWriteRecoveryModel } from '../support/write-recovery'
 import { buildStickyEnvelope } from '@/lib/sticky-listing'
 
@@ -195,7 +195,7 @@ beforeEach(() => {
   unregister = registerReviewHandler(async prompt => { await fake.review(prompt.model); return prompt.confirmation })
 })
 let unregister = () => {}
-afterEach(() => unregister())
+afterEach(() => { unregister(); vi.useRealTimers() })
 
 describe('Sticky launch browser boundaries', () => {
   it('enforces one home chain at every publication boundary', async () => {
@@ -255,7 +255,7 @@ describe('Sticky launch browser boundaries', () => {
 
   it('a creation still confirming is followed to its end, and its listing published with the signature it carried, from one review', async () => {
     const noted = callbacks()
-    const listing = { published: vi.fn(), failed: vi.fn() }
+    const listing = { published: vi.fn(), failed: vi.fn(), signed: vi.fn() }
     const signature = `0x${'5e'.repeat(65)}` as Hex
     fake.sign.mockResolvedValue(signature)
     fake.publish.mockImplementation(async (_plan, sign) => ({ id: 'listing', signed: await sign('Exact SDK listing message') }))
@@ -275,6 +275,41 @@ describe('Sticky launch browser boundaries', () => {
     expect(listing.published).toHaveBeenCalledWith('listing')
     expect(listing.failed).not.toHaveBeenCalled()
   }, 20_000)
+
+  it('a creation unconfirmed past the follow keeps its signed listing, so recovery publishes it with no new signature', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const noted = callbacks()
+    const listing = { published: vi.fn(), failed: vi.fn(), signed: vi.fn() }
+    const signature = `0x${'5e'.repeat(65)}` as Hex
+    fake.sign.mockResolvedValue(signature)
+    fake.publish.mockImplementation(async (_plan, sign) => ({ id: 'listing', signed: await sign('Exact SDK listing message') }))
+    const landed = fake.receipt.getMockImplementation()!
+    let reads = 0
+    // The wallet's receipt arrives; every later read lags past the default follow.
+    fake.receipt.mockImplementation(async (...args) => {
+      reads += 1
+      if (reads >= 2) throw new Error('lagging node')
+      return landed(...args)
+    })
+    const sent = fake.ports.sendDirect(session(), noted, listing)
+    const refused = expect(sent).rejects.toBeInstanceOf(ReviewedReceiptUnverifiedError)
+    await vi.advanceTimersByTimeAsync(130_000)
+    await refused
+    expect(fake.write).toHaveBeenCalledOnce()
+    expect(fake.sign).toHaveBeenCalledOnce()
+    expect(listing.signed).toHaveBeenCalledExactlyOnceWith('Exact SDK listing message', signature)
+    expect(listing.failed).not.toHaveBeenCalled()
+    expect(listing.published).not.toHaveBeenCalled()
+  }, 20_000)
+
+  it('publishes a saved listing signature without asking the wallet, and refuses one for a different message', async () => {
+    const signature = `0x${'5e'.repeat(65)}` as Hex
+    fake.publish.mockImplementation(async (_plan, sign) => ({ id: 'listing', signed: await sign('Exact SDK listing message') }))
+    await expect(fake.ports.publishSignedListing(session().plan, { message: 'Exact SDK listing message', signature })).resolves.toBe('listing')
+    expect(await fake.publish.mock.results[0].value).toEqual({ id: 'listing', signed: signature })
+    await expect(fake.ports.publishSignedListing(session().plan, { message: 'An older message', signature })).rejects.toThrow('changed since it was signed')
+    expect(fake.sign).not.toHaveBeenCalled()
+  })
 
   it.each(['account', 'view-as', 'external-wallet'] as const)('rechecks %s after the review before the wallet opens', async kind => {
     const noted = callbacks()
