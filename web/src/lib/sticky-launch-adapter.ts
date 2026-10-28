@@ -2,7 +2,7 @@
 
 import { stickyDeployerAbi, type JBChainId } from '@bananapus/nana-sdk-core'
 import { JBCenterRequestError, type JBCenterIntent } from '@bananapus/nana-sdk-core/jbcenter'
-import { errorLine, followReviewedStep, intent, ReviewedReceiptUnverifiedError, ReviewLineError, launchIntent, payRelayrReviewed, sendReviewed, settledLine, signReviewed, waitForTrackedReceipt, type ReviewedCall, type ReviewedResult, type ReviewedSignature, type WriteHoldClient } from '@bananapus/nana-sdk-core/review'
+import { errorLine, HELD_CONFIRMING_LINE, intent, ReviewLineError, launchIntent, payRelayrReviewed, sendReviewed, signReviewed, waitForTrackedReceipt, type ReviewedCall, type ReviewedResult, type ReviewedSignature, type WriteHoldClient } from '@bananapus/nana-sdk-core/review'
 import { safeExecutionRunsCalls } from '@bananapus/nana-sdk-core/safe-service'
 import {
   RELAYR_API,
@@ -130,9 +130,6 @@ async function checkLaunch(plan: LaunchPlan) {
   guard(plan.owner)
   requireSingleHomeChain(plan.targets)
 }
-
-/** How long a sent creation is followed as confirming before the launch is left to its recovery check. */
-const CONFIRM_FOLLOW_MS = 120_000
 
 /** A proposal hash is saved before polling and is never mistaken for an onchain receipt hash. */
 async function resolveSafe(chainId: number, hash: Hex, timeoutMs = 15_000): Promise<Hex> {
@@ -284,7 +281,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       const [target] = plan.targets
       const [call] = reviewCalls(plan)
       const journal = boundary(callbacks)
-      const sendOnce = (signatures: ReviewedSignature[]) => sendReviewed({
+      const send = (signatures: ReviewedSignature[]) => sendReviewed({
         account: plan.owner,
         // Held by the launch, never the calldata: a regenerated call is still the same launch.
         calls: [{ ...call, intent: launchKey(session, 'direct').namespace }],
@@ -298,18 +295,9 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
         beforeWallet: async () => { await journal.beforeWallet(); requireSingleHomeChain(plan.targets); guard(plan.owner) },
         onUnsent: journal.onUnsent,
         onSubmitted: (_call, _step, hash, { safe }) => journal.onSubmitted(hash, safe),
+        // A creation still confirming is followed in the run; after the bound the launch goes to its recovery check.
+        follow: { onConfirming: () => phase(HELD_CONFIRMING_LINE) },
       }, { ...reviewedSendDeps, onProgress: ({ phase: step }) => phase(step === 'signing' ? 'Confirm creation in your wallet.' : step === 'receipt' ? 'Waiting for the creation to confirm.' : 'Checking the launch transaction.') })
-      // A creation still confirming is followed until its hold settles it, keeping what the run signed.
-      const send = async (signatures: ReviewedSignature[]): Promise<ReviewedResult> => {
-        try { return await sendOnce(signatures) } catch (error) {
-          if (!(error instanceof ReviewedReceiptUnverifiedError)) throw error
-          phase(error.message)
-          const settled = await followReviewedStep(error, { account: plan.owner }, reviewedSendDeps, { signal: AbortSignal.timeout(CONFIRM_FOLLOW_MS) })
-          if (!settled) throw error
-          if (settled.result !== 'success') throw new ReviewLineError(settledLine(settled))
-          return { status: 'done', hashes: [settled.hash], receipts: [], ...(error.held?.signatures ? { signatures: error.held.signatures } : {}) }
-        }
-      }
       let result: ReviewedResult | undefined
       if (listing) {
         // The listing message comes from Center: it is signed in the creation's review, and published once it is sent.
