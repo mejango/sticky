@@ -26,7 +26,7 @@
     "check": "npm run audit:prod && npm run lint && npm run ts:check && npm run deployments:check && npm run schema:check:offline && npm run transaction:check && npm run wallet:check && npm run test:ci && npm run build && npm run budget && npm run test:browser"
   },
   "dependencies": {
-    "@bananapus/nana-sdk-core": "file:../../../../../../../../../private/tmp/claude-501/-Users-jango-Documents-jb-v6-evm/3a7f03bb-7068-4808-be46-32d6bf228d7d/scratchpad/sdk5-pack/bananapus-nana-sdk-core-5.0.0-pre.7095ecd.tgz",
+    "@bananapus/nana-sdk-core": "5.0.0",
     "@coinbase/wallet-sdk": "4.3.7",
     "@me.jango/signa": "0.4.0",
     "@safe-global/safe-apps-provider": "0.18.6",
