@@ -180,8 +180,13 @@ export function useReviewedAction() {
     return () => { open.current = false }
   }, [])
   const last = useRef<{ action: ReviewedRun; account: Address | undefined; chainId: number; proposed: ReviewedCall | null } | null>(null)
-  /** A run that ended with nothing finished: once its state shows, it is read for a cancel. */
-  const [ended, setEnded] = useState<{ onCancelled: () => void } | null>(null)
+  /** A run refused after an earlier step went through: its cancel is told once its state renders. */
+  const [partlySent, setPartlySent] = useState<{ onCancelled: () => void } | null>(null)
+  useEffect(() => {
+    if (!partlySent) return
+    setPartlySent(null)
+    partlySent.onCancelled()
+  }, [partlySent])
   const runner = useReviewedRun({
     account: address,
     ...reviewedSendDeps,
@@ -206,6 +211,8 @@ export function useReviewedAction() {
     const { onReleased: _released, onCancelled, reverify, ...sent } = action
     last.current = { action, account: address, chainId: action.calls[0].chainId, proposed: null }
     const epoch = accountEpoch.current
+    /** A step of this run reached the wallet's reply. */
+    let submitted = false
     const abort = new AbortController()
     aborts.current.add(abort)
     try {
@@ -213,6 +220,8 @@ export function useReviewedAction() {
       const ran = await runner.run({
         ...sent,
         signal: abort.signal,
+        // A review the account change withdrew says so as an error; the flow stays open on it.
+        ...(onCancelled ? { onCancelled: () => { if (!abort.signal.aborted) onCancelled() } } : {}),
         ...(action.calls.length > 1 ? { scope: sequenceScope(action.calls) } : {}),
         ...(description ? { description } : {}),
         ...(viaSafe && !action.confirmLabel ? { confirmLabel: 'Agree & continue to Safe' } : {}),
@@ -228,6 +237,7 @@ export function useReviewedAction() {
         },
         onSubmitted: async (call, step, hash, how) => {
           setSubmission({ hash, safe: how.safe })
+          submitted = true
           await action.onSubmitted?.(call, step, hash, how)
         },
         onConfirmed: async (call, step, receipt) => {
@@ -246,7 +256,9 @@ export function useReviewedAction() {
       if (done?.status === 'done') setLanded(action.calls.length)
       if (done?.status === 'proposed' && last.current?.action === action) last.current.proposed = action.calls[done.step] ?? null
       setResult(done)
-      if (!done && onCancelled) setEnded({ onCancelled })
+      // A refusal after an earlier step went through ends the action as the person's cancel too: the SDK reports that
+      // run as settled, not cancelled, and resolves it with nothing. It is told once that state has rendered.
+      if (ran === null && submitted && onCancelled) setPartlySent({ onCancelled })
       return done
     } finally {
       aborts.current.delete(abort)
@@ -258,12 +270,6 @@ export function useReviewedAction() {
   /** Whether the held step is a Safe's proposal. */
   const heldSafe = !!shown?.state && shown.state.status !== 'clear' && shown.state.record.safe
   const phase = txPhaseOf(runner.status, !!exitError)
-  // A run that returned nothing was cancelled when, once its state shows, nothing failed and nothing is held.
-  useEffect(() => {
-    if (!ended) return
-    setEnded(null)
-    if (phase === 'idle' && !shown) ended.onCancelled()
-  }, [ended, phase, shown])
 
   const onReleased = last.current?.action.onReleased
   const runExit = () => {
@@ -297,7 +303,7 @@ export function useReviewedAction() {
       followDetached(openStepHold(holds, address, true, proposed), publicClient(proposed.chainId as JBChainId) as WriteHoldClient, () => refreshAfterConfirmedWrite(queryClient, proposed.chainId))
     }
     last.current = null
-    setEnded(null)
+    setPartlySent(null)
     setResult(null)
     setSubmission(null)
     setLanded(0)
