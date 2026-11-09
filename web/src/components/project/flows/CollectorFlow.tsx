@@ -62,7 +62,10 @@ export function CollectorFlow({ source, info, onSettled }: {
   const generation = useRef(0)
   const handledHash = useRef<Hex | null>(null)
   const active = review?.identity === identity ? review : null
-  const busy = working || tx.busy || tx.phase === 'review'
+  /** The confirmed hash whose effect is being recorded under the bridge lock: until it is, the step still reads as confirming. */
+  const [recording, setRecording] = useState<Hex | null>(null)
+  const phase = recording ? 'pending' : tx.phase
+  const busy = working || !!recording || tx.busy || tx.phase === 'review'
   const remote = deployment.sourceChainId !== info.chainId
 
   const assertCurrent = (expected: string) => {
@@ -198,6 +201,7 @@ export function CollectorFlow({ source, info, onSettled }: {
     if (tx.phase !== 'success' || !tx.hash || !active || handledHash.current === tx.hash) return
     const current = active, hash = tx.hash
     const submissionHash = tx.submissionHash, safeProposal = tx.submissionIsSafe
+    setRecording(hash)
     void withBridgeLock(async () => {
       assertCurrent(current.identity)
       let held = readPendingBridgeWrite(current.owner)
@@ -207,7 +211,7 @@ export function CollectorFlow({ source, info, onSettled }: {
       await recover(hash, held)
       handledHash.current = hash
       setReview(null); tx.reset(); await refresh()
-    }, true).catch(reason => setError(errorLine(reason)))
+    }, true).catch(reason => setError(errorLine(reason))).finally(() => setRecording(null))
     // Process each canonical hash once against its frozen allocation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tx.phase, tx.hash, tx.submissionHash, tx.submissionIsSafe, active])
@@ -261,7 +265,7 @@ export function CollectorFlow({ source, info, onSettled }: {
         </> : <p className="text-sm text-muted">Recover the pending action in its original bridge or allocation panel.</p>}
       </div> : null}
       <TxError error={error} />
-      {active ? <TxConfirmDialog open title={active.delivery.request.label ?? 'Deliver queued rewards'} rows={active.rows} steps={[{ title: active.delivery.request.label ?? 'Deliver queued rewards' }]} activeIndex={0} onClose={closeReview} onConfirm={() => void confirm(active)} busy={busy} settled={tx.phase === 'submitted'} complete={false} action={confirmAction(tx.phase, 'Review again')} status={sendingStatus(tx) ?? undefined} error={tx.error} /> : null}
+      {active ? <TxConfirmDialog open title={active.delivery.request.label ?? 'Deliver queued rewards'} rows={active.rows} steps={[{ title: active.delivery.request.label ?? 'Deliver queued rewards' }]} activeIndex={0} onClose={closeReview} onConfirm={() => void confirm(active)} busy={busy} settled={phase === 'submitted'} complete={false} action={confirmAction(phase, 'Review again')} status={sendingStatus({ ...tx, phase }) ?? undefined} error={tx.error ?? error} /> : null}
       {monitor ? <BridgeFlow info={info} sourceChainId={deployment.sourceChainId} delivery={{ route: source.bridgeRoute, groupId }} onClose={() => setMonitor(false)} onFunded={onSettled} /> : null}
     </div>
   )

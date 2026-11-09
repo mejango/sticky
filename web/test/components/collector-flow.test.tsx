@@ -410,6 +410,27 @@ describe('permissionless collector delivery', () => {
     expect(text()).toContain('allocation changed')
   })
 
+  it('keeps the confirmed delivery busy while its effect is recorded, offering no review again', async () => {
+    const proof = Promise.withResolvers<{ success: boolean; receipt: { blockNumber: bigint } }>()
+    mocks.verifyWrite.mockReturnValueOnce(proof.promise)
+    await review(); await press('Review delivery')
+    await confirmed()
+    expect(button('Review again')).toBeUndefined()
+    expect(button('Confirming…').disabled).toBe(true)
+    expect(button('Cancel').disabled).toBe(true)
+    await act(async () => proof.resolve({ success: true, receipt: { blockNumber: 100n } }))
+    expect(readPendingBridgeWrite(OWNER)).toBeNull()
+    expect(text()).toContain('Bridge delivery, claim and settlement are still pending')
+    expect(text()).not.toContain('another tab')
+  })
+  it('shows a failed recording in the open review, not behind it', async () => {
+    mocks.verifyWrite.mockResolvedValueOnce({ success: false, receipt: { blockNumber: 100n } })
+    await review(); await press('Review delivery')
+    await confirmed()
+    const dialog = document.querySelector('[data-tx-confirm]')!
+    expect(dialog.textContent).toContain('The transaction reverted')
+  })
+
   it('rejects a source family for another home pool', async () => {
     await render(SOURCE, { ...INFO, stToken: A(99) })
     expect(mocks.read).not.toHaveBeenCalled()
