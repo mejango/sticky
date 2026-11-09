@@ -40,7 +40,12 @@ export function StickyLaunchHost() {
   const [hashChain, setHashChain] = useState<number | null>(null)
   const controller = useRef<Promise<Controller> | null>(null)
   const lastResults = useRef('')
-  const acting = useRef(false)
+  /** The end of the last queued launch work. */
+  const acting = useRef<Promise<void>>(Promise.resolve())
+  /** Launch work queued or running. */
+  const queued = useRef(0)
+  /** A press is queued or running: a second press is ignored. */
+  const pressing = useRef(false)
 
   const changed = useCallback((next: StickyLaunchSession | null) => {
     setSession(next)
@@ -83,19 +88,28 @@ export function StickyLaunchHost() {
     return () => { window.removeEventListener(STICKY_LAUNCH_EVENT, show); window.removeEventListener('storage', storage) }
   }, [restore])
 
+  /** Launch work runs one at a time, in the order it was asked for: a press, or a quiet recording, waits its turn. */
   const action = useCallback(async (run: (controller: Controller) => Promise<unknown>, quiet = false) => {
-    if (acting.current) return
-    acting.current = true
-    if (!quiet) { setBusy(true); setError('') }
-    try { await run(await getController()) }
-    catch (failure) { if (!quiet) setError(message(failure)) }
-    finally { acting.current = false; if (!quiet) { setBusy(false); setPhase('') } }
+    if (!quiet) {
+      if (pressing.current) return
+      pressing.current = true; setBusy(true); setError('')
+    }
+    queued.current += 1
+    const turn = acting.current.then(async () => { await run(await getController()) })
+      .catch(failure => { if (!quiet) setError(message(failure)) })
+      .finally(() => {
+        queued.current -= 1; setPhase('')
+        if (!quiet) { pressing.current = false; setBusy(false) }
+      })
+    acting.current = turn
+    await turn
   }, [getController])
 
   const savedLaunchId = session?.plan.id
   useEffect(() => {
     if (!savedLaunchId || corrupt || restoring) return
-    const check = () => { if (!document.hidden) void action(async current => { await current.refresh(); setGeneration(value => value + 1) }, true) }
+    // The background check is skipped, never queued, while other launch work is running.
+    const check = () => { if (!document.hidden && !queued.current) void action(async current => { await current.refresh(); setGeneration(value => value + 1) }, true) }
     check()
     const interval = window.setInterval(check, 12_000)
     document.addEventListener('visibilitychange', check)
