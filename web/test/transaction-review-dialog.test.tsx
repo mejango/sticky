@@ -85,7 +85,7 @@ describe('transaction review dialog', () => {
       ],
     }
     act(() => root.render(
-      <TransactionReviewDialog pending={{ kind: 'review', id: 1, model: buildReviewModel(request as TransactionReviewRequest), resolve: () => {} }} onFinish={() => {}} />,
+      <TransactionReviewDialog pending={{ kind: 'review', id: 1, model: buildReviewModel(request as TransactionReviewRequest) }} onFinish={() => {}} />,
     ))
     const text = document.querySelector('dialog')?.textContent ?? ''
     expect(text).toContain('Signature 1 of 3')
@@ -103,7 +103,7 @@ describe('transaction review dialog', () => {
     const { TransactionReviewDialog } = await import('@/components/TransactionReviewDialog')
     const request = { calls: [payment], authorization: { kind: 'message', message: 'hello' } }
     act(() => root.render(
-      <TransactionReviewDialog pending={{ kind: 'review', id: 1, model: buildReviewModel(request as TransactionReviewRequest), resolve: () => {} }} onFinish={() => {}} />,
+      <TransactionReviewDialog pending={{ kind: 'review', id: 1, model: buildReviewModel(request as TransactionReviewRequest) }} onFinish={() => {}} />,
     ))
     const text = document.querySelector('dialog')?.textContent ?? ''
     expect(text).toContain('plus the exact message your signature commits to')
@@ -117,7 +117,7 @@ describe('transaction review dialog', () => {
     const request = { calls: [payment], authorization: { amount: Number.NaN } }
     act(() => root.render(
       <TransactionReviewDialog
-        pending={{ kind: 'review', id: 1, model: buildReviewModel(request as TransactionReviewRequest), resolve: () => {} }}
+        pending={{ kind: 'review', id: 1, model: buildReviewModel(request as TransactionReviewRequest) }}
         onFinish={approved => finished.push(approved)}
       />,
     ))
@@ -134,7 +134,7 @@ describe('transaction review dialog', () => {
     const simulation = Promise.resolve({ status: 'failed' as const, message: 'upstream sentinel' })
     await act(async () => root.render(
       <TransactionReviewDialog
-        pending={{ kind: 'review', id: 1, model: buildReviewModel({ calls: [payment] } as TransactionReviewRequest), simulation, resolve: () => {} }}
+        pending={{ kind: 'review', id: 1, model: buildReviewModel({ calls: [payment] } as TransactionReviewRequest), simulation }}
         onFinish={() => {}}
       />,
     ))
@@ -153,7 +153,7 @@ describe('transaction review dialog', () => {
     const simulation = Promise.resolve({ status: 'failed' as const, message: 'This project is not accepting payments right now.', explained: true })
     await act(async () => root.render(
       <TransactionReviewDialog
-        pending={{ kind: 'review', id: 1, model: buildReviewModel({ calls: [payment] } as TransactionReviewRequest), simulation, resolve: () => {} }}
+        pending={{ kind: 'review', id: 1, model: buildReviewModel({ calls: [payment] } as TransactionReviewRequest), simulation }}
         onFinish={() => {}}
       />,
     ))
