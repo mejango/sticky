@@ -11,7 +11,7 @@ import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { holdIntent } from '@/lib/sticky-hold-intent'
 import { SavedWriteRecovery } from '@/components/ui/SavedWriteRecovery'
 import { TxError } from '@/components/ui/TxError'
-import { confirmAction, sendingStatus, ViewTransactionLink } from '@/components/ui/TxProgress'
+import { confirmAction, sendingStatus, txStage, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { reviewedSteps, useReviewedAction, type TxRequest } from '@/hooks/useReviewedAction'
 import { useWallet } from '@/hooks/useWallet'
 import { parseAmount } from '@/lib/sticky-amount'
@@ -432,7 +432,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
         {settle?.identity === identity ? <ReceiverFlow key={`${settle.token}:${settle.groupId}`} info={info} chainId={info.chainId} projectId={Number(info.projectId)} initialToken={settle.token} initialGroupId={settle.groupId} initiallyOpen onSettled={onFunded} /> : null}
         <TxError error={error} />
       </div>
-      {active ? <TxConfirmDialog open title={active.request.label ?? 'Confirm bridge step'} rows={reviewRows(active)} steps={(active.record?.steps ?? [storeBridgeWrite(active.request)]).map(step => ({ title: step.label }))} activeIndex={0} onClose={closeReview} onConfirm={() => void confirm(active)} busy={busy} settled={phase === 'submitted'} complete={false} action={confirmAction(phase, 'Review again')} status={sendingStatus({ ...tx, phase }) ?? undefined} error={tx.error ?? error} /> : null}
+      {active ? <TxConfirmDialog open title={active.request.label ?? 'Confirm bridge step'} rows={reviewRows(active)} steps={(active.record?.steps ?? [storeBridgeWrite(active.request)]).map(step => ({ title: step.label }))} activeIndex={0} onClose={closeReview} onConfirm={() => void confirm(active)} stage={txStage({ busy, phase })} action={confirmAction(phase, 'Review again')} status={sendingStatus({ ...tx, phase }) ?? undefined} error={tx.error ?? error} /> : null}
     </ModalShell>
   )
 }

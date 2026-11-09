@@ -32,6 +32,19 @@ function sendingLine({ phase, safeNonceGuidance, notice, held }: { phase: TxPhas
   return label ? (safeNonceGuidance ?? label) : null
 }
 
+/** Where a flow's confirm stands: its plan being read, ready to send, sending, held by a Safe or the hold, or done. */
+export type TxStage = 'preparing' | 'ready' | 'busy' | 'settled' | 'complete'
+
+/** A flow's confirm stage, from what it knows: done once every step confirmed, held when the engine's phase says a Safe
+ * or the hold has it, sending while its run (or its own work) is busy, reading while its plan is not ready, and
+ * otherwise ready. */
+export function txStage({ preparing = false, busy, complete = false, phase }: { preparing?: boolean; busy: boolean; complete?: boolean; phase: TxPhase }): TxStage {
+  if (complete) return 'complete'
+  if (phase === 'submitted') return 'settled'
+  if (busy) return 'busy'
+  return preparing ? 'preparing' : 'ready'
+}
+
 /** "1 transaction left", "3 transactions left": what a flow has still to send, in Sticky's words. */
 export function transactionsLeft(count: number): string {
   return `${count} transaction${count === 1 ? '' : 's'} left`

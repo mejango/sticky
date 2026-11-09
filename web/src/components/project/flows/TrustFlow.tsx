@@ -8,7 +8,7 @@ import { reviewGate } from '@/components/project/flows/review-gate'
 import { ModalShell } from '@/components/ui/ModalShell'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
-import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
+import { confirmAction, sendingStatus, stepsIntro, txStage, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { reviewedCall, useReviewedAction, type TxRequest } from '@/hooks/useReviewedAction'
 import { useStepPresses } from '@/hooks/useStepPresses'
 import { useWallet } from '@/hooks/useWallet'
@@ -213,16 +213,13 @@ export function TrustFlow({
       {plan || current?.preparing ? (
         <TxConfirmDialog
           open
-          preparing={!plan}
+          stage={txStage({ preparing: !plan, busy: sending, complete, phase: tx.phase })}
           onClose={closeReview}
           title={complete ? (trusting ? 'Sender trusted' : 'Sender untrusted') : trusting ? 'Trust this sender' : 'Untrust this sender'}
           rows={planSender ? rowsOf(planSender) : undefined}
           steps={[{ title: plan?.label ?? (trusting ? 'Trust sender' : 'Untrust sender') }]}
           activeIndex={0}
           stepsIntro={stepsIntro(1, complete ? 1 : 0)}
-          complete={complete}
-          settled={tx.phase === 'submitted'}
-          busy={sending}
           action={confirmAction(tx.phase, tx.phase === 'error' ? 'Retry' : 'Review again')}
           onConfirm={() => void send()}
           status={

@@ -8,7 +8,7 @@ import { reviewGate } from '@/components/project/flows/review-gate'
 import { ModalShell } from '@/components/ui/ModalShell'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
-import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
+import { confirmAction, sendingStatus, stepsIntro, txStage, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { reviewedCall, useReviewedAction, type TxRequest } from '@/hooks/useReviewedAction'
 import { useStepPresses } from '@/hooks/useStepPresses'
 import { useStickyPosition } from '@/hooks/useStickyProject'
@@ -250,16 +250,13 @@ export function TransferFlow({ info, onClose }: { info: StickyProjectInfo; onClo
       {plan || current?.preparing ? (
         <TxConfirmDialog
           open
-          preparing={!plan}
+          stage={txStage({ preparing: !plan, busy: sending, complete, phase: tx.phase })}
           onClose={closeReview}
           title={complete ? 'Sticky tokens transferred' : 'Confirm transfer'}
           rows={planTo && planCount !== undefined ? rowsOf(planTo, planCount, !!current?.whole) : undefined}
           steps={[{ title: plan?.label ?? 'Transfer' }]}
           activeIndex={0}
           stepsIntro={stepsIntro(1, complete ? 1 : 0)}
-          complete={complete}
-          settled={tx.phase === 'submitted'}
-          busy={sending}
           action={confirmAction(tx.phase, tx.phase === 'error' ? 'Retry' : 'Review again')}
           onConfirm={() => void send()}
           status={

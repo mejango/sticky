@@ -201,7 +201,7 @@ describe('a confirm hosted in the shell', () => {
           action="Adding liquidity…"
           onConfirm={() => {}}
           onClose={onConfirmClose}
-          busy={busy}
+          stage={busy ? 'busy' : 'ready'}
         />
       </ModalShell>
     )

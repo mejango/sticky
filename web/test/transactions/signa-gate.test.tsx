@@ -122,7 +122,7 @@ function TrustFlow() {
       title="Trust this sender"
       steps={[{ title: 'Trust the sender' }]}
       activeIndex={tx.busy ? 0 : -1}
-      busy={tx.busy}
+      stage={tx.busy ? 'busy' : 'ready'}
       action="Confirm & trust"
       onConfirm={() => void tx.run({ account: ALICE, calls: [call] })}
       error={tx.error}

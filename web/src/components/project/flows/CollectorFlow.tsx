@@ -10,7 +10,7 @@ import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { holdIntent } from '@/lib/sticky-hold-intent'
 import { SavedWriteRecovery } from '@/components/ui/SavedWriteRecovery'
 import { TxError } from '@/components/ui/TxError'
-import { confirmAction, sendingStatus, ViewTransactionLink } from '@/components/ui/TxProgress'
+import { confirmAction, sendingStatus, txStage, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { reviewedCall, useReviewedAction } from '@/hooks/useReviewedAction'
 import { useWallet } from '@/hooks/useWallet'
 import { parseAmount } from '@/lib/sticky-amount'
@@ -265,7 +265,7 @@ export function CollectorFlow({ source, info, onSettled }: {
         </> : <p className="text-sm text-muted">Recover the pending action in its original bridge or allocation panel.</p>}
       </div> : null}
       <TxError error={error} />
-      {active ? <TxConfirmDialog open title={active.delivery.request.label ?? 'Deliver queued rewards'} rows={active.rows} steps={[{ title: active.delivery.request.label ?? 'Deliver queued rewards' }]} activeIndex={0} onClose={closeReview} onConfirm={() => void confirm(active)} busy={busy} settled={phase === 'submitted'} complete={false} action={confirmAction(phase, 'Review again')} status={sendingStatus({ ...tx, phase }) ?? undefined} error={tx.error ?? error} /> : null}
+      {active ? <TxConfirmDialog open title={active.delivery.request.label ?? 'Deliver queued rewards'} rows={active.rows} steps={[{ title: active.delivery.request.label ?? 'Deliver queued rewards' }]} activeIndex={0} onClose={closeReview} onConfirm={() => void confirm(active)} stage={txStage({ busy, phase })} action={confirmAction(phase, 'Review again')} status={sendingStatus({ ...tx, phase }) ?? undefined} error={tx.error ?? error} /> : null}
       {monitor ? <BridgeFlow info={info} sourceChainId={deployment.sourceChainId} delivery={{ route: source.bridgeRoute, groupId }} onClose={() => setMonitor(false)} onFunded={onSettled} /> : null}
     </div>
   )

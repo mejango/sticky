@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/ModalShell'
 import { ExternalWalletAction } from '@/components/ui/ExternalWalletAction'
 import { transactionMessage } from '@bananapus/nana-sdk-core/review'
+import type { TxStage } from '@/components/ui/TxProgress'
 import { TxSteps } from '@/components/ui/TxSteps'
 
 export type TxConfirmRow = {
@@ -24,7 +25,7 @@ export type TxConfirmRow = {
 /**
  * The one review surface for every wallet write: a frozen plan (label/value
  * rows), the wallet-prompt queue, then a single action. Closing is refused
- * while `busy`; once `complete` the footer collapses to Done.
+ * while `busy`; once `settled` or `complete` the footer collapses to Done.
  */
 export function TxConfirmDialog({
   open,
@@ -40,10 +41,7 @@ export function TxConfirmDialog({
   actionDisabled = false,
   cancelLabel = 'Cancel',
   onConfirm,
-  busy = false,
-  complete = false,
-  settled = false,
-  preparing = false,
+  stage = 'ready',
   status,
   error,
 }: {
@@ -61,16 +59,16 @@ export function TxConfirmDialog({
   actionDisabled?: boolean
   cancelLabel?: string
   onConfirm: () => void
-  busy?: boolean
-  complete?: boolean
-  /** A Safe holds the pending action; Done closes this review without marking its steps confirmed. */
-  settled?: boolean
-  /** Rows and steps are still being read; `status` says what is happening. */
-  preparing?: boolean
+  /** `preparing`: rows and steps are still being read, and `status` says what is happening. `settled`: a Safe or the
+   * hold has the action, and Done closes this review without marking its steps confirmed. */
+  stage?: TxStage
   status?: ReactNode
   error?: ReactNode
 }) {
   const titleId = useId()
+  const busy = stage === 'busy'
+  const preparing = stage === 'preparing'
+  const complete = stage === 'complete'
   // Inside a ModalShell already, the confirm replaces that card's content in
   // place: one scrim, one card, and closing brings the form back.
   const host = useEnclosingModalCard()
@@ -144,7 +142,7 @@ export function TxConfirmDialog({
           {error ? <p className="text-sm text-red-600">{typeof error === 'string' ? transactionMessage(error) : error}<ExternalWalletAction error={error} /></p> : null}
         </div>
         <footer className="flex justify-end gap-2 border-t border-smoke-200 bg-bone px-5 py-4">
-          {complete || settled ? (
+          {complete || stage === 'settled' ? (
             <button
               type="button"
               className="btn-primary min-h-[44px] px-5 text-sm"

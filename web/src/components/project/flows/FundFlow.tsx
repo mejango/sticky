@@ -13,7 +13,7 @@ import { FIELD_INPUT, FIELD_LABEL, StakeAgeFields } from '@/components/project/S
 import { ModalShell } from '@/components/ui/ModalShell'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
-import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
+import { confirmAction, sendingStatus, stepsIntro, txStage, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { reviewedSteps, useReviewedAction, type TxRequest } from '@/hooks/useReviewedAction'
 import { usePlannedReview } from '@/hooks/usePlannedReview'
 import { useWallet } from '@/hooks/useWallet'
@@ -326,7 +326,7 @@ function SameChainFundFlow({
       {plan || preparing ? (
         <TxConfirmDialog
           open
-          preparing={!plan}
+          stage={txStage({ preparing: !plan, busy: sending, complete, phase: tx.phase })}
           onClose={closeReview}
           title={complete ? 'Airdrop sent' : 'Confirm airdrop'}
           rows={plan ? rowsOf(plan, info) : undefined}
@@ -337,9 +337,6 @@ function SameChainFundFlow({
           // Once a step has gone through, closing undoes nothing: what went through stays, and the next review finds it.
           cancelLabel={landed > 0 ? 'Close' : 'Cancel'}
           onConfirm={() => void confirm()}
-          busy={sending}
-          complete={complete}
-          settled={tx.phase === 'submitted'}
           status={
             !plan ? (
               'Reading the token, your balance and allowance…'

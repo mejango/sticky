@@ -10,7 +10,7 @@ import { FIELD_INPUT, FIELD_LABEL } from '@/components/project/StakeAgeFields'
 import { ModalShell } from '@/components/ui/ModalShell'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
-import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
+import { confirmAction, sendingStatus, stepsIntro, txStage, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { reviewedSteps, useReviewedAction, type TxRequest } from '@/hooks/useReviewedAction'
 import { usePlannedReview } from '@/hooks/usePlannedReview'
 import { useWallet } from '@/hooks/useWallet'
@@ -449,7 +449,7 @@ export function AutoStickFlow({
     plan || preparing ? (
       <TxConfirmDialog
         open
-        preparing={!plan}
+        stage={txStage({ preparing: !plan, busy: sending, complete, phase: tx.phase })}
         onClose={closeReview}
         title={complete ? plan!.doneTitle : (plan?.title ?? 'Auto-stick')}
         rows={plan?.rows}
@@ -459,9 +459,6 @@ export function AutoStickFlow({
         action={confirmAction(tx.phase, tx.phase === 'error' ? 'Retry' : 'Review again')}
         cancelLabel={landed > 0 ? 'Close' : 'Cancel'}
         onConfirm={() => void confirm()}
-        busy={sending}
-        complete={complete}
-        settled={tx.phase === 'submitted'}
         status={
           !plan ? (
             'Reading your auto-stick…'
