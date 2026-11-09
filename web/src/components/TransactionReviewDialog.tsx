@@ -14,6 +14,7 @@ import {
   type ReviewValue,
 } from '@bananapus/nana-sdk-core/review'
 import { ChainIcon } from '@/components/ChainIcon'
+import { useCopyNotice } from '@/hooks/useCopyNotice'
 import {
   ModalCloseButton,
   ModalDialog,
@@ -526,7 +527,7 @@ function ReviewModal({
   /** The action's summary rows, as core's model carries them. */
   const rows = model.context
   const [agreed, setAgreed] = useState(false)
-  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const [copyState, setCopyState] = useCopyNotice<'copied' | 'failed'>(2200)
   // Core refuses a confirm once its simulation saw a revert: the dialog says why when core decoded it, and offers only
   // Cancel.
   const [wouldFail, setWouldFail] = useState<string | null>(null)
@@ -545,7 +546,6 @@ function ReviewModal({
     } catch {
       setCopyState('failed')
     }
-    window.setTimeout(() => setCopyState('idle'), 2200)
   }
 
   const titleId = `transaction-review-title-${pending.id}`

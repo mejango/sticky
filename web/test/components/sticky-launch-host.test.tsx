@@ -287,6 +287,21 @@ describe('global Sticky launch host', () => {
     expect(mocks.clear).not.toHaveBeenCalled()
   })
 
+  it('runs a press made during the background check once that check ends, instead of dropping it', async () => {
+    localStorage.setItem(STICKY_LAUNCH_KEY, 'saved')
+    mocks.load.mockReturnValue(saved())
+    const check = Promise.withResolvers<void>()
+    mocks.refresh.mockReturnValueOnce(check.promise)
+    await mount(); await show()
+    expect(mocks.refresh).toHaveBeenCalledOnce()
+    await click('Continue launch')
+    expect(button('Continue launch')?.disabled).toBe(true)
+    expect(mocks.run).not.toHaveBeenCalled()
+    await act(async () => check.resolve())
+    expect(mocks.run).toHaveBeenCalledOnce()
+    expect(button('Continue launch')?.disabled).toBe(false)
+  })
+
   it('polls read-only recovery every 12 seconds and pauses while the document is hidden', async () => {
     vi.useFakeTimers()
     const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)

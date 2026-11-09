@@ -91,7 +91,10 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
   const currentIdentity = useRef(identity)
   useEffect(() => { currentIdentity.current = identity; generation.current += 1; return () => { currentIdentity.current = ''; generation.current += 1 } }, [identity])
   const active = review?.identity === identity ? review : null
-  const busy = working || tx.busy || tx.phase === 'review'
+  /** The confirmed hash whose effect is being recorded under the bridge lock: until it is, the step still reads as confirming. */
+  const [recording, setRecording] = useState<Hex | null>(null)
+  const phase = recording ? 'pending' : tx.phase
+  const busy = working || !!recording || tx.busy || tx.phase === 'review'
 
   const assertCurrent = (expected: string) => {
     if (currentIdentity.current !== expected) throw new ReviewLineError(changed)
@@ -335,6 +338,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
     if (tx.phase !== 'success' || !tx.hash || !active || handledHash.current === tx.hash) return
     const current = active, hash = tx.hash, epoch = action.current
     const submissionHash = tx.submissionHash, safeProposal = tx.submissionIsSafe
+    setRecording(hash)
     void withBridgeLock(async () => {
       let held = readPendingBridgeWrite(current.owner)
       if (!held) return
@@ -359,7 +363,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
       if (!next || epoch !== action.current || currentIdentity.current !== next.identity) return
       tx.reset(); handledHash.current = null
       setReview(next)
-    }).catch(reason => setError(errorLine(reason)))
+    }).catch(reason => setError(errorLine(reason))).finally(() => setRecording(null))
     // Each canonical hash is processed once, against the frozen review.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tx.phase, tx.hash, tx.submissionHash, tx.submissionIsSafe, active])
@@ -428,7 +432,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
         {settle?.identity === identity ? <ReceiverFlow key={`${settle.token}:${settle.groupId}`} info={info} chainId={info.chainId} projectId={Number(info.projectId)} initialToken={settle.token} initialGroupId={settle.groupId} initiallyOpen onSettled={onFunded} /> : null}
         <TxError error={error} />
       </div>
-      {active ? <TxConfirmDialog open title={active.request.label ?? 'Confirm bridge step'} rows={reviewRows(active)} steps={(active.record?.steps ?? [storeBridgeWrite(active.request)]).map(step => ({ title: step.label }))} activeIndex={0} onClose={closeReview} onConfirm={() => void confirm(active)} busy={busy} settled={tx.phase === 'submitted'} complete={false} action={confirmAction(tx.phase, 'Review again')} status={sendingStatus(tx) ?? undefined} error={tx.error} /> : null}
+      {active ? <TxConfirmDialog open title={active.request.label ?? 'Confirm bridge step'} rows={reviewRows(active)} steps={(active.record?.steps ?? [storeBridgeWrite(active.request)]).map(step => ({ title: step.label }))} activeIndex={0} onClose={closeReview} onConfirm={() => void confirm(active)} busy={busy} settled={phase === 'submitted'} complete={false} action={confirmAction(phase, 'Review again')} status={sendingStatus({ ...tx, phase }) ?? undefined} error={tx.error ?? error} /> : null}
     </ModalShell>
   )
 }

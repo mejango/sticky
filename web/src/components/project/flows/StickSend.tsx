@@ -3,13 +3,13 @@
 import { errorLine, ReviewLineError } from '@bananapus/nana-sdk-core/review'
 import { asSentence } from '@/lib/sticky-format'
 import { useQueryClient } from '@tanstack/react-query'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { formatUnits, isAddressEqual, type Address } from 'viem'
 import { told } from '@/components/project/flows/refusal'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { reviewedSteps, useReviewedAction } from '@/hooks/useReviewedAction'
-import { useStepPresses } from '@/hooks/useStepPresses'
+import { usePlannedReview } from '@/hooks/usePlannedReview'
 import { useWallet } from '@/hooks/useWallet'
 import { readBalanceAndAllowance } from '@/lib/sticky-allowance'
 import { approveSteps, stickTx, type TxRequest } from '@/lib/sticky-builders'
@@ -72,14 +72,12 @@ export function StickSend({
   const { isConnected, isCenterWallet } = useWallet()
   const tx = useReviewedAction()
   const client = useQueryClient()
-  const [plan, setPlan] = useState<Plan | null>(null)
-  const [preparing, setPreparing] = useState(false)
-  const presses = useStepPresses(tx, close)
+  const review = usePlannedReview<Plan>(tx, close)
+  const { plan, preparing, start } = review
   // The steps confirmed so far: the dialog is on the one after them.
   const { landed } = tx
-  const reading = useRef<AbortController | null>(null)
-  const latest = useRef({ tx, presses, onFailure })
-  latest.current = { tx, presses, onFailure }
+  const latest = useRef(onFailure)
+  latest.current = onFailure
 
   const sending = tx.busy || tx.phase === 'review'
   const complete = plan !== null && landed === plan.steps.length
@@ -93,47 +91,31 @@ export function StickSend({
   // Each request plans afresh from what the chain says now.
   useEffect(() => {
     const { info, terminal, account, beneficiary, amount: value } = request
-    reading.current?.abort()
-    const controller = new AbortController()
-    reading.current = controller
-    const { signal } = controller
-    latest.current.tx.reset()
-    setPlan(null)
-    latest.current.presses.restart()
-    setPreparing(true)
-    void (async () => {
-      try {
-        if (!isAddressEqual(beneficiary, account)) {
-          await assertCanStickFor(chainId, info.projectId, account, beneficiary, { signal })
-        }
-        const { balance, allowance } = await readBalanceAndAllowance(
-          chainId,
-          { token: info.stakedToken, owner: account, spender: terminal },
-          { signal },
-        )
-        if (balance < value) throw new ReviewLineError(MORE_THAN_HELD)
-        const minted = await quoteStick(chainId, info.projectId, info.stakedToken, value, account, beneficiary, { signal })
-        const steps = withApprovalParent([
-          ...approveSteps(chainId, info.stakedToken, terminal, allowance, value, {
-            symbol: info.symbol,
-            decimals: info.decimals,
-            mode: 'covering',
-          }),
-          stickTx(info, beneficiary, value, minted),
-        ], account)
-        if (signal.aborted) return
-        setPlan({ info, terminal, account, beneficiary, amount: value, minted, steps })
-        latest.current.presses.arm()
-      } catch (reason) {
-        if (!signal.aborted) {
-          const message = asSentence(errorLine(told(REVIEW_UNREADABLE, { chainId, projectId }, reason)))
-          latest.current.onFailure(message, account.toLowerCase())
-        }
-      } finally {
-        if (!signal.aborted) setPreparing(false)
+    void start(async signal => {
+      if (!isAddressEqual(beneficiary, account)) {
+        await assertCanStickFor(chainId, info.projectId, account, beneficiary, { signal })
       }
-    })()
-  }, [request, chainId, projectId])
+      const { balance, allowance } = await readBalanceAndAllowance(
+        chainId,
+        { token: info.stakedToken, owner: account, spender: terminal },
+        { signal },
+      )
+      if (balance < value) throw new ReviewLineError(MORE_THAN_HELD)
+      const minted = await quoteStick(chainId, info.projectId, info.stakedToken, value, account, beneficiary, { signal })
+      const steps = withApprovalParent([
+        ...approveSteps(chainId, info.stakedToken, terminal, allowance, value, {
+          symbol: info.symbol,
+          decimals: info.decimals,
+          mode: 'covering',
+        }),
+        stickTx(info, beneficiary, value, minted),
+      ], account)
+      return { info, terminal, account, beneficiary, amount: value, minted, steps }
+    }, reason => {
+      const message = asSentence(errorLine(told(REVIEW_UNREADABLE, { chainId, projectId }, reason)))
+      latest.current(message, account.toLowerCase())
+    })
+  }, [request, chainId, projectId, start])
 
   /** The balance just before a step is sent: an approval does not fail for want of one, and the stick after it would. A
    * balance that cannot be read stops the step, and the console is told why. */
@@ -149,7 +131,7 @@ export function StickSend({
     if (!plan || sending) return
     // The plan is the reviewing account's: its balance, its allowance, its trust check and its quote. Every step is sent
     // as that account, and the engine refuses it, before a review opens, while another is connected.
-    await presses.press(
+    await review.press(
       {
         account: plan.account,
         calls: reviewedSteps(plan.steps, plan.account),
@@ -162,16 +144,12 @@ export function StickSend({
 
   // The stick's one decoded review opens once it is planned, and each step it showed is sent as the one before confirms.
   useEffect(() => {
-    if (presses.due && plan && !sending) void confirm()
+    if (review.due && plan && !sending) void confirm()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [presses.due, plan, sending])
+  }, [review.due, plan, sending])
 
   function close() {
-    reading.current?.abort()
-    // Closed at once: a step already due for this action is not sent.
-    presses.restart()
-    setPlan(null)
-    setPreparing(false)
+    review.close()
     if (tx.phase !== 'success') tx.dismiss()
     onClose(complete)
   }
@@ -189,8 +167,6 @@ export function StickSend({
   useEffect(() => {
     if (complete) refreshAfterStick(client, chainId, projectId)
   }, [complete, client, chainId, projectId])
-
-  useEffect(() => () => reading.current?.abort(), [])
 
   if (!plan && !preparing) return null
   // A stick that would now mint less than its quote is quoted again, never sent with a looser minimum. A mined revert's

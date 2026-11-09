@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCopyNotice } from '@/hooks/useCopyNotice'
 
 /** How long a copy button says what became of the copy. */
 const COPY_NOTICE_MS = 1_500
@@ -13,12 +13,7 @@ const COPY_REFUSED = 'Could not copy an address to the clipboard.'
  * live region beside it, which is always there for the announcement to be made in.
  */
 export function CopyAddress({ label, address }: { label: string; address: string }) {
-  const [notice, setNotice] = useState<'copied' | 'refused' | null>(null)
-  useEffect(() => {
-    if (notice === null) return
-    const timer = setTimeout(() => setNotice(null), COPY_NOTICE_MS)
-    return () => clearTimeout(timer)
-  }, [notice])
+  const [notice, setNotice] = useCopyNotice<'copied' | 'refused'>(COPY_NOTICE_MS)
 
   const copy = async () => {
     try {

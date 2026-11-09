@@ -125,6 +125,29 @@ export const launchComplete = (session: StickyLaunchSession) =>
 export const launchCanClear = (session: StickyLaunchSession) => launchComplete(session) ||
   (!session.published && !session.direct?.started && !session.payment?.started && !session.listing.requested)
 
+/**
+ * Where a saved launch stands and what its panel may offer, in one place. `recoveryOnly`: an older multi-pool record
+ * that keeps its evidence and offers no new authority. `settled`: a submission settled as a success or a deployment is
+ * proven, before every pool reads as confirmed.
+ */
+export function launchActions(session: StickyLaunchSession) {
+  const complete = launchComplete(session)
+  const recoveryOnly = session.plan.targets.length !== 1
+  const started = !!(session.direct?.started || session.payment?.started)
+  const settled = session.direct?.settled === 'success' || session.payment?.settled === 'success' || launchEstablished(session)
+  const open = !recoveryOnly && !complete
+  return {
+    complete,
+    recoveryOnly,
+    settled,
+    retry: open && !settled && started,
+    continue: open && !started && (!session.listing.requested || !!session.listing.selfPaid),
+    selfPay: open && session.mode === 'center' && !session.listing.requested,
+    list: !recoveryOnly && !session.listing.intentId && session.listing.state !== 'unavailable',
+    clear: launchCanClear(session),
+  }
+}
+
 /** An authenticated deployment is saved: the launch went through, whatever a later read says. */
 export const launchEstablished = (session: StickyLaunchSession) => Object.keys(session.proven ?? {}).length > 0
 /** How long a sponsor request that discovery cannot find keeps waiting before it earns the explicit check. */

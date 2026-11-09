@@ -16,7 +16,7 @@ import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { reviewedSteps, useReviewedAction, type TxRequest } from '@/hooks/useReviewedAction'
-import { useStepPresses } from '@/hooks/useStepPresses'
+import { usePlannedReview } from '@/hooks/usePlannedReview'
 import type { TransactionReviewRow } from '@/lib/transaction-review'
 import { useWallet } from '@/hooks/useWallet'
 import { preflight } from '@/lib/preflight'
@@ -172,7 +172,8 @@ export function ReceiverFlow({
   const { address, isConnected, isCenterWallet, openSignIn } = useWallet()
   const { viewAs } = useViewAs()
   const tx = useReviewedAction()
-  const presses = useStepPresses(tx, close)
+  const review = usePlannedReview<Plan>(tx, close)
+  const { plan, preparing } = review
   const { landed } = tx
   const client = useQueryClient()
   const tokenId = useId()
@@ -180,10 +181,7 @@ export function ReceiverFlow({
   const [minWeeks, setMinWeeks] = useState(() => String(decodeGroupId(initialGroupId).minWeeks || ''))
   const [maxWeeks, setMaxWeeks] = useState(() => String(decodeGroupId(initialGroupId).maxWeeks || ''))
   const [tokenText, setTokenText] = useState(initialToken ?? '')
-  const [plan, setPlan] = useState<Plan | null>(null)
-  const [preparing, setPreparing] = useState(false)
   const [failure, setFailure] = useState<Failure | null>(null)
-  const reading = useRef<AbortController | null>(null)
   const settledToken = useRef(onSettled)
   settledToken.current = onSettled
 
@@ -217,53 +215,31 @@ export function ReceiverFlow({
     if (!gate) return void openSignIn()
     if (gate.refusal) return setFailure({ message: gate.refusal, account: null })
     const { account } = gate
-    reading.current?.abort()
-    const controller = new AbortController()
-    reading.current = controller
-    const { signal } = controller
-    tx.reset()
-    presses.restart()
     setFailure(null)
-    setPlan(null)
-    setPreparing(true)
-    try {
+    await review.start(async signal => {
       const group = groupOf(minWeeks, maxWeeks)
-      const next =
-        kind === 'create'
-          ? await planCreate(info, group, account, signal)
-          : await planSettle(info, group, tokenText, account, signal)
-      if (!signal.aborted) {
-        setPlan(next)
-        presses.arm()
-      }
-    } catch (reason) {
-      if (signal.aborted) return
+      return kind === 'create' ? planCreate(info, group, account, signal) : planSettle(info, group, tokenText, account, signal)
+    }, reason => {
       const told = refusalOf(reason)
       if (!(told instanceof Refusal)) console.warn(PREPARE_UNREADABLE, { chainId, projectId }, told)
       setFailure({ message: asSentence(errorLine(told)), account: account.toLowerCase() })
-    } finally {
-      if (!signal.aborted) setPreparing(false)
-    }
+    })
   }
 
   async function confirm() {
     if (!plan || sending) return
     // The step is sent as the account that reviewed it, and the engine refuses it while another is connected.
-    await presses.press({ account: plan.account, calls: reviewedSteps(plan.steps, plan.account), title: titleOf(plan.kind), context: plan.rows })
+    await review.press({ account: plan.account, calls: reviewedSteps(plan.steps, plan.account), title: titleOf(plan.kind), context: plan.rows })
   }
 
   // The step's one decoded review opens once it is planned.
   useEffect(() => {
-    if (presses.due && plan && !sending) void confirm()
+    if (review.due && plan && !sending) void confirm()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [presses.due, plan, sending])
+  }, [review.due, plan, sending])
 
   function close() {
-    reading.current?.abort()
-    // Closed at once: a step already due for this action is not sent.
-    presses.restart()
-    setPlan(null)
-    setPreparing(false)
+    review.close()
     if (tx.phase !== 'success') tx.dismiss()
   }
 
@@ -278,8 +254,6 @@ export function ReceiverFlow({
     refreshAfterSettle(client, chainId, projectId)
     settledToken.current(plan.token!)
   }, [complete, plan, client, chainId, projectId])
-
-  useEffect(() => () => reading.current?.abort(), [])
 
   const held = arrivals.data
   const arrivalsLine =
