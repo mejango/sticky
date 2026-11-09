@@ -15,6 +15,7 @@ import {
   type ReviewedAction,
   type ReviewedCall,
   type ReviewedResult,
+  type ReviewedRunStatus,
   type WriteHoldClient,
 } from '@bananapus/nana-sdk-core/review'
 import { useReviewedRun } from '@bananapus/nana-sdk-core/review/react'
@@ -43,6 +44,16 @@ export type TxPhase =
   | 'submitted'
   | 'success'
   | 'error'
+
+/** Sticky's display phase for the SDK's run status: a held or proposed step shows its hold, and an exit that could not
+ * be checked, or a review the account change withdrew, shows as an error. */
+export function txPhaseOf(status: ReviewedRunStatus, exitFailed: boolean): TxPhase {
+  if (status === 'done') return 'success'
+  if (status === 'proposed' || status === 'held') return 'submitted'
+  if (status === 'receipt') return 'pending'
+  if (status === 'review' || status === 'simulating' || status === 'signing') return status
+  return status === 'failed' || exitFailed ? 'error' : 'idle'
+}
 
 /** A contract write, as Sticky's builders return it. */
 export type TxRequest = {
@@ -168,9 +179,9 @@ export function useReviewedAction() {
     open.current = true
     return () => { open.current = false }
   }, [])
+  const last = useRef<{ action: ReviewedRun; account: Address | undefined; chainId: number; proposed: ReviewedCall | null } | null>(null)
   /** A run that ended with nothing finished: once its state shows, it is read for a cancel. */
   const [ended, setEnded] = useState<{ onCancelled: () => void } | null>(null)
-  const last = useRef<{ action: ReviewedRun; account: Address | undefined; chainId: number; proposed: ReviewedCall | null } | null>(null)
   const runner = useReviewedRun({
     account: address,
     ...reviewedSendDeps,
@@ -244,23 +255,15 @@ export function useReviewedAction() {
   }
 
   const { held: shown } = runner
-  // Core says a run that returned nothing was cancelled by leaving its error empty, with nothing held.
+  /** Whether the held step is a Safe's proposal. */
+  const heldSafe = !!shown?.state && shown.state.status !== 'clear' && shown.state.record.safe
+  const phase = txPhaseOf(runner.status, !!exitError)
+  // A run that returned nothing was cancelled when, once its state shows, nothing failed and nothing is held.
   useEffect(() => {
     if (!ended) return
     setEnded(null)
-    if (runner.phase === 'idle' && !runner.error && !shown) ended.onCancelled()
-  }, [ended, runner.phase, runner.error, shown])
-  /** Whether the held step is a Safe's proposal. */
-  const heldSafe = !!shown?.state && shown.state.status !== 'clear' && shown.state.record.safe
-  // Core's phase, with its held view: a run that stopped with a step in flight is held, with that hold's line.
-  const phase: TxPhase =
-    runner.phase === 'done' ? 'success'
-      : runner.phase === 'proposed' ? 'submitted'
-        : runner.phase === 'receipt' ? 'pending'
-          : runner.phase !== 'idle' ? runner.phase
-            : shown ? (shown.phase === 'confirming' && !heldSafe ? 'pending' : 'submitted')
-              : runner.error || exitError ? 'error'
-                : 'idle'
+    if (phase === 'idle' && !shown) ended.onCancelled()
+  }, [ended, phase, shown])
 
   const onReleased = last.current?.action.onReleased
   const runExit = () => {
