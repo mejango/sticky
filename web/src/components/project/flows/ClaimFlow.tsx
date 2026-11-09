@@ -10,7 +10,7 @@ import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { reviewedSteps, useReviewedAction, type TxRequest } from '@/hooks/useReviewedAction'
-import { useStepPresses } from '@/hooks/useStepPresses'
+import { usePlannedReview } from '@/hooks/usePlannedReview'
 import { useWallet } from '@/hooks/useWallet'
 import { asked } from '@/lib/hook-logs'
 import { preflight } from '@/lib/preflight'
@@ -189,13 +189,11 @@ export function ClaimFlow({
   const { address, isConnected, isCenterWallet, openSignIn } = useWallet()
   const { viewAs } = useViewAs()
   const tx = useReviewedAction()
-  const presses = useStepPresses(tx, close)
+  const review = usePlannedReview<Plan>(tx, close)
+  const { plan, preparing } = review
   const { landed } = tx
   const client = useQueryClient()
-  const [plan, setPlan] = useState<Plan | null>(null)
-  const [preparing, setPreparing] = useState(false)
   const [failure, setFailure] = useState<Failure | null>(null)
-  const reading = useRef<AbortController | null>(null)
 
   const sending = tx.busy || tx.phase === 'review'
   const complete = plan !== null && landed === plan.steps.length
@@ -209,30 +207,13 @@ export function ClaimFlow({
     if (!gate) return void openSignIn()
     if (gate.refusal) return setFailure({ message: gate.refusal, account: null })
     const { account } = gate
-    reading.current?.abort()
-    const controller = new AbortController()
-    reading.current = controller
-    const { signal } = controller
-    tx.reset()
-    presses.restart()
     setFailure(null)
-    setPlan(null)
-    setPreparing(true)
-    try {
-      const next =
-        kind === 'stick' ? await planClaimAndStick(info, groups, account, signal) : await planCollect(info, card, account, signal)
-      if (!signal.aborted) {
-        setPlan(next)
-        presses.arm()
-      }
-    } catch (reason) {
-      if (signal.aborted) return
+    await review.start(signal =>
+      kind === 'stick' ? planClaimAndStick(info, groups, account, signal) : planCollect(info, card, account, signal), reason => {
       const told = refusalOf(reason)
       if (!(told instanceof Refusal)) console.warn(PREPARE_UNREADABLE, { chainId, projectId }, told)
       setFailure({ message: asSentence(errorLine(told)), account: account.toLowerCase() })
-    } finally {
-      if (!signal.aborted) setPreparing(false)
-    }
+    })
   }
 
   /** A claim and stick approves exactly what was collectable, so before each step that is read again: a claim that
@@ -253,25 +234,21 @@ export function ClaimFlow({
     if (!plan || sending) return
     // Every step is sent as the account that reviewed the claim, and the engine refuses it while another is connected.
     const symbol = plan.kind === 'stick' ? info.symbol : card.meta.symbol
-    await presses.press(
+    await review.press(
       { account: plan.account, calls: reviewedSteps(plan.steps, plan.account), title: titleOf(plan, symbol), context: rowsOf(plan, info, card), reverify: () => verify(plan) },
     )
   }
 
   function close() {
-    reading.current?.abort()
-    // Closed at once: a step already due for this action is not sent.
-    presses.restart()
-    setPlan(null)
-    setPreparing(false)
+    review.close()
     if (tx.phase !== 'success') tx.dismiss()
   }
 
   // The claim's one decoded review opens once it is planned, and each step it showed is sent as the one before confirms.
   useEffect(() => {
-    if (presses.due && plan && !sending) void confirm()
+    if (review.due && plan && !sending) void confirm()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [presses.due, plan, sending])
+  }, [review.due, plan, sending])
 
   useEffect(() => {
     setFailure(current => (current?.account === null ? null : current))
@@ -283,8 +260,6 @@ export function ClaimFlow({
     if (plan.kind === 'stick') refreshAfterRewardStick(client, chainId, projectId, plan.account)
     else refreshAfterCollect(client, chainId, projectId, plan.account)
   }, [complete, plan, client, chainId, projectId])
-
-  useEffect(() => () => reading.current?.abort(), [])
 
   // A review stays open until it is closed, whatever its pot comes to show once its step lands.
   const open = plan !== null || preparing

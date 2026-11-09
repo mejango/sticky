@@ -2,7 +2,7 @@
 
 import { withApprovalParent } from '@/lib/sticky-hold-intent'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import { formatUnits, maxUint256, type Address } from 'viem'
 import { Refusal, refusalOf } from '@/components/project/flows/refusal'
 import { reviewGate } from '@/components/project/flows/review-gate'
@@ -12,7 +12,7 @@ import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { reviewedSteps, useReviewedAction, type TxRequest } from '@/hooks/useReviewedAction'
-import { useStepPresses } from '@/hooks/useStepPresses'
+import { usePlannedReview } from '@/hooks/usePlannedReview'
 import { useWallet } from '@/hooks/useWallet'
 import type { TransactionReviewRow } from '@/lib/transaction-review'
 import { stickyDeployment } from '@/lib/sticky-addresses'
@@ -299,16 +299,14 @@ export function AutoStickFlow({
   const { address, isConnected, isCenterWallet, openSignIn } = useWallet()
   const { viewAs } = useViewAs()
   const tx = useReviewedAction()
-  const presses = useStepPresses(tx, closeReview)
+  const planned = usePlannedReview<Plan>(tx, closeReview)
+  const { plan, preparing } = planned
   const { landed } = tx
   const client = useQueryClient()
   const minimumId = useId()
   const capId = useId()
   const [form, setForm] = useState<Form | null>(null)
-  const [plan, setPlan] = useState<Plan | null>(null)
-  const [preparing, setPreparing] = useState(false)
   const [failure, setFailure] = useState<Failure | null>(null)
-  const reading = useRef<AbortController | null>(null)
 
   const schedule = useQuery({
     queryKey: ['sticky-reward-schedule', chainId],
@@ -345,31 +343,17 @@ export function AutoStickFlow({
     if (!gate) return void openSignIn()
     if (gate.refusal) return setFailure({ message: gate.refusal, account: null })
     const { account } = gate
-    reading.current?.abort()
-    const controller = new AbortController()
-    reading.current = controller
-    const { signal } = controller
-    tx.reset()
-    presses.restart()
     setFailure(null)
-    setPlan(null)
-    setPreparing(true)
-    try {
+    await planned.start(async signal => {
       const next = await planAutoStick(action, { info, groups, account, form, signal })
-      if (signal.aborted) return
-      if (next === 'renew') openForm('enable')
-      else {
-        setPlan(next)
-        presses.arm()
-      }
-    } catch (reason) {
-      if (signal.aborted) return
+      if (next !== 'renew') return next
+      if (!signal.aborted) openForm('enable')
+      return null
+    }, reason => {
       const told = refusalOf(reason)
       if (!(told instanceof Refusal)) console.warn(PREPARE_UNREADABLE, { chainId, projectId }, told)
       setFailure({ message: asSentence(errorLine(told)), account: account.toLowerCase() })
-    } finally {
-      if (!signal.aborted) setPreparing(false)
-    }
+    })
   }
 
   /**
@@ -403,7 +387,7 @@ export function AutoStickFlow({
   async function confirm() {
     if (!plan || sending) return
     // Every step is sent as the account that reviewed the change, and the engine refuses it while another is connected.
-    await presses.press(
+    await planned.press(
       {
         account: plan.account,
         calls: reviewedSteps(plan.steps, plan.account),
@@ -416,25 +400,21 @@ export function AutoStickFlow({
 
   // The change's one decoded review opens once it is planned, and each step it showed is sent as the one before confirms.
   useEffect(() => {
-    if (presses.due && plan && !sending) void confirm()
+    if (planned.due && plan && !sending) void confirm()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [presses.due, plan, sending])
+  }, [planned.due, plan, sending])
 
   /** Closes the review, and the form with it once the change is done. A review closed after a step went through reads
    * auto-stick again, so the card says where it stands. */
   function closeReview() {
-    reading.current?.abort()
-    // Closed at once: a step already due for this action is not sent.
-    presses.restart()
+    planned.close()
     if (plan && !complete && landed > 0) refreshAfterAutoStick(client, chainId, projectId, plan.account)
     if (complete) setForm(null)
-    setPlan(null)
-    setPreparing(false)
     if (tx.phase !== 'success') tx.dismiss()
   }
 
   function closeForm() {
-    reading.current?.abort()
+    planned.abort()
     setForm(null)
     setFailure(null)
   }
@@ -451,8 +431,6 @@ export function AutoStickFlow({
     else if (plan.action === 'vest') refreshAfterCollect(client, chainId, projectId, plan.account)
     else refreshAfterAutoStick(client, chainId, projectId, plan.account)
   }, [complete, plan, client, chainId, projectId])
-
-  useEffect(() => () => reading.current?.abort(), [])
 
   const { enabled, status, canBeginVesting } = state
   const buttons: { label: string; press: () => void; primary?: boolean }[] = [

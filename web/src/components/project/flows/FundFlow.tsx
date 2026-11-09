@@ -15,7 +15,7 @@ import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { reviewedSteps, useReviewedAction, type TxRequest } from '@/hooks/useReviewedAction'
-import { useStepPresses } from '@/hooks/useStepPresses'
+import { usePlannedReview } from '@/hooks/usePlannedReview'
 import { useWallet } from '@/hooks/useWallet'
 import { asked } from '@/lib/hook-logs'
 import type { TransactionReviewRow } from '@/lib/transaction-review'
@@ -183,7 +183,8 @@ function SameChainFundFlow({
   const { address, isConnected, isCenterWallet, openSignIn } = useWallet()
   const { viewAs } = useViewAs()
   const tx = useReviewedAction()
-  const presses = useStepPresses(tx, closeReview)
+  const review = usePlannedReview<Plan>(tx, closeReview)
+  const { plan, preparing } = review
   const { landed } = tx
   const client = useQueryClient()
   const ids = { from: useId(), token: useId(), amount: useId() }
@@ -191,10 +192,7 @@ function SameChainFundFlow({
   const [minWeeks, setMinWeeks] = useState('')
   const [maxWeeks, setMaxWeeks] = useState('')
   const [amount, setAmount] = useState('')
-  const [plan, setPlan] = useState<Plan | null>(null)
-  const [preparing, setPreparing] = useState(false)
   const [failure, setFailure] = useState<Failure | null>(null)
-  const reading = useRef<AbortController | null>(null)
   const funded = useRef(onFunded)
   funded.current = onFunded
 
@@ -209,26 +207,12 @@ function SameChainFundFlow({
     // The engine refuses these too; saying so now keeps a plan from being built for an account that cannot send it.
     if (gate.refusal) return setFailure({ message: gate.refusal, account: null })
     const { account } = gate
-    reading.current?.abort()
-    const controller = new AbortController()
-    reading.current = controller
-    const { signal } = controller
-    tx.reset()
-    presses.restart()
     setFailure(null)
-    setPlan(null)
-    setPreparing(true)
-    try {
-      const next = await planFund(info, account, { token, minWeeks, maxWeeks, amount }, signal)
-      if (!signal.aborted) { setPlan(next); presses.arm() }
-    } catch (reason) {
-      if (signal.aborted) return
+    await review.start(signal => planFund(info, account, { token, minWeeks, maxWeeks, amount }, signal), reason => {
       const told = refusalOf(reason)
       if (!(told instanceof Refusal)) console.warn(PREPARE_UNREADABLE, { chainId, projectId }, told)
       setFailure({ message: asSentence(errorLine(told)), account: account.toLowerCase() })
-    } finally {
-      if (!signal.aborted) setPreparing(false)
-    }
+    })
   }
 
   /** The balance just before a step is sent: an approval does not fail for want of one, and the airdrop after it would.
@@ -247,24 +231,20 @@ function SameChainFundFlow({
   async function confirm() {
     if (!plan || sending) return
     // Every step is sent as the account that reviewed the airdrop, and the engine refuses it while another is connected.
-    await presses.press(
+    await review.press(
       { account: plan.account, calls: reviewedSteps(plan.steps, plan.account), title: 'Airdrop', context: rowsOf(plan, info), reverify: () => verify(plan) },
     )
   }
 
   // The airdrop's one decoded review opens once it is planned, and each step it showed is sent as the one before confirms.
   useEffect(() => {
-    if (presses.due && plan && !sending) void confirm()
+    if (review.due && plan && !sending) void confirm()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [presses.due, plan, sending])
+  }, [review.due, plan, sending])
 
   function closeReview() {
-    reading.current?.abort()
-    // Closed at once: a step already due for this action is not sent.
-    presses.restart()
+    review.close()
     if (complete) return onClose()
-    setPlan(null)
-    setPreparing(false)
     if (tx.phase !== 'success') tx.dismiss()
   }
 
@@ -280,8 +260,6 @@ function SameChainFundFlow({
     refreshAfterFund(client, chainId, projectId, plan.account)
     funded.current(plan.token.toLowerCase() as Address)
   }, [complete, plan, client, chainId, projectId])
-
-  useEffect(() => () => reading.current?.abort(), [])
 
   // What a refusal said is about what was in the fields, which are no longer.
   const edit = (set: (value: string) => void) => (value: string) => {
