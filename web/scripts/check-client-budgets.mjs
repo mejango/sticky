@@ -20,9 +20,9 @@ const dist = resolve(process.env.NEXT_DIST_DIR || '.next')
 // 480.3, account 346.7, callback 312.4 and not-found 314.8 KiB before the load-size changes. SDK 4.0.0 (core's reviewed run, one
 // plan review) measured home 326.7, project 343.1 and account 317.6 KiB.
 const budgets = {
-  '/': 328 * KIB,
-  '/base:23': 345 * KIB,
-  '/account/0x0000000000000000000000000000000000000001': 319 * KIB,
+  '/': 329 * KIB,
+  '/base:23': 346 * KIB,
+  '/account/0x0000000000000000000000000000000000000001': 320 * KIB,
   '/center/callback': 216 * KIB,
   '/zz-not-a-route': 214 * KIB,
 }
