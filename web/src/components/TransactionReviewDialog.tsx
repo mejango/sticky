@@ -19,10 +19,12 @@ import {
   ModalCloseButton,
   ModalDialog,
 } from '@/components/ui/ModalShell'
+import { feeBuybackContext } from '@/lib/fee-buyback-client'
 import { buildTransactionReviewPrompt } from '@/lib/transaction-review'
 import { chainName } from '@/lib/urn'
 
-import { FeeBuybackNotice, useFeeBuybackReview } from './FeeBuybackNotice'
+import { useFeeBuybackReview } from '@bananapus/nana-sdk-core/review/react'
+import { FeeBuybackNotice } from './FeeBuybackNotice'
 
 import type { PendingReview, PendingFundingChainSelection, TransactionReviewDialogProps } from './TransactionReviewProvider'
 
@@ -523,7 +525,7 @@ function ReviewModal({
     ...(call.from ? { from: call.from } : {}),
     ...(call.functionName ? { functionName: call.functionName } : {}),
   })), [model])
-  const feeReview = useFeeBuybackReview(feeCalls)
+  const feeReview = useFeeBuybackReview(feeCalls, feeBuybackContext)
   /** The action's summary rows, as core's model carries them. */
   const rows = model.context
   const [agreed, setAgreed] = useState(false)

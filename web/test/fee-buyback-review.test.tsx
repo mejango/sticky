@@ -2,164 +2,48 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import {
-  FeeBuybackNotice,
-  useFeeBuybackReview,
-} from '../src/components/FeeBuybackNotice'
-const mocks = vi.hoisted(() => ({
-  check: vi.fn(),
-  block: undefined as undefined | (() => void),
-  stop: vi.fn(),
-}))
-vi.mock('../src/lib/fee-buyback-client', () => ({
-  feeBuybackContext: () => ({
-    client: {
-      watchBlockNumber: (o: { onBlockNumber: () => void }) => {
-        mocks.block = o.onBlockNumber
-        return mocks.stop
-      },
-    },
-    options: {},
-  }),
-}))
-vi.mock('@bananapus/nana-sdk-core/v6/fee-buyback', async importOriginal => ({
-  ...(await importOriginal<object>()),
-  checkFeeBuyback: (...args: unknown[]) => mocks.check(...args),
-}))
-const calls = [
-  {
-    chainId: 8453,
-    from: '0x3333333333333333333333333333333333333333' as const,
-    to: '0x1111111111111111111111111111111111111111' as const,
-    data: '0x1234' as const,
-    functionName: 'borrowFrom',
-  },
-]
-const fee = {
-  key: 'base:6',
-  projectId: 6n,
-  received: 9429n * 10n ** 18n,
-  route: 'fallback',
+import type { useFeeBuybackReview } from '@bananapus/nana-sdk-core/review/react'
+import { FeeBuybackNotice } from '../src/components/FeeBuybackNotice'
+
+type Review = ReturnType<typeof useFeeBuybackReview>
+const fee = { key: 'base:6', projectId: 6n, received: 9429n * 10n ** 18n, route: 'fallback' as const }
+const review = (state: Partial<Review>): Review => ({
+  enabled: true, status: 'fallback', result: { status: 'fallback', fees: [fee], checkedAt: Date.now() }, busy: false, settled: true,
+  waiting: false, autoRefresh: true, confirmLabel: undefined, confirm: vi.fn(async () => true), retry: vi.fn(), wait: vi.fn(), ...state,
+} as Review)
+let root: Root, host: HTMLDivElement
+afterEach(() => { act(() => root.unmount()); host.remove() })
+async function render(shown: Review) {
+  host = document.createElement('div'); document.body.append(host); root = createRoot(host)
+  await act(async () => root.render(<FeeBuybackNotice review={shown} />))
 }
-const batch = [
-  { ...calls[0], functionName: 'sendPayoutsOf' },
-  { ...calls[0], chainId: 10, functionName: 'sendPayoutsOf' },
-  { ...calls[0], chainId: 10, functionName: 'transfer' },
-]
-function Host({ sent, reviewed = calls }: { sent: () => void; reviewed?: typeof calls }) {
-  const review = useFeeBuybackReview(reviewed)
-  return (
-    <>
-      <FeeBuybackNotice review={review} />
-      <button
-        disabled={review.busy}
-        onClick={async () => {
-          if (await review.confirm()) sent()
-        }}
-      >
-        {review.confirmLabel ?? 'Confirm'}
-      </button>
-    </>
-  )
-}
-let root: Root | undefined
-let host: HTMLDivElement
-afterEach(() => {
-  if (root) act(() => root!.unmount())
-  host?.remove()
-  vi.clearAllMocks()
-})
-async function render(sent: () => void, reviewed = calls) {
-  host = document.createElement('div')
-  document.body.append(host)
-  root = createRoot(host)
-  await act(async () => root!.render(<Host sent={sent} reviewed={reviewed} />))
-}
-function button(label: string) {
-  const found = [...host.querySelectorAll('button')].find(
-    b => b.textContent === label,
-  )
-  expect(found, label).toBeTruthy()
-  return found!
-}
-describe('actionable fee review', () => {
-  it('waits in place, refreshes on blocks, and never auto-submits when ready', async () => {
-    mocks.check.mockResolvedValue({
-      status: 'fallback',
-      fees: [fee],
-      checkedAt: Date.now(),
-    })
-    const sent = vi.fn()
-    await render(sent)
+const button = (label: string) => [...host.querySelectorAll('button')].find(b => b.textContent === label)
+
+// The fee return machine is the SDK's (useFeeBuybackReview); Sticky renders its state.
+describe('fee return notice', () => {
+  it('shows a fallback with its amount and lets the person wait', async () => {
+    const shown = review({})
+    await render(shown)
     expect(host.textContent).toContain('9,429')
-    await act(async () => button('Wait for better rate').click())
     expect(host.textContent).toContain('Checking new blocks automatically')
-    mocks.check.mockResolvedValue({
-      status: 'ready',
-      fees: [{ ...fee, route: 'swap' }],
-      checkedAt: Date.now(),
-    })
-    await act(async () => mocks.block?.())
-    expect(sent).not.toHaveBeenCalled()
-    await act(async () => button('Review and submit').click())
-    expect(sent).toHaveBeenCalledOnce()
-    act(() => root!.unmount())
-    root = undefined
-    expect(mocks.stop).toHaveBeenCalled()
+    await act(async () => button('Wait for better rate')!.click())
+    expect(shown.wait).toHaveBeenCalledOnce()
   })
   it('shows a pending first check as checking, never as unavailable', async () => {
-    let settle!: (result: unknown) => void
-    mocks.check.mockReturnValue(new Promise(resolve => (settle = resolve)))
-    await render(vi.fn())
+    await render(review({ status: 'checking', busy: true, settled: false, result: { status: 'unknown', fees: [] } }))
     expect(host.textContent).toContain('Checking fee return…')
     expect(host.textContent).not.toContain('unavailable')
-    expect(host.textContent).not.toContain('Retry now')
-    expect(button('Checking fee return…').disabled).toBe(true)
-
-    await act(async () => settle({ status: 'ready', fees: [{ ...fee, route: 'swap' }], checkedAt: Date.now() }))
-    expect(host.textContent).toContain('Checking new blocks automatically')
-    expect(host.textContent).not.toContain('unavailable')
+    expect(button('Retry now')).toBeUndefined()
   })
-  it('says automatic checks are unavailable once a check without a block watcher has settled', async () => {
-    // A call without a sender has no fee context, so nothing can watch its blocks.
-    await render(vi.fn(), [{ ...calls[0], from: undefined as unknown as (typeof calls)[number]['from'] }])
+  it('offers retry when the return is unknown and blocks are not watched', async () => {
+    const shown = review({ status: 'unknown', autoRefresh: false, result: { status: 'unknown', fees: [] } })
+    await render(shown)
     expect(host.textContent).toContain('Automatic checks unavailable. Retry now.')
-    button('Retry now')
-    expect(mocks.check).not.toHaveBeenCalled()
+    await act(async () => button('Retry now')!.click())
+    expect(shown.retry).toHaveBeenCalledOnce()
   })
-  it('shows retry when unavailable and makes submitting without an estimate explicit', async () => {
-    mocks.check.mockResolvedValue({ status: 'unknown', fees: [] })
-    await render(vi.fn())
-    button('Retry now')
-    button('Submit without estimate')
-  })
-  it('keeps review open when the submit-time recheck falls back', async () => {
-    mocks.check
-      .mockResolvedValueOnce({
-        status: 'ready',
-        fees: [{ ...fee, route: 'swap' }],
-      })
-      .mockResolvedValue({ status: 'fallback', fees: [fee] })
-    const sent = vi.fn()
-    await render(sent)
-    await act(async () => button('Review and submit').click())
-    expect(sent).not.toHaveBeenCalled()
-    button('Submit anyway')
-    await act(async () => button('Submit anyway').click())
-    expect(sent).toHaveBeenCalledOnce()
-  })
-  it('estimates every fee-paying call in a batch and shows the worst result', async () => {
-    mocks.check.mockImplementation(async (_client: unknown, call: { chainId: number }) =>
-      call.chainId === 8453
-        ? { status: 'ready', fees: [{ ...fee, route: 'swap' }], checkedAt: 1 }
-        : { status: 'fallback', fees: [fee], checkedAt: 2 },
-    )
-    const sent = vi.fn()
-    await render(sent, batch)
-    expect(mocks.check).toHaveBeenCalledTimes(2)
-    expect(host.textContent).toContain('issuance rate')
-    expect(host.textContent!.match(/9,429/g)).toHaveLength(2)
-    await act(async () => button('Submit anyway').click())
-    expect(sent).toHaveBeenCalledOnce()
+  it('shows nothing when no call pays a fee', async () => {
+    await render(review({ enabled: false, status: 'none', result: { status: 'none', fees: [] } }))
+    expect(host.textContent).toBe('')
   })
 })
