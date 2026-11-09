@@ -11,7 +11,7 @@ import { displayChainName, explorerTxUrl } from '@/lib/chainDisplay'
 import type { ChainEnvironment } from '@/lib/chains'
 import { STICKY_LAUNCH_EVENT, takeStickyLaunchRequest } from '@/lib/sticky-launch-events'
 import type { LaunchPlan } from '@/lib/sticky-launch-plan'
-import { STICKY_LAUNCH_KEY, launchCanClear, launchComplete, type StickyLaunchSession } from '@/lib/sticky-launch-session'
+import { STICKY_LAUNCH_KEY, launchActions, type StickyLaunchSession } from '@/lib/sticky-launch-session'
 
 const CreateForm = dynamic(() => import('./StickyCreateForm').then(module => module.StickyCreateForm), { loading: () => <p role="status">Loading create form…</p> })
 // The SDK's saved-attempt recovery loads with the launch adapter, never on a page without a saved launch.
@@ -123,9 +123,9 @@ export function StickyLaunchHost() {
   /** The form's one launch press: save the launch, then open its decoded review. No confirmation comes before it. */
   const prepare = (plan: LaunchPlan, capability: 'sponsored' | 'self-paid' | 'unavailable') =>
     launch(async current => { await current.prepare(plan, capability); await current.run() })
-  const complete = session ? launchComplete(session) : false
-  const settledSuccess = !!session && (session.direct?.settled === 'success' || session.payment?.settled === 'success' || Object.keys(session.proven ?? {}).length > 0)
-  const recoveryOnly = !!session && session.plan.targets.length !== 1
+  const allowed = session ? launchActions(session) : null
+  const complete = !!allowed?.complete
+  const recoveryOnly = !!allowed?.recoveryOnly
   const chainId = hashChain ?? session?.plan.targets[0].chainId
   return <>
     {session || corrupt ? <div className="fixed inset-x-0 bottom-0 z-20 border-t border-line bg-card px-4 py-3 text-center shadow-lg">
@@ -152,17 +152,17 @@ export function StickyLaunchHost() {
                   : <span className="text-muted">{session.direct?.started || session.payment?.started || session.published || session.listing.requested ? 'Waiting for verified deployment' : 'Ready for review'}</span>}
               </li>
             })}</ul>
-            {settledSuccess && !complete ? <p role="status" className="text-sm">{HELD_SUCCESS_LINE}</p> : null}
+            {allowed?.settled && !complete ? <p role="status" className="text-sm">{HELD_SUCCESS_LINE}</p> : null}
             {loaded && !recoveryOnly && !complete && !launching ? <LaunchRecovery controller={loaded} session={session} generation={generation} busy={busy} act={action} /> : null}
             {session.error || session.listing.error ? <p className="break-words text-sm text-err">{session.error || session.listing.error}</p> : null}
             <div className="flex flex-wrap gap-3">
               <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(async current => { await current.refresh(); setGeneration(value => value + 1) })}>Check again</button>
-              {!recoveryOnly && !complete && !settledSuccess && (session.direct?.started || session.payment?.started) ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(current => current.retry())}>Check failed transaction for retry</button> : null}
-              {!recoveryOnly && !complete && !session.direct?.started && !session.payment?.started && (!session.listing.requested || session.listing.selfPaid) ?
+              {allowed?.retry ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(current => current.retry())}>Check failed transaction for retry</button> : null}
+              {allowed?.continue ?
                 <button type="button" className="btn-primary px-3 py-2" disabled={busy} onClick={() => void launch(current => current.run())}>{session.mode === 'center' ? 'Request sponsored launch' : 'Continue launch'}</button> : null}
-              {!recoveryOnly && !complete && session.mode === 'center' && !session.listing.requested ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void launch(async current => { await current.selfPay(); await current.run() })}>Pay for launch myself</button> : null}
-              {!recoveryOnly && !session.listing.intentId && session.listing.state !== 'unavailable' ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(current => current.list())}>List on Juicebox Center</button> : null}
-              {launchCanClear(session) ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(async current => { await current.clear(); setOpen(false) })}>{complete ? 'Finish' : session.directAttempts?.length ? 'Discard failed launch' : 'Discard unsubmitted launch'}</button> : null}
+              {allowed?.selfPay ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void launch(async current => { await current.selfPay(); await current.run() })}>Pay for launch myself</button> : null}
+              {allowed?.list ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(current => current.list())}>List on Juicebox Center</button> : null}
+              {allowed?.clear ? <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void action(async current => { await current.clear(); setOpen(false) })}>{complete ? 'Finish' : session.directAttempts?.length ? 'Discard failed launch' : 'Discard unsubmitted launch'}</button> : null}
             </div>
             {!complete ? <details className="text-sm"><summary className="cursor-pointer font-medium">Recover with a transaction hash</summary>
               <p className="my-2 text-muted">Use the mined deployment transaction. It will be checked against this saved launch before it counts as confirmed.</p>

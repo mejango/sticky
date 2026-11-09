@@ -3,8 +3,8 @@ import type { RelayrQuote } from '@bananapus/nana-sdk-core/review/relayr'
 import { encodeFunctionData, type Address, type Hex } from 'viem'
 import { describe, expect, it, vi } from 'vitest'
 import type { LaunchPlan } from '@/lib/sticky-launch-plan'
-import { STICKY_LAUNCH_KEY, createStickyLaunchController, createStickyLaunchStore, launchCanClear, launchComplete, sponsorUnresolved, validateStickyLaunch,
-  type StickyLaunchPorts } from '@/lib/sticky-launch-session'
+import { STICKY_LAUNCH_KEY, createStickyLaunchController, createStickyLaunchStore, launchActions, launchCanClear, launchComplete, sponsorUnresolved, validateStickyLaunch,
+  type StickyLaunchPorts, type StickyLaunchSession } from '@/lib/sticky-launch-session'
 import { memoryStorage } from '../memory-storage'
 
 vi.mock('@/lib/jbcenter-public-client', () => ({ jbCenterPublicClient: vi.fn() }))
@@ -580,5 +580,24 @@ describe('durable Sticky launch controller', () => {
     for (const history of [[{ started: true }], [{ started: false, hash: H1 }], [{ started: true, hash: 'bad' }], {}]) {
       expect(() => validateStickyLaunch({ ...f.prepared, directAttempts: history })).toThrow()
     }
+  })
+})
+
+describe('launchActions', () => {
+  const base = (overrides: Partial<StickyLaunchSession> = {}): StickyLaunchSession => ({ version: 1, plan: plan(), mode: 'direct', published: false,
+    candidates: {}, results: {}, listing: { state: 'pending', recorded: {} }, ...overrides })
+  const offered = (session: StickyLaunchSession) => Object.entries(launchActions(session)).filter(([key, on]) => on && !['complete', 'recoveryOnly', 'settled'].includes(key)).map(([key]) => key)
+  it('offers each button only where the saved launch stands', () => {
+    expect(offered(base())).toEqual(['continue', 'list', 'clear'])
+    expect(offered(base({ mode: 'center' }))).toEqual(['continue', 'selfPay', 'list', 'clear'])
+    expect(offered(base({ mode: 'center', listing: { state: 'pending', recorded: {}, requested: true } }))).toEqual(['list'])
+    expect(offered(base({ mode: 'center', listing: { state: 'pending', recorded: {}, requested: true, selfPaid: true } }))).toEqual(['continue', 'list'])
+    expect(offered(base({ direct: { started: true } }))).toEqual(['retry', 'list'])
+    expect(offered(base({ direct: { started: true, settled: 'success' } }))).toEqual(['list'])
+    expect(launchActions(base({ direct: { started: true, settled: 'success' } })).settled).toBe(true)
+    expect(offered(base({ results: { 84532: { hash: H1, projectId: '9', token: TOKEN } } }))).toEqual(['list', 'clear'])
+    expect(launchActions(base({ results: { 84532: { hash: H1, projectId: '9', token: TOKEN } } })).complete).toBe(true)
+    expect(offered(base({ plan: plan([84532, 11155420]) }))).toEqual(['clear'])
+    expect(offered(base({ listing: { state: 'unavailable', recorded: {} } }))).toEqual(['continue', 'clear'])
   })
 })
