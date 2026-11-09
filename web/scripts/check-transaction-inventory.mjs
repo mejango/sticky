@@ -60,7 +60,7 @@ for (const path of sourceFiles(sourceRoot)) {
     true,
     extname(path) === '.tsx' ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   )
-  /** A flow's useReviewedAction, and the presses that run it: each `run` or `press` is one reviewed action. */
+  /** A flow's useReviewedAction, and the presses (useStepPresses, usePlannedReview) that run it: each `run` or `press` is one reviewed action. */
   const actionVariables = new Set()
   const monitoredNames = new Set([
     'useReviewedAction',
@@ -95,7 +95,7 @@ for (const path of sourceFiles(sourceRoot)) {
       ts.isIdentifier(node.name) &&
       node.initializer &&
       ts.isCallExpression(node.initializer) &&
-      ['useReviewedAction', 'useStepPresses'].includes(canonicalCalledName(node.initializer.expression))
+      ['useReviewedAction', 'useStepPresses', 'usePlannedReview'].includes(canonicalCalledName(node.initializer.expression))
     ) {
       actionVariables.add(node.name.text)
       if (canonicalCalledName(node.initializer.expression) === 'useReviewedAction') {
