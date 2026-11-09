@@ -397,7 +397,9 @@ describe('new bridge durable intent and source recovery', () => {
     expect(readBridgeRecords(key)).toHaveLength(2)
     await withBridgeLock(async () => {})
     expect(locks.mock.calls.map(call => call[0])).toEqual(['sticky-reward-bridge-storage', 'sticky-reward-bridge-storage', 'sticky-reward-bridge'])
+    // Without Web Locks, the SDK's fallback lock still runs the action (R119).
     vi.stubGlobal('navigator', {})
-    await expect(withBridgeLock(async () => {})).rejects.toThrow('Web Locks')
+    await expect(withBridgeLock(async () => 'ran')).resolves.toBe('ran')
+    await expect(updateBridgeRecords(key, records => records)).resolves.toHaveLength(2)
   })
 })

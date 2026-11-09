@@ -227,11 +227,13 @@ describe('Sticky launch browser boundaries', () => {
     expect(fake.sign).not.toHaveBeenCalled()
   })
 
-  it('refuses cross-tab contention and missing Web Locks before creating a recovery record', async () => {
+  it('saves a launch on the fallback lock without Web Locks, and refuses cross-tab contention before creating a recovery record', async () => {
     const controller = createBrowserStickyLaunchController()
+    // Without Web Locks, the SDK's fallback lock still runs the action (R119).
     vi.stubGlobal('navigator', {})
-    await expect(controller.prepare(plan(), 'unavailable')).rejects.toThrow('Web Locks')
-    expect(controller.load()).toBeNull()
+    await controller.prepare(plan(), 'unavailable')
+    expect(controller.load()).not.toBeNull()
+    localStorage.clear()
     vi.stubGlobal('navigator', { locks: { request: vi.fn(async (_name, _options, run) => run(null)) } })
     await expect(controller.prepare(plan(), 'unavailable')).rejects.toThrow('Another tab')
     expect(controller.load()).toBeNull()

@@ -4,6 +4,7 @@ import type { TxRequest } from '@/hooks/useReviewedAction'
 import { environmentForChainIds, SUPPORTED_CHAINS } from '@/lib/chains'
 import { bridgeCalldata, bridgeRouteId, type BridgeMovement, type BridgeRoute, type createStickyBridge } from '@/lib/sticky-bridge'
 import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
+import { browserLocks } from '@bananapus/nana-sdk-core/review/locks'
 
 export type StoredBridgeWrite = { chainId: number; address: Address; data: Hex; value: string; label: string; parent?: string }
 export type BridgeRecord = {
@@ -142,15 +143,13 @@ export function saveBridgeRecords(key: string, records: BridgeRecord[], storage:
 }
 /** One write lock spans preparation, review and wallet submission, including other tabs. */
 export async function withBridgeLock<T>(work: () => Promise<T>, wait = false): Promise<T> {
-  if (!navigator.locks?.request) throw new ReviewLineError('This browser cannot safely coordinate cross-chain transfers. Use a current browser with Web Locks support.')
-  return navigator.locks.request('sticky-reward-bridge', { mode: 'exclusive', ...(!wait ? { ifAvailable: true } : {}) }, async lock => {
+  return browserLocks().request('sticky-reward-bridge', { mode: 'exclusive', ...(!wait ? { ifAvailable: true } : {}) }, async lock => {
     if (!lock) throw new ReviewLineError('A bridge action is already open in another tab.')
     return work()
   })
 }
 export async function updateBridgeRecords(key: string, update: (records: BridgeRecord[]) => BridgeRecord[], storage: BridgeStorage = localStorage) {
-  if (!navigator.locks?.request) throw new ReviewLineError('This browser cannot safely save bridge recovery across tabs.')
-  return navigator.locks.request('sticky-reward-bridge-storage', { mode: 'exclusive' }, () => {
+  return browserLocks().request('sticky-reward-bridge-storage', { mode: 'exclusive' }, () => {
     const records = update(readBridgeRecords(key, storage))
     saveBridgeRecords(key, records, storage)
     return records
