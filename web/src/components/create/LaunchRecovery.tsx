@@ -27,41 +27,37 @@ export function LaunchRecovery({ controller, session, generation, busy, act }: {
   // The saved journal stands for the attempt.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const bundle = useMemo(() => controller.attempt(session), [controller, saved])
-  const recovery = useSavedAttempt({ recovery: attempts, attempt: bundle?.attempt, client: bundle?.client, checkNext: 'Create again' })
+  const latest = useRef({ act, kind: bundle?.kind })
+  latest.current = { act, kind: bundle?.kind }
+  const recovery = useSavedAttempt({ recovery: attempts, attempt: bundle?.attempt, client: bundle?.client, checkNext: 'Create again',
+    // A followed settlement: its hash and result join the journal, which verifies the deployment, then it retires.
+    onDone: async outcome => {
+      const { act: queue, kind } = latest.current
+      if (!kind) return false
+      let joined = false
+      await queue(async current => {
+        if (outcome.hash && kind !== 'sponsor') await current.record(kind, { hash: outcome.hash, result: outcome.result })
+        await current.refresh()
+        joined = true
+      }, true)
+      return joined
+    },
+    // The user's exit or check retired the attempt: the journal records it as exited, which reopens the launch.
+    onRetired: async () => {
+      const { act: queue, kind } = latest.current
+      if (kind) await queue(current => current.exited(kind), true)
+    },
+  })
   const { outcome, recover, retire, checkAction, unreadableAction } = recovery
-  const latest = useRef({ act, retire, kind: bundle?.kind })
-  latest.current = { act, retire, kind: bundle?.kind }
 
   const status = outcome?.status
   const first = useRef(generation)
-  /** The outcome whose settlement or retirement was handed to the journal; asked again after each refresh. */
-  const recorded = useRef<string | null>(null)
+  // Asked again after each refresh of the journal.
   useEffect(() => {
     if (first.current === generation || status === 'held') return
     first.current = generation
-    recorded.current = null
     void recover()
   }, [generation, status, recover])
-
-  useEffect(() => {
-    const kind = latest.current.kind
-    if (!outcome || !kind) return
-    const mark = JSON.stringify(outcome)
-    if (recorded.current === mark) return
-    if (outcome.status === 'done') {
-      recorded.current = mark
-      const hash = outcome.hash
-      // A followed settlement: its hash and result join the journal, which verifies the deployment, then it retires.
-      void latest.current.act(async current => {
-        if (hash && kind !== 'sponsor') await current.record(kind, { hash, result: outcome.result })
-        await current.refresh()
-        await latest.current.retire({ by: 'settled', ...(hash ? { hash } : {}) })
-      }, true)
-    } else if (outcome.status === 'none' && outcome.retired && outcome.retired !== 'settled') {
-      recorded.current = mark
-      void latest.current.act(current => current.exited(kind), true)
-    }
-  }, [outcome])
 
   if (!bundle || !outcome) return null
   if (outcome.status === 'held') {
@@ -75,10 +71,10 @@ export function LaunchRecovery({ controller, session, generation, busy, act }: {
     <div role="status" className="space-y-2 text-sm">
       <p>{checkAction.line}</p>
       <p className="text-muted">{checkAction.warning}</p>
-      <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void act(async current => { if ((await checkAction.run()).retired) await current.exited(bundle.kind) })}>{checkAction.label}</button>
+      <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void act(() => checkAction.run())}>{checkAction.label}</button>
       {unreadableAction ? <>
         <p>{unreadableAction.line}</p>
-        <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void act(async current => { if ((await unreadableAction.run()).retired) await current.exited(bundle.kind) })}>{unreadableAction.label}</button>
+        <button type="button" className="btn-secondary px-3 py-2" disabled={busy} onClick={() => void act(() => unreadableAction.run())}>{unreadableAction.label}</button>
       </> : null}
     </div>
   )
