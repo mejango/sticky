@@ -11,7 +11,7 @@ import { ModalShell } from '@/components/ui/ModalShell'
 import { Revalidating } from '@/components/ui/Revalidating'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
-import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
+import { confirmAction, sendingStatus, stepsIntro, txStage, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { reviewedSteps, useReviewedAction, type TxRequest } from '@/hooks/useReviewedAction'
 import { useStepPresses } from '@/hooks/useStepPresses'
 import { useSettled } from '@/hooks/useSettled'
@@ -495,7 +495,7 @@ export function UnstickFlow({
       {plan || preparing ? (
         <TxConfirmDialog
           open
-          preparing={preparing}
+          stage={txStage({ preparing: preparing, busy: sending, complete, phase: tx.phase })}
           onClose={closeReview}
           title={complete ? 'Unstick confirmed' : 'Confirm unstick'}
           rows={plan ? reviewRows(info, plan) : undefined}
@@ -505,9 +505,6 @@ export function UnstickFlow({
           action={confirmAction(tx.phase, actionLabel)}
           cancelLabel={landed.length > 0 ? 'Close' : 'Cancel'}
           onConfirm={() => (failed ? retry() : void sendNext())}
-          busy={sending}
-          complete={complete}
-          settled={tx.phase === 'submitted'}
           status={status}
           error={flowError}
         />

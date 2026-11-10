@@ -66,14 +66,3 @@ export function mobileWalletLinks(href: string) {
     },
   ]
 }
-
-export function isMobileDevice(nav: {
-  userAgent?: string
-  platform?: string
-  maxTouchPoints?: number
-}) {
-  return (
-    /Android|iPhone|iPad|iPod/i.test(nav.userAgent || '') ||
-    (nav.platform === 'MacIntel' && (nav.maxTouchPoints ?? 0) > 1)
-  )
-}

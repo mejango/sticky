@@ -354,6 +354,45 @@ describe('useReviewedAction', () => {
     await unmount()
   }, 20_000)
 
+  it('stops an approval run once its held receipt is dismissed: no later review for it, and a new amount can start', async () => {
+    let reviews = 0
+    unregister.push(registerReviewHandler(async prompt => { reviews += 1; return prompt.confirmation }))
+    const { stick, unstick } = baseline
+    const tag = crypto.randomUUID()
+    const calls = [stick, unstick].map((sent, at) => ({ chainId: sent.chainId, to: sent.to as Address, data: sent.data as Hex, value: BigInt(sent.value), intent: `dismiss-${at}-${tag}`, ...(at ? { dependsOnPrior: true } : {}) }))
+    // The approval's receipt can't be read until its in-run follow times out: the hold has it, the dialog shows Done.
+    client.getTransactionReceipt.mockImplementation(async () => { throw new Error('lagging node') })
+    const { ref, unmount } = await mount()
+    let ended: unknown = 'pending'
+    await act(async () => {
+      void ref.current!.run({ account: ALICE, calls, follow: { timeoutMs: 50 } }).then(value => { ended = value })
+    })
+    await vi.waitFor(() => expect(ref.current!.phase).toBe('pending'))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 200)) })
+    // Two minutes on, the hold's look shows its pending line: the confirm can end on Done.
+    const now = Date.now.bind(Date)
+    const later = vi.spyOn(Date, 'now').mockImplementation(() => now() + 130_000)
+    await vi.waitFor(() => expect(ref.current!.phase).toBe('submitted'), { timeout: 10_000, interval: 100 })
+    later.mockRestore()
+    expect(walletSends).toHaveLength(1)
+    await act(async () => ref.current!.dismiss())
+    await vi.waitFor(() => expect(ended).toBeNull())
+    // The approval confirms: the dismissed run reviews nothing more.
+    client.getTransactionReceipt.mockImplementation(async ({ hash }: { hash: Hex }) => receipt(hash))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 6_000)) })
+    expect(reviews).toBe(1)
+    expect(walletSends).toHaveLength(1)
+    expect(ref.current!.phase).not.toBe('review')
+    // A new amount starts and is sent.
+    let result: Awaited<ReturnType<Action['run']>> = null
+    await act(async () => {
+      result = await ref.current!.run({ account: ALICE, calls: [{ chainId: stick.chainId, to: stick.to as Address, data: stick.data as Hex, value: BigInt(stick.value) + 1n, intent: `dismiss-new-${tag}` }] })
+    })
+    expect(result).toMatchObject({ status: 'done' })
+    expect(reviews).toBe(2)
+    await unmount()
+  }, 30_000)
+
   it('sends no later step once the page that ran it has gone, and frees that step', async () => {
     confirmEveryReview()
     const { stick, unstick } = baseline

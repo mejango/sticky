@@ -3,6 +3,7 @@
 import { stickyDeployerAbi, type JBChainId } from '@bananapus/nana-sdk-core'
 import { JBCenterRequestError, type JBCenterIntent } from '@bananapus/nana-sdk-core/jbcenter'
 import { errorLine, HELD_CONFIRMING_LINE, intent, ReviewedReceiptUnverifiedError, ReviewLineError, launchIntent, payRelayrReviewed, sendReviewed, signReviewed, waitForTrackedReceipt, type ReviewedCall, type ReviewedResult, type ReviewedSignature, type WriteHoldClient } from '@bananapus/nana-sdk-core/review'
+import { browserLocks } from '@bananapus/nana-sdk-core/review/locks'
 import { safeExecutionRunsCalls } from '@bananapus/nana-sdk-core/safe-service'
 import {
   RELAYR_API,
@@ -505,8 +506,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
   }
   const controller = createStickyLaunchController(ports)
   const exclusive = async <T>(run: () => Promise<T> | T): Promise<T> => {
-    if (!navigator.locks) throw new ReviewLineError('This browser cannot coordinate launch recovery across tabs. Use a browser with Web Locks support.')
-    return await navigator.locks.request('sticky-launch-write', { ifAvailable: true }, async lock => {
+    return await browserLocks().request('sticky-launch-write', { ifAvailable: true }, async lock => {
       if (!lock) throw new ReviewLineError('Another tab is processing this launch. Resume it there or wait for it to finish.')
       return run()
     })

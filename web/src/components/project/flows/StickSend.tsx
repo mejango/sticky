@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { formatUnits, isAddressEqual, type Address } from 'viem'
 import { told } from '@/components/project/flows/refusal'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
-import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
+import { confirmAction, sendingStatus, stepsIntro, txStage, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { reviewedSteps, useReviewedAction } from '@/hooks/useReviewedAction'
 import { usePlannedReview } from '@/hooks/usePlannedReview'
 import { useWallet } from '@/hooks/useWallet'
@@ -176,7 +176,7 @@ export function StickSend({
   return (
     <TxConfirmDialog
       open
-      preparing={!plan}
+      stage={txStage({ preparing: !plan, busy: sending, complete, phase: tx.phase })}
       onClose={close}
       title={complete ? 'Stick confirmed' : forSomeoneElse ? 'Confirm stick for someone else' : 'Confirm stick'}
       rows={plan ? rowsOf(plan, forSomeoneElse, chainId) : undefined}
@@ -187,9 +187,6 @@ export function StickSend({
       // Once a step has gone through, closing undoes nothing: what went through stays, and the next review finds it.
       cancelLabel={landed > 0 ? 'Close' : 'Cancel'}
       onConfirm={() => (requote ? onReviewAgain() : void confirm())}
-      busy={sending}
-      complete={complete}
-      settled={tx.phase === 'submitted'}
       status={
         !plan ? (
           'Reading your balance, allowance and the current price…'

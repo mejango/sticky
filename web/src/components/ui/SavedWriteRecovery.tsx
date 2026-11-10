@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import type { Hex } from 'viem'
 import { getPublicClient } from '@wagmi/core'
 import { useHeldWrite, useSavedAttempt } from '@bananapus/nana-sdk-core/review/react'
@@ -58,38 +58,18 @@ export function SavedWriteRecovery({ pending, disabled, authenticate, record, en
   // The saved fields stand for the attempt.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const attempt = useMemo(() => pendingAttempt(pending, hash => check.current(hash)), [saved])
-  const recovery = useSavedAttempt({ recovery: attempts, attempt, client })
+  const latest = useRef({ record, end })
+  latest.current = { record, end }
+  // A followed settlement is recorded by the flow, then retired; a hashless one waits for the explicit check.
+  const recovery = useSavedAttempt({ recovery: attempts, attempt, client, recheckMs: 15_000,
+    onDone: async outcome => !!outcome.hash && latest.current.record(outcome.hash, outcome.result),
+    onRetired: () => latest.current.end() })
   const { outcome, recover, retire, checkAction, unreadableAction } = recovery
   const [working, setWorking] = useState(false)
   const run = (work: () => Promise<unknown>) => {
     setWorking(true)
     void work().catch(() => undefined).finally(() => setWorking(false))
   }
-  const recorded = useRef<string | null>(null)
-  const latest = useRef({ record, end, retire })
-  latest.current = { record, end, retire }
-  useEffect(() => {
-    if (!outcome) return
-    const mark = JSON.stringify(outcome)
-    if (recorded.current === mark) return
-    if (outcome.status === 'done' && outcome.hash) {
-      const hash = outcome.hash
-      recorded.current = mark
-      void latest.current.record(hash, outcome.result)
-        .then(done => (done ? latest.current.retire({ by: 'settled', hash }) : (recorded.current = null)))
-        .catch(() => { recorded.current = null })
-    } else if (outcome.status === 'none' && outcome.retired && outcome.retired !== 'settled') {
-      recorded.current = mark
-      void latest.current.end().catch(() => { recorded.current = null })
-    }
-  }, [outcome])
-  // Asked again every 15 seconds while the answer can still change; a held write watches itself.
-  const status = outcome?.status
-  useEffect(() => {
-    if (!status || status === 'held') return
-    const timer = setInterval(() => void recover(), 15_000)
-    return () => clearInterval(timer)
-  }, [status, recover])
 
   if (!outcome) return null
   if (outcome.status === 'held') {
@@ -109,10 +89,10 @@ export function SavedWriteRecovery({ pending, disabled, authenticate, record, en
   return (
     <>
       <p className="text-sm text-muted">{`${checkAction.line} ${checkAction.warning}`}</p>
-      <button className="btn-link" disabled={disabled || working} onClick={() => run(async () => { if ((await checkAction.run()).retired) await end() })}>{checkAction.label}</button>
+      <button className="btn-link" disabled={disabled || working} onClick={() => run(checkAction.run)}>{checkAction.label}</button>
       {unreadableAction ? <>
         <p className="text-sm text-muted">{unreadableAction.line}</p>
-        <button className="btn-link" disabled={disabled || working} onClick={() => run(async () => { if ((await unreadableAction.run()).retired) await end() })}>{unreadableAction.label}</button>
+        <button className="btn-link" disabled={disabled || working} onClick={() => run(unreadableAction.run)}>{unreadableAction.label}</button>
       </> : null}
     </>
   )

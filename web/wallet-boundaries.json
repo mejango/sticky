@@ -3,9 +3,23 @@
   "sites": [
     {
       "file": "src/components/TransactionReviewProvider.tsx",
-      "line": 213,
+      "line": 85,
+      "api": "request",
+      "boundary": "The SDK review queue's request for a funding chain choice, answered only by the person in the dialog; never a wallet RPC.",
+      "test": "test/components/funding-chain-selection.test.tsx"
+    },
+    {
+      "file": "src/components/TransactionReviewProvider.tsx",
+      "line": 123,
       "api": "registerReviewHandler",
       "boundary": "The page's one review handler: it answers core's prompt only with the person's choice in the review dialog, cancels on a scope or account change, and closes when core withdraws the prompt.",
+      "test": "test/components/transaction-review-scope.test.tsx"
+    },
+    {
+      "file": "src/components/TransactionReviewProvider.tsx",
+      "line": 125,
+      "api": "request",
+      "boundary": "The SDK review queue's request for core's prompt, bound to the project scope and account it opened under and withdrawn with core's signal; never a wallet RPC.",
       "test": "test/components/transaction-review-scope.test.tsx"
     },
     {

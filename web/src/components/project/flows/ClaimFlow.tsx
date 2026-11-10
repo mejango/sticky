@@ -8,7 +8,7 @@ import { Refusal, refusalOf } from '@/components/project/flows/refusal'
 import { reviewGate } from '@/components/project/flows/review-gate'
 import { TxConfirmDialog } from '@/components/ui/TxConfirmDialog'
 import { TxError } from '@/components/ui/TxError'
-import { confirmAction, sendingStatus, stepsIntro, ViewTransactionLink } from '@/components/ui/TxProgress'
+import { confirmAction, sendingStatus, stepsIntro, txStage, ViewTransactionLink } from '@/components/ui/TxProgress'
 import { reviewedSteps, useReviewedAction, type TxRequest } from '@/hooks/useReviewedAction'
 import { usePlannedReview } from '@/hooks/usePlannedReview'
 import { useWallet } from '@/hooks/useWallet'
@@ -304,7 +304,7 @@ export function ClaimFlow({
       {open ? (
         <TxConfirmDialog
           open
-          preparing={!plan}
+          stage={txStage({ preparing: !plan, busy: sending, complete, phase: tx.phase })}
           onClose={close}
           title={complete ? doneTitle : titleOf(plan, symbol)}
           rows={plan ? rowsOf(plan, info, card) : undefined}
@@ -314,9 +314,6 @@ export function ClaimFlow({
           action={confirmAction(tx.phase, tx.phase === 'error' ? 'Retry' : 'Review again')}
           cancelLabel={landed > 0 ? 'Close' : 'Cancel'}
           onConfirm={() => void confirm()}
-          busy={sending}
-          complete={complete}
-          settled={tx.phase === 'submitted'}
           status={
             !plan ? (
               'Reading your rewards…'

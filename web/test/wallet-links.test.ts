@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import {
-  isMobileDevice,
   mobileWalletLinks,
   walletDappUrl,
 } from '@/lib/walletLinks'
@@ -23,23 +22,5 @@ describe('mobile wallet links', () => {
     expect(decodeURIComponent(metamask.url.split('/dapp/')[1])).toBe(
       page.replace(/^https?:\/\//, ''),
     )
-  })
-
-  it('recognizes phone and touch-iPad browsers', () => {
-    expect(isMobileDevice({ userAgent: 'Mozilla/5.0 (iPhone)' })).toBe(true)
-    expect(
-      isMobileDevice({
-        userAgent: 'Mozilla/5.0 (Macintosh)',
-        platform: 'MacIntel',
-        maxTouchPoints: 5,
-      }),
-    ).toBe(true)
-    expect(
-      isMobileDevice({
-        userAgent: 'Mozilla/5.0 (Macintosh)',
-        platform: 'MacIntel',
-        maxTouchPoints: 0,
-      }),
-    ).toBe(false)
   })
 })

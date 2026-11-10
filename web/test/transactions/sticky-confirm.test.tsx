@@ -124,8 +124,7 @@ function TrustFlow({ onDone }: { onDone: () => void }) {
       steps={STEPS}
       activeIndex={tx.busy ? 0 : -1}
       stepsIntro={stepsIntro(STEPS.length, complete ? STEPS.length : 0)}
-      complete={complete}
-      busy={tx.busy}
+      stage={complete ? 'complete' : tx.busy ? 'busy' : 'ready'}
       action="Confirm & trust"
       onConfirm={() => void tx.run({ account: ALICE, calls: [call] })}
       status={complete ? <ViewTransactionLink chainId={8453} hash={tx.hash} /> : undefined}
