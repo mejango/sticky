@@ -180,6 +180,19 @@ describe('global Sticky launch host', () => {
       expect(mocks.exited).toHaveBeenCalledWith('direct')
     })
 
+    it('records the check\'s exit once another tab frees the launch, when it held the launch then', async () => {
+      await open({ started: true })
+      mocks.exited.mockRejectedValueOnce(new ReviewLineError('Another tab is processing this launch. Resume it there or wait for it to finish.'))
+      await click(checkedItLabel('Create again'))
+      for (let tries = 0; tries < 20 && !mocks.exited.mock.calls.length; tries += 1) await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)) })
+      expect(mocks.exited).toHaveBeenCalledOnce()
+      // The next look at the journal hands the retirement to it again, and it takes.
+      await act(async () => document.dispatchEvent(new Event('visibilitychange')))
+      for (let tries = 0; tries < 40 && mocks.exited.mock.calls.length < 2; tries += 1) await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)) })
+      expect(mocks.exited).toHaveBeenCalledTimes(2)
+      expect(mocks.exited).toHaveBeenLastCalledWith('direct')
+    })
+
     it('offers the warned continue only after the check found storage unreadable', async () => {
       await open({ started: true })
       const read = Storage.prototype.getItem

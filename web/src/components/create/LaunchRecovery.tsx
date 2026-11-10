@@ -42,10 +42,17 @@ export function LaunchRecovery({ controller, session, generation, busy, act }: {
       }, true)
       return joined
     },
-    // The user's exit or check retired the attempt: the journal records it as exited, which reopens the launch.
+    // The user's exit or check retired the attempt: the journal records it as exited, which reopens the launch. One
+    // the host could not record (another tab holds the launch) rejects, so the SDK hands it over again on its next look.
     onRetired: async () => {
       const { act: queue, kind } = latest.current
-      if (kind) await queue(current => current.exited(kind), true)
+      if (!kind) return
+      let exited = false
+      await queue(async current => {
+        await current.exited(kind)
+        exited = true
+      }, true)
+      if (!exited) throw new Error('The launch journal did not record the exit.')
     },
   })
   const { outcome, recover, retire, checkAction, unreadableAction } = recovery
