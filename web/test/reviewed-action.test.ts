@@ -369,6 +369,9 @@ describe('useReviewedAction', () => {
     })
     await vi.waitFor(() => expect(ref.current!.phase).toBe('pending'))
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 200)) })
+    // The run only follows the approval's hold: the confirm is not busy, so it can close.
+    expect(ref.current!.phase).toBe('pending')
+    expect(ref.current!.busy).toBe(false)
     // Two minutes on, the hold's look shows its pending line: the confirm can end on Done.
     const now = Date.now.bind(Date)
     const later = vi.spyOn(Date, 'now').mockImplementation(() => now() + 130_000)
@@ -468,6 +471,33 @@ describe('useReviewedAction', () => {
     })
     expect(onUnsent).toHaveBeenCalledOnce()
     expect(onCancelled).toHaveBeenCalledOnce()
+    await unmount()
+  })
+
+  it('reads a refusal in a resumed sequence, whose earlier step an earlier run sent, as the person\'s cancel', async () => {
+    confirmEveryReview()
+    const { stick, unstick } = baseline
+    const tag = crypto.randomUUID()
+    const calls = [stick, unstick].map((sent, at) => ({ chainId: sent.chainId, to: sent.to as Address, data: sent.data as Hex, value: BigInt(sent.value), intent: `resume-${at}-${tag}`, ...(at ? { dependsOnPrior: true } : {}) }))
+    let stale = true
+    const reverify = vi.fn(async (_call: ReviewedCall, index: number) => {
+      if (index === 1 && stale) throw new ReviewLineError('The unstick changed. Review it again.')
+    })
+    const onCancelled = vi.fn()
+    const { ref, unmount } = await mount()
+    await act(async () => {
+      expect(await ref.current!.run({ account: ALICE, calls, reverify, onCancelled })).toBeNull()
+    })
+    expect(onCancelled).not.toHaveBeenCalled()
+    expect(walletSends).toHaveLength(1)
+    // The resumed run sends only the second step, and the wallet refuses it.
+    stale = false
+    walletClient.sendTransaction.mockRejectedValueOnce(Object.assign(new Error('User rejected the request.'), { code: 4001 }))
+    await act(async () => {
+      expect(await ref.current!.run({ account: ALICE, calls, reverify, onCancelled })).toBeNull()
+    })
+    expect(onCancelled).toHaveBeenCalledOnce()
+    expect(walletSends).toHaveLength(1)
     await unmount()
   })
 

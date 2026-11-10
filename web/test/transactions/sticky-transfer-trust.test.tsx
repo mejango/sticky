@@ -307,7 +307,7 @@ describe('a transfer', () => {
     expect(sent()).toMatchObject({ to: STICKY, functionName: 'transfer', args: [BOB, amount] })
     // The balance was read for the review, and again after it and before the wallet.
     expect(mocks.read).toHaveBeenCalledTimes(2)
-    expect(confirm().textContent).toContain('Waiting for confirmation…')
+    expect(confirm().textContent).toContain('Confirming your transaction.')
 
     await mine()
     expect(confirm().textContent).toContain('Sticky tokens transferred')
@@ -327,7 +327,7 @@ describe('a transfer', () => {
 
     await act(async () => prompt.resolve(HASH))
     await settle()
-    expect(statusLine()).toBe('Waiting for confirmation…')
+    expect(statusLine()).toBe('Confirming your transaction.')
     expect(primary().textContent).toBe('Confirming…')
   })
 
@@ -423,7 +423,7 @@ describe('a change of trust', () => {
     expect(primary().textContent).toBe('Confirm in your wallet…')
     await act(async () => prompt.resolve(HASH))
     await settle()
-    expect(statusLine()).toBe('Waiting for confirmation…')
+    expect(statusLine()).toBe('Confirming your transaction.')
   })
 
   it('wallet-action:trust-or-untrust-a-sender reaches the wallet as setTrustedSenderFor(project, sender, false) for an untrust', async () => {

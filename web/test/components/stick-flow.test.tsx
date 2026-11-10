@@ -539,7 +539,7 @@ describe('the review', () => {
     await rerender()
     expect(stepStates()).toEqual(['active', 'pending', 'pending'])
     expect(confirmButton()!.disabled).toBe(true)
-    expect(dialog()!.textContent).toContain('Waiting for confirmation…')
+    expect(dialog()!.textContent).toContain('Confirming your transaction.')
     mocks.tx.landed = 1
     await rerender()
     expect(stepStates()).toEqual(['complete', 'active', 'pending'])
@@ -768,7 +768,7 @@ describe('the review', () => {
     for (const [phase, line, button] of [
       ['simulating', 'Double-checking the transaction…', 'Double-checking the transaction…'],
       ['signing', 'Confirm in your wallet…', 'Confirm in your wallet…'],
-      ['pending', 'Waiting for confirmation…', 'Confirming…'],
+      ['pending', 'Confirming your transaction.', 'Confirming…'],
     ] as const) {
       mocks.tx.phase = phase
       await rerender()
@@ -783,7 +783,7 @@ describe('the review', () => {
     await rerender()
     expect(mocks.tx.send.mock.calls[1][0]).toMatchObject({ functionName: 'pay' })
     expect(mocks.tx.review).toHaveBeenCalledOnce()
-    expect(statusLine()).toBe('Waiting for confirmation…')
+    expect(statusLine()).toBe('Confirming your transaction.')
     expect(stepStates()).toEqual(['complete', 'active'])
   })
 

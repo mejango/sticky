@@ -383,7 +383,7 @@ describe('trusting a sender: the send', () => {
     for (const [phase, line, button] of [
       ['simulating', 'Double-checking the transaction…', 'Double-checking the transaction…'],
       ['signing', 'Confirm in your wallet…', 'Confirm in your wallet…'],
-      ['pending', 'Waiting for confirmation…', 'Confirming…'],
+      ['pending', 'Confirming your transaction.', 'Confirming…'],
     ]) {
       tx().phase = phase
       await render()

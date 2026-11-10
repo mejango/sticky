@@ -7,6 +7,7 @@ import {
 } from '@bananapus/nana-sdk-core/review/relayr'
 import { encodeFunctionData, parseAbi, type Address, type Hex } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { LockLostError } from '@bananapus/nana-sdk-core/review/locks'
 import type { LaunchPlan } from '@/lib/sticky-launch-plan'
 import type { StickyLaunchPorts, StickyLaunchSession } from '@/lib/sticky-launch-session'
 import { memoryStorage } from '../memory-storage'
@@ -635,6 +636,37 @@ describe('Sticky launch browser boundaries', () => {
     expect(fake.write).toHaveBeenCalledOnce()
   }, 20_000)
 
+  it.each(['hash', 'refusal'] as const)("keeps the wallet's %s when the launch lock lapsed before it answered: a hash is saved under a fresh lock", async answer => {
+    // The launch lock open when the wallet answers is lost to another tab; the next grant holds.
+    const lost = new Set<object>()
+    let open: object | null = null
+    vi.stubGlobal('navigator', { locks: { request: vi.fn(async (name: string, options: unknown, run?: (lock: object) => unknown) => {
+      const lock: object = { name, mode: 'exclusive', signal: new AbortController().signal,
+        held: async () => !lost.has(lock), assertHeld: async () => { if (lost.has(lock)) throw new LockLostError(name) } }
+      if (name !== 'sticky-launch-write') return (run ?? (options as (lock: object) => unknown))(lock)
+      open = lock
+      try { return await (run ?? (options as (lock: object) => unknown))(lock) } finally { if (open === lock) open = null }
+    }) } })
+    const send = fake.write.getMockImplementation()!
+    fake.write.mockImplementationOnce(async tx => {
+      if (open) lost.add(open)
+      if (answer === 'refusal') throw Object.assign(new Error('User rejected the request.'), { code: 4001 })
+      return send(tx)
+    })
+    const controller = createBrowserStickyLaunchController()
+    await controller.prepare(plan(), 'unavailable')
+    await controller.run().catch(() => {})
+    expect(fake.write).toHaveBeenCalledOnce()
+    if (answer === 'hash') {
+      expect(controller.load()?.direct).toEqual(expect.objectContaining({ started: true, hash: HASH }))
+      return
+    }
+    // Under a lost lock the SDK does not report the refusal (the new owner owns the journal): the start stays, and the
+    // SDK's recovery of the saved attempt offers its check and exit, so it is never stuck.
+    expect(controller.load()?.direct).toEqual({ started: true })
+    expect(controller.attempt(controller.load()!)).toMatchObject({ kind: 'direct' })
+  })
+
   it('the one review of a Safe launch shows the Safe execution gas the wallet will run', async () => {
     fake.safe = true
     const controller = createBrowserStickyLaunchController()
@@ -647,7 +679,7 @@ describe('Sticky launch browser boundaries', () => {
   it('remembers a published bundle UUID even when its exact quote binding fails', async () => {
     const remember = vi.fn()
     vi.mocked(fetch).mockResolvedValueOnce(json({ bundle_uuid: BUNDLE, tx_uuids: [], payment_info: [] }))
-    await expect(fake.ports.quote(plan(), remember, () => {})).rejects.toThrow('bind')
+    await expect(fake.ports.quote(plan(), remember, async () => {})).rejects.toThrow('bind')
     expect(remember).toHaveBeenCalledWith(BUNDLE)
     const sent = JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))
     expect(sent.virtual_nonce_mode).toBe('ChainIndependent')

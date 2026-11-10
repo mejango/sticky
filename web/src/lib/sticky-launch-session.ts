@@ -1,6 +1,7 @@
 import { isAddress, isHash, type Hex } from 'viem'
 import type { RelayrPayment, RelayrQuote } from '@bananapus/nana-sdk-core/review/relayr'
 import { errorLine, ReviewLineError, TransactionReviewCancelledError, writeIntentKey, type SavedAttempt } from '@bananapus/nana-sdk-core/review'
+import { LockLostError, type LockHandle } from '@bananapus/nana-sdk-core/review/locks'
 import { requireSingleHomeChain, validateLaunchCall, type LaunchPlan, type LaunchTarget } from '@/lib/sticky-launch-plan'
 
 export const STICKY_LAUNCH_KEY = 'sticky-launch-pending-v1'
@@ -217,16 +218,16 @@ export function launchAttempt(session: StickyLaunchSession, deps: {
 
 export type SubmissionCallbacks = {
   beforeWrite: () => Promise<void>
-  rejected: () => void
-  submitted: (hash: Hex, proposalHash?: Hex) => void
+  rejected: () => Promise<void>
+  submitted: (hash: Hex, proposalHash?: Hex) => Promise<void>
 }
 
 /** What became of a listing signed with the creation: published under its id, or not, and why. */
 export type ListingCallbacks = {
-  published: (intentId: string) => void
-  failed: (message: string) => void
+  published: (intentId: string) => Promise<void>
+  failed: (message: string) => Promise<void>
   /** The wallet signed the listing, but its creation is still confirming: kept to publish once it is. */
-  signed: (message: string, signature: Hex) => void
+  signed: (message: string, signature: Hex) => Promise<void>
 }
 
 /** The hold's authenticated result for a launch submission. */
@@ -234,8 +235,10 @@ export type LaunchSettlement = { hash: Hex; result: 'success' | 'failed' }
 
 export type StickyLaunchPorts = {
   store: ReturnType<typeof createStickyLaunchStore>
+  /** The launch lock's handle while a controller call holds it: every journal write checks it is still held first. */
+  held: () => Pick<LockHandle, 'assertHeld'> | null
   guard: (owner: `0x${string}`) => void
-  quote: (plan: LaunchPlan, rememberUuid: (uuid: string) => void, beforePublish: () => void) => Promise<RelayrQuote>
+  quote: (plan: LaunchPlan, rememberUuid: (uuid: string) => Promise<void>, beforePublish: () => Promise<void>) => Promise<RelayrQuote>
   status: (session: StickyLaunchSession) => Promise<Record<number, Hex[]>>
   choosePayment: (session: StickyLaunchSession) => Promise<RelayrPayment>
   /**
@@ -251,7 +254,7 @@ export type StickyLaunchPorts = {
   publishListing: (plan: LaunchPlan) => Promise<string>
   /** Publishes the listing from the signature the wallet already gave, asking nothing: its id. */
   publishSignedListing: (plan: LaunchPlan, signed: { message: string; signature: Hex }) => Promise<string>
-  sponsor: (session: StickyLaunchSession, beforeRequest: () => void) => Promise<void>
+  sponsor: (session: StickyLaunchSession, beforeRequest: () => Promise<void>) => Promise<void>
   record: (session: StickyLaunchSession, chainId: number, result: LaunchResult) => Promise<boolean>
   /** Whether the SDK lets the saved attempt of this launch be discarded (its followed success retired first). */
   canDiscard: (session: StickyLaunchSession) => Promise<boolean>
@@ -261,11 +264,37 @@ export type StickyLaunchPorts = {
 /** Sticky's deploy call has no replay nonce. A published unknown quote is never replaced. */
 export function createStickyLaunchController(ports: StickyLaunchPorts) {
   let busy = false
-  const save = (session: StickyLaunchSession) => {
+  /** Every journal write runs under the launch lock: it checks this tab still holds it, then writes. */
+  const fence = async () => {
+    const lock = ports.held()
+    if (!lock) throw new ReviewLineError('This launch is not open in this tab. Nothing was saved.')
+    await lock.assertHeld()
+  }
+  const save = async (session: StickyLaunchSession) => {
+    await fence()
     const saved = ports.store.save(session)
     ports.changed?.(saved)
     return saved
   }
+  /** Outcomes the wallet already gave that a lost lock refused: each applies later only to the same attempt. */
+  const late: ((current: StickyLaunchSession) => StickyLaunchSession | null)[] = []
+  /**
+   * Saves what the wallet answered. Refused for a lost lock, `apply` is kept: `reconcileLapsed` runs it under a fresh
+   * lock on the record saved then, which it changes only while it is still this attempt's (null leaves it).
+   */
+  const keep = async (apply: (current: StickyLaunchSession) => StickyLaunchSession | null) => {
+    const next = apply(load())
+    if (!next) return
+    try { await save(next) } catch (error) {
+      if (error instanceof LockLostError) late.push(apply)
+      throw error
+    }
+  }
+  /** The same launch, and the same attempt of `kind` as `base`: its history unchanged (and, for a payment, its option). */
+  const sameAttempt = (base: StickyLaunchSession, current: StickyLaunchSession, kind: 'direct' | 'payment') =>
+    current.plan.id === base.plan.id &&
+    (current[kind === 'direct' ? 'directAttempts' : 'paymentAttempts']?.length ?? 0) === (base[kind === 'direct' ? 'directAttempts' : 'paymentAttempts']?.length ?? 0) &&
+    (kind === 'direct' || (!!current.payment && JSON.stringify(current.payment.option) === JSON.stringify(base.payment?.option)))
   const load = () => {
     const session = ports.store.load()
     if (!session) throw new ReviewLineError('No launch is saved.')
@@ -279,9 +308,15 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
   /** Whether the launch still has a listing to publish. */
   const unlisted = (session: StickyLaunchSession) => !session.listing.intentId && session.listing.state !== 'unavailable'
   const listed: ListingCallbacks = {
-    published: intentId => { const session = load(); save({ ...session, listing: { ...session.listing, state: 'published', intentId, error: undefined } }) },
-    failed: message => { const session = load(); save({ ...session, listing: { ...session.listing, state: 'unlisted', error: message } }) },
-    signed: (message, signature) => { const session = load(); save({ ...session, listing: { ...session.listing, signed: { message, signature } } }) },
+    published: async intentId => {
+      const { plan } = load()
+      await keep(current => current.plan.id === plan.id ? { ...current, listing: { ...current.listing, state: 'published', intentId, error: undefined } } : null)
+    },
+    failed: async message => { const session = load(); await save({ ...session, listing: { ...session.listing, state: 'unlisted', error: message } }) },
+    signed: async (message, signature) => {
+      const { plan } = load()
+      await keep(current => current.plan.id === plan.id && !current.listing.intentId ? { ...current, listing: { ...current.listing, signed: { message, signature } } } : null)
+    },
   }
   /**
    * `session` as saved after an await: its listing (the signature, the publication) is the latest
@@ -298,11 +333,11 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     try {
       const intentId = await ports.publishSignedListing(session.plan, signed)
       const latest = fresh(session)
-      return save({ ...latest, listing: { ...latest.listing, state: 'published', intentId, signed: undefined, error: undefined } })
+      return await save({ ...latest, listing: { ...latest.listing, state: 'published', intentId, signed: undefined, error: undefined } })
     } catch (error) {
       // Kept: the next check publishes it again.
       const latest = fresh(session)
-      return save({ ...latest, listing: { ...latest.listing, error: error instanceof Error ? errorLine(error) : 'Listing will need another check.' } })
+      return await save({ ...latest, listing: { ...latest.listing, error: error instanceof Error ? errorLine(error) : 'Listing will need another check.' } })
     }
   }
   async function listing(session: StickyLaunchSession) {
@@ -310,17 +345,17 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     if (!unlisted(session)) return session
     try {
       ports.guard(session.plan.owner)
-      listed.published(await ports.publishListing(session.plan))
+      await listed.published(await ports.publishListing(session.plan))
     } catch (error) {
       // Closing its review is no failure of the listing: the launch stops there, as it was.
       if (error instanceof TransactionReviewCancelledError) throw error
-      listed.failed(error instanceof Error ? errorLine(error) : 'Listing unavailable.')
+      await listed.failed(error instanceof Error ? errorLine(error) : 'Listing unavailable.')
     }
     return load()
   }
   async function refreshSession(session: StickyLaunchSession) {
     // Authenticated results of an older journal join `proven` before the display results are cleared.
-    let current = save({ ...session, results: {}, proven: { ...session.results, ...session.proven }, ...(session.listing.requested && !session.listing.requestedAt ? { listing: { ...session.listing, requestedAt: Date.now() } } : {}) })
+    let current = await save({ ...session, results: {}, proven: { ...session.results, ...session.proven }, ...(session.listing.requested && !session.listing.requestedAt ? { listing: { ...session.listing, requestedAt: Date.now() } } : {}) })
     if (current.quote || current.listing.requested || current.direct?.started) {
       try {
         const found = await ports.status(current)
@@ -328,9 +363,9 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
         for (const target of current.plan.targets) {
           candidates[target.chainId] = [...new Set([...candidates[target.chainId], ...(found[target.chainId] ?? [])])]
         }
-        current = save({ ...fresh(current), candidates, error: undefined })
+        current = await save({ ...fresh(current), candidates, error: undefined })
       } catch (error) {
-        current = save({ ...fresh(current), error: error instanceof Error ? errorLine(error) : 'Could not check the saved launch.' })
+        current = await save({ ...fresh(current), error: error instanceof Error ? errorLine(error) : 'Could not check the saved launch.' })
       }
     }
     // Previously confirmed receipts must remain canonical; one unavailable chain cannot renew old proof.
@@ -347,12 +382,12 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     const latest = ports.store.load()
     const kept = <T extends LaunchSubmission>(mine: T | undefined, theirs: T | undefined): T | undefined =>
       mine && theirs?.settled && !mine.settled && theirs.hash ? { ...mine, hash: theirs.hash, settled: theirs.settled } : mine
-    current = save({ ...fresh(current), results, proven: { ...latest?.proven, ...current.proven, ...results },
+    current = await save({ ...fresh(current), results, proven: { ...latest?.proven, ...current.proven, ...results },
       direct: kept(current.direct, latest?.direct), payment: kept(current.payment, latest?.payment) })
     if (current.payment?.hash) {
       let confirmed = false
       try { confirmed = await ports.verifyPayment(current) } catch { /* Unknown funding keeps its exact intent. */ }
-      current = save({ ...fresh(current), payment: { ...current.payment, confirmed } })
+      current = await save({ ...fresh(current), payment: { ...current.payment, confirmed } })
     }
     if (current.listing.intentId && current.plan.targets.length === 1) {
       for (const target of current.plan.targets) {
@@ -361,18 +396,18 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
         try {
           if (await ports.record(current, target.chainId, result)) {
             current = fresh(current)
-            current = save({ ...current, listing: { ...current.listing, recorded: { ...current.listing.recorded, [target.chainId]: result.hash } } })
+            current = await save({ ...current, listing: { ...current.listing, recorded: { ...current.listing.recorded, [target.chainId]: result.hash } } })
           }
         } catch (error) {
           current = fresh(current)
-          current = save({ ...current, listing: { ...current.listing, error: error instanceof Error ? errorLine(error) : 'Listing will need another check.' } })
+          current = await save({ ...current, listing: { ...current.listing, error: error instanceof Error ? errorLine(error) : 'Listing will need another check.' } })
         }
       }
     }
     return current
   }
 /** The hold's authenticated hash is the submission's hash from here: the journal's own checks run on that transaction. */
-  function saveSettlement(session: StickyLaunchSession, kind: 'direct' | 'payment', { hash, result }: { hash: Hex; result: 'success' | 'failed' }) {
+  async function saveSettlement(session: StickyLaunchSession, kind: 'direct' | 'payment', { hash, result }: { hash: Hex; result: 'success' | 'failed' }) {
     const chainId = session.plan.targets[0].chainId
     const candidates = { ...session.candidates, [chainId]: [...new Set([...session.candidates[chainId], hash])] }
     return kind === 'direct'
@@ -391,31 +426,44 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
           requireSingleHomeChain(session.plan.targets)
         }
         if (session[kind]?.started) throw new ReviewLineError('This launch already has a wallet submission. Recover it before continuing.')
-        if (kind === 'direct') save({ ...session, direct: { started: true } })
-        else if (session.payment) save({ ...session, payment: { ...session.payment, started: true } })
+        if (kind === 'direct') await save({ ...session, direct: { started: true } })
+        else if (session.payment) await save({ ...session, payment: { ...session.payment, started: true } })
       },
-      rejected() {
-        const session = load()
-        if (kind === 'direct') save({ ...session, direct: undefined })
-        else save({ ...session, payment: undefined })
+      async rejected() {
+        // The wallet refused: nothing was sent, so the start ends, unless a hash was saved for this attempt meanwhile.
+        const base = load()
+        await keep(current => !sameAttempt(base, current, kind) || current[kind]?.hash ? null
+          : kind === 'direct' ? { ...current, direct: undefined } : { ...current, payment: undefined })
       },
-      submitted(hash, proposalHash) {
-        const session = load()
-        if (kind === 'direct') {
-          const chainId = session.plan.targets[0].chainId
-          save({ ...session, direct: { started: true, hash, proposalHash },
-            candidates: { ...session.candidates, [chainId]: [...new Set([...session.candidates[chainId], hash])] } })
-        } else if (session.payment) save({ ...session, payment: { ...session.payment, started: true, hash, proposalHash } })
+      async submitted(hash, proposalHash) {
+        const base = load()
+        await keep(current => {
+          if (!sameAttempt(base, current, kind)) return null
+          if (kind === 'payment') return { ...current, payment: { ...current.payment!, started: true, hash, proposalHash } }
+          const chainId = current.plan.targets[0].chainId
+          return { ...current, direct: { started: true, hash, proposalHash },
+            candidates: { ...current.candidates, [chainId]: [...new Set([...current.candidates[chainId], hash])] } }
+        })
       },
     }
   }
   return {
     load: ports.store.load,
-    prepare(plan: LaunchPlan, capability: 'sponsored' | 'self-paid' | 'unavailable') {
+    /** Whether a lost lock left an outcome of the wallet to apply under a fresh one. */
+    lapsed: () => late.length > 0,
+    /** Under a fresh lock: applies each kept outcome to the record saved now, only while it is still its attempt's. */
+    reconcileLapsed: () => exclusively(async () => {
+      for (const apply of late.splice(0)) {
+        const current = ports.store.load()
+        const next = current && apply(current)
+        if (next) await save(next)
+      }
+    }),
+    async prepare(plan: LaunchPlan, capability: 'sponsored' | 'self-paid' | 'unavailable') {
       requireSingleHomeChain(plan.targets)
       ports.guard(plan.owner)
       if (ports.store.load()) throw new ReviewLineError('Finish or resume the saved launch first.')
-      return save({ version: 1, plan, mode: capability === 'sponsored' ? 'center' : 'direct',
+      return await save({ version: 1, plan, mode: capability === 'sponsored' ? 'center' : 'direct',
         published: false, candidates: Object.fromEntries(plan.targets.map(target => [target.chainId, []])), results: {},
         listing: { state: capability === 'unavailable' ? 'unavailable' : 'pending', recorded: {} } })
     },
@@ -430,14 +478,14 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
         // A sponsored launch is its signed listing: one review of the message, then the sponsor's request.
         session = await listing(session)
         if (!session.listing.intentId) {
-          session = save({ ...session, mode: 'direct' })
+          session = await save({ ...session, mode: 'direct' })
         } else {
-          await ports.sponsor(session, () => {
+          await ports.sponsor(session, async () => {
             ports.guard(session.plan.owner)
             requireSingleHomeChain(session.plan.targets)
             if (session.listing.requested) throw new ReviewLineError('This sponsor request was already published.')
             // Save immediately before request: a timeout may still queue the deployment.
-            session = save({ ...session, listing: { ...session.listing, requested: true, requestedAt: Date.now() } })
+            session = await save({ ...session, listing: { ...session.listing, requested: true, requestedAt: Date.now() } })
           })
           if (!session.listing.requested) throw new ReviewLineError('The sponsor request was not durably recorded.')
           return refreshSession(load())
@@ -448,14 +496,14 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
         return refreshSession(load())
       }
       if (!session.published) {
-        const quote = await ports.quote(session.plan, uuid => { session = save({ ...session, bundleUuid: uuid }) }, () => {
+        const quote = await ports.quote(session.plan, async uuid => { session = await save({ ...session, bundleUuid: uuid }) }, async () => {
           ports.guard(session.plan.owner)
           requireSingleHomeChain(session.plan.targets)
           if (session.published) throw new ReviewLineError('This launch was already published.')
-          session = save({ ...session, published: true })
+          session = await save({ ...session, published: true })
         })
         if (!session.published) throw new ReviewLineError('The launch publication was not durably recorded.')
-        session = save({ ...session, quote, bundleUuid: quote.bundle_uuid })
+        session = await save({ ...session, quote, bundleUuid: quote.bundle_uuid })
       }
       if (!session.quote) throw new ReviewLineError('This launch may already be published. Keep it saved and recover its deployment hashes; publishing again could create duplicates.')
       const option = await ports.choosePayment(session)
@@ -463,7 +511,7 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
         throw new ReviewLineError('Choose one of the saved quote’s actual payment options.')
       }
       ports.guard(session.plan.owner)
-      session = save({ ...session, payment: { option, started: false } })
+      session = await save({ ...session, payment: { option, started: false } })
       await ports.sendPayment(session, callbacks('payment'))
       return refreshSession(load())
     }),
@@ -514,7 +562,7 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
       if (session.mode !== 'center' || session.listing.requested) {
         throw new ReviewLineError('This launch may already be running. Keep its saved recovery and check again.')
       }
-      return save({ ...session, mode: 'direct',
+      return await save({ ...session, mode: 'direct',
         listing: { ...session.listing, selfPaid: true } })
     }),
     list: () => exclusively(async () => {
@@ -527,7 +575,7 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     addHash: (chainId: number, hash: Hex) => exclusively(async () => {
       const session = load()
       if (!isHash(hash) || !session.candidates[chainId]) throw new ReviewLineError('Enter a transaction hash for one of this launch’s chains.')
-      return refreshSession(save({ ...session, candidates: { ...session.candidates, [chainId]: [...new Set([...session.candidates[chainId], hash])] } }))
+      return refreshSession(await save({ ...session, candidates: { ...session.candidates, [chainId]: [...new Set([...session.candidates[chainId], hash])] } }))
     }),
     clear: () => exclusively(async () => {
       const session = await refreshSession(load())
@@ -538,6 +586,7 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
       const history = { ...session, direct: undefined, payment: undefined }
       if (session.directAttempts?.length) await ports.requireRetry(history, 'direct', 'retire')
       if (session.paymentAttempts?.length) await ports.requireRetry(history, 'payment', 'retire')
+      await fence()
       ports.store.remove()
       ports.changed?.(null)
     }),

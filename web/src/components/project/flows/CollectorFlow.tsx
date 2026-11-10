@@ -11,13 +11,14 @@ import { holdIntent } from '@/lib/sticky-hold-intent'
 import { SavedWriteRecovery } from '@/components/ui/SavedWriteRecovery'
 import { TxError } from '@/components/ui/TxError'
 import { confirmAction, sendingStatus, txStage, ViewTransactionLink } from '@/components/ui/TxProgress'
+import type { LockHandle } from '@bananapus/nana-sdk-core/review/locks'
 import { reviewedCall, useReviewedAction } from '@/hooks/useReviewedAction'
 import { useWallet } from '@/hooks/useWallet'
 import { parseAmount } from '@/lib/sticky-amount'
 import { createStickyBridge } from '@/lib/sticky-bridge'
 import {
   adoptSettlementHash, assertPendingBridgeWrite, ensurePendingBridgeId, endPendingBridgeAttempt, createPendingBridgeWrite, readPendingBridgeWrite, retryPendingBridgeSubmission, savePendingBridgeWrite, savePendingBridgeSubmission, saveWatchedBridgeRoute,
-  storeBridgeWrite, withBridgeLock, type PendingBridgeWrite,
+  storeBridgeWrite, withBridgeLock, type BridgeLock, type BridgeOutcome, type PendingBridgeWrite,
 } from '@/lib/sticky-bridge-journal'
 import type { CollectorSource } from '@/lib/sticky-collector'
 import { collectorWriteKind, createStickyCollectorDelivery, type CollectorDelivery } from '@/lib/sticky-collector-delivery'
@@ -92,7 +93,7 @@ export function CollectorFlow({ source, info, onSettled }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identity])
 
-  async function run(work: () => Promise<void>) {
+  async function run(work: (lock: LockHandle, keep: (write: BridgeOutcome) => Promise<void>) => Promise<void>) {
     if (busy) return
     setWorking(true); setError(null)
     try { await withBridgeLock(work) } catch (reason) { setError(errorLine(reason)) } finally { setWorking(false) }
@@ -121,17 +122,19 @@ export function CollectorFlow({ source, info, onSettled }: {
   }
   async function confirm(chosen: Review) {
     const current = { ...chosen, autoSend: false }
-    await run(async () => {
+    await run(async (lock, keep) => {
       assertCurrent(current.identity)
       if (readPendingBridgeWrite(current.owner)) throw new ReviewLineError('Recover the pending transaction before sending again.')
       const held = createPendingBridgeWrite({ owner: current.owner, request: storeBridgeWrite(current.delivery.request), intent: holdIntent(current.delivery.request, current.owner) })
       setReview({ ...current, attempt: held })
       let reserved = false
-      const undo = () => endPendingBridgeAttempt(current.owner, held.id)
+      // Ends only this attempt's reservation (by its id), so a write kept for a fresh lock touches no other.
+      const undo = () => keep(fenced => endPendingBridgeAttempt(fenced, current.owner, held.id))
       // The engine can adopt an existing Safe proposal without reaching beforeWallet.
-      if (source.bridgeRoute) saveWatchedBridgeRoute(info.chainId, info.stToken, groupId, source.bridgeRoute)
+      if (source.bridgeRoute) await saveWatchedBridgeRoute(lock, info.chainId, info.stToken, groupId, source.bridgeRoute)
       await tx.run({
         account: current.owner,
+        locks: [lock],
         calls: [reviewedCall(current.delivery.request, current.owner)],
         title: current.delivery.request.label ?? 'Deliver queued rewards',
         context: current.rows,
@@ -139,7 +142,7 @@ export function CollectorFlow({ source, info, onSettled }: {
         beforeWallet: async () => {
           assertCurrent(current.identity)
           try {
-            savePendingBridgeWrite(current.owner, held)
+            await savePendingBridgeWrite(lock, current.owner, held)
             reserved = true
           } catch (reason) {
             try { if (readPendingBridgeWrite(current.owner)) await undo() } catch { /* Preserve another attempt or unreadable storage. */ }
@@ -148,12 +151,14 @@ export function CollectorFlow({ source, info, onSettled }: {
         },
         // Only a reservation this send made is ended: one it found is another attempt's.
         onUnsent: async () => { if (reserved) await undo() },
-        onSubmitted: (_call, _step, hash, { safe }) => {
-          if (!reserved && !readPendingBridgeWrite(current.owner)) { savePendingBridgeWrite(current.owner, held); reserved = true }
-          savePendingBridgeSubmission(held, hash, safe)
-        },
+        // The wallet's hash is kept: refused for a lost lock, it is saved under a fresh one, to this attempt only.
+        onSubmitted: (_call, _step, hash, { safe }) => keep(async fenced => {
+          if (!reserved && !readPendingBridgeWrite(current.owner)) { await savePendingBridgeWrite(fenced, current.owner, held); reserved = true }
+          await savePendingBridgeSubmission(fenced, held, hash, safe)
+        }),
         // The user's exit released the SDK hold: the reservation goes, the saved transfer stays.
-        onReleased: async () => { await endPendingBridgeAttempt(current.owner, held.id); setPending(null) },
+        // It runs on the person's exit, after this lock was released: the end takes the lock again.
+        onReleased: () => withBridgeLock(async released => { await endPendingBridgeAttempt(released, current.owner, held.id); setPending(null) }, true),
         onCancelled: closeReview,
       })
       setPending(readPendingBridgeWrite(current.owner))
@@ -163,19 +168,19 @@ export function CollectorFlow({ source, info, onSettled }: {
   async function settleFromPanel(held: PendingBridgeWrite, hash: Hex, result?: 'success' | 'failed'): Promise<boolean> {
     if (busy) return false
     let adopted = false
-    await run(async () => { await settleStored(held, hash, result); adopted = true })
+    await run(async lock => { await settleStored(lock, held, hash, result); adopted = true })
     return adopted
   }
   /** The SDK settled this write on authenticated evidence: its hash becomes the submission reference, and the normal recovery runs. */
-  async function settleStored(held: PendingBridgeWrite, hash: Hex, result?: 'success' | 'failed') {
+  async function settleStored(lock: BridgeLock, held: PendingBridgeWrite, hash: Hex, result?: 'success' | 'failed') {
     const stored = readPendingBridgeWrite(held.owner)
     if (!stored || stored.id !== held.id) throw new ReviewLineError('The pending bridge transaction changed. Refresh its recovery before continuing.')
-    await recover(hash, await adoptSettlementHash(stored.owner, stored.id, hash, undefined, result))
+    await recover(lock, hash, await adoptSettlementHash(lock, stored.owner, stored.id, hash, undefined, result))
     await refresh()
   }
-  async function recover(hash: Hex, held: PendingBridgeWrite) {
+  async function recover(lock: BridgeLock, hash: Hex, held: PendingBridgeWrite) {
     assertCurrent(identity)
-    retryPendingBridgeSubmission(held)
+    await retryPendingBridgeSubmission(lock, held)
     assertPendingBridgeWrite(held)
     const kind = collectorWriteKind(source, held)
     if (!kind) throw new ReviewLineError('Recover this pending action in its original bridge or allocation panel.')
@@ -187,9 +192,9 @@ export function CollectorFlow({ source, info, onSettled }: {
     assertCurrent(identity)
     assertPendingBridgeWrite(held)
     if (outcome.success && kind === 'send' && source.bridgeRoute) {
-      saveWatchedBridgeRoute(info.chainId, info.stToken, groupId, source.bridgeRoute)
+      await saveWatchedBridgeRoute(lock, info.chainId, info.stToken, groupId, source.bridgeRoute)
     }
-    savePendingBridgeWrite(held.owner, null); setPending(null)
+    await savePendingBridgeWrite(lock, held.owner, null); setPending(null)
     if (!outcome.success) throw new ReviewLineError('The transaction reverted. The remaining allocation can be reviewed again.')
     setResult(kind === 'send' ? 'submitted' : 'settled')
     if (kind === 'settle') {
@@ -202,13 +207,13 @@ export function CollectorFlow({ source, info, onSettled }: {
     const current = active, hash = tx.hash
     const submissionHash = tx.submissionHash, safeProposal = tx.submissionIsSafe
     setRecording(hash)
-    void withBridgeLock(async () => {
+    void withBridgeLock(async lock => {
       assertCurrent(current.identity)
       let held = readPendingBridgeWrite(current.owner)
       if (!held) return
       if (!current.attempt || !(submissionHash ?? held.hash)) throw new ReviewLineError('The original wallet attempt is unavailable. Recover its saved transaction before continuing.')
-      held = savePendingBridgeSubmission(current.attempt, (submissionHash ?? held.hash)!, submissionHash ? safeProposal : held.safeProposal)
-      await recover(hash, held)
+      held = await savePendingBridgeSubmission(lock, current.attempt, (submissionHash ?? held.hash)!, submissionHash ? safeProposal : held.safeProposal)
+      await recover(lock, hash, held)
       handledHash.current = hash
       setReview(null); tx.reset(); await refresh()
     }, true).catch(reason => setError(errorLine(reason))).finally(() => setRecording(null))
@@ -220,7 +225,7 @@ export function CollectorFlow({ source, info, onSettled }: {
   const legacyOwner = pending && !pending.id ? pending.owner : null
   useEffect(() => {
     if (!legacyOwner) return
-    void withBridgeLock(async () => { setPending(ensurePendingBridgeId(legacyOwner)) }, true).catch(() => undefined)
+    void withBridgeLock(async lock => { setPending(await ensurePendingBridgeId(lock, legacyOwner)) }, true).catch(() => undefined)
   }, [legacyOwner])
   // A chosen delivery is sent from its own render.
   useEffect(() => {
@@ -252,15 +257,15 @@ export function CollectorFlow({ source, info, onSettled }: {
           <SavedWriteRecovery pending={pending} disabled={busy}
             authenticate={async hash => (await bridge.verifyWrite({ chainId: deployment.sourceChainId }, pending.owner, hash, { ...pending.request, value: BigInt(pending.request.value) }, pending.hash ? { hash: pending.hash, safeProposal: pending.safeProposal } : undefined)).success}
             record={(hash, result) => settleFromPanel(pending, hash, result)}
-            end={() => withBridgeLock(async () => { await endPendingBridgeAttempt(pending.owner, pending.id); setPending(readPendingBridgeWrite(pending.owner)); await refresh() }, true)} />
+            end={() => withBridgeLock(async lock => { await endPendingBridgeAttempt(lock, pending.owner, pending.id); setPending(readPendingBridgeWrite(pending.owner)); await refresh() }, true)} />
           {pending.safeProposal ? <p className="text-sm text-muted">Complete the Safe proposal, then check its executed transaction hash.</p> : null}
           {pending.hash && !pending.safeProposal ? <ViewTransactionLink chainId={pending.request.chainId} hash={pending.hash} /> : null}
           <label htmlFor={`${id}-hash`} className={FIELD_LABEL}>Executed transaction hash</label>
           <input id={`${id}-hash`} className={`${FIELD_INPUT} font-mono text-xs`} value={recoveryHash} onChange={event => setRecoveryHash(event.target.value)} placeholder={pending.safeProposal ? '0x…' : pending.hash ?? '0x…'} />
-          <button className="btn-link" disabled={busy} onClick={() => void run(async () => {
+          <button className="btn-link" disabled={busy} onClick={() => void run(async lock => {
             const hash = recoveryHash || (!pending.safeProposal ? pending.hash : '')
             if (!hash || !isHash(hash)) throw new ReviewLineError('Enter the executed transaction hash from the wallet.')
-            await recover(hash, pending); await refresh()
+            await recover(lock, hash, pending); await refresh()
           })}>Check transaction</button>
         </> : <p className="text-sm text-muted">Recover the pending action in its original bridge or allocation panel.</p>}
       </div> : null}

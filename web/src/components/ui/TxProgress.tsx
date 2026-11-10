@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { HELD_CONFIRMING_LINE } from '@bananapus/nana-sdk-core/review'
 import { txPhaseLabel, type ReviewedActionState, type TxPhase } from '@/hooks/useReviewedAction'
 import { explorerTxUrl } from '@/lib/chainDisplay'
 
@@ -28,7 +29,8 @@ function sendingLine({ phase, safeNonceGuidance, notice, held }: { phase: TxPhas
     )
   }
   if (phase === 'submitted') return notice ?? null
-  const label = txPhaseLabel(phase, { idle: '', pending: 'Waiting for confirmation…' })
+  // The SDK's confirming line, as every client shows it.
+  const label = txPhaseLabel(phase, { idle: '', pending: HELD_CONFIRMING_LINE })
   return label ? (safeNonceGuidance ?? label) : null
 }
 
