@@ -179,7 +179,9 @@ export function useReviewedAction() {
     open.current = true
     return () => { open.current = false }
   }, [])
-  const last = useRef<{ action: ReviewedRun; account: Address | undefined; chainId: number; proposed: ReviewedCall | null } | null>(null)
+  const last = useRef<{ action: ReviewedRun; account: Address | undefined; chainId: number; proposed: ReviewedCall | null; confirming: ReviewedCall | null } | null>(null)
+  /** The run only waits for its sent step's hold, whose confirm can end on Done: closing it ends the run there. */
+  const awaitingHold = useRef(false)
   /** A run refused after an earlier step went through: its cancel is told once its state renders. */
   const [partlySent, setPartlySent] = useState<{ onCancelled: () => void } | null>(null)
   useEffect(() => {
@@ -209,7 +211,7 @@ export function useReviewedAction() {
     setExitError(null)
     const viaSafe = isSafeConnection(wagmiConfig)
     const { onReleased: _released, onCancelled, reverify, ...sent } = action
-    last.current = { action, account: address, chainId: action.calls[0].chainId, proposed: null }
+    last.current = { action, account: address, chainId: action.calls[0].chainId, proposed: null, confirming: null }
     const epoch = accountEpoch.current
     /** A step of this run reached the wallet's reply. */
     let submitted = false
@@ -246,6 +248,12 @@ export function useReviewedAction() {
         },
       })
       // A receipt still verifying is sent and pending (the hook's `receipt` phase) until its hold ends the run.
+      // Closing its confirm resets core's run, which ends this wait with nothing (`ended()` is null): no later step is
+      // reviewed for it, and its hold keeps the sent step.
+      if (ran?.status === 'receipt') {
+        if (last.current?.action === action) last.current.confirming = action.calls[ran.step] ?? null
+        awaitingHold.current = true
+      }
       const settled = ran?.status === 'receipt' ? await ran.ended() : ran
       const done = settled?.status === 'failed' ? null : settled
       // The account changed while the review was open: core withdrew it, and the action says why.
@@ -262,6 +270,7 @@ export function useReviewedAction() {
       return done
     } finally {
       aborts.current.delete(abort)
+      awaitingHold.current = false
       inFlight.current = false
     }
   }
@@ -296,11 +305,12 @@ export function useReviewedAction() {
           : null
 
   function reset() {
-    if (inFlight.current) return
-    // A Safe proposal whose flow closed is still followed, and its reads refresh once it runs.
-    const proposed = last.current?.proposed
-    if (proposed && address) {
-      followDetached(openStepHold(holds, address, true, proposed), publicClient(proposed.chainId as JBChainId) as WriteHoldClient, () => refreshAfterConfirmedWrite(queryClient, proposed.chainId))
+    if (inFlight.current && !awaitingHold.current) return
+    // A Safe proposal, or a sent step still confirming, whose flow closed is still followed, and its reads refresh once
+    // it runs.
+    const { proposed = null, confirming = null } = last.current ?? {}
+    for (const [call, safe] of [[proposed, true], [confirming, false]] as const) {
+      if (call && address) followDetached(openStepHold(holds, address, safe, call), publicClient(call.chainId as JBChainId) as WriteHoldClient, () => refreshAfterConfirmedWrite(queryClient, call.chainId))
     }
     last.current = null
     setPartlySent(null)
