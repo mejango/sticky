@@ -4,7 +4,7 @@ import type { TxRequest } from '@/hooks/useReviewedAction'
 import { environmentForChainIds, SUPPORTED_CHAINS } from '@/lib/chains'
 import { bridgeCalldata, bridgeRouteId, type BridgeMovement, type BridgeRoute, type createStickyBridge } from '@/lib/sticky-bridge'
 import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
-import { browserLocks } from '@bananapus/nana-sdk-core/review/locks'
+import { browserLocks, type LockHandle } from '@bananapus/nana-sdk-core/review/locks'
 
 export type StoredBridgeWrite = { chainId: number; address: Address; data: Hex; value: string; label: string; parent?: string }
 export type BridgeRecord = {
@@ -27,6 +27,8 @@ export type BridgeRecord = {
   status?: BridgeMovement['status'] | 'recover'
 }
 export type BridgeStorage = Pick<Storage, 'getItem' | 'setItem'>
+/** The `withBridgeLock` handle a journal write runs under: each write checks this tab still holds it, then writes. */
+export type BridgeLock = Pick<LockHandle, 'assertHeld'>
 export type PendingBridgeWrite = {
   /** New attempts are distinct even when their calldata is identical. Legacy records omit this. */
   id?: string
@@ -92,7 +94,7 @@ export function readWatchedBridgeRoutes(homeChainId: number, stickyToken: Addres
   return routes
 }
 /** Under `withBridgeLock`, retain the route before submitting. Mutable terminal/display hints never replace its binding. */
-export function saveWatchedBridgeRoute(homeChainId: number, stickyToken: Address, groupId: bigint, route: BridgeRoute, storage: BridgeStorage = localStorage): void {
+export async function saveWatchedBridgeRoute(lock: BridgeLock, homeChainId: number, stickyToken: Address, groupId: bigint, route: BridgeRoute, storage: BridgeStorage = localStorage): Promise<void> {
   const key = watchedKey(homeChainId, stickyToken, groupId)
   const next = watchedRoute(route, homeChainId)
   const routes = readWatchedBridgeRoutes(homeChainId, stickyToken, groupId, storage)
@@ -105,6 +107,7 @@ export function saveWatchedBridgeRoute(homeChainId: number, stickyToken: Address
   }
   if (routes.length >= 100) throw new ReviewLineError('This browser’s saved bridge route history is full. Recover existing transfers before submitting another route.')
   const encoded = JSON.stringify([...routes, next])
+  await lock.assertHeld()
   storage.setItem(key, encoded)
   if (storage.getItem(key) !== encoded) throw new ReviewLineError('Bridge route recovery could not be saved. No new transfer will be submitted.')
 }
@@ -135,43 +138,53 @@ export function readBridgeRecords(key: string, storage: BridgeStorage = localSto
   )) throw new ReviewLineError(FAILED)
   return records
 }
-export function saveBridgeRecords(key: string, records: BridgeRecord[], storage: BridgeStorage = localStorage): void {
+export async function saveBridgeRecords(lock: BridgeLock, key: string, records: BridgeRecord[], storage: BridgeStorage = localStorage): Promise<void> {
   if (records.length > 100) throw new ReviewLineError('This browser’s saved bridge history is full. Existing transfers can still be recovered; no new transfer was submitted.')
   const encoded = JSON.stringify(records)
+  await lock.assertHeld()
   storage.setItem(key, encoded)
   if (storage.getItem(key) !== encoded) throw new ReviewLineError('Bridge recovery could not be saved. No new transfer will be submitted.')
 }
-/** One write lock spans preparation, review and wallet submission, including other tabs. */
-export async function withBridgeLock<T>(work: () => Promise<T>, wait = false): Promise<T> {
+/**
+ * One write lock spans preparation, review and wallet submission, including other tabs. `work` gets its handle: every
+ * journal write and wallet submission under it checks it is still held. When it is taken and `wait` is false, `taken`
+ * answers instead, or the action is refused.
+ */
+export async function withBridgeLock<T>(work: (lock: LockHandle) => Promise<T>, wait = false, taken?: () => T): Promise<T> {
   return browserLocks().request('sticky-reward-bridge', { mode: 'exclusive', ...(!wait ? { ifAvailable: true } : {}) }, async lock => {
-    if (!lock) throw new ReviewLineError('A bridge action is already open in another tab.')
-    return work()
+    if (lock) return work(lock)
+    if (taken) return taken()
+    throw new ReviewLineError('A bridge action is already open in another tab.')
   })
 }
-export async function updateBridgeRecords(key: string, update: (records: BridgeRecord[]) => BridgeRecord[], storage: BridgeStorage = localStorage) {
-  return browserLocks().request('sticky-reward-bridge-storage', { mode: 'exclusive' }, () => {
+export async function updateBridgeRecords(lock: BridgeLock, key: string, update: (records: BridgeRecord[]) => BridgeRecord[], storage: BridgeStorage = localStorage) {
+  return browserLocks().request('sticky-reward-bridge-storage', { mode: 'exclusive' }, async () => {
     const records = update(readBridgeRecords(key, storage))
-    saveBridgeRecords(key, records, storage)
+    await saveBridgeRecords(lock, key, records, storage)
     return records
   })
 }
-export async function updateBridgeRecord(key: string, metadata: Hex, update: (record: BridgeRecord) => BridgeRecord) {
-  return updateBridgeRecords(key, records => {
+export async function updateBridgeRecord(lock: BridgeLock, key: string, metadata: Hex, update: (record: BridgeRecord) => BridgeRecord) {
+  return updateBridgeRecords(lock, key, records => {
     const at = records.findIndex(record => record.metadata === metadata)
     if (at < 0) throw new ReviewLineError('The saved bridge transfer disappeared. Refresh before continuing.')
     records[at] = update(records[at])
     return records
   })
 }
-export async function discardBridgeDraft(key: string, metadata: Hex) {
-  return updateBridgeRecords(key, records => {
+export async function discardBridgeDraft(lock: BridgeLock, key: string, metadata: Hex) {
+  return updateBridgeRecords(lock, key, records => {
     const record = records.find(item => item.metadata === metadata)
     if (record && (record.submission || record.sourceHash || record.sourceVerified || readPendingBridgeWrite(record.owner)?.metadata === metadata)) throw new ReviewLineError('This transfer may still execute. Recover its original transaction before cancelling.')
     return records.filter(item => item.metadata !== metadata)
   })
 }
-/** A copied metadata value or a noncanonical source log cannot release a saved prepare. */
+/**
+ * A copied metadata value or a noncanonical source log cannot release a saved prepare. With no `lock` (a status
+ * refresh), its write runs only when the bridge lock is free: an action holding it reconciles the record itself.
+ */
 export async function reconcileBridgeRecord(
+  lock: BridgeLock | null,
   api: Pick<ReturnType<typeof createStickyBridge>, 'verifySource'>,
   key: string,
   record: BridgeRecord,
@@ -185,12 +198,14 @@ export async function reconcileBridgeRecord(
     try { await api.verifySource(record.route, row, record.owner, record.prepareData, submission); found = row; break } catch { /* Keep the historical record until its exact source succeeds. */ }
   }
   if (found && (found.leaf.projectTokenCount !== BigInt(record.amount) || found.leaf.beneficiary.toLowerCase() !== `0x${record.receiver.slice(2).toLowerCase().padStart(64, '0')}`)) throw new ReviewLineError('The recovered bridge leaf does not match the saved transfer.')
-  await updateBridgeRecord(key, record.metadata, current => {
+  const write = (held: BridgeLock) => updateBridgeRecord(held, key, record.metadata, current => {
     if (expected) assertPendingBridgeWrite(expected)
     return found
       ? { ...current, sourceHash: found.sourceHash, sourceVerified: true, leafIndex: String(found.leaf.index), status: found.status, steps: [] }
       : { ...current, sourceVerified: false, status: 'recover' }
   })
+  if (lock) await write(lock)
+  else await withBridgeLock(async held => { await write(held) }, false, () => undefined)
   return !!found
 }
 
@@ -221,7 +236,7 @@ export function assertPendingBridgeWrite(expected: PendingBridgeWrite, storage: 
   if (JSON.stringify(current) !== JSON.stringify(expected)) throw new ReviewLineError('The pending bridge transaction changed. Refresh its recovery before continuing.')
 }
 /** Attach only this attempt's actual wallet reply; a repeated commit is harmless. Legacy records need their own evidence. */
-export function savePendingBridgeSubmission(expected: PendingBridgeWrite, hash: Hex, safeProposal?: boolean, storage: BridgeStorage = localStorage): PendingBridgeWrite {
+export async function savePendingBridgeSubmission(lock: BridgeLock, expected: PendingBridgeWrite, hash: Hex, safeProposal?: boolean, storage: BridgeStorage = localStorage): Promise<PendingBridgeWrite> {
   const submitted = { ...expected, hash, safeProposal }
   const key = pendingKey(expected.owner)
   const retained = retainedSubmissions.get(storage)?.get(key)
@@ -243,7 +258,7 @@ export function savePendingBridgeSubmission(expected: PendingBridgeWrite, hash: 
     throw new ReviewLineError('The pending bridge transaction changed. Refresh its recovery before continuing.')
   }
   remember()
-  savePendingBridgeWrite(expected.owner, submitted, storage)
+  await savePendingBridgeWrite(lock, expected.owner, submitted, storage)
   return submitted
 }
 /**
@@ -252,23 +267,23 @@ export function savePendingBridgeSubmission(expected: PendingBridgeWrite, hash: 
  * normal recovery verifies the settled transaction. Only the SDK's hash is ever passed here; a Safe proposal keeps
  * its proposal hash.
  */
-export async function adoptSettlementHash(owner: Address, id: string | undefined, hash: Hex, storage: BridgeStorage = localStorage, result?: 'success' | 'failed'): Promise<PendingBridgeWrite> {
+export async function adoptSettlementHash(lock: BridgeLock, owner: Address, id: string | undefined, hash: Hex, storage: BridgeStorage = localStorage, result?: 'success' | 'failed'): Promise<PendingBridgeWrite> {
   const stored = readStoredPendingBridgeWrite(owner, storage)
   if (!stored || !id || stored.id !== id || !isHash(hash)) throw new ReviewLineError('The pending bridge transaction changed. Refresh its recovery before continuing.')
   if (stored.safeProposal || (stored.hash && stored.hash.toLowerCase() === hash.toLowerCase())) {
     if (!result || stored.settled === result) return stored
     // A Safe proposal keeps its identity; the authenticated result is recorded beside it before any domain check.
     const learned: PendingBridgeWrite = { ...stored, settled: result, ...(stored.safeProposal ? { settledHash: hash } : {}) }
-    savePendingBridgeWrite(owner, learned, storage)
+    await savePendingBridgeWrite(lock, owner, learned, storage)
     return learned
   }
   const adopted: PendingBridgeWrite = { ...stored, hash, safeProposal: false, ...(result ? { settled: result } : {}) }
   if (stored.metadata && stored.recordKey) {
     const { metadata } = stored
-    await updateBridgeRecords(stored.recordKey, records => records.map(record =>
+    await updateBridgeRecords(lock, stored.recordKey, records => records.map(record =>
       record.metadata === metadata && record.prepareData === stored.request.data ? { ...record, submission: { hash, safeProposal: false } } : record), storage)
   }
-  savePendingBridgeWrite(owner, adopted, storage)
+  await savePendingBridgeWrite(lock, owner, adopted, storage)
   return adopted
 }
 
@@ -277,14 +292,14 @@ export async function adoptSettlementHash(owner: Address, id: string | undefined
  * so that adoption, the SDK's exit and the end of the reservation all name the same attempt. The exact raw snapshot
  * is compared again before it is written; anything else that changed it leaves it alone.
  */
-export function ensurePendingBridgeId(owner: Address, storage: BridgeStorage = localStorage): PendingBridgeWrite | null {
+export async function ensurePendingBridgeId(lock: BridgeLock, owner: Address, storage: BridgeStorage = localStorage): Promise<PendingBridgeWrite | null> {
   const key = pendingKey(owner)
   const raw = storage.getItem(key)
   const stored = readStoredPendingBridgeWrite(owner, storage)
   if (!stored || stored.id) return stored
   if (storage.getItem(key) !== raw) return readStoredPendingBridgeWrite(owner, storage)
   const migrated: PendingBridgeWrite = { ...stored, id: crypto.randomUUID() }
-  savePendingBridgeWrite(owner, migrated, storage)
+  await savePendingBridgeWrite(lock, owner, migrated, storage)
   return migrated
 }
 /**
@@ -294,7 +309,7 @@ export function ensurePendingBridgeId(owner: Address, storage: BridgeStorage = l
  * transfer can be continued or cancelled); then removes the reservation. Another attempt's is never touched, and
  * an already ended attempt is a no-op.
  */
-export async function endPendingBridgeAttempt(owner: Address, id: string | undefined, storage: BridgeStorage = localStorage): Promise<void> {
+export async function endPendingBridgeAttempt(lock: BridgeLock, owner: Address, id: string | undefined, storage: BridgeStorage = localStorage): Promise<void> {
   const stored = readStoredPendingBridgeWrite(owner, storage)
   if (!stored) return
   if (!id || stored.id !== id) throw new ReviewLineError('The pending bridge transaction changed. Refresh its recovery before continuing.')
@@ -302,23 +317,24 @@ export async function endPendingBridgeAttempt(owner: Address, id: string | undef
   if (stored.settled === 'success') return
   if (stored.metadata && stored.recordKey) {
     const { metadata } = stored
-    await updateBridgeRecords(stored.recordKey, records => records.map(record => record.metadata === metadata ? { ...record, submission: undefined } : record), storage)
+    await updateBridgeRecords(lock, stored.recordKey, records => records.map(record => record.metadata === metadata ? { ...record, submission: undefined } : record), storage)
   }
-  savePendingBridgeWrite(owner, null, storage)
+  await savePendingBridgeWrite(lock, owner, null, storage)
 }
 /** Under the owner lock, retry only the trusted reply retained for this exact raw reservation. */
-export function retryPendingBridgeSubmission(expected: PendingBridgeWrite, storage: BridgeStorage = localStorage): void {
+export async function retryPendingBridgeSubmission(lock: BridgeLock, expected: PendingBridgeWrite, storage: BridgeStorage = localStorage): Promise<void> {
   const current = readStoredPendingBridgeWrite(expected.owner, storage)
   if (JSON.stringify(current) === JSON.stringify(expected)) return
   const retained = retainedSubmissions.get(storage)?.get(pendingKey(expected.owner))
   if (!retained || JSON.stringify(current) !== retained.original || JSON.stringify(expected) !== retained.submitted || !expected.hash) {
     throw new ReviewLineError('The pending bridge transaction changed. Refresh its recovery before continuing.')
   }
-  savePendingBridgeSubmission(JSON.parse(retained.original), expected.hash, expected.safeProposal, storage)
+  await savePendingBridgeSubmission(lock, JSON.parse(retained.original), expected.hash, expected.safeProposal, storage)
 }
 /** Persist before any wallet call; clearing requires an explicit rejection or canonical exact-call proof. */
-export function savePendingBridgeWrite(owner: Address, value: PendingBridgeWrite | null, storage: BridgeStorage = localStorage) {
+export async function savePendingBridgeWrite(lock: BridgeLock, owner: Address, value: PendingBridgeWrite | null, storage: BridgeStorage = localStorage): Promise<void> {
   const encoded = JSON.stringify(value)
+  await lock.assertHeld()
   storage.setItem(pendingKey(owner), encoded)
   if (storage.getItem(pendingKey(owner)) !== encoded) throw new ReviewLineError('Bridge recovery could not be saved. No new transfer will be submitted.')
   if (retainedSubmissions.get(storage)?.get(pendingKey(owner))?.original !== encoded) retainedSubmissions.get(storage)?.delete(pendingKey(owner))

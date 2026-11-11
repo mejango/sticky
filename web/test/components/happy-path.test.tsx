@@ -204,7 +204,7 @@ describe('the normal path adds no click, notice or wait', () => {
 
     expect(clicks).toBe(1)
     expect(mocks.review).toHaveBeenCalledOnce()
-    expect(seen).toEqual([['Waiting for confirmation…'], ['Waiting for confirmation…'], ['View transaction ↗']])
+    expect(seen).toEqual([['Confirming your transaction.'], ['Confirming your transaction.'], ['View transaction ↗']])
   })
 
   it('an unstick (cash-out): one review and only the waiting line and the transaction link', async () => {
@@ -225,6 +225,6 @@ describe('the normal path adds no click, notice or wait', () => {
     expect(clicks).toBe(1)
     expect(mocks.review).toHaveBeenCalledOnce()
     expect(mocks.review.mock.calls[0][0].calls).toEqual([expect.objectContaining({ to: TERMINAL, functionName: 'cashOutTokensOf' })])
-    expect(seen).toEqual([['Waiting for confirmation…View transaction ↗'], ['View transaction ↗']])
+    expect(seen).toEqual([['Confirming your transaction.View transaction ↗'], ['View transaction ↗']])
   })
 })

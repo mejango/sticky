@@ -336,7 +336,7 @@ describe('the stick flow on the real engine', () => {
     expect(confirmButton()!.disabled).toBe(true)
 
     await act(async () => prompt.resolve(APPROVAL))
-    await until(() => statusLine() === 'Waiting for confirmation…', 'the wait for the chain')
+    await until(() => statusLine() === 'Confirming your transaction.', 'the wait for the chain')
     expect(confirmButton()!.textContent).toBe('Confirming…')
   })
 

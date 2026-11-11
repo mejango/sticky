@@ -1,4 +1,6 @@
 import { stickyDeployerAbi } from '@bananapus/nana-sdk-core'
+import { LockLostError, browserLocks, keepOutcome, type LockHandle } from '@bananapus/nana-sdk-core/review/locks'
+import { lapsingLocksForTests } from '@bananapus/nana-sdk-core/testing'
 import type { RelayrQuote } from '@bananapus/nana-sdk-core/review/relayr'
 import { encodeFunctionData, type Address, type Hex } from 'viem'
 import { describe, expect, it, vi } from 'vitest'
@@ -22,20 +24,22 @@ function plan(chainIds = [84532]): LaunchPlan {
   return value
 }
 const payment = { chain: 84532, amount: '12', target: address('7'), calldata: '0x' as Hex }
+/** The launch lock, held throughout: each journal write checks it. */
+const HELD = { name: 'sticky-launch-write', mode: 'exclusive', signal: new AbortController().signal, held: async () => true, assertHeld: async () => {} } as LockHandle
 const quote = { bundle_uuid: '11111111-1111-4111-8111-111111111111', payment_info: [payment], expectedTransactions: [] } as unknown as RelayrQuote
 
-function fixture(chainIds = [84532], capability: 'sponsored' | 'self-paid' | 'unavailable' = 'self-paid') {
+async function fixture(chainIds = [84532], capability: 'sponsored' | 'self-paid' | 'unavailable' = 'self-paid') {
   const storage = memoryStorage()
   const store = createStickyLaunchStore(storage)
   const ports: StickyLaunchPorts = {
-    store, guard: vi.fn(), quote: vi.fn(async (_plan, _remember, beforePublish) => { await beforePublish(); return quote }), status: vi.fn(async () => ({})),
+    store, held: () => HELD, guard: vi.fn(), quote: vi.fn(async (_plan, _remember, beforePublish) => { await beforePublish(); return quote }), status: vi.fn(async () => ({})),
     choosePayment: vi.fn(async () => quote.payment_info[0]),
     // The creation, and the listing signed in its review: published once the creation is sent.
     sendDirect: vi.fn(async (session, callbacks, listing) => {
-      await callbacks.beforeWrite(); callbacks.submitted(H1)
+      await callbacks.beforeWrite(); await callbacks.submitted(H1)
       if (listing) await ports.publishListing(session.plan).then(listing.published, (error: Error) => listing.failed(error.message))
     }),
-    sendPayment: vi.fn(async (_session, callbacks) => { await callbacks.beforeWrite(); callbacks.submitted(H2) }),
+    sendPayment: vi.fn(async (_session, callbacks) => { await callbacks.beforeWrite(); await callbacks.submitted(H2) }),
     verifyPayment: vi.fn(async () => true), verifyDeployment: vi.fn(async () => null),
     requireRetry: vi.fn(async () => {}),
     canDiscard: vi.fn(async () => true),
@@ -43,7 +47,7 @@ function fixture(chainIds = [84532], capability: 'sponsored' | 'self-paid' | 'un
     record: vi.fn(async () => true), changed: vi.fn(),
   }
   const controller = createStickyLaunchController(ports)
-  const prepared = chainIds.length === 1 ? controller.prepare(plan(chainIds), capability) : store.save({
+  const prepared = chainIds.length === 1 ? await controller.prepare(plan(chainIds), capability) : store.save({
     version: 1, plan: plan(chainIds), mode: 'relayr', published: false,
     candidates: Object.fromEntries(chainIds.map(id => [id, []])), results: {}, listing: { state: 'pending', recorded: {} },
   })
@@ -51,15 +55,82 @@ function fixture(chainIds = [84532], capability: 'sponsored' | 'self-paid' | 'un
 }
 
 /** Existing single-target Relayr records retain their exact payment/recovery behavior. New plans choose direct. */
-function relayrFixture() {
-  const f = fixture()
+async function relayrFixture() {
+  const f = await fixture()
   f.prepared = f.store.save({ ...f.prepared, mode: 'relayr' })
   return f
 }
 
 describe('durable Sticky launch controller', () => {
+  it('saves nothing once the launch lock is lost, and opens no wallet', async () => {
+    const f = await fixture()
+    const before = f.store.load()
+    const lost = new LockLostError('sticky-launch-write')
+    f.ports.held = () => ({ ...HELD, assertHeld: async () => { throw lost } })
+    await expect(f.controller.run()).rejects.toBe(lost)
+    await expect(f.controller.clear()).rejects.toBe(lost)
+    expect(f.store.load()).toEqual(before)
+    expect(f.ports.sendDirect).not.toHaveBeenCalled()
+    // A write outside any call of the controller has no lock to check: it is refused.
+    f.ports.held = () => null
+    await expect(f.controller.addHash(84532, H1)).rejects.toThrow('not open in this tab')
+    expect(f.store.load()).toEqual(before)
+  })
+
+  it.each(['hash', 'refusal'] as const)("keeps the wallet's %s through a lapsed launch lock, for its own attempt only", async answer => {
+    // The SDK's rerun under the lock taken back (attemptScoped) is `keepOutcome`, over lapsing leases.
+    const { locks, lapse } = lapsingLocksForTests()
+    vi.stubGlobal('navigator', { locks })
+    try {
+      for (const newer of [false, true]) {
+        const f = await fixture()
+        let held: LockHandle | null = null
+        f.ports.held = () => held
+        let settled!: (applied: boolean) => void
+        const applied = new Promise<boolean>(resolve => { settled = resolve })
+        const later = { ...f.prepared, direct: { started: true, hash: H2 }, directAttempts: [{ started: true, hash: H2 }] }
+        vi.mocked(f.ports.sendDirect).mockImplementation(async (_session, callbacks) => {
+          await callbacks.beforeWrite()
+          lapse()
+          // Another tab took the launch meanwhile and started a newer attempt.
+          if (newer) f.store.save(later)
+          const write = () => answer === 'hash' ? callbacks.submitted(H1) : callbacks.rejected()
+          // Its own attempt is kept for the lock taken back; a newer one is never touched.
+          expect(await keepOutcome([held!], write, write, settled)).toBe(newer)
+        })
+        await expect(browserLocks().request('sticky-launch-write', async lock => {
+          held = lock
+          try { return await f.controller.run() } finally { held = null }
+        })).rejects.toBeInstanceOf(LockLostError)
+        if (!newer) expect(await applied).toBe(true)
+        expect(f.store.load()?.direct).toEqual(newer ? later.direct : answer === 'hash' ? { started: true, hash: H1 } : undefined)
+        if (newer) expect(f.store.load()).toEqual(later)
+      }
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it('keeps the listing the wallet signed and Center published through a lapsed launch lock', async () => {
+    const { locks, lapse } = lapsingLocksForTests()
+    vi.stubGlobal('navigator', { locks })
+    try {
+      const f = await fixture()
+      let held: LockHandle | null = null
+      f.ports.held = () => held
+      vi.mocked(f.ports.sendDirect).mockImplementation(async (session, callbacks, listing) => {
+        await callbacks.beforeWrite(); await callbacks.submitted(H1)
+        lapse()
+        await listing!.published(await f.ports.publishListing(session.plan))
+      })
+      await expect(browserLocks().request('sticky-launch-write', async lock => {
+        held = lock
+        try { return await f.controller.run() } finally { held = null }
+      })).rejects.toBeInstanceOf(LockLostError)
+      await vi.waitFor(() => expect(f.store.load()?.listing).toMatchObject({ state: 'published', intentId: 'listing-identity' }))
+    } finally { vi.unstubAllGlobals() }
+  })
+
   it('admits only one home chain while preserving old submitted records for read-only recovery', async () => {
-    const f = fixture([84532, 11155420])
+    const f = await fixture([84532, 11155420])
     const before = { ...f.prepared, published: true, bundleUuid: quote.bundle_uuid, quote,
       payment: { option: payment, started: true, hash: H2, proposalHash: H1 },
       listing: { ...f.prepared.listing, state: 'published' as const, intentId: 'listing-identity' } }
@@ -77,14 +148,14 @@ describe('durable Sticky launch controller', () => {
     expect(f.ports.publishListing).not.toHaveBeenCalled()
     expect(f.ports.record).not.toHaveBeenCalled()
     expect(f.ports.sponsor).not.toHaveBeenCalled()
-    const clean = fixture()
+    const clean = await fixture()
     clean.store.remove()
-    expect(() => clean.controller.prepare(plan([84532, 11155420]), 'self-paid')).toThrow('one home chain')
+    await expect(clean.controller.prepare(plan([84532, 11155420]), 'self-paid')).rejects.toThrow('one home chain')
     expect(clean.store.load()).toBeNull()
   })
 
   it('wallet-action:create-a-sticky-token retains the submitted direct hash and never sends it twice after reload', async () => {
-    const f = fixture()
+    const f = await fixture()
     await f.controller.run()
     expect(f.store.load()?.direct).toEqual({ started: true, hash: H1 })
     expect(f.store.load()?.candidates[84532]).toEqual([H1])
@@ -94,7 +165,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('durably marks raw publication before POST and cannot republish a timed-out quote', async () => {
-    const f = relayrFixture()
+    const f = await relayrFixture()
     vi.mocked(f.ports.quote).mockImplementation(async (_plan, _remember, beforePublish) => {
       await beforePublish()
       expect(f.store.load()?.published).toBe(true)
@@ -108,7 +179,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('keeps a returned bundle identity even when later quote binding fails', async () => {
-    const f = relayrFixture()
+    const f = await relayrFixture()
     vi.mocked(f.ports.quote).mockImplementation(async (_plan, remember, beforePublish) => { await beforePublish(); remember(quote.bundle_uuid); throw new Error('binding failed') })
     await expect(f.controller.run()).rejects.toThrow('binding failed')
     expect(f.store.load()).toMatchObject({ published: true, bundleUuid: quote.bundle_uuid })
@@ -117,7 +188,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('can retry a failed preflight before quote publication, while a published quote stays locked', async () => {
-    const f = relayrFixture()
+    const f = await relayrFixture()
     vi.mocked(f.ports.quote).mockRejectedValueOnce(new Error('RPC unavailable before publication'))
     await expect(f.controller.run()).rejects.toThrow('before publication')
     expect(f.store.load()?.published).toBe(false)
@@ -129,7 +200,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('wallet-action:pay-for-a-multichain-sticky-launch saves the exact option and funding hash once', async () => {
-    const f = relayrFixture()
+    const f = await relayrFixture()
     await f.controller.run()
     expect(f.store.load()?.payment).toMatchObject({ option: payment, started: true, hash: H2, confirmed: true })
     await f.controller.run()
@@ -139,30 +210,30 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('refuses a payment chooser response outside the saved quote', async () => {
-    const f = relayrFixture()
+    const f = await relayrFixture()
     vi.mocked(f.ports.choosePayment).mockResolvedValue({ ...quote.payment_info[0], amount: '999' })
     await expect(f.controller.run()).rejects.toThrow('actual payment options')
     expect(f.ports.sendPayment).not.toHaveBeenCalled()
   })
 
   it('unknown wallet errors keep the write intent; only a proven rejection releases it', async () => {
-    const unknown = fixture()
+    const unknown = await fixture()
     vi.mocked(unknown.ports.sendDirect).mockImplementation(async (_session, callbacks) => { await callbacks.beforeWrite(); throw new Error('provider disconnected') })
     await expect(unknown.controller.run()).rejects.toThrow('disconnected')
     expect(unknown.store.load()?.direct).toEqual({ started: true })
     await unknown.controller.run()
     expect(unknown.ports.sendDirect).toHaveBeenCalledTimes(1)
-    const rejected = fixture()
-    vi.mocked(rejected.ports.sendDirect).mockImplementation(async (_session, callbacks) => { await callbacks.beforeWrite(); callbacks.rejected(); throw new Error('User rejected') })
+    const rejected = await fixture()
+    vi.mocked(rejected.ports.sendDirect).mockImplementation(async (_session, callbacks) => { await callbacks.beforeWrite(); await callbacks.rejected(); throw new Error('User rejected') })
     await expect(rejected.controller.run()).rejects.toThrow('User rejected')
     expect(rejected.store.load()?.direct).toBeUndefined()
     expect(launchCanClear(rejected.store.load()!)).toBe(true)
   })
 
   it('saves a Safe proposal before a wait fails, and binds its mined receipt later without resending', async () => {
-    const f = fixture()
+    const f = await fixture()
     vi.mocked(f.ports.sendDirect).mockImplementation(async (_session, callbacks) => {
-      await callbacks.beforeWrite(); callbacks.submitted(H1, H1); throw new Error('Waiting for multisig')
+      await callbacks.beforeWrite(); await callbacks.submitted(H1, H1); throw new Error('Waiting for multisig')
     })
     await expect(f.controller.run()).rejects.toThrow('multisig')
     vi.mocked(f.ports.status).mockResolvedValue({ 84532: [H2] })
@@ -174,7 +245,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('wallet-action:authorize-sticky-listing keeps listing failure retryable while direct launch remains usable', async () => {
-    const f = fixture()
+    const f = await fixture()
     vi.mocked(f.ports.publishListing).mockRejectedValueOnce(new Error('Center offline'))
     await f.controller.run()
     expect(f.store.load()?.listing).toMatchObject({ state: 'unlisted', error: 'Center offline' })
@@ -185,7 +256,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('persists sponsor publication before request and never falls back after an unknown sponsor reply', async () => {
-    const f = fixture([84532], 'sponsored')
+    const f = await fixture([84532], 'sponsored')
     vi.mocked(f.ports.sponsor).mockImplementation(async (_session, beforeRequest) => {
       await beforeRequest()
       expect(f.store.load()?.listing.requested).toBe(true)
@@ -200,7 +271,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('offers self-payment before sponsoring, without posting a sponsor request', async () => {
-    const f = fixture([84532], 'sponsored')
+    const f = await fixture([84532], 'sponsored')
     await f.controller.selfPay()
     await f.controller.run()
     expect(f.ports.sponsor).not.toHaveBeenCalled()
@@ -209,7 +280,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('keeps a sponsor preflight failure unrequested and offers self-payment before any request escaped', async () => {
-    const f = fixture([84532], 'sponsored')
+    const f = await fixture([84532], 'sponsored')
     vi.mocked(f.ports.sponsor).mockRejectedValueOnce(new Error('Sponsor preflight unavailable'))
     await expect(f.controller.run()).rejects.toThrow('preflight unavailable')
     expect(f.store.load()?.listing.requested).toBeUndefined()
@@ -220,7 +291,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('reverifies every chain before complete/clear and downgrades stale or reorged receipts', async () => {
-    const f = fixture([84532, 11155420])
+    const f = await fixture([84532, 11155420])
     f.store.save({ ...f.prepared, published: true, candidates: { 84532: [H1], 11155420: [H2] }, results: {
       84532: { hash: H1, token: address('8'), projectId: '10' }, 11155420: { hash: H2, token: address('8'), projectId: '11' },
     } })
@@ -233,7 +304,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('stores added hashes as hints and clears only after fresh proof of all deployments', async () => {
-    const f = fixture()
+    const f = await fixture()
     await f.controller.run()
     vi.mocked(f.ports.verifyDeployment).mockImplementation(async (_session, _target, candidate) => candidate === H2 ? { hash: H2, token: address('8'), projectId: '10' } : null)
     const recovered = await f.controller.addHash(84532, H2)
@@ -244,7 +315,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('fails before external calls if saved intent cannot be durably written or the account changes', async () => {
-    const f = fixture()
+    const f = await fixture()
     const original = f.storage.setItem
     f.storage.setItem = () => { throw new Error('Storage blocked') }
     await expect(f.controller.run()).rejects.toThrow('Storage blocked')
@@ -255,8 +326,8 @@ describe('durable Sticky launch controller', () => {
     expect(f.ports.sendDirect).not.toHaveBeenCalled()
   })
 
-  it('rejects corrupt calls, primitive fields and JSON without deleting their recovery evidence', () => {
-    const f = fixture()
+  it('rejects corrupt calls, primitive fields and JSON without deleting their recovery evidence', async () => {
+    const f = await fixture()
     for (const edit of [{ environment: 'unknown' }, { cashOutTaxRate: '1e3' }, { tokenDecimals: -1 }, { soulbound: 'false' }, { symbol: '' }]) {
       expect(() => validateStickyLaunch({ ...f.prepared, plan: { ...f.prepared.plan, ...edit } })).toThrow()
     }
@@ -269,10 +340,10 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('refuses overlapping actions while the first wallet step is in flight', async () => {
-    const f = fixture()
+    const f = await fixture()
     let release!: () => void
     const pending = new Promise<void>(resolve => { release = resolve })
-    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await pending; await callbacks.beforeWrite(); callbacks.submitted(H1) })
+    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await pending; await callbacks.beforeWrite(); await callbacks.submitted(H1) })
     const running = f.controller.run()
     await expect(f.controller.run()).rejects.toThrow('already being processed')
     release()
@@ -281,13 +352,13 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('retries only the known submission after failure proof and retains every attempt across reloads', async () => {
-    const f = fixture()
+    const f = await fixture()
     await f.controller.run()
     await f.controller.retry()
     expect(f.store.load()?.direct).toBeUndefined()
     expect(f.store.load()?.directAttempts).toEqual([{ started: true, hash: H1 }])
     expect(f.ports.requireRetry).toHaveBeenCalledWith(expect.objectContaining({ direct: { started: true, hash: H1 } }), 'direct', 'retry')
-    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); callbacks.submitted(H2) })
+    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); await callbacks.submitted(H2) })
     await createStickyLaunchController(f.ports).run()
     expect(f.ports.requireRetry).toHaveBeenCalledWith(expect.objectContaining({ directAttempts: [{ started: true, hash: H1 }] }), 'direct', 'retry')
     expect(f.store.load()).toMatchObject({ direct: { started: true, hash: H2 }, directAttempts: [{ started: true, hash: H1 }] })
@@ -296,7 +367,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('never lets a manually added old same-call hash release an unknown wallet submission', async () => {
-    const f = fixture()
+    const f = await fixture()
     vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); throw new Error('Unknown submission') })
     await expect(f.controller.run()).rejects.toThrow('Unknown submission')
     await f.controller.addHash(84532, H1)
@@ -307,11 +378,11 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('publishes a listing signed before an unconfirmed creation once that creation is recovered, with no new signature', async () => {
-    const f = fixture()
+    const f = await fixture()
     const signed = { message: 'Exact SDK listing message', signature: `0x${'5e'.repeat(65)}` as Hex }
     vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks, listing) => {
-      await callbacks.beforeWrite(); callbacks.submitted(H1)
-      listing!.signed(signed.message, signed.signature)
+      await callbacks.beforeWrite(); await callbacks.submitted(H1)
+      await listing!.signed(signed.message, signed.signature)
       throw new Error('The creation was sent; its confirmation is still pending.')
     })
     await expect(f.controller.run()).rejects.toThrow()
@@ -328,16 +399,16 @@ describe('durable Sticky launch controller', () => {
   })
 
   it("keeps a listing signed in one tab while another tab's refresh was awaiting its proof, and publishes it once", async () => {
-    const f = fixture()
+    const f = await fixture()
     const signed = { message: 'Exact SDK listing message', signature: `0x${'5e'.repeat(65)}` as Hex }
     let paused!: () => void, release!: () => void, sign!: () => void
     const waiting = new Promise<void>(resolve => { paused = resolve })
     const released = new Promise<void>(resolve => { release = resolve })
     const signing = new Promise<void>(resolve => { sign = resolve })
     vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks, listing) => {
-      await callbacks.beforeWrite(); callbacks.submitted(H1)
+      await callbacks.beforeWrite(); await callbacks.submitted(H1)
       await signing
-      listing!.signed(signed.message, signed.signature)
+      await listing!.signed(signed.message, signed.signature)
       throw new Error('The creation was sent; its confirmation is still pending.')
     })
     const tabA = f.controller.run()
@@ -359,7 +430,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('saves a settlement the SDK followed into the journal, so the launch is never sent again', async () => {
-    const f = fixture()
+    const f = await fixture()
     vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); throw new Error('reload before the hash was saved') })
     await expect(f.controller.run()).rejects.toThrow()
     // Another writer changes the journal first: the settlement is saved over that, never over a stale copy.
@@ -371,7 +442,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('records the SDK retiring a hashless submission as its exit, and sends again afterwards', async () => {
-    const f = fixture()
+    const f = await fixture()
     vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); throw new Error('Unknown submission') })
     await expect(f.controller.run()).rejects.toThrow('Unknown submission')
     await f.controller.exited('direct')
@@ -382,7 +453,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('keeps a retired hashed submission as an exited attempt, so no later step asks for its failure proof', async () => {
-    const f = fixture()
+    const f = await fixture()
     await f.controller.run()
     await f.controller.exited('direct')
     expect(f.store.load()?.direct).toBeUndefined()
@@ -390,7 +461,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('never records an exit over a success the journal saved', async () => {
-    const f = fixture()
+    const f = await fixture()
     await f.controller.run()
     f.store.save({ ...f.store.load()!, direct: { started: true, hash: H1, settled: 'success' } })
     await f.controller.exited('direct')
@@ -399,7 +470,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('asks the SDK before discarding: a launch it still holds is kept', async () => {
-    const f = fixture()
+    const f = await fixture()
     vi.mocked(f.ports.verifyDeployment).mockResolvedValue({ hash: H1, token: address('8'), projectId: '10' })
     await f.controller.run()
     vi.mocked(f.ports.canDiscard).mockResolvedValueOnce(false)
@@ -411,7 +482,7 @@ describe('durable Sticky launch controller', () => {
 
   describe('an uncertain sponsor request', () => {
     const uncertain = async () => {
-      const f = fixture([84532], 'sponsored')
+      const f = await fixture([84532], 'sponsored')
       vi.mocked(f.ports.sponsor).mockImplementationOnce(async (_session, beforeRequest) => { await beforeRequest(); throw new Error('timeout') })
       vi.mocked(f.ports.status).mockRejectedValue(new Error('discovery down'))
       await expect(f.controller.run()).rejects.toThrow('timeout')
@@ -432,7 +503,7 @@ describe('durable Sticky launch controller', () => {
       vi.useFakeTimers()
       try {
         vi.setSystemTime(new Date('2026-10-14T10:00:00Z'))
-        const f = fixture([84532], 'sponsored')
+        const f = await fixture([84532], 'sponsored')
         vi.mocked(f.ports.sponsor).mockImplementationOnce(async (_session, beforeRequest) => { await beforeRequest(); throw new Error('timeout') })
         await expect(f.controller.run()).rejects.toThrow('timeout')
         await f.controller.refresh()
@@ -459,7 +530,7 @@ describe('durable Sticky launch controller', () => {
       vi.useFakeTimers()
       try {
         vi.setSystemTime(new Date('2026-10-14T10:00:00Z'))
-        const f = fixture([84532], 'sponsored')
+        const f = await fixture([84532], 'sponsored')
         vi.mocked(f.ports.sponsor).mockImplementationOnce(async (_session, beforeRequest) => { await beforeRequest(); throw new Error('timeout') })
         vi.mocked(f.ports.status).mockResolvedValue({ 84532: [H1] })
         vi.mocked(f.ports.verifyDeployment).mockRejectedValue(new Error('cannot authenticate'))
@@ -476,7 +547,7 @@ describe('durable Sticky launch controller', () => {
       vi.useFakeTimers()
       try {
         vi.setSystemTime(new Date('2026-10-14T10:00:00Z'))
-        const f = fixture([84532], 'sponsored')
+        const f = await fixture([84532], 'sponsored')
         vi.mocked(f.ports.sponsor).mockImplementationOnce(async (_session, beforeRequest) => { await beforeRequest(); throw new Error('timeout') })
         vi.mocked(f.ports.status).mockResolvedValue({ 84532: [H1] })
         vi.mocked(f.ports.verifyDeployment).mockResolvedValueOnce({ hash: H1, projectId: '7', token: address('2') })
@@ -506,7 +577,7 @@ describe('durable Sticky launch controller', () => {
     vi.useFakeTimers()
     try {
       vi.setSystemTime(new Date('2026-10-14T10:00:00Z'))
-      const f = fixture([84532], 'sponsored')
+      const f = await fixture([84532], 'sponsored')
       const result = { hash: H1, projectId: '7', token: address('2') }
       f.store.save({ ...f.store.load()!, mode: 'center', listing: { ...f.store.load()!.listing, requested: true, requestedAt: Date.now() }, candidates: { 84532: [H1] }, results: { 84532: result } })
       vi.mocked(f.ports.verifyDeployment).mockRejectedValue(new Error('rpc down'))
@@ -520,7 +591,7 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('keeps the original hash locked when finalized failure proof is unavailable or reorged', async () => {
-    const f = fixture()
+    const f = await fixture()
     await f.controller.run()
     vi.mocked(f.ports.requireRetry).mockRejectedValue(new Error('Finality unavailable'))
     await expect(f.controller.retry()).rejects.toThrow('Finality unavailable')
@@ -529,11 +600,11 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('reproves historical attempts before the next wallet write and keeps them when that proof fails', async () => {
-    const f = fixture()
+    const f = await fixture()
     await f.controller.run()
     await f.controller.retry()
     const write = vi.fn()
-    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); write(); callbacks.submitted(H2) })
+    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); write(); await callbacks.submitted(H2) })
     vi.mocked(f.ports.requireRetry).mockRejectedValueOnce(new Error('Earlier failure reorged'))
     await expect(f.controller.run()).rejects.toThrow('Earlier failure reorged')
     expect(write).not.toHaveBeenCalled()
@@ -542,14 +613,14 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('keeps original quote and every old funding option when a finalized failed payment is retried', async () => {
-    const f = relayrFixture()
+    const f = await relayrFixture()
     const other = { ...quote.payment_info[0], chain: 11155420, amount: '99' }
     const multi = { ...quote, payment_info: [...quote.payment_info, other] }
-    vi.mocked(f.ports.quote).mockImplementationOnce(async (_plan, _remember, beforePublish) => { beforePublish(); return multi })
+    vi.mocked(f.ports.quote).mockImplementationOnce(async (_plan, _remember, beforePublish) => { await beforePublish(); return multi })
     await f.controller.run()
     await f.controller.retry()
     vi.mocked(f.ports.choosePayment).mockResolvedValueOnce(other)
-    vi.mocked(f.ports.sendPayment).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); callbacks.submitted(H1) })
+    vi.mocked(f.ports.sendPayment).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); await callbacks.submitted(H1) })
     await createStickyLaunchController(f.ports).run()
     expect(f.store.load()?.paymentAttempts).toEqual([{ option: payment, started: true, hash: H2, confirmed: true }])
     expect(f.store.load()?.payment).toMatchObject({ option: other, started: true, hash: H1 })
@@ -560,13 +631,13 @@ describe('durable Sticky launch controller', () => {
   })
 
   it('reproves archived failures before clearing, excluding a successful latest submission from retirement proof', async () => {
-    const f = fixture()
+    const f = await fixture()
     await f.controller.run()
     await f.controller.retry()
     vi.mocked(f.ports.requireRetry).mockRejectedValueOnce(new Error('History proof unavailable'))
     await expect(f.controller.clear()).rejects.toThrow('History proof unavailable')
     expect(f.store.load()?.directAttempts).toHaveLength(1)
-    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); callbacks.submitted(H2) })
+    vi.mocked(f.ports.sendDirect).mockImplementationOnce(async (_session, callbacks) => { await callbacks.beforeWrite(); await callbacks.submitted(H2) })
     await f.controller.run()
     vi.mocked(f.ports.verifyDeployment).mockImplementation(async (_session, _target, candidate) => candidate === H2 ? { hash: H2, token: address('8'), projectId: '10' } : null)
     await f.controller.clear()
@@ -575,8 +646,8 @@ describe('durable Sticky launch controller', () => {
     expect(f.store.load()).toBeNull()
   })
 
-  it('refuses malformed retained histories rather than treating them as unsubmitted', () => {
-    const f = fixture()
+  it('refuses malformed retained histories rather than treating them as unsubmitted', async () => {
+    const f = await fixture()
     for (const history of [[{ started: true }], [{ started: false, hash: H1 }], [{ started: true, hash: 'bad' }], {}]) {
       expect(() => validateStickyLaunch({ ...f.prepared, directAttempts: history })).toThrow()
     }

@@ -2,11 +2,11 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import type { JBChainId } from '@bananapus/nana-sdk-core'
 import { encodeFunctionData, keccak256, stringToHex, type Abi, type Address, type Hex, type TransactionReceipt } from 'viem'
 import {
+  CONFIRMATION_QUEUED_LINE,
   HELD_CONFIRMING_LINE,
-  openStepHold,
+  REVIEW_STOPPED_LINE,
   REVIEWED_ACCOUNT_CHANGED_LINE,
   ReviewedCallRevertedError,
   ReviewLineError,
@@ -16,8 +16,8 @@ import {
   type ReviewedCall,
   type ReviewedResult,
   type ReviewedRunStatus,
-  type WriteHoldClient,
 } from '@bananapus/nana-sdk-core/review'
+import { ConfirmationQueuedError } from '@bananapus/nana-sdk-core/review/locks'
 import { useReviewedRun } from '@bananapus/nana-sdk-core/review/react'
 import { useWallet } from '@/hooks/useWallet'
 import { legacyNamespaces } from '@/lib/legacy-intents'
@@ -26,8 +26,8 @@ import { holdIntent } from '@/lib/sticky-hold-intent'
 import { refreshAfterConfirmedWrite } from '@/lib/sticky-refresh'
 import { getViewAs, VIEW_AS_WRITE_BLOCKED } from '@/lib/viewAs'
 import { loadReviewEngine } from '@/lib/review-engine'
-import { publicClient, reviewedSendDeps } from '@/lib/wallet-core'
-import { exitWarning, followDetached, holds } from '@/lib/write-holds'
+import { reviewedSendDeps } from '@/lib/wallet-core'
+import { exitWarning, holds } from '@/lib/write-holds'
 import { wagmiConfig } from '@/providers/Providers'
 import { EXTERNAL_WALLET_REQUIRED } from '@/providers/WalletAuthContext'
 
@@ -46,13 +46,14 @@ export type TxPhase =
   | 'error'
 
 /** Sticky's display phase for the SDK's run status: a held or proposed step shows its hold, and an exit that could not
- * be checked, or a review the account change withdrew, shows as an error. */
+ * be checked, a review the account change withdrew, or a run closed after an earlier step was sent (`stopped`, with
+ * REVIEW_STOPPED_LINE) shows as an error. */
 export function txPhaseOf(status: ReviewedRunStatus, exitFailed: boolean): TxPhase {
   if (status === 'done') return 'success'
   if (status === 'proposed' || status === 'held') return 'submitted'
   if (status === 'receipt') return 'pending'
   if (status === 'review' || status === 'simulating' || status === 'signing') return status
-  return status === 'failed' || exitFailed ? 'error' : 'idle'
+  return status === 'failed' || status === 'stopped' || exitFailed ? 'error' : 'idle'
 }
 
 /** A contract write, as Sticky's builders return it. */
@@ -164,6 +165,8 @@ export function useReviewedAction() {
   const [landed, setLanded] = useState(0)
   /** The user's exit could not be checked: the hold keeps the write. Or the account changed while the review was open. */
   const [exitError, setExitError] = useState<string | null>(null)
+  /** A confirmed step whose recording waits for the flow's own work under its locks: shown while it still confirms. */
+  const [queued, setQueued] = useState(false)
   const inFlight = useRef(false)
   /** Counts account changes: a run reviewed before one sends nothing after it, even once the account is back. */
   const accountEpoch = useRef(0)
@@ -179,22 +182,15 @@ export function useReviewedAction() {
     open.current = true
     return () => { open.current = false }
   }, [])
-  const last = useRef<{ action: ReviewedRun; account: Address | undefined; chainId: number; proposed: ReviewedCall | null; confirming: ReviewedCall | null } | null>(null)
-  /** The run only waits for its sent step's hold, whose confirm can end on Done: closing it ends the run there. */
-  const awaitingHold = useRef(false)
-  /** A run refused after an earlier step went through: its cancel is told once its state renders. */
-  const [partlySent, setPartlySent] = useState<{ onCancelled: () => void } | null>(null)
-  useEffect(() => {
-    if (!partlySent) return
-    setPartlySent(null)
-    partlySent.onCancelled()
-  }, [partlySent])
+  const last = useRef<{ action: ReviewedRun; account: Address | undefined } | null>(null)
   const runner = useReviewedRun({
     account: address,
     ...reviewedSendDeps,
     engine: loadReviewEngine,
     // A step starts only once every step before it confirmed, here or in a resumed run's earlier one.
     onProgress: ({ step }) => setLanded(count => Math.max(count, step)),
+    // A held step the person's dismiss closed confirmed later: its reads refresh.
+    onDismissedSettled: call => refreshAfterConfirmedWrite(queryClient, call.chainId),
     guard: () => {
       if (isCenterWallet) throw new ReviewLineError(EXTERNAL_WALLET_REQUIRED)
       if (getViewAs()) throw new ReviewLineError(VIEW_AS_WRITE_BLOCKED)
@@ -209,12 +205,11 @@ export function useReviewedAction() {
     setSubmission(null)
     setLanded(0)
     setExitError(null)
+    setQueued(false)
     const viaSafe = isSafeConnection(wagmiConfig)
     const { onReleased: _released, onCancelled, reverify, ...sent } = action
-    last.current = { action, account: address, chainId: action.calls[0].chainId, proposed: null, confirming: null }
+    last.current = { action, account: address }
     const epoch = accountEpoch.current
-    /** A step of this run reached the wallet's reply. */
-    let submitted = false
     const abort = new AbortController()
     aborts.current.add(abort)
     try {
@@ -223,7 +218,12 @@ export function useReviewedAction() {
         ...sent,
         signal: abort.signal,
         // A review the account change withdrew says so as an error; the flow stays open on it.
-        ...(onCancelled ? { onCancelled: () => { if (!abort.signal.aborted) onCancelled() } } : {}),
+        // A refusal after a step of the action was sent, here or in a resumed run's earlier one, ends it as the
+        // person's cancel too.
+        ...(onCancelled ? {
+          onCancelled: () => { if (!abort.signal.aborted) onCancelled() },
+          onStopped: () => { if (!abort.signal.aborted) onCancelled() },
+        } : {}),
         ...(action.calls.length > 1 ? { scope: sequenceScope(action.calls) } : {}),
         ...(description ? { description } : {}),
         ...(viaSafe && !action.confirmLabel ? { confirmLabel: 'Agree & continue to Safe' } : {}),
@@ -239,7 +239,6 @@ export function useReviewedAction() {
         },
         onSubmitted: async (call, step, hash, how) => {
           setSubmission({ hash, safe: how.safe })
-          submitted = true
           await action.onSubmitted?.(call, step, hash, how)
         },
         onConfirmed: async (call, step, receipt) => {
@@ -247,14 +246,11 @@ export function useReviewedAction() {
           await action.onConfirmed?.(call, step, receipt)
         },
       })
-      // A receipt still verifying is sent and pending (the hook's `receipt` phase) until its hold ends the run.
-      // Closing its confirm resets core's run, which ends this wait with nothing (`ended()` is null): no later step is
-      // reviewed for it, and its hold keeps the sent step.
-      if (ran?.status === 'receipt') {
-        if (last.current?.action === action) last.current.confirming = action.calls[ran.step] ?? null
-        awaitingHold.current = true
-      }
+      // A receipt still verifying is sent and pending until its hold ends the run. The person's dismiss ends this wait
+      // with nothing (`ended()` is null): no later step is reviewed for it, and its hold keeps the sent step.
       const settled = ran?.status === 'receipt' ? await ran.ended() : ran
+      // Its confirmation is recorded once the flow's work under its locks ends: nothing is sent again, a retry checks it.
+      if (settled?.status === 'failed' && settled.failure instanceof ConfirmationQueuedError) setQueued(true)
       const done = settled?.status === 'failed' ? null : settled
       // The account changed while the review was open: core withdrew it, and the action says why.
       if (!ran && abort.signal.aborted) {
@@ -262,15 +258,10 @@ export function useReviewedAction() {
         return null
       }
       if (done?.status === 'done') setLanded(action.calls.length)
-      if (done?.status === 'proposed' && last.current?.action === action) last.current.proposed = action.calls[done.step] ?? null
       setResult(done)
-      // A refusal after an earlier step went through ends the action as the person's cancel too: the SDK reports that
-      // run as settled, not cancelled, and resolves it with nothing. It is told once that state has rendered.
-      if (ran === null && submitted && onCancelled) setPartlySent({ onCancelled })
       return done
     } finally {
       aborts.current.delete(abort)
-      awaitingHold.current = false
       inFlight.current = false
     }
   }
@@ -304,21 +295,15 @@ export function useReviewedAction() {
           ? { line: shown.line, warning: '', label: '', notice: shown.notice, exit: null }
           : null
 
+  /** Closes the confirm; nothing while the review or wallet is open. Core follows a hold it showed, detached. */
   function reset() {
-    if (inFlight.current && !awaitingHold.current) return
-    // A Safe proposal, or a sent step still confirming, whose flow closed is still followed, and its reads refresh once
-    // it runs.
-    const { proposed = null, confirming = null } = last.current ?? {}
-    for (const [call, safe] of [[proposed, true], [confirming, false]] as const) {
-      if (call && address) followDetached(openStepHold(holds, address, safe, call), publicClient(call.chainId as JBChainId) as WriteHoldClient, () => refreshAfterConfirmedWrite(queryClient, call.chainId))
-    }
+    if (!runner.dismiss()) return
     last.current = null
-    setPartlySent(null)
     setResult(null)
     setSubmission(null)
     setLanded(0)
     setExitError(null)
-    runner.reset()
+    setQueued(false)
   }
 
   const hash = result?.status === 'done' ? result.hashes.at(-1) ?? null : runner.hash ?? (submission && !submission.safe ? submission.hash : null)
@@ -327,8 +312,8 @@ export function useReviewedAction() {
   return {
     run,
     phase,
-    /** True while the run is in flight: in review, simulating, signing or awaiting its receipt. */
-    busy: phase === 'review' || phase === 'simulating' || phase === 'signing' || phase === 'pending',
+    /** True while the run is in flight: in review, simulating, signing or confirming in place; not while it only follows a hold. */
+    busy: runner.busy,
     /** The confirm can end on Done: the run succeeded, or a Safe or the hold has it. */
     settled: phase === 'success' || phase === 'submitted',
     /** The one line a `submitted` confirm shows: the hold's. */
@@ -339,7 +324,8 @@ export function useReviewedAction() {
     holdNotice: shown?.notice ?? null,
     /** Whether the connected writer is a Safe connector. */
     isSafe,
-    error: exitError ?? (phase === 'error' ? runner.error : null),
+    error: exitError ?? (queued && (phase === 'pending' || phase === 'submitted') ? CONFIRMATION_QUEUED_LINE : null) ??
+      (phase === 'error' ? runner.error ?? (runner.status === 'stopped' ? REVIEW_STOPPED_LINE : null) : null),
     /** The value the failed run threw, with its cause chain, for a flow's own decoder. */
     failure: runner.failure,
     /** A step was mined and reverted: its receipt says so, not why. */

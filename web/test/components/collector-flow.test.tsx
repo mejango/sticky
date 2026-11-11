@@ -5,6 +5,7 @@ import { buildStickyCollectorSendTx, buildStickyCollectorSettleTx } from '@banan
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { lapsingLocksForTests } from '@bananapus/nana-sdk-core/testing'
 import type { TxRequest } from '@/hooks/useReviewedAction'
 import { TransactionReviewCancelledError } from '@/lib/transaction-review'
 import { bridgeCalldata } from '@/lib/sticky-bridge'
@@ -31,6 +32,16 @@ vi.mock('@/lib/jbcenter-public-client', async original => ({ ...(await original<
 vi.mock('@/lib/sticky-refresh', () => ({ refreshAfterFund: mocks.refresh }))
 vi.mock('@/components/project/flows/BridgeFlow', () => ({ BridgeFlow: (props: unknown) => { mocks.monitor(props); return <span>Existing bridge monitor</span> } }))
 import { CollectorFlow } from '@/components/project/flows/CollectorFlow'
+
+/** Lapsing locks (the SDK's): `lapse()` loses this tab's bridge lease, and another tab's routine check takes it once. */
+function lapsingBridgeLock() {
+  const { locks, lapse, otherTab } = lapsingLocksForTests()
+  vi.stubGlobal('navigator', { locks })
+  return async () => { lapse(); await otherTab().request('sticky-reward-bridge', async () => {}) }
+}
+
+/** Another tab's write, under its own bridge lock. */
+const HELD = { assertHeld: async () => {} }
 
 const UNIT = 10n ** 18n
 const requestOf = (source = SOURCE, amount = UNIT): TxRequest => source.bridgeRoute
@@ -101,6 +112,22 @@ function failReturnedHashSave(failure: 'write' | 'read' = 'write') {
 }
 
 describe('permissionless collector delivery', () => {
+  it("ends the reservation of a send the wallet refused after the bridge lock lapsed, under the lock taken back", async () => {
+    await review()
+    const lapse = lapsingBridgeLock()
+    mocks.walletWrite.mockImplementation(async () => { await lapse(); throw Object.assign(new Error('User rejected the request.'), { code: 4001 }) })
+    await press('Review delivery')
+    await vi.waitFor(() => expect(localStorage.getItem(`sticky:bridge:pending:v1:${OWNER.toLowerCase()}`)).toBe('null'))
+  })
+  it("keeps the wallet's hash when the bridge lock lapsed before it returned, and saves it under the lock taken back", async () => {
+    await review()
+    const lapse = lapsingBridgeLock()
+    // The wallet answers after this tab's lease lapsed: the hash cannot be saved under the old lock.
+    mocks.walletWrite.mockImplementation(async () => { await lapse() })
+    await press('Review delivery')
+    await vi.waitFor(() => expect(JSON.parse(localStorage.getItem(`sticky:bridge:pending:v1:${OWNER.toLowerCase()}`)!).hash).toBe(HASH))
+    expect(mocks.walletWrite).toHaveBeenCalledOnce()
+  })
   it('repairs the actual returned delivery hash after its durable save failed', async () => {
     await review()
     const save = failReturnedHashSave()
@@ -122,7 +149,7 @@ describe('permissionless collector delivery', () => {
     const original = storedPending()
     save.mockRestore()
     const replacement = { ...original, id: crypto.randomUUID(), ...(hasHash ? { hash: H(91), safeProposal: false } : {}) }
-    savePendingBridgeWrite(OWNER, replacement)
+    await savePendingBridgeWrite(HELD, OWNER, replacement)
     await confirmed()
     expect(readPendingBridgeWrite(OWNER)).toEqual(replacement)
     expect(mocks.verifyWrite).not.toHaveBeenCalled()
@@ -153,12 +180,12 @@ describe('permissionless collector delivery', () => {
   })
   it('rechecks the saved reservation after an asynchronous canonical proof before clearing', async () => {
     const original = { ...createPendingBridgeWrite({ owner: OWNER, request: storeBridgeWrite(requestOf()) }), hash: HASH }
-    savePendingBridgeWrite(OWNER, original)
+    await savePendingBridgeWrite(HELD, OWNER, original)
     const proof = Promise.withResolvers<{ success: boolean; receipt: { blockNumber: bigint } }>()
     mocks.verifyWrite.mockReturnValueOnce(proof.promise)
     await render(); await press('Check transaction')
     const replacement = { ...original, id: crypto.randomUUID(), hash: H(91) }
-    savePendingBridgeWrite(OWNER, replacement)
+    await savePendingBridgeWrite(HELD, OWNER, replacement)
     await act(async () => proof.resolve({ success: true, receipt: { blockNumber: 100n } }))
     expect(readPendingBridgeWrite(OWNER)).toEqual(replacement)
     expect(onSettled).not.toHaveBeenCalled()
@@ -242,7 +269,7 @@ describe('permissionless collector delivery', () => {
 
   it('retains pending intent while proof is unavailable, then permits a new review only after a proven revert', async () => {
     const held = { owner: OWNER, request: storeBridgeWrite(requestOf()), hash: HASH }
-    savePendingBridgeWrite(OWNER, held)
+    await savePendingBridgeWrite(HELD, OWNER, held)
     mocks.verifyWrite.mockRejectedValueOnce(new Error('Failure is not finalized'))
     await render(); await press('Check transaction')
     // A legacy snapshot keeps every field and gains only a durable attempt id.
@@ -257,8 +284,8 @@ describe('permissionless collector delivery', () => {
 
   it('does not clear another tab’s newer attempt, even when the calldata is identical', async () => {
     const old = { owner: OWNER, request: storeBridgeWrite(requestOf()), hash: HASH }
-    savePendingBridgeWrite(OWNER, old); await render()
-    const next = { ...old, hash: H(91) }; savePendingBridgeWrite(OWNER, next)
+    await savePendingBridgeWrite(HELD, OWNER, old); await render()
+    const next = { ...old, hash: H(91) }; await savePendingBridgeWrite(HELD, OWNER, next)
     await press('Check transaction')
     expect(readPendingBridgeWrite(OWNER)).toEqual(next)
     expect(mocks.verifyWrite).not.toHaveBeenCalled()
@@ -266,7 +293,7 @@ describe('permissionless collector delivery', () => {
 
   it('leaves record-linked bridge actions to their original recovery owner', async () => {
     const held = { owner: OWNER, request: storeBridgeWrite(requestOf()), hash: HASH, metadata: H(3), recordKey: 'original' }
-    savePendingBridgeWrite(OWNER, held); await render()
+    await savePendingBridgeWrite(HELD, OWNER, held); await render()
     expect(button('Check transaction')).toBeUndefined()
     expect(text()).toContain('original bridge or allocation panel')
     expect(readPendingBridgeWrite(OWNER)).toEqual({ ...held, id: expect.any(String) })
@@ -367,14 +394,14 @@ describe('permissionless collector delivery', () => {
   // Switch on with SDK 2.36's hold.adopt, as in the bridge flow: a hashed legacy delivery with no SDK record gets the warned exit.
   it('has the SDK adopt a hashed legacy delivery reservation with its hash', async () => {
     const hashed = { ...createPendingBridgeWrite({ owner: OWNER, request: storeBridgeWrite(requestOf()), intent: 'intent:collector-delivery:abc' }), hash: HASH, safeProposal: false }
-    savePendingBridgeWrite(OWNER, hashed)
+    await savePendingBridgeWrite(HELD, OWNER, hashed)
     await render()
     const handle = holds.open({ chainId: 1, account: OWNER, safe: false, namespace: 'intent:collector-delivery:abc', call: { ...deliveryCall(), value: BigInt(hashed.request.value) } })
     await vi.waitFor(() => expect(handle.peek()).toMatchObject({ record: { hash: HASH } }))
     expect(readPendingBridgeWrite(OWNER)).toEqual(hashed)
   })
   it('shows recovery even when allocation reads fail', async () => {
-    savePendingBridgeWrite(OWNER, { owner: OWNER, request: storeBridgeWrite(requestOf()), hash: HASH })
+    await savePendingBridgeWrite(HELD, OWNER, { owner: OWNER, request: storeBridgeWrite(requestOf()), hash: HASH })
     mocks.read.mockRejectedValue(new Error('Queue RPC unavailable'))
     await render()
     expect(text()).toContain('Executed transaction hash')

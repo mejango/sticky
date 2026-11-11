@@ -192,6 +192,14 @@ const switchWalletOnly = (account: Address) => mocks.getAccount.mockImplementati
 /** The confirm's main button, and the line under its step that says what the engine is doing. */
 const primary = () => confirm().querySelector<HTMLButtonElement>('footer button.btn-primary')!
 const statusLine = () => confirm().querySelector('p.text-bluebs-700')?.textContent ?? null
+/**
+ * Settles until the confirm shows the Safe proposal. The Safe's queue is read from a fetch Response, whose body resolves
+ * on the event loop rather than on a fake timer, so a fixed number of settles is not enough on a loaded machine.
+ */
+const proposed = () => vi.waitFor(async () => {
+  await settle()
+  expect(statusLine()).toBe('Proposed to your Safe. Its other signers can approve it there.')
+})
 /** Holds the next decoded review open until the test approves it. */
 function holdReview() {
   const open = Promise.withResolvers<void>()
@@ -244,7 +252,7 @@ describe('a Safe review dismissed from its enclosing modal', () => {
     await press(modal(), `Review ${kind}`)
 
     expect(mocks.review).toHaveBeenCalledOnce()
-    expect(statusLine()).toContain('Proposed to your Safe. Its other signers can approve it there.')
+    await proposed()
     expect(primary().textContent).toBe('Done')
     expect(confirm().querySelector('li')?.getAttribute('data-state')).toBe('active')
     expect(invalidate).not.toHaveBeenCalled()
@@ -267,7 +275,7 @@ describe('a Safe review dismissed from its enclosing modal', () => {
     await type('Recipient', BOB)
     await type('Amount', '1.987654321')
     await press(modal(), 'Review transfer')
-    expect(statusLine()).toBe('Proposed to your Safe. Its other signers can approve it there.')
+    await proposed()
     expect(primary().textContent).toBe('Done')
     await escape()
     await press(modal(), 'Review transfer')
@@ -307,7 +315,7 @@ describe('a transfer', () => {
     expect(sent()).toMatchObject({ to: STICKY, functionName: 'transfer', args: [BOB, amount] })
     // The balance was read for the review, and again after it and before the wallet.
     expect(mocks.read).toHaveBeenCalledTimes(2)
-    expect(confirm().textContent).toContain('Waiting for confirmation…')
+    expect(confirm().textContent).toContain('Confirming your transaction.')
 
     await mine()
     expect(confirm().textContent).toContain('Sticky tokens transferred')
@@ -327,7 +335,7 @@ describe('a transfer', () => {
 
     await act(async () => prompt.resolve(HASH))
     await settle()
-    expect(statusLine()).toBe('Waiting for confirmation…')
+    expect(statusLine()).toBe('Confirming your transaction.')
     expect(primary().textContent).toBe('Confirming…')
   })
 
@@ -423,7 +431,7 @@ describe('a change of trust', () => {
     expect(primary().textContent).toBe('Confirm in your wallet…')
     await act(async () => prompt.resolve(HASH))
     await settle()
-    expect(statusLine()).toBe('Waiting for confirmation…')
+    expect(statusLine()).toBe('Confirming your transaction.')
   })
 
   it('wallet-action:trust-or-untrust-a-sender reaches the wallet as setTrustedSenderFor(project, sender, false) for an untrust', async () => {

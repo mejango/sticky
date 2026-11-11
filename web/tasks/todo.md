@@ -1,3 +1,44 @@
+# SDK core 6.3.0: lapse keeping moves to the SDK, queued confirmations, shared lines (2026-11-10)
+
+Brief: adopt-630-brief.md and the 6.3.0 deletion map (Sticky: `withBridgeLock`'s keep and late become plain `locks` plus `attemptScoped: true`). Stacks on the 6.2.0 entry below, same PR (#88).
+
+- [x] 1. Pin `@bananapus/nana-sdk-core` 6.3.0 exact.
+- [x] 2. Bridge and collector: `withBridgeLock` is plain again (no keep, no late, no `BridgeOutcome`); each run's callbacks write under its `lock` and pass `attemptScoped: true`, since they already change only their own attempt (reservation id) and record.
+- [x] 3. Launch: delete the controller's `late`, `lapsed`, `reconcileLapsed` and the adapter's reconcile under a fresh lock. Callbacks capture the call's lock and match their attempt by identity (`beforeWrite`'s saved attempt), so the SDK reruns them under the lock taken back (`attemptScoped` on `sendReviewed` and `payRelayrReviewed`). The payment's manual unsent handling becomes `payRelayrReviewed`'s `onUnsent`. Answers given outside a reviewed send's callbacks (the listing published and signed, a Safe's execution hashes) go through `keepOutcome`.
+- [x] 4. `ended()`: a `ConfirmationQueuedError` shows `CONFIRMATION_QUEUED_LINE` while the step is pending or held, and the action can run again (nothing is sent again). A `stopped` run reads error with `REVIEW_STOPPED_LINE`, as Homerun. `LOCK_LOST_LINE` comes from the SDK's `errorLine`. No Sticky view takes a user-entered hash for a held write, so `HELD_HASH_*` and `hashCheck` have no caller.
+- [x] 5. Regressions on the SDK path with `lapsingLocksForTests` (each seen failing without `attemptScoped`): bridge and collector refusal ends the reservation and a late hash is saved; the launch's direct hash and refusal through the real `sendReviewed`; the controller's own-attempt-only merge and the kept listing. The flow fake runs its callbacks through the SDK's `keepOutcome` instead of ignoring `locks` (Codex pass 1 finding). The hook shows a queued confirmation and a retry sends nothing again; a resumed refusal shows the stopped line.
+- [x] 6. Full `npm run check`, push without force, Codex to MERGE. No merge.
+
+## Plan refinement
+- **Objective:** No client-side keep, reconcile or dismissal memory left; the SDK keeps a wallet's answer through a lapsed lock.
+- **System fit:** The SDK owns keeping and rerunning outcomes under the lock taken back; Sticky's callbacks only promise attempt scope (match by id, merge into the latest record). Recovery is unchanged.
+- **Reuse and simplicity:** `keepOutcome`, `attemptScoped`, `onUnsent`, the SDK lines and `lapsingLocksForTests`; net deletion in the controller and adapter.
+- **Evidence and unknowns:** 6.3.0 `.d.ts` and `useReviewedRun.js`; Codex pass 1 on #88 (Medium: refusal after lapse left the reservation) re-checked: fixed by `attemptScoped` with a real-lock test. `ConfirmationQueuedError` is unreachable in Sticky today (no flow passes `onConfirmed`); handled anyway per the brief.
+- **Verification:** The tests above, mutation by removing `attemptScoped`, full `npm run check`.
+- **Resource budget:** Same worktree and PR.
+
+# SDK core 6.2.0 adoption: run wrapper, lock fencing, shared confirming line (2026-11-10)
+
+Brief: SDK #295 (lock fencing) and #296 (run wrapper), read against the released 6.2.0 code in node_modules; the fencing map's Sticky section (4 journal saves).
+
+- [x] 1. Pin `@bananapus/nana-sdk-core` 6.2.0 (Node 26, npm 12). Sticky uses core only; `wallet:check` forbids the react package.
+- [x] 2. Wrapper: delete `partlySent` and its effect, the local `submitted` flag, the `awaitingHold` ref, `last.proposed`/`confirming` and the `followDetached` loop in `reset`. Pass `onStopped` next to the wrapped `onCancelled`, `onDismissedSettled` refreshes reads, `busy` is `runner.busy`, `reset` is `runner.dismiss()` and clears local state only when it returns true. `followDetached` has no caller left: deleted from `lib/write-holds`.
+- [x] 3. Fences: `withBridgeLock` hands its lock to the work; every bridge journal write (`saveBridgeRecords` through `updateBridgeRecords`, `savePendingBridgeWrite`, `saveWatchedBridgeRoute`, and the helpers over them) takes that handle and awaits `assertHeld()` right before writing. A status refresh with no lock reconciles a record only when the bridge lock is free. The exit's `onReleased` runs after the action's lock was released, so it takes the lock again. Bridge and collector runs pass `locks: [lock]`.
+- [x] 4. Launch: the adapter binds the launch lock while a controller call holds it (`ports.held`); the controller's `save` and `clear` check it before writing, and refuse with no lock. `sendReviewed`, `payRelayrReviewed` and `signReviewed` get `locks`. Sync saves became async, with awaits up the callbacks.
+- [x] 4b. A lapse never drops what the wallet answered (the SDK `fund()` keep pattern): a post-wallet write refused for a lost lock (the hash, the refusal's end of the reservation, the launch's submission, refusal and listing signature) is kept and applied once the old lock callback ends, under a fresh lock, only while the saved record is still that attempt's. A refusal the SDK does not report under a lost lock (#295) leaves the start, which the SDK's saved-attempt recovery checks and exits.
+- [x] 5. Status wording: the confirm's waiting line and the launch's receipt line are the SDK's `HELD_CONFIRMING_LINE`, as Homerun's.
+- [x] 6. Failing-first tests: a resumed sequence's refusal is the person's cancel; the confirm is not busy while it only follows a hold; a lost bridge lock and a lost launch lock each write nothing (seen failing with the checks removed); a refresh reconciles only while the bridge lock is free; per fence, a hash and a refusal answered after a lapse are applied under a fresh lock (to the same attempt only), seen failing with the keep removed; the bridge run passes its lock; the shared confirming line.
+- [x] 6b. Pre-existing flake fixed: `sticky-transfer-trust`'s two Safe-proposal tests asserted right after one settle, but the Safe queue's fetch `Response` body resolves on the event loop, not on a fake timer. Under load they failed on origin/main too (3 of 12 parallel runs); they now settle until the proposal shows (0 of 30 runs failing).
+- [x] 7. Full `npm run check` (with browser tests); draft PR, no merge.
+
+## Plan refinement
+- **Objective:** Sticky runs on SDK 6.2.0: the wrapper keeps only display mapping, every journal write under a browser lock refuses once the lock is lost, and the waiting line is the SDK's.
+- **System fit:** The SDK owns run status, dismissal, detached following and the wallet/signature fences (`locks`); Sticky owns its journals, so each locked write checks its own handle right before writing. Recovery paths are unchanged; a lost lock leaves the journal as it was, which the existing recovery already reads.
+- **Reuse and simplicity:** `LockHandle.assertHeld` from core, no local lock code; the wrapper drops its own partly-sent, dismissal and follow code for `onStopped`, `dismiss()` and `onDismissedSettled`; the line is the SDK constant.
+- **Evidence and unknowns:** Released 6.2.0 `.d.ts` and `useReviewedRun.js`; behavior change from #296: dismissing a held last step keeps its hold shown until it settles.
+- **Verification:** Failing-first tests above (each seen failing before the change), mutation check of the fences, full `npm run check`.
+- **Resource budget:** One worktree, tsc to find every call site of each signature change.
+
 # Launch: one press opens the decoded review (2026-10-22)
 
 Stacks on #73. The create form's launch press saved the launch, then a second press ("Continue launch" or "Request sponsored launch") opened the SDK review: two confirmations for one action.

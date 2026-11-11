@@ -19,7 +19,7 @@ import { bridgeCalldata, bridgeRouteId, bridgeWriteHasUniqueReference, createSti
 import {
   adoptSettlementHash, assertPendingBridgeWrite, ensurePendingBridgeId, bridgeStorageKey, endPendingBridgeAttempt, createPendingBridgeWrite, discardBridgeDraft, readBridgeRecords, readPendingBridgeWrite, readWatchedBridgeRoutes, reconcileBridgeRecord,
   restoreBridgeWrite, retryPendingBridgeSubmission, savePendingBridgeWrite, savePendingBridgeSubmission, storeBridgeWrite, updateBridgeRecord, updateBridgeRecords, withBridgeLock,
-  type BridgeRecord, type PendingBridgeWrite,
+  type BridgeLock, type BridgeRecord, type PendingBridgeWrite,
 } from '@/lib/sticky-bridge-journal'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { readReceiver } from '@/lib/sticky-receivers'
@@ -29,6 +29,7 @@ import type { TransactionReviewRow } from '@/lib/transaction-review'
 import { chainName } from '@/lib/urn'
 import type { JBChainId } from '@bananapus/nana-sdk-core'
 import { errorLine, ReviewLineError } from '@bananapus/nana-sdk-core/review'
+import type { LockHandle } from '@bananapus/nana-sdk-core/review/locks'
 
 const bridge = createStickyBridge()
 type Item = { route: BridgeRoute; row: BridgeMovement }
@@ -115,7 +116,8 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
     assertCurrent(identity)
     return { groupId, account, receiver, key: bridgeStorageKey(info.chainId, info.stToken, groupId, account) }
   }
-  async function refresh() {
+  /** Rereads the saved transfers and their routes; under the bridge lock, `lock` is its handle. */
+  async function refresh(lock: BridgeLock | null = null) {
     const mine = ++generation.current
     try {
       const account = owner()
@@ -133,7 +135,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
         if (route.source.chainId !== sourceChainId || route.destination.chainId !== info.chainId) continue
         try {
           const rows = await bridge.movements(route, contextValue.receiver)
-          for (const record of saved.filter(item => bridgeRouteId(item.route) === bridgeRouteId(route))) await reconcileBridgeRecord(bridge, contextValue.key, record, rows)
+          for (const record of saved.filter(item => bridgeRouteId(item.route) === bridgeRouteId(route))) await reconcileBridgeRecord(lock, bridge, contextValue.key, record, rows)
           next.push(...rows.map(row => ({ route, row })))
         } catch (reason) { failures.push(errorLine(reason)) }
       }
@@ -152,7 +154,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identity])
 
-  async function run(work: () => Promise<void>) {
+  async function run(work: (lock: LockHandle) => Promise<void>) {
     if (busy) return
     setWorking(true); setError(null)
     try { await withBridgeLock(work) } catch (reason) { setError(errorLine(reason)) } finally { setWorking(false) }
@@ -176,7 +178,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
     { label: 'Transfer reference', value: record.metadata, mono: true },
     { label: 'Afterward', value: 'Send the queued batch, wait for delivery, claim the arrival, then settle it into airdrops.' },
   ]
-  async function start(record?: BridgeRecord) {
+  async function start(lock: BridgeLock, record?: BridgeRecord) {
     if (delivery) throw new ReviewLineError('Use the allocation panel to deliver queued collector rewards.')
     const { account, receiver, groupId, key } = await context()
     if (readPendingBridgeWrite(account)) throw new ReviewLineError('Recover the pending bridge transaction before starting another.')
@@ -184,7 +186,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
     if (!record && saved.length >= 100) throw new ReviewLineError('This browser’s saved bridge history is full. Recover existing transfers first.')
     for (const previous of saved) {
       if (previous.metadata === record?.metadata && !previous.submission && !previous.sourceHash) continue
-      if (!(await reconcileBridgeRecord(bridge, key, previous, await bridge.movements(previous.route, receiver)))) throw new ReviewLineError('Recover the saved origin transfer before starting another bridge transfer.')
+      if (!(await reconcileBridgeRecord(lock, bridge, key, previous, await bridge.movements(previous.route, receiver)))) throw new ReviewLineError('Recover the saved origin transfer before starting another bridge transfer.')
     }
     const route = record?.route ?? routes[selected]
     if (!route || route.source.chainId !== sourceChainId || route.destination.chainId !== info.chainId) throw new ReviewLineError('Find and review this token’s bridge first.')
@@ -193,11 +195,11 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
     const plan = await bridge.prepare({ route, owner: account, amount: count, receiver, metadata })
     assertCurrent(identity)
     const next: BridgeRecord = { metadata, owner: account, receiver, groupId: String(groupId), stickyToken: info.stToken, stickyProjectId: String(info.projectId), route, amount: String(count), prepareData: bridgeCalldata(plan.steps.at(-1)!), createdAt: record?.createdAt ?? Date.now(), steps: plan.steps.map(storeBridgeWrite) }
-    if (record) await updateBridgeRecord(key, record.metadata, current => {
+    if (record) await updateBridgeRecord(lock, key, record.metadata, current => {
       if (current.submission || current.sourceHash) throw new ReviewLineError('This transfer may still execute. Recover it first.')
       return next
     })
-    else await updateBridgeRecords(key, current => [...current, next])
+    else await updateBridgeRecords(lock, key, current => [...current, next])
     assertCurrent(identity)
     tx.reset(); handledHash.current = null
     // The button was the choice: its one decoded review opens as soon as this step renders.
@@ -244,7 +246,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
   /** Reviews every step left of the action once, and sends them in order, each saved as the transfer's attempt while it is out. */
   async function confirm(chosen: Review) {
     const current = { ...chosen, autoSend: false }
-    await run(async () => {
+    await run(async lock => {
       assertCurrent(current.identity)
       if (readPendingBridgeWrite(current.owner)) throw new ReviewLineError('Recover the pending bridge transaction before sending it again.')
       const steps = current.record ? [current.request, ...current.record.steps.slice(1).map(restoreBridgeWrite)] : [current.request]
@@ -252,9 +254,13 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
       const attempts: PendingBridgeWrite[] = []
       /** The steps whose reservation this run saved. */
       const reserved = new Set<number>()
-      const undo = (step: number) => endPendingBridgeAttempt(current.owner, attempts[step]?.id)
+      const undo = (step: number) => endPendingBridgeAttempt(lock, current.owner, attempts[step]?.id)
       await tx.run({
         account: current.owner,
+        locks: [lock],
+        // Each callback changes only this attempt's reservation (by its id) and record, so a wallet answer after a lapsed
+        // lock lands once the SDK takes the lock back.
+        attemptScoped: true,
         calls: reviewedSteps(steps, current.owner, current.confirmedAt),
         title: current.record ? 'Airdrop across chains' : current.request.label ?? 'Confirm bridge step',
         context: reviewRows(current),
@@ -263,11 +269,11 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
           assertCurrent(current.identity)
           // The step before this one confirmed in this run: its saved attempt is recovered first.
           const before = step > 0 ? readPendingBridgeWrite(current.owner) : null
-          if (before?.hash) await recover(before.hash, before)
+          if (before?.hash) await recover(lock, before.hash, before)
           const held = createPendingBridgeWrite({ owner: current.owner, request: storeBridgeWrite(steps[step]), intent: holdIntent(steps[step], current.owner), ...(current.record ? { metadata: current.record.metadata, recordKey: current.key } : {}) })
           attempts[step] = held
           setReview({ ...current, request: steps[step], attempt: held })
-          try { savePendingBridgeWrite(current.owner, held); reserved.add(step) } catch (reason) {
+          try { await savePendingBridgeWrite(lock, current.owner, held); reserved.add(step) } catch (reason) {
             // This callback has not reached the wallet; undo a partial local write.
             try { if (readPendingBridgeWrite(current.owner)) await undo(step) } catch { /* Preserve another attempt or unreadable storage. */ }
             throw reason
@@ -279,19 +285,20 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
           // A queued Safe proposal can be adopted without reserving a new write.
           const held = attempts[step] ?? createPendingBridgeWrite({ owner: current.owner, request: storeBridgeWrite(steps[step]), intent: holdIntent(steps[step], current.owner), ...(current.record ? { metadata: current.record.metadata, recordKey: current.key } : {}) })
           if (!attempts[step]) { attempts[step] = held; setReview({ ...current, request: steps[step], attempt: held }) }
-          if (!reserved.has(step) && !readPendingBridgeWrite(current.owner)) { savePendingBridgeWrite(current.owner, held); reserved.add(step) }
-          const submitted = savePendingBridgeSubmission(held, hash, safe)
-          if (current.record && steps[step].functionName === 'prepare') await updateBridgeRecord(current.key, current.record.metadata, record => {
+          if (!reserved.has(step) && !readPendingBridgeWrite(current.owner)) { await savePendingBridgeWrite(lock, current.owner, held); reserved.add(step) }
+          const submitted = await savePendingBridgeSubmission(lock, held, hash, safe)
+          if (current.record && steps[step].functionName === 'prepare') await updateBridgeRecord(lock, current.key, current.record.metadata, record => {
             assertPendingBridgeWrite(submitted)
             return { ...record, submission: { hash, safeProposal: safe } }
           })
         },
         // The user's exit released the SDK hold: the reservation goes, the saved transfer stays.
-        onReleased: async () => {
+        // It runs on the person's exit, after this lock was released: the end takes the lock again.
+        onReleased: () => withBridgeLock(async released => {
           const held = readPendingBridgeWrite(current.owner)
-          if (held) await endPendingBridgeAttempt(current.owner, held.id)
+          if (held) await endPendingBridgeAttempt(released, current.owner, held.id)
           setPending(null)
-        },
+        }, true),
         onCancelled: closeReview,
       })
       setPending(readPendingBridgeWrite(current.owner))
@@ -301,19 +308,19 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
   async function settleFromPanel(held: PendingBridgeWrite, hash: Hex, result?: 'success' | 'failed'): Promise<boolean> {
     if (busy) return false
     let adopted = false
-    await run(async () => { await settleStored(held, hash, result); adopted = true })
+    await run(async lock => { await settleStored(lock, held, hash, result); adopted = true })
     return adopted
   }
   /** The SDK settled this write on authenticated evidence: its hash becomes the submission reference, and the normal confirmed-step recovery runs. */
-  async function settleStored(held: PendingBridgeWrite, hash: Hex, result?: 'success' | 'failed') {
+  async function settleStored(lock: BridgeLock, held: PendingBridgeWrite, hash: Hex, result?: 'success' | 'failed') {
     const stored = readPendingBridgeWrite(held.owner)
     if (!stored || stored.id !== held.id) throw new ReviewLineError('The pending bridge transaction changed. Refresh its recovery before continuing.')
-    const submitted = await adoptSettlementHash(stored.owner, stored.id, hash, undefined, result)
+    const submitted = await adoptSettlementHash(lock, stored.owner, stored.id, hash, undefined, result)
     // Even when the recovery cannot finish, the list shows the saved submission, so nothing offers to send it again.
-    try { await recover(hash, submitted) } finally { await refresh().catch(() => undefined) }
+    try { await recover(lock, hash, submitted) } finally { await refresh(lock).catch(() => undefined) }
   }
-  async function recover(hash: Hex, held: PendingBridgeWrite) {
-    retryPendingBridgeSubmission(held)
+  async function recover(lock: BridgeLock, hash: Hex, held: PendingBridgeWrite) {
+    await retryPendingBridgeSubmission(lock, held)
     assertPendingBridgeWrite(held)
     const outcome = await bridge.verifyWrite({ chainId: held.request.chainId as JBChainId }, held.owner, hash, { ...held.request, value: BigInt(held.request.value) }, held.hash ? { hash: held.hash, safeProposal: held.safeProposal } : undefined)
     assertPendingBridgeWrite(held)
@@ -321,14 +328,14 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
       const record = readBridgeRecords(held.recordKey).find(item => item.metadata === held.metadata)
       if (!record) throw new ReviewLineError('The saved transfer is missing. Keep the transaction hash for recovery.')
       if (held.request.data === record.prepareData && outcome.success) {
-        if (!(await reconcileBridgeRecord(bridge, held.recordKey, record, await bridge.movements(record.route, record.receiver), held))) throw new ReviewLineError('The source transaction is confirmed. Its exact bridge event is not available yet; refresh to recover it.')
-      } else await updateBridgeRecord(held.recordKey, held.metadata, current => {
+        if (!(await reconcileBridgeRecord(lock, bridge, held.recordKey, record, await bridge.movements(record.route, record.receiver), held))) throw new ReviewLineError('The source transaction is confirmed. Its exact bridge event is not available yet; refresh to recover it.')
+      } else await updateBridgeRecord(lock, held.recordKey, held.metadata, current => {
         assertPendingBridgeWrite(held)
         return { ...current, submission: undefined, steps: outcome.success && current.steps[0]?.data === held.request.data ? current.steps.slice(1) : current.steps }
       })
     }
     assertPendingBridgeWrite(held)
-    savePendingBridgeWrite(held.owner, null)
+    await savePendingBridgeWrite(lock, held.owner, null)
     setPending(null)
     if (!outcome.success) throw new ReviewLineError('The bridge transaction reverted. Its saved transfer can be reviewed again.')
     refreshAfterFund(client, info.chainId, Number(info.projectId), held.owner)
@@ -339,16 +346,16 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
     const current = active, hash = tx.hash, epoch = action.current
     const submissionHash = tx.submissionHash, safeProposal = tx.submissionIsSafe
     setRecording(hash)
-    void withBridgeLock(async () => {
+    void withBridgeLock(async lock => {
       let held = readPendingBridgeWrite(current.owner)
       if (!held) return
       // The engine retains its actual wallet reply if the original hash save
       // failed. Repair that exact intent under its owner lock before recovery.
       if (!current.attempt || !(submissionHash ?? held.hash)) throw new ReviewLineError('The original wallet attempt is unavailable. Recover its saved transaction before continuing.')
-      held = savePendingBridgeSubmission(current.attempt, (submissionHash ?? held.hash)!, submissionHash ? safeProposal : held.safeProposal)
-      if (current.record && current.request.functionName === 'prepare') await updateBridgeRecord(current.key, current.record.metadata,
+      held = await savePendingBridgeSubmission(lock, current.attempt, (submissionHash ?? held.hash)!, submissionHash ? safeProposal : held.safeProposal)
+      if (current.record && current.request.functionName === 'prepare') await updateBridgeRecord(lock, current.key, current.record.metadata,
         record => { assertPendingBridgeWrite(held!); return { ...record, submission: { hash: held!.hash!, safeProposal: held!.safeProposal } } })
-      const confirmedAt = await recover(hash, held)
+      const confirmedAt = await recover(lock, hash, held)
       handledHash.current = hash
       assertCurrent(current.identity)
       const record = current.record && readBridgeRecords(current.key).find(item => item.metadata === current.record!.metadata)
@@ -356,7 +363,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
         ? { ...current, record: { ...current.record!, steps: record.steps }, confirmedAt, request: restoreBridgeWrite(record.steps[0]), autoSend: false }
         : null
       if (!next) { if (epoch === action.current) setReview(null); tx.reset() }
-      await refresh()
+      await refresh(lock)
       return next
     }, true).then(next => {
       // Published once the lock is free: a step left over is reviewed again from its own confirm.
@@ -372,7 +379,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
   const legacyOwner = pending && !pending.id ? pending.owner : null
   useEffect(() => {
     if (!legacyOwner) return
-    void withBridgeLock(async () => { setPending(ensurePendingBridgeId(legacyOwner)) }, true).catch(() => undefined)
+    void withBridgeLock(async lock => { setPending(await ensurePendingBridgeId(lock, legacyOwner)) }, true).catch(() => undefined)
   }, [legacyOwner])
   // A chosen step is sent from its own render, so the sender is the one for its chain.
   useEffect(() => {
@@ -400,7 +407,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
         <fieldset disabled={busy || !!active}><StakeAgeFields minWeeks={minWeeks} maxWeeks={maxWeeks} onMinWeeks={setMinWeeks} onMaxWeeks={setMaxWeeks} /></fieldset>
         <label htmlFor={`${id}-amount`} className={FIELD_LABEL}>Amount</label>
         <input disabled={busy || !!active} id={`${id}-amount`} className={FIELD_INPUT} value={amount} onChange={event => setAmount(event.target.value)} inputMode="decimal" placeholder="100" />
-        <div className="flex flex-wrap gap-3"><button className="btn-primary" disabled={busy || !!pending || !routes[selected]?.canPrepare} onClick={() => void run(() => start())}>Review transfer</button></div>
+        <div className="flex flex-wrap gap-3"><button className="btn-primary" disabled={busy || !!pending || !routes[selected]?.canPrepare} onClick={() => void run(lock => start(lock))}>Review transfer</button></div>
         </>}
         <button className="btn-link" disabled={busy} onClick={() => void refresh()}>Refresh bridge status</button>
         {pending ? <div role="status" className="space-y-2 border-t border-line pt-3">
@@ -409,19 +416,19 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
           <SavedWriteRecovery pending={pending} disabled={busy}
             authenticate={async hash => (await bridge.verifyWrite({ chainId: pending.request.chainId as JBChainId }, pending.owner, hash, { ...pending.request, value: BigInt(pending.request.value) }, pending.hash ? { hash: pending.hash, safeProposal: pending.safeProposal } : undefined)).success}
             record={(hash, result) => settleFromPanel(pending, hash, result)}
-            end={() => withBridgeLock(async () => { await endPendingBridgeAttempt(pending.owner, pending.id); setPending(readPendingBridgeWrite(pending.owner)); await refresh() }, true)} />
+            end={() => withBridgeLock(async lock => { await endPendingBridgeAttempt(lock, pending.owner, pending.id); setPending(readPendingBridgeWrite(pending.owner)); await refresh(lock) }, true)} />
           {pending.safeProposal ? <p className="text-sm text-muted">Open the Safe queue and finish its approvals. Use the executed transaction hash below when it is ready.</p> : null}
           <label htmlFor={`${id}-hash`} className={FIELD_LABEL}>Executed transaction hash</label>
           <input id={`${id}-hash`} className={`${FIELD_INPUT} font-mono text-xs`} value={recoveryHash} placeholder={pending.safeProposal ? '0x…' : pending.hash ?? '0x…'} onChange={event => setRecoveryHash(event.target.value)} />
-          <button className="btn-link" disabled={busy} onClick={() => void run(async () => {
+          <button className="btn-link" disabled={busy} onClick={() => void run(async lock => {
             const hash = recoveryHash || (!pending.safeProposal ? pending.hash : '')
             if (!hash || !isHash(hash)) throw new ReviewLineError('Enter the executed transaction hash from the wallet.')
-            await recover(hash, pending); await refresh()
+            await recover(lock, hash, pending); await refresh(lock)
           })}>Check transaction</button>
         </div> : null}
         {records.filter(record => loadedIdentity === identity && !record.sourceVerified && !delivery).map(record => <div key={record.metadata} className="space-y-2 border-t border-line pt-3">
           <p className="text-sm">Saved transfer: {formatUnits(BigInt(record.amount), record.route.sourceMeta.decimals)} {record.route.sourceMeta.symbol} from {chainName(record.route.source.chainId)}.</p>
-          {!record.submission && !record.sourceHash ? <div className="flex gap-3"><button className="btn-link" disabled={busy || !!pending} onClick={() => void run(() => start(record))}>Continue transfer</button><button className="btn-link" disabled={busy || !!pending} onClick={() => void run(async () => { await discardBridgeDraft(bridgeStorageKey(info.chainId, info.stToken, BigInt(record.groupId), record.owner), record.metadata); await refresh() })}>Cancel unsubmitted transfer</button></div> : <p className="text-sm text-muted">Keep this saved reference until the origin transaction is verified.</p>}
+          {!record.submission && !record.sourceHash ? <div className="flex gap-3"><button className="btn-link" disabled={busy || !!pending} onClick={() => void run(lock => start(lock, record))}>Continue transfer</button><button className="btn-link" disabled={busy || !!pending} onClick={() => void run(async lock => { await discardBridgeDraft(lock, bridgeStorageKey(info.chainId, info.stToken, BigInt(record.groupId), record.owner), record.metadata); await refresh(lock) })}>Cancel unsubmitted transfer</button></div> : <p className="text-sm text-muted">Keep this saved reference until the origin transaction is verified.</p>}
         </div>)}
         {(loadedIdentity === identity ? items : []).map(item => <div key={`${bridgeRouteId(item.route)}:${item.row.leaf.index}`} className="space-y-2 border-t border-line pt-3">
           <p className="text-sm">{formatUnits(item.row.leaf.projectTokenCount, item.route.sourceMeta.decimals)} {item.route.sourceMeta.symbol}: {messages[item.row.status]}</p>

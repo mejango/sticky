@@ -7,6 +7,7 @@ import {
 } from '@bananapus/nana-sdk-core/review/relayr'
 import { encodeFunctionData, parseAbi, type Address, type Hex } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { lapsingLocksForTests } from '@bananapus/nana-sdk-core/testing'
 import type { LaunchPlan } from '@/lib/sticky-launch-plan'
 import type { StickyLaunchPorts, StickyLaunchSession } from '@/lib/sticky-launch-session'
 import { memoryStorage } from '../memory-storage'
@@ -635,6 +636,25 @@ describe('Sticky launch browser boundaries', () => {
     expect(fake.write).toHaveBeenCalledOnce()
   }, 20_000)
 
+  it.each(['hash', 'refusal'] as const)("keeps the wallet's %s when the launch lock lapsed before it answered, under the lock taken back", async answer => {
+    const { locks, lapse, otherTab } = lapsingLocksForTests()
+    vi.stubGlobal('navigator', { locks })
+    const send = fake.write.getMockImplementation()!
+    fake.write.mockImplementationOnce(async tx => {
+      lapse()
+      // Another tab's routine check took the launch lock meanwhile, and changed nothing.
+      await otherTab().request('sticky-launch-write', async () => {})
+      if (answer === 'refusal') throw Object.assign(new Error('User rejected the request.'), { code: 4001 })
+      return send(tx)
+    })
+    const controller = createBrowserStickyLaunchController()
+    await controller.prepare(plan(), 'unavailable')
+    await controller.run().catch(() => {})
+    expect(fake.write).toHaveBeenCalledOnce()
+    // The SDK reruns the answer under the launch lock taken back: a hash is saved, a refusal ends the start.
+    await vi.waitFor(() => expect(controller.load()?.direct).toEqual(answer === 'hash' ? expect.objectContaining({ started: true, hash: HASH }) : undefined))
+  })
+
   it('the one review of a Safe launch shows the Safe execution gas the wallet will run', async () => {
     fake.safe = true
     const controller = createBrowserStickyLaunchController()
@@ -647,7 +667,7 @@ describe('Sticky launch browser boundaries', () => {
   it('remembers a published bundle UUID even when its exact quote binding fails', async () => {
     const remember = vi.fn()
     vi.mocked(fetch).mockResolvedValueOnce(json({ bundle_uuid: BUNDLE, tx_uuids: [], payment_info: [] }))
-    await expect(fake.ports.quote(plan(), remember, () => {})).rejects.toThrow('bind')
+    await expect(fake.ports.quote(plan(), remember, async () => {})).rejects.toThrow('bind')
     expect(remember).toHaveBeenCalledWith(BUNDLE)
     const sent = JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))
     expect(sent.virtual_nonce_mode).toBe('ChainIndependent')

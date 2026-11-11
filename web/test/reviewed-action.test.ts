@@ -10,7 +10,9 @@ import { createElement, createRef, forwardRef, useImperativeHandle } from 'react
 import TestRenderer, { act } from 'react-test-renderer'
 import { decodeFunctionData, encodeFunctionData, erc20Abi, numberToHex, type Abi, type Address, type Hex } from 'viem'
 import { jbMultiTerminalAbi } from '@bananapus/nana-sdk-core'
-import { registerReviewHandler, ReviewLineError, type ReviewedCall } from '@bananapus/nana-sdk-core/review'
+import { CONFIRMATION_QUEUED_LINE, registerReviewHandler, REVIEW_STOPPED_LINE, ReviewLineError, type ReviewedCall } from '@bananapus/nana-sdk-core/review'
+import { browserLocks } from '@bananapus/nana-sdk-core/review/locks'
+import { lapsingLocksForTests } from '@bananapus/nana-sdk-core/testing'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import baseline from './fixtures/use-safe-tx-calldata.json'
 
@@ -369,6 +371,9 @@ describe('useReviewedAction', () => {
     })
     await vi.waitFor(() => expect(ref.current!.phase).toBe('pending'))
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 200)) })
+    // The run only follows the approval's hold: the confirm is not busy, so it can close.
+    expect(ref.current!.phase).toBe('pending')
+    expect(ref.current!.busy).toBe(false)
     // Two minutes on, the hold's look shows its pending line: the confirm can end on Done.
     const now = Date.now.bind(Date)
     const later = vi.spyOn(Date, 'now').mockImplementation(() => now() + 130_000)
@@ -470,6 +475,77 @@ describe('useReviewedAction', () => {
     expect(onCancelled).toHaveBeenCalledOnce()
     await unmount()
   })
+
+  it('reads a refusal in a resumed sequence, whose earlier step an earlier run sent, as the person\'s cancel', async () => {
+    confirmEveryReview()
+    const { stick, unstick } = baseline
+    const tag = crypto.randomUUID()
+    const calls = [stick, unstick].map((sent, at) => ({ chainId: sent.chainId, to: sent.to as Address, data: sent.data as Hex, value: BigInt(sent.value), intent: `resume-${at}-${tag}`, ...(at ? { dependsOnPrior: true } : {}) }))
+    let stale = true
+    const reverify = vi.fn(async (_call: ReviewedCall, index: number) => {
+      if (index === 1 && stale) throw new ReviewLineError('The unstick changed. Review it again.')
+    })
+    const onCancelled = vi.fn()
+    const { ref, unmount } = await mount()
+    await act(async () => {
+      expect(await ref.current!.run({ account: ALICE, calls, reverify, onCancelled })).toBeNull()
+    })
+    expect(onCancelled).not.toHaveBeenCalled()
+    expect(walletSends).toHaveLength(1)
+    // The resumed run sends only the second step, and the wallet refuses it.
+    stale = false
+    walletClient.sendTransaction.mockRejectedValueOnce(Object.assign(new Error('User rejected the request.'), { code: 4001 }))
+    await act(async () => {
+      expect(await ref.current!.run({ account: ALICE, calls, reverify, onCancelled })).toBeNull()
+    })
+    expect(onCancelled).toHaveBeenCalledOnce()
+    expect(walletSends).toHaveLength(1)
+    // The same line every client shows for a run closed after an earlier step was sent.
+    expect(ref.current!).toMatchObject({ phase: 'error', error: REVIEW_STOPPED_LINE })
+    await unmount()
+  })
+
+  it('shows a confirmation queued behind the flow\'s own lost lock, and lets the flow end its work', async () => {
+    confirmEveryReview()
+    const { locks, lapse } = lapsingLocksForTests()
+    vi.stubGlobal('navigator', { ...navigator, locks })
+    try {
+      client.getTransactionReceipt.mockImplementation(async () => { throw new Error('lagging node') })
+      const { ref, unmount } = await mount()
+      const { stick } = baseline
+      const call = { chainId: stick.chainId, to: stick.to as Address, data: stick.data as Hex, value: BigInt(stick.value), intent: `queued-${crypto.randomUUID()}` }
+      let ended: unknown = 'pending'
+      let shown: string | null = null
+      await act(async () => {
+        void browserLocks().request('sticky-queued-test', async lock => {
+          // The flow records the confirmation under its lock.
+          ended = await ref.current!.run({ account: ALICE, calls: [call], locks: [lock!], onConfirmed: () => lock!.assertHeld() })
+          // While the flow's work still runs, the confirmation is shown as queued.
+          await vi.waitFor(() => { shown = ref.current!.error; expect(shown).toBe(CONFIRMATION_QUEUED_LINE) })
+        })
+      })
+      await vi.waitFor(() => expect(ref.current!.phase).toBe('pending'))
+      // The lease lapses while the step confirms: its confirmation waits for the flow's work, never holding it up.
+      lapse()
+      client.getTransactionReceipt.mockImplementation(async ({ hash }: { hash: Hex }) => receipt(hash))
+      await act(async () => { await vi.waitFor(() => expect(ended).not.toBe('pending'), { timeout: 15_000, interval: 100 }) })
+      expect(ended).toBeNull()
+      await act(async () => { await vi.waitFor(() => expect(shown).toBe(CONFIRMATION_QUEUED_LINE)) })
+      expect(walletSends).toHaveLength(1)
+      // Once the flow's work ended, the hold shows the step went through; a retry sends nothing again.
+      await act(async () => { await vi.waitFor(() => expect(ref.current!.notice).toBe('This went through while you were away.'), { timeout: 15_000, interval: 100 }) })
+      let retried: unknown = 'pending'
+      await act(async () => {
+        void browserLocks().request('sticky-queued-test', async lock => {
+          retried = await ref.current!.run({ account: ALICE, calls: [call], locks: [lock!], onConfirmed: () => lock!.assertHeld() })
+        })
+      })
+      await act(async () => { await vi.waitFor(() => expect(retried).not.toBe('pending'), { timeout: 15_000, interval: 100 }) })
+      expect(walletSends).toHaveLength(1)
+      expect(ref.current!.error).not.toBe(CONFIRMATION_QUEUED_LINE)
+      await unmount()
+    } finally { vi.unstubAllGlobals() }
+  }, 40_000)
 
   it('refuses a write in View as before its review, with the reason and no cancel', async () => {
     const review = vi.fn(async () => null)

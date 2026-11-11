@@ -846,7 +846,7 @@ describe('a send that stops halfway', () => {
     world(on)
     onWrite(2, unmined)
     await review('1')
-    await until(() => confirm()!.textContent!.includes('Waiting for confirmation'), 'the wait')
+    await until(() => confirm()!.textContent!.includes('Confirming your transaction'), 'the wait')
     expect(confirm()!.textContent).toContain(
       "Went through: Turn off auto-stick. Waiting for: Stop the auto-stick contract from sticking ART for you. Not sent yet: Remove the auto-stick contract's ART allowance; Unstick.",
     )
@@ -927,7 +927,7 @@ describe('a send that stops halfway', () => {
     world(on)
     mocks.confirming.on = false
     await review('1')
-    await until(() => confirm()!.textContent!.includes('Waiting for confirmation'), 'the wait')
+    await until(() => confirm()!.textContent!.includes('Confirming your transaction'), 'the wait')
 
     await act(async () => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
@@ -1009,7 +1009,7 @@ describe('a send that stops halfway', () => {
     world(on)
     mocks.confirming.on = false
     await review('1')
-    await until(() => confirm()!.textContent!.includes('Waiting for confirmation'), 'the wait')
+    await until(() => confirm()!.textContent!.includes('Confirming your transaction'), 'the wait')
     const dialog = confirm()!
     expect(dialog.querySelector('a')).not.toBeNull()
     expect(buttonsOf(dialog).find(each => each.textContent === 'Confirming…')!.disabled).toBe(true)

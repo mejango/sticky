@@ -6,6 +6,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { erc20Abi, pad, zeroHash, type Address, type Hex } from 'viem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { lapsingLocksForTests } from '@bananapus/nana-sdk-core/testing'
 import type { TxRequest } from '@/hooks/useReviewedAction'
 import { bridgeCalldata, type BridgeMovement, type BridgeRoute } from '@/lib/sticky-bridge'
 import { bridgeStorageKey, createPendingBridgeWrite, readBridgeRecords, readPendingBridgeWrite, saveBridgeRecords, savePendingBridgeWrite, saveWatchedBridgeRoute, storeBridgeWrite } from '@/lib/sticky-bridge-journal'
@@ -34,6 +35,16 @@ vi.mock('@/lib/sticky-receivers', () => ({ readReceiver: mocks.receiver }))
 vi.mock('@/lib/sticky-refresh', () => ({ refreshAfterFund: mocks.refresh }))
 vi.mock('@/components/project/flows/ReceiverFlow', () => ({ ReceiverFlow: (props: unknown) => { mocks.settle(props); return <span>Settle received rewards</span> } }))
 import { BridgeFlow } from '@/components/project/flows/BridgeFlow'
+
+/** Lapsing locks (the SDK's): `lapse()` loses this tab's bridge lease, and another tab's routine check takes it once. */
+function lapsingBridgeLock() {
+  const { locks, lapse, otherTab } = lapsingLocksForTests()
+  vi.stubGlobal('navigator', { locks })
+  return async () => { lapse(); await otherTab().request('sticky-reward-bridge', async () => {}) }
+}
+
+/** Another tab's write, under its own bridge lock. */
+const HELD = { assertHeld: async () => {} }
 
 let root: Root, host: HTMLDivElement, client: QueryClient, approved: boolean
 let chain = heldChain(1), destination = heldChain(10)
@@ -138,7 +149,7 @@ describe('reviewed durable bridge workflow', () => {
     const original = storedPending()
     save.mockRestore()
     const replacement = { ...original, id: crypto.randomUUID(), ...(hasHash ? { hash: H(91), safeProposal: false } : {}) }
-    savePendingBridgeWrite(OWNER, replacement)
+    await savePendingBridgeWrite(HELD, OWNER, replacement)
     await confirmed()
     expect(readPendingBridgeWrite(OWNER)).toEqual(replacement)
     expect(mocks.verifyWrite).not.toHaveBeenCalled()
@@ -170,15 +181,34 @@ describe('reviewed durable bridge workflow', () => {
   })
   it('rechecks the saved reservation after an asynchronous canonical proof before clearing', async () => {
     const original = { ...createPendingBridgeWrite({ owner: OWNER, request: storeBridgeWrite(queuedRequest()) }), hash: HASH }
-    savePendingBridgeWrite(OWNER, original)
+    await savePendingBridgeWrite(HELD, OWNER, original)
     const proof = Promise.withResolvers<{ success: boolean; receipt: { blockNumber: bigint } }>()
     mocks.verifyWrite.mockReturnValueOnce(proof.promise)
     await render(); await press('Check transaction')
     const replacement = { ...original, id: crypto.randomUUID(), hash: H(91) }
-    savePendingBridgeWrite(OWNER, replacement)
+    await savePendingBridgeWrite(HELD, OWNER, replacement)
     await act(async () => proof.resolve({ success: true, receipt: { blockNumber: 100n } }))
     expect(readPendingBridgeWrite(OWNER)).toEqual(replacement)
     expect(text()).toContain('pending bridge transaction changed')
+  })
+  it("ends the reservation of a send the wallet refused after the bridge lock lapsed, under the lock taken back", async () => {
+    await review()
+    const lapse = lapsingBridgeLock()
+    mocks.walletWrite.mockImplementation(async () => { await lapse(); throw Object.assign(new Error('User rejected the request.'), { code: 4001 }) })
+    await press('Review transfer')
+    await vi.waitFor(() => expect(localStorage.getItem(`sticky:bridge:pending:v1:${OWNER.toLowerCase()}`)).toBe('null'))
+  })
+  it("keeps the wallet's hash when the bridge lock lapsed before it returned, and saves it under the lock taken back", async () => {
+    await review()
+    const lapse = lapsingBridgeLock()
+    // The wallet answers after this tab's lease lapsed: the hash cannot be saved under the old lock.
+    mocks.walletWrite.mockImplementation(async () => { await lapse() })
+    await press('Review transfer')
+    // Core keeps the hash until the work under the lock ends: its receipt here, then the next step refused for the lost lock.
+    await vi.waitFor(() => expect(receipts).toHaveLength(1))
+    approved = true; await confirmed()
+    await vi.waitFor(() => expect(JSON.parse(localStorage.getItem(`sticky:bridge:pending:v1:${OWNER.toLowerCase()}`)!).hash).toBe(HASH))
+    expect(mocks.walletWrite).toHaveBeenCalledOnce()
   })
   it('wallet-action:approve-a-bridge-transfer Approve a bridge transfer: reviews the exact spender and saves intent before the wallet call', async () => {
     await review()
@@ -207,6 +237,8 @@ describe('reviewed durable bridge workflow', () => {
     expect(mocks.tx.run).toHaveBeenCalledOnce()
     const [approval, queue] = mocks.tx.send.mock.calls.map(([call]) => call)
     expect(mocks.tx.run.mock.calls[0][0].calls).toEqual([approval, queue])
+    // The wallet prompts are fenced by the bridge lock the action holds.
+    expect(mocks.tx.run.mock.calls[0][0].locks).toEqual([expect.objectContaining({ assertHeld: expect.any(Function) })])
     // The queue step is simulated where its approval confirmed.
     expect(queue.dependsOnPrior).toBe(true)
     expect(mocks.walletWrite).toHaveBeenLastCalledWith(expect.objectContaining({ functionName: 'prepare', args: [10n ** 18n, pad(RECEIVER), 965n, ROUTE.backingToken, metadata] }))
@@ -571,7 +603,7 @@ describe('reviewed durable bridge workflow', () => {
     expect(mocks.tx.send.mock.calls.length).toBe(1)
   })
   it('brings a main-era hashless reservation with no SDK record to the explicit check, releasing nothing on its own', async () => {
-    savePendingBridgeWrite(OWNER, createPendingBridgeWrite({ owner: OWNER, request: storeBridgeWrite(queuedRequest()), intent: 'intent:bridge-queue:abc' }))
+    await savePendingBridgeWrite(HELD, OWNER, createPendingBridgeWrite({ owner: OWNER, request: storeBridgeWrite(queuedRequest()), intent: 'intent:bridge-queue:abc' }))
     await render()
     await vi.waitFor(() => expect(button(checkedItLabel())).toBeDefined())
     expect(readPendingBridgeWrite(OWNER)).not.toBeNull()
@@ -592,9 +624,9 @@ describe('reviewed durable bridge workflow', () => {
   // Switch on with SDK 2.36's hold.adopt: a main-era reservation with a saved hash and no SDK record is adopted under the
   // domain lock, keeping the hash and any Safe identity; if its transaction dropped, the gate offers the warned exit.
   it('has the SDK adopt a hashed legacy reservation with its hash, keeping it held and nothing released', async () => {
-    savePendingBridgeWrite(OWNER, createPendingBridgeWrite({ owner: OWNER, request: storeBridgeWrite(queuedRequest()), intent: 'intent:bridge-queue:abc' }))
+    await savePendingBridgeWrite(HELD, OWNER, createPendingBridgeWrite({ owner: OWNER, request: storeBridgeWrite(queuedRequest()), intent: 'intent:bridge-queue:abc' }))
     const hashed = { ...readPendingBridgeWrite(OWNER)!, hash: HASH, safeProposal: false, at: 1_700_000_000_000 }
-    savePendingBridgeWrite(OWNER, hashed)
+    await savePendingBridgeWrite(HELD, OWNER, hashed)
     await render()
     const handle = holds.open({ chainId: 1, account: OWNER, safe: false, namespace: 'intent:bridge-queue:abc', call: { to: hashed.request.address, data: hashed.request.data, value: 0n } })
     await vi.waitFor(() => expect(handle.peek()).toMatchObject({ record: { hash: HASH } }))
@@ -603,7 +635,7 @@ describe('reviewed durable bridge workflow', () => {
     expect(readPendingBridgeWrite(OWNER)).toEqual(hashed)
   })
   it('shows pending recovery even when receiver or route evidence is unavailable', async () => {
-    savePendingBridgeWrite(OWNER, { owner: OWNER, request: storeBridgeWrite(queuedRequest()), hash: HASH })
+    await savePendingBridgeWrite(HELD, OWNER, { owner: OWNER, request: storeBridgeWrite(queuedRequest()), hash: HASH })
     mocks.receiver.mockRejectedValue(new Error('RPC unavailable')); await render()
     expect(text()).toContain('Executed transaction hash')
     expect(text()).toContain(NETWORK_ERROR_LINE)
@@ -642,7 +674,7 @@ describe('reviewed durable bridge workflow', () => {
     if (field === 'value') step.value = '1'
     if (field === 'chain') step.chainId = 10
     if (field === 'selector') step.data = bridgeCalldata({ chainId: 1, address: ROUTE.sourceToken, abi: erc20Abi, functionName: 'approve', args: [A(999), 10n ** 18n] })
-    saveBridgeRecords(KEY, [record]); approved = true; await confirmed()
+    await saveBridgeRecords(HELD, KEY, [record]); approved = true; await confirmed()
     expect(mocks.walletWrite).toHaveBeenCalledTimes(2)
     expect(mocks.walletWrite).toHaveBeenLastCalledWith(expect.objectContaining({ chainId: reviewed.chainId, data: reviewed.data, value: BigInt(reviewed.value) }))
     expect(mocks.tx.review).toHaveBeenCalledOnce()
@@ -658,7 +690,7 @@ describe('reviewed durable bridge workflow', () => {
     expect(text()).toContain('wallet, project or bridge changed')
   })
   it('preserves the original pending reference on unfinalized or unproven recovery', async () => {
-    savePendingBridgeWrite(OWNER, { owner: OWNER, request: storeBridgeWrite(queuedRequest()), hash: HASH })
+    await savePendingBridgeWrite(HELD, OWNER, { owner: OWNER, request: storeBridgeWrite(queuedRequest()), hash: HASH })
     mocks.verifyWrite.mockRejectedValue(new Error('The failed transaction is not finalized'))
     await render(); await press('Check transaction')
     expect(readPendingBridgeWrite(OWNER)?.hash).toBe(HASH)
@@ -677,7 +709,7 @@ describe('reviewed durable bridge workflow', () => {
   })
 
   it('recovers a watched retired route after reload without live send discovery', async () => {
-    saveWatchedBridgeRoute(10, INFO.stToken, 4000n, ROUTE)
+    await saveWatchedBridgeRoute(HELD, 10, INFO.stToken, 4000n, ROUTE)
     mocks.movements.mockResolvedValue([movement('claimable')])
     await render(INFO, { groupId: 4000n })
     expect(mocks.discover).not.toHaveBeenCalled()
@@ -695,10 +727,10 @@ describe('reviewed durable bridge workflow', () => {
 
   it('a stale recovery click cannot clear a newer pending transaction with identical calldata', async () => {
     const old = { owner: OWNER, request: storeBridgeWrite(queuedRequest()), hash: HASH }
-    savePendingBridgeWrite(OWNER, old)
+    await savePendingBridgeWrite(HELD, OWNER, old)
     await render()
     const next = { ...old, hash: H(91) }
-    savePendingBridgeWrite(OWNER, next)
+    await savePendingBridgeWrite(HELD, OWNER, next)
     await press('Check transaction')
     expect(mocks.verifyWrite).not.toHaveBeenCalled()
     expect(readPendingBridgeWrite(OWNER)).toEqual(next)
@@ -707,7 +739,7 @@ describe('reviewed durable bridge workflow', () => {
   it('reads only this source and retains claimable arrivals when another watched lane fails', async () => {
     const otherSource = { ...ROUTE, source: { chainId: 8453 as const }, sourceSucker: A(71) }
     const broken = { ...ROUTE, sourceSucker: A(72), destinationSucker: A(73) }
-    for (const route of [otherSource, broken, ROUTE]) saveWatchedBridgeRoute(10, INFO.stToken, 0n, route)
+    for (const route of [otherSource, broken, ROUTE]) await saveWatchedBridgeRoute(HELD, 10, INFO.stToken, 0n, route)
     mocks.movements.mockImplementation(async (route: BridgeRoute) => {
       if (route.sourceSucker === broken.sourceSucker) throw new Error('Old route unavailable')
       return [movement('claimable')]
