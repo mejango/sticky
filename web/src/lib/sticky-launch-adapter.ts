@@ -3,7 +3,7 @@
 import { stickyDeployerAbi, type JBChainId } from '@bananapus/nana-sdk-core'
 import { JBCenterRequestError, type JBCenterIntent } from '@bananapus/nana-sdk-core/jbcenter'
 import { errorLine, HELD_CONFIRMING_LINE, intent, ReviewedReceiptUnverifiedError, ReviewLineError, launchIntent, payRelayrReviewed, sendReviewed, signReviewed, waitForTrackedReceipt, type ReviewedCall, type ReviewedResult, type ReviewedSignature, type WriteHoldClient } from '@bananapus/nana-sdk-core/review'
-import { browserLocks, type LockHandle } from '@bananapus/nana-sdk-core/review/locks'
+import { browserLocks, keepOutcome, type LockHandle } from '@bananapus/nana-sdk-core/review/locks'
 import { safeExecutionRunsCalls } from '@bananapus/nana-sdk-core/safe-service'
 import {
   RELAYR_API,
@@ -15,7 +15,6 @@ import {
   relayrDestinationRecords,
   relayrPaymentDetails,
   relayrPaymentOptions,
-  relayrPaymentAttemptOutcome,
   requireRelayrBundleUnpaid,
   requireRelayrPaymentRetry,
   verifyRelayrPayment,
@@ -158,11 +157,14 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
   /** A Safe's proposal, saved when the wallet returned it, is followed to its execution and that transaction's receipt. */
   const safeExecution = async (chainId: number, proposal: Hex, callbacks: SubmissionCallbacks) => {
     phase('Waiting for the multisig to execute. You can close this dialog and resume later.')
+    // Each hash is the Safe's answer, kept by the SDK if the launch lock lapsed while it executed.
+    const lockedBy = locks()
+    const submitted = (hash: Hex) => keepOutcome(lockedBy, () => callbacks.submitted(hash, proposal), () => callbacks.submitted(hash, proposal))
     const execution = await resolveSafe(chainId, proposal)
-    await callbacks.submitted(execution, proposal)
+    await submitted(execution)
     const receipt = await waitForTrackedReceipt(clientFor(chainId), execution)
     if (!isHash(receipt.transactionHash)) throw new ReviewLineError('The submitted transaction has no readable receipt hash. Keep the launch saved.')
-    if (!same(receipt.transactionHash, execution)) await callbacks.submitted(receipt.transactionHash, proposal)
+    if (!same(receipt.transactionHash, execution)) await submitted(receipt.transactionHash)
     return receipt.transactionHash
   }
   /**
@@ -200,7 +202,8 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
     let began = false
     return {
       beforeWallet: async () => { await callbacks.beforeWrite(); began = true },
-      onUnsent: async () => { const started = began; began = false; if (started) await callbacks.rejected() },
+      // `began` clears only once the start ended, so the SDK's rerun under the lock taken back still ends it.
+      onUnsent: async () => { if (began) { await callbacks.rejected(); began = false } },
       onSubmitted: async (hash: Hex, safe: boolean) => {
         if (!isHash(hash)) throw new ReviewLineError('The wallet did not return a readable submission hash. Keep the launch saved.')
         await callbacks.submitted(hash, safe ? hash : undefined)
@@ -289,6 +292,7 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       const send = (signatures: ReviewedSignature[]) => sendReviewed({
         account: plan.owner,
         locks: locks(),
+        attemptScoped: true,
         // Held by the launch, never the calldata: a regenerated call is still the same launch.
         calls: [{ ...call, intent: launchKey(session, 'direct').namespace }],
         signatures,
@@ -347,31 +351,23 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
       const paid = await payRelayrReviewed(quote, details.chainId, {
         account: owner,
         locks: locks(),
+        attemptScoped: true,
         context: launchContext(session.plan),
         onSending: async () => {
           guard(owner)
           await checkLaunch(session.plan)
           await journal.beforeWallet()
-          try {
-            requireSingleHomeChain(session.plan.targets)
-            guard(owner)
-          } catch (error) {
-            // Core releases the payment's hold when this throws: the journal's start goes with it.
-            await journal.onUnsent()
-            throw error
-          }
+          requireSingleHomeChain(session.plan.targets)
+          guard(owner)
         },
+        // Core says nothing was sent (a final gate refused, or the wallet's 4001): the journal's start ends.
+        onUnsent: journal.onUnsent,
         // Every hash the payment is known by: the wallet's, then the mined one.
         onSent: async hash => {
           sent ??= hash
           await callbacks.submitted(hash, safe ? sent : undefined)
         },
-      }, { ...reviewedSendDeps, onProgress: () => phase('Confirm payment in your wallet.') }).catch(async error => {
-        // Only what core reads as unpaid (the wallet's 4001, a refusal before the wallet) says nothing was sent; any other
-        // failure keeps the submission started.
-        if (!sent && relayrPaymentAttemptOutcome(error, { sending: true, paid: false }) === 'unpaid') await journal.onUnsent()
-        throw error
-      })
+      }, { ...reviewedSendDeps, onProgress: () => phase('Confirm payment in your wallet.') })
       const execution = 'safeTxHash' in paid ? await safeExecution(details.chainId, paid.safeTxHash, callbacks) : paid.hash
       phase('Payment submitted. Checking execution on the home chain.')
       if (!(await ports.verifyPayment({ ...session,
@@ -513,21 +509,11 @@ export function createBrowserStickyLaunchController({ changed, phase = () => {} 
   }
   const controller = createStickyLaunchController(ports)
   const exclusive = async <T>(run: () => Promise<T> | T): Promise<T> => {
-    try {
-      return await browserLocks().request('sticky-launch-write', { ifAvailable: true }, async lock => {
-        if (!lock) throw new ReviewLineError('Another tab is processing this launch. Resume it there or wait for it to finish.')
-        held = lock
-        try { return await run() } finally { held = null }
-      })
-    } finally {
-      // What the wallet answered while the lock lapsed is saved now, under a fresh lock, to the same attempt only.
-      if (controller.lapsed()) {
-        await browserLocks().request('sticky-launch-write', async lock => {
-          held = lock
-          try { await controller.reconcileLapsed() } finally { held = null }
-        }).catch(() => undefined)
-      }
-    }
+    return browserLocks().request('sticky-launch-write', { ifAvailable: true }, async lock => {
+      if (!lock) throw new ReviewLineError('Another tab is processing this launch. Resume it there or wait for it to finish.')
+      held = lock
+      try { return await run() } finally { held = null }
+    })
   }
   return {
     load: controller.load,

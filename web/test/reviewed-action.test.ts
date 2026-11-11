@@ -10,7 +10,9 @@ import { createElement, createRef, forwardRef, useImperativeHandle } from 'react
 import TestRenderer, { act } from 'react-test-renderer'
 import { decodeFunctionData, encodeFunctionData, erc20Abi, numberToHex, type Abi, type Address, type Hex } from 'viem'
 import { jbMultiTerminalAbi } from '@bananapus/nana-sdk-core'
-import { registerReviewHandler, ReviewLineError, type ReviewedCall } from '@bananapus/nana-sdk-core/review'
+import { CONFIRMATION_QUEUED_LINE, registerReviewHandler, REVIEW_STOPPED_LINE, ReviewLineError, type ReviewedCall } from '@bananapus/nana-sdk-core/review'
+import { browserLocks } from '@bananapus/nana-sdk-core/review/locks'
+import { lapsingLocksForTests } from '@bananapus/nana-sdk-core/testing'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import baseline from './fixtures/use-safe-tx-calldata.json'
 
@@ -498,8 +500,52 @@ describe('useReviewedAction', () => {
     })
     expect(onCancelled).toHaveBeenCalledOnce()
     expect(walletSends).toHaveLength(1)
+    // The same line every client shows for a run closed after an earlier step was sent.
+    expect(ref.current!).toMatchObject({ phase: 'error', error: REVIEW_STOPPED_LINE })
     await unmount()
   })
+
+  it('shows a confirmation queued behind the flow\'s own lost lock, and lets the flow end its work', async () => {
+    confirmEveryReview()
+    const { locks, lapse } = lapsingLocksForTests()
+    vi.stubGlobal('navigator', { ...navigator, locks })
+    try {
+      client.getTransactionReceipt.mockImplementation(async () => { throw new Error('lagging node') })
+      const { ref, unmount } = await mount()
+      const { stick } = baseline
+      const call = { chainId: stick.chainId, to: stick.to as Address, data: stick.data as Hex, value: BigInt(stick.value), intent: `queued-${crypto.randomUUID()}` }
+      let ended: unknown = 'pending'
+      let shown: string | null = null
+      await act(async () => {
+        void browserLocks().request('sticky-queued-test', async lock => {
+          // The flow records the confirmation under its lock.
+          ended = await ref.current!.run({ account: ALICE, calls: [call], locks: [lock!], onConfirmed: () => lock!.assertHeld() })
+          // While the flow's work still runs, the confirmation is shown as queued.
+          await vi.waitFor(() => { shown = ref.current!.error; expect(shown).toBe(CONFIRMATION_QUEUED_LINE) })
+        })
+      })
+      await vi.waitFor(() => expect(ref.current!.phase).toBe('pending'))
+      // The lease lapses while the step confirms: its confirmation waits for the flow's work, never holding it up.
+      lapse()
+      client.getTransactionReceipt.mockImplementation(async ({ hash }: { hash: Hex }) => receipt(hash))
+      await act(async () => { await vi.waitFor(() => expect(ended).not.toBe('pending'), { timeout: 15_000, interval: 100 }) })
+      expect(ended).toBeNull()
+      await act(async () => { await vi.waitFor(() => expect(shown).toBe(CONFIRMATION_QUEUED_LINE)) })
+      expect(walletSends).toHaveLength(1)
+      // Once the flow's work ended, the hold shows the step went through; a retry sends nothing again.
+      await act(async () => { await vi.waitFor(() => expect(ref.current!.notice).toBe('This went through while you were away.'), { timeout: 15_000, interval: 100 }) })
+      let retried: unknown = 'pending'
+      await act(async () => {
+        void browserLocks().request('sticky-queued-test', async lock => {
+          retried = await ref.current!.run({ account: ALICE, calls: [call], locks: [lock!], onConfirmed: () => lock!.assertHeld() })
+        })
+      })
+      await act(async () => { await vi.waitFor(() => expect(retried).not.toBe('pending'), { timeout: 15_000, interval: 100 }) })
+      expect(walletSends).toHaveLength(1)
+      expect(ref.current!.error).not.toBe(CONFIRMATION_QUEUED_LINE)
+      await unmount()
+    } finally { vi.unstubAllGlobals() }
+  }, 40_000)
 
   it('refuses a write in View as before its review, with the reason and no cancel', async () => {
     const review = vi.fn(async () => null)

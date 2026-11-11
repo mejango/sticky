@@ -4,7 +4,9 @@ import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { encodeFunctionData, keccak256, stringToHex, type Abi, type Address, type Hex, type TransactionReceipt } from 'viem'
 import {
+  CONFIRMATION_QUEUED_LINE,
   HELD_CONFIRMING_LINE,
+  REVIEW_STOPPED_LINE,
   REVIEWED_ACCOUNT_CHANGED_LINE,
   ReviewedCallRevertedError,
   ReviewLineError,
@@ -15,6 +17,7 @@ import {
   type ReviewedResult,
   type ReviewedRunStatus,
 } from '@bananapus/nana-sdk-core/review'
+import { ConfirmationQueuedError } from '@bananapus/nana-sdk-core/review/locks'
 import { useReviewedRun } from '@bananapus/nana-sdk-core/review/react'
 import { useWallet } from '@/hooks/useWallet'
 import { legacyNamespaces } from '@/lib/legacy-intents'
@@ -43,13 +46,14 @@ export type TxPhase =
   | 'error'
 
 /** Sticky's display phase for the SDK's run status: a held or proposed step shows its hold, and an exit that could not
- * be checked, or a review the account change withdrew, shows as an error. */
+ * be checked, a review the account change withdrew, or a run closed after an earlier step was sent (`stopped`, with
+ * REVIEW_STOPPED_LINE) shows as an error. */
 export function txPhaseOf(status: ReviewedRunStatus, exitFailed: boolean): TxPhase {
   if (status === 'done') return 'success'
   if (status === 'proposed' || status === 'held') return 'submitted'
   if (status === 'receipt') return 'pending'
   if (status === 'review' || status === 'simulating' || status === 'signing') return status
-  return status === 'failed' || exitFailed ? 'error' : 'idle'
+  return status === 'failed' || status === 'stopped' || exitFailed ? 'error' : 'idle'
 }
 
 /** A contract write, as Sticky's builders return it. */
@@ -161,6 +165,8 @@ export function useReviewedAction() {
   const [landed, setLanded] = useState(0)
   /** The user's exit could not be checked: the hold keeps the write. Or the account changed while the review was open. */
   const [exitError, setExitError] = useState<string | null>(null)
+  /** A confirmed step whose recording waits for the flow's own work under its locks: shown while it still confirms. */
+  const [queued, setQueued] = useState(false)
   const inFlight = useRef(false)
   /** Counts account changes: a run reviewed before one sends nothing after it, even once the account is back. */
   const accountEpoch = useRef(0)
@@ -199,6 +205,7 @@ export function useReviewedAction() {
     setSubmission(null)
     setLanded(0)
     setExitError(null)
+    setQueued(false)
     const viaSafe = isSafeConnection(wagmiConfig)
     const { onReleased: _released, onCancelled, reverify, ...sent } = action
     last.current = { action, account: address }
@@ -242,6 +249,8 @@ export function useReviewedAction() {
       // A receipt still verifying is sent and pending until its hold ends the run. The person's dismiss ends this wait
       // with nothing (`ended()` is null): no later step is reviewed for it, and its hold keeps the sent step.
       const settled = ran?.status === 'receipt' ? await ran.ended() : ran
+      // Its confirmation is recorded once the flow's work under its locks ends: nothing is sent again, a retry checks it.
+      if (settled?.status === 'failed' && settled.failure instanceof ConfirmationQueuedError) setQueued(true)
       const done = settled?.status === 'failed' ? null : settled
       // The account changed while the review was open: core withdrew it, and the action says why.
       if (!ran && abort.signal.aborted) {
@@ -294,6 +303,7 @@ export function useReviewedAction() {
     setSubmission(null)
     setLanded(0)
     setExitError(null)
+    setQueued(false)
   }
 
   const hash = result?.status === 'done' ? result.hashes.at(-1) ?? null : runner.hash ?? (submission && !submission.safe ? submission.hash : null)
@@ -314,7 +324,8 @@ export function useReviewedAction() {
     holdNotice: shown?.notice ?? null,
     /** Whether the connected writer is a Safe connector. */
     isSafe,
-    error: exitError ?? (phase === 'error' ? runner.error : null),
+    error: exitError ?? (queued && (phase === 'pending' || phase === 'submitted') ? CONFIRMATION_QUEUED_LINE : null) ??
+      (phase === 'error' ? runner.error ?? (runner.status === 'stopped' ? REVIEW_STOPPED_LINE : null) : null),
     /** The value the failed run threw, with its cause chain, for a flow's own decoder. */
     failure: runner.failure,
     /** A step was mined and reverted: its receipt says so, not why. */

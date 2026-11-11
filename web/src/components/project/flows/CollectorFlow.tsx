@@ -18,7 +18,7 @@ import { parseAmount } from '@/lib/sticky-amount'
 import { createStickyBridge } from '@/lib/sticky-bridge'
 import {
   adoptSettlementHash, assertPendingBridgeWrite, ensurePendingBridgeId, endPendingBridgeAttempt, createPendingBridgeWrite, readPendingBridgeWrite, retryPendingBridgeSubmission, savePendingBridgeWrite, savePendingBridgeSubmission, saveWatchedBridgeRoute,
-  storeBridgeWrite, withBridgeLock, type BridgeLock, type BridgeOutcome, type PendingBridgeWrite,
+  storeBridgeWrite, withBridgeLock, type BridgeLock, type PendingBridgeWrite,
 } from '@/lib/sticky-bridge-journal'
 import type { CollectorSource } from '@/lib/sticky-collector'
 import { collectorWriteKind, createStickyCollectorDelivery, type CollectorDelivery } from '@/lib/sticky-collector-delivery'
@@ -93,7 +93,7 @@ export function CollectorFlow({ source, info, onSettled }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identity])
 
-  async function run(work: (lock: LockHandle, keep: (write: BridgeOutcome) => Promise<void>) => Promise<void>) {
+  async function run(work: (lock: LockHandle) => Promise<void>) {
     if (busy) return
     setWorking(true); setError(null)
     try { await withBridgeLock(work) } catch (reason) { setError(errorLine(reason)) } finally { setWorking(false) }
@@ -122,19 +122,21 @@ export function CollectorFlow({ source, info, onSettled }: {
   }
   async function confirm(chosen: Review) {
     const current = { ...chosen, autoSend: false }
-    await run(async (lock, keep) => {
+    await run(async lock => {
       assertCurrent(current.identity)
       if (readPendingBridgeWrite(current.owner)) throw new ReviewLineError('Recover the pending transaction before sending again.')
       const held = createPendingBridgeWrite({ owner: current.owner, request: storeBridgeWrite(current.delivery.request), intent: holdIntent(current.delivery.request, current.owner) })
       setReview({ ...current, attempt: held })
       let reserved = false
-      // Ends only this attempt's reservation (by its id), so a write kept for a fresh lock touches no other.
-      const undo = () => keep(fenced => endPendingBridgeAttempt(fenced, current.owner, held.id))
+      const undo = () => endPendingBridgeAttempt(lock, current.owner, held.id)
       // The engine can adopt an existing Safe proposal without reaching beforeWallet.
       if (source.bridgeRoute) await saveWatchedBridgeRoute(lock, info.chainId, info.stToken, groupId, source.bridgeRoute)
       await tx.run({
         account: current.owner,
         locks: [lock],
+        // Each callback changes only this attempt's reservation (by its id), so a wallet answer after a lapsed lock lands
+        // once the SDK takes the lock back.
+        attemptScoped: true,
         calls: [reviewedCall(current.delivery.request, current.owner)],
         title: current.delivery.request.label ?? 'Deliver queued rewards',
         context: current.rows,
@@ -151,11 +153,10 @@ export function CollectorFlow({ source, info, onSettled }: {
         },
         // Only a reservation this send made is ended: one it found is another attempt's.
         onUnsent: async () => { if (reserved) await undo() },
-        // The wallet's hash is kept: refused for a lost lock, it is saved under a fresh one, to this attempt only.
-        onSubmitted: (_call, _step, hash, { safe }) => keep(async fenced => {
-          if (!reserved && !readPendingBridgeWrite(current.owner)) { await savePendingBridgeWrite(fenced, current.owner, held); reserved = true }
-          await savePendingBridgeSubmission(fenced, held, hash, safe)
-        }),
+        onSubmitted: async (_call, _step, hash, { safe }) => {
+          if (!reserved && !readPendingBridgeWrite(current.owner)) { await savePendingBridgeWrite(lock, current.owner, held); reserved = true }
+          await savePendingBridgeSubmission(lock, held, hash, safe)
+        },
         // The user's exit released the SDK hold: the reservation goes, the saved transfer stays.
         // It runs on the person's exit, after this lock was released: the end takes the lock again.
         onReleased: () => withBridgeLock(async released => { await endPendingBridgeAttempt(released, current.owner, held.id); setPending(null) }, true),

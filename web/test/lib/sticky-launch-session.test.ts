@@ -1,5 +1,6 @@
 import { stickyDeployerAbi } from '@bananapus/nana-sdk-core'
-import { LockLostError } from '@bananapus/nana-sdk-core/review/locks'
+import { LockLostError, browserLocks, keepOutcome, type LockHandle } from '@bananapus/nana-sdk-core/review/locks'
+import { lapsingLocksForTests } from '@bananapus/nana-sdk-core/testing'
 import type { RelayrQuote } from '@bananapus/nana-sdk-core/review/relayr'
 import { encodeFunctionData, type Address, type Hex } from 'viem'
 import { describe, expect, it, vi } from 'vitest'
@@ -24,7 +25,7 @@ function plan(chainIds = [84532]): LaunchPlan {
 }
 const payment = { chain: 84532, amount: '12', target: address('7'), calldata: '0x' as Hex }
 /** The launch lock, held throughout: each journal write checks it. */
-const HELD = { assertHeld: async () => {} }
+const HELD = { name: 'sticky-launch-write', mode: 'exclusive', signal: new AbortController().signal, held: async () => true, assertHeld: async () => {} } as LockHandle
 const quote = { bundle_uuid: '11111111-1111-4111-8111-111111111111', payment_info: [payment], expectedTransactions: [] } as unknown as RelayrQuote
 
 async function fixture(chainIds = [84532], capability: 'sponsored' | 'self-paid' | 'unavailable' = 'self-paid') {
@@ -65,7 +66,7 @@ describe('durable Sticky launch controller', () => {
     const f = await fixture()
     const before = f.store.load()
     const lost = new LockLostError('sticky-launch-write')
-    f.ports.held = () => ({ assertHeld: async () => { throw lost } })
+    f.ports.held = () => ({ ...HELD, assertHeld: async () => { throw lost } })
     await expect(f.controller.run()).rejects.toBe(lost)
     await expect(f.controller.clear()).rejects.toBe(lost)
     expect(f.store.load()).toEqual(before)
@@ -76,39 +77,56 @@ describe('durable Sticky launch controller', () => {
     expect(f.store.load()).toEqual(before)
   })
 
-  it.each(['hash', 'refusal'] as const)('applies the wallet\'s %s, refused for a lost lock, under a fresh lock to the same attempt only', async answer => {
-    let lost = false
-    const f = await fixture()
-    f.ports.held = () => ({ assertHeld: async () => { if (lost) throw new LockLostError('sticky-launch-write') } })
-    vi.mocked(f.ports.sendDirect).mockImplementation(async (_session, callbacks) => {
-      await callbacks.beforeWrite()
-      lost = true
-      if (answer === 'hash') await callbacks.submitted(H1)
-      else await callbacks.rejected()
-    })
-    await expect(f.controller.run()).rejects.toBeInstanceOf(LockLostError)
-    expect(f.store.load()?.direct).toEqual({ started: true })
-    expect(f.controller.lapsed()).toBe(true)
-    lost = false
-    await f.controller.reconcileLapsed()
-    expect(f.store.load()?.direct).toEqual(answer === 'hash' ? { started: true, hash: H1 } : undefined)
-    expect(f.controller.lapsed()).toBe(false)
+  it.each(['hash', 'refusal'] as const)("keeps the wallet's %s through a lapsed launch lock, for its own attempt only", async answer => {
+    // The SDK's rerun under the lock taken back (attemptScoped) is `keepOutcome`, over lapsing leases.
+    const { locks, lapse } = lapsingLocksForTests()
+    vi.stubGlobal('navigator', { locks })
+    try {
+      for (const newer of [false, true]) {
+        const f = await fixture()
+        let held: LockHandle | null = null
+        f.ports.held = () => held
+        let settled!: (applied: boolean) => void
+        const applied = new Promise<boolean>(resolve => { settled = resolve })
+        const later = { ...f.prepared, direct: { started: true, hash: H2 }, directAttempts: [{ started: true, hash: H2 }] }
+        vi.mocked(f.ports.sendDirect).mockImplementation(async (_session, callbacks) => {
+          await callbacks.beforeWrite()
+          lapse()
+          // Another tab took the launch meanwhile and started a newer attempt.
+          if (newer) f.store.save(later)
+          const write = () => answer === 'hash' ? callbacks.submitted(H1) : callbacks.rejected()
+          // Its own attempt is kept for the lock taken back; a newer one is never touched.
+          expect(await keepOutcome([held!], write, write, settled)).toBe(newer)
+        })
+        await expect(browserLocks().request('sticky-launch-write', async lock => {
+          held = lock
+          try { return await f.controller.run() } finally { held = null }
+        })).rejects.toBeInstanceOf(LockLostError)
+        if (!newer) expect(await applied).toBe(true)
+        expect(f.store.load()?.direct).toEqual(newer ? later.direct : answer === 'hash' ? { started: true, hash: H1 } : undefined)
+        if (newer) expect(f.store.load()).toEqual(later)
+      }
+    } finally { vi.unstubAllGlobals() }
+  })
 
-    // Another attempt saved meanwhile is never changed by an older attempt's outcome.
-    const g = await fixture()
-    g.ports.held = f.ports.held
-    vi.mocked(g.ports.sendDirect).mockImplementation(async (_session, callbacks) => {
-      await callbacks.beforeWrite()
-      lost = true
-      if (answer === 'hash') await callbacks.submitted(H1)
-      else await callbacks.rejected()
-    })
-    await expect(g.controller.run()).rejects.toBeInstanceOf(LockLostError)
-    const newer = { ...g.store.load()!, direct: { started: true, hash: H2 }, directAttempts: [{ started: true, hash: H2 }] }
-    g.store.save(newer)
-    lost = false
-    await g.controller.reconcileLapsed()
-    expect(g.store.load()).toEqual(newer)
+  it('keeps the listing the wallet signed and Center published through a lapsed launch lock', async () => {
+    const { locks, lapse } = lapsingLocksForTests()
+    vi.stubGlobal('navigator', { locks })
+    try {
+      const f = await fixture()
+      let held: LockHandle | null = null
+      f.ports.held = () => held
+      vi.mocked(f.ports.sendDirect).mockImplementation(async (session, callbacks, listing) => {
+        await callbacks.beforeWrite(); await callbacks.submitted(H1)
+        lapse()
+        await listing!.published(await f.ports.publishListing(session.plan))
+      })
+      await expect(browserLocks().request('sticky-launch-write', async lock => {
+        held = lock
+        try { return await f.controller.run() } finally { held = null }
+      })).rejects.toBeInstanceOf(LockLostError)
+      await vi.waitFor(() => expect(f.store.load()?.listing).toMatchObject({ state: 'published', intentId: 'listing-identity' }))
+    } finally { vi.unstubAllGlobals() }
   })
 
   it('admits only one home chain while preserving old submitted records for read-only recovery', async () => {

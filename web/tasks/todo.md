@@ -1,3 +1,22 @@
+# SDK core 6.3.0: lapse keeping moves to the SDK, queued confirmations, shared lines (2026-11-10)
+
+Brief: adopt-630-brief.md and the 6.3.0 deletion map (Sticky: `withBridgeLock`'s keep and late become plain `locks` plus `attemptScoped: true`). Stacks on the 6.2.0 entry below, same PR (#88).
+
+- [x] 1. Pin `@bananapus/nana-sdk-core` 6.3.0 exact.
+- [x] 2. Bridge and collector: `withBridgeLock` is plain again (no keep, no late, no `BridgeOutcome`); each run's callbacks write under its `lock` and pass `attemptScoped: true`, since they already change only their own attempt (reservation id) and record.
+- [x] 3. Launch: delete the controller's `late`, `lapsed`, `reconcileLapsed` and the adapter's reconcile under a fresh lock. Callbacks capture the call's lock and match their attempt by identity (`beforeWrite`'s saved attempt), so the SDK reruns them under the lock taken back (`attemptScoped` on `sendReviewed` and `payRelayrReviewed`). The payment's manual unsent handling becomes `payRelayrReviewed`'s `onUnsent`. Answers given outside a reviewed send's callbacks (the listing published and signed, a Safe's execution hashes) go through `keepOutcome`.
+- [x] 4. `ended()`: a `ConfirmationQueuedError` shows `CONFIRMATION_QUEUED_LINE` while the step is pending or held, and the action can run again (nothing is sent again). A `stopped` run reads error with `REVIEW_STOPPED_LINE`, as Homerun. `LOCK_LOST_LINE` comes from the SDK's `errorLine`. No Sticky view takes a user-entered hash for a held write, so `HELD_HASH_*` and `hashCheck` have no caller.
+- [x] 5. Regressions on the SDK path with `lapsingLocksForTests` (each seen failing without `attemptScoped`): bridge and collector refusal ends the reservation and a late hash is saved; the launch's direct hash and refusal through the real `sendReviewed`; the controller's own-attempt-only merge and the kept listing. The flow fake runs its callbacks through the SDK's `keepOutcome` instead of ignoring `locks` (Codex pass 1 finding). The hook shows a queued confirmation and a retry sends nothing again; a resumed refusal shows the stopped line.
+- [x] 6. Full `npm run check`, push without force, Codex to MERGE. No merge.
+
+## Plan refinement
+- **Objective:** No client-side keep, reconcile or dismissal memory left; the SDK keeps a wallet's answer through a lapsed lock.
+- **System fit:** The SDK owns keeping and rerunning outcomes under the lock taken back; Sticky's callbacks only promise attempt scope (match by id, merge into the latest record). Recovery is unchanged.
+- **Reuse and simplicity:** `keepOutcome`, `attemptScoped`, `onUnsent`, the SDK lines and `lapsingLocksForTests`; net deletion in the controller and adapter.
+- **Evidence and unknowns:** 6.3.0 `.d.ts` and `useReviewedRun.js`; Codex pass 1 on #88 (Medium: refusal after lapse left the reservation) re-checked: fixed by `attemptScoped` with a real-lock test. `ConfirmationQueuedError` is unreachable in Sticky today (no flow passes `onConfirmed`); handled anyway per the brief.
+- **Verification:** The tests above, mutation by removing `attemptScoped`, full `npm run check`.
+- **Resource budget:** Same worktree and PR.
+
 # SDK core 6.2.0 adoption: run wrapper, lock fencing, shared confirming line (2026-11-10)
 
 Brief: SDK #295 (lock fencing) and #296 (run wrapper), read against the released 6.2.0 code in node_modules; the fencing map's Sticky section (4 journal saves).

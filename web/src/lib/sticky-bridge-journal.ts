@@ -4,7 +4,7 @@ import type { TxRequest } from '@/hooks/useReviewedAction'
 import { environmentForChainIds, SUPPORTED_CHAINS } from '@/lib/chains'
 import { bridgeCalldata, bridgeRouteId, type BridgeMovement, type BridgeRoute, type createStickyBridge } from '@/lib/sticky-bridge'
 import { ReviewLineError } from '@bananapus/nana-sdk-core/review'
-import { browserLocks, LockLostError, type LockHandle } from '@bananapus/nana-sdk-core/review/locks'
+import { browserLocks, type LockHandle } from '@bananapus/nana-sdk-core/review/locks'
 
 export type StoredBridgeWrite = { chainId: number; address: Address; data: Hex; value: string; label: string; parent?: string }
 export type BridgeRecord = {
@@ -145,34 +145,17 @@ export async function saveBridgeRecords(lock: BridgeLock, key: string, records: 
   storage.setItem(key, encoded)
   if (storage.getItem(key) !== encoded) throw new ReviewLineError('Bridge recovery could not be saved. No new transfer will be submitted.')
 }
-/** A write of what the wallet already answered, run again under a fresh lock: it applies only to the same attempt. */
-export type BridgeOutcome = (lock: BridgeLock) => Promise<unknown>
-
 /**
  * One write lock spans preparation, review and wallet submission, including other tabs. `work` gets its handle: every
  * journal write and wallet submission under it checks it is still held. When it is taken and `wait` is false, `taken`
- * answers instead, or the action is refused. An outcome `keep` could not save for a lost lock is applied once `work`
- * ends, under a fresh lock.
+ * answers instead, or the action is refused.
  */
-export async function withBridgeLock<T>(work: (lock: LockHandle, keep: (write: BridgeOutcome) => Promise<void>) => Promise<T>, wait = false, taken?: () => T): Promise<T> {
-  const late: BridgeOutcome[] = []
-  /** Saves what the wallet answered; refused for a lost lock, the same write is kept for a fresh lock. */
-  const keep = (lock: BridgeLock) => async (write: BridgeOutcome) => {
-    try { await write(lock) } catch (error) {
-      if (error instanceof LockLostError) late.push(write)
-      throw error
-    }
-  }
-  try {
-    return await browserLocks().request('sticky-reward-bridge', { mode: 'exclusive', ...(!wait ? { ifAvailable: true } : {}) }, async lock => {
-      if (lock) return work(lock, keep(lock))
-      if (taken) return taken()
-      throw new ReviewLineError('A bridge action is already open in another tab.')
-    })
-  } finally {
-    // Each write checks the saved record is still its attempt's; otherwise it stays as the lost lock left it.
-    if (late.length) await withBridgeLock(async fresh => { for (const write of late) await write(fresh).catch(() => undefined) }, true).catch(() => undefined)
-  }
+export async function withBridgeLock<T>(work: (lock: LockHandle) => Promise<T>, wait = false, taken?: () => T): Promise<T> {
+  return browserLocks().request('sticky-reward-bridge', { mode: 'exclusive', ...(!wait ? { ifAvailable: true } : {}) }, async lock => {
+    if (lock) return work(lock)
+    if (taken) return taken()
+    throw new ReviewLineError('A bridge action is already open in another tab.')
+  })
 }
 export async function updateBridgeRecords(lock: BridgeLock, key: string, update: (records: BridgeRecord[]) => BridgeRecord[], storage: BridgeStorage = localStorage) {
   return browserLocks().request('sticky-reward-bridge-storage', { mode: 'exclusive' }, async () => {

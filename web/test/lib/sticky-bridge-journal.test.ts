@@ -413,14 +413,16 @@ describe('new bridge durable intent and source recovery', () => {
     await saveBridgeRecords(HELD, key, [record])
     const held = createPendingBridgeWrite({ owner, request: storeBridgeWrite(request) })
     await savePendingBridgeWrite(HELD, owner, held)
-    const before = { ...localStorage }
+    // Sticky's own keys: the SDK's storage-lock bookkeeping is its own.
+    const sticky = () => Object.fromEntries(Object.entries({ ...localStorage }).filter(([key]) => key.startsWith('sticky:')))
+    const before = sticky()
     await expect(saveBridgeRecords(LOST, key, [])).rejects.toBe(lost)
     await expect(updateBridgeRecords(LOST, key, () => [])).rejects.toBe(lost)
     await expect(savePendingBridgeWrite(LOST, owner, null)).rejects.toBe(lost)
     await expect(savePendingBridgeSubmission(LOST, held, H(90))).rejects.toBe(lost)
     await expect(endPendingBridgeAttempt(LOST, owner, held.id)).rejects.toBe(lost)
     await expect(saveWatchedBridgeRoute(LOST, 10, stToken, 4008n, route)).rejects.toBe(lost)
-    expect({ ...localStorage }).toEqual(before)
+    expect(sticky()).toEqual(before)
   })
 
   it('merges durable mutations under one storage lock and serializes wallet actions across tabs', async () => {

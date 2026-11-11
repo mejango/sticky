@@ -1,3 +1,4 @@
+import { keepOutcome } from '@bananapus/nana-sdk-core/review/locks'
 import { vi } from 'vitest'
 import type { Hex } from 'viem'
 import type { ReviewedCall, ReviewedResult } from '@bananapus/nana-sdk-core/review'
@@ -15,7 +16,8 @@ export const confirmedBlock = (index: number) => 100n + BigInt(index)
  * `onSubmitted`, then the wait for the step to be `mined`. Anything that throws ends the run with nothing returned, as
  * a failure the state shows. Otherwise the state is the test's to set. `checks: false` leaves `reverify` to the test,
  * for a world whose reads do not move as the steps confirm; `finish: true` shows a finished run as the hook does, a
- * success.
+ * success. `onUnsent` and `onSubmitted` run under the run's `locks` through the SDK's `keepOutcome`, as core keeps them:
+ * refused for a lost lock, they rerun under the lock taken back (with `attemptScoped`, even after another tab held it).
  */
 export function reviewedActionFake(hash: Hex = `0x${'c3'.repeat(32)}`, { checks = true, finish = false } = {}) {
   const fake = {
@@ -40,6 +42,7 @@ export function reviewedActionFake(hash: Hex = `0x${'c3'.repeat(32)}`, { checks 
     /** The wait for a sent step's receipt, before the next step: at once, unless a test holds it. */
     mined: vi.fn(async (_call: ReviewedCall, _step: number): Promise<void> => {}),
     run: vi.fn(async (action: ReviewedRun): Promise<ReviewedResult | null> => {
+      const kept = (write: () => unknown) => keepOutcome(action.locks, write, action.attemptScoped ? write : undefined)
       /** The run failed: the hook shows why, unless the test already set what it shows. */
       const failed = (error: unknown) => {
         if (fake.phase !== 'error') Object.assign(fake, { phase: 'error', busy: false, error: (error as Error).message, failure: error })
@@ -64,7 +67,7 @@ export function reviewedActionFake(hash: Hex = `0x${'c3'.repeat(32)}`, { checks 
         try {
           await action.beforeWallet?.(call, step)
         } catch (error) {
-          await action.onUnsent?.(call, step)
+          await kept(() => action.onUnsent?.(call, step))
           return failed(error)
         }
         try {
@@ -72,12 +75,12 @@ export function reviewedActionFake(hash: Hex = `0x${'c3'.repeat(32)}`, { checks 
         } catch (error) {
           // Only the wallet's refusal frees the step; any other answer leaves it held, as it may have been sent.
           if ((error as { code?: number }).code !== 4001) return failed(error)
-          await action.onUnsent?.(call, step)
+          await kept(() => action.onUnsent?.(call, step))
           action.onCancelled?.()
           return null
         }
         try {
-          await action.onSubmitted?.(call, step, hashes[step], { safe: fake.isSafe, adopted: false })
+          await kept(() => action.onSubmitted?.(call, step, hashes[step], { safe: fake.isSafe, adopted: false }))
         } catch (error) {
           // Sent, and its record could not be kept: the run fails with the step held.
           return failed(error)

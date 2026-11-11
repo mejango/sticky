@@ -5,7 +5,7 @@ import { buildStickyCollectorSendTx, buildStickyCollectorSettleTx } from '@banan
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { LockLostError } from '@bananapus/nana-sdk-core/review/locks'
+import { lapsingLocksForTests } from '@bananapus/nana-sdk-core/testing'
 import type { TxRequest } from '@/hooks/useReviewedAction'
 import { TransactionReviewCancelledError } from '@/lib/transaction-review'
 import { bridgeCalldata } from '@/lib/sticky-bridge'
@@ -33,18 +33,11 @@ vi.mock('@/lib/sticky-refresh', () => ({ refreshAfterFund: mocks.refresh }))
 vi.mock('@/components/project/flows/BridgeFlow', () => ({ BridgeFlow: (props: unknown) => { mocks.monitor(props); return <span>Existing bridge monitor</span> } }))
 import { CollectorFlow } from '@/components/project/flows/CollectorFlow'
 
-/** Web Locks whose bridge grant open when `lapse()` runs is lost (another tab took it); later grants hold. */
+/** Lapsing locks (the SDK's): `lapse()` loses this tab's bridge lease, and another tab's routine check takes it once. */
 function lapsingBridgeLock() {
-  const lost = new Set<object>()
-  let open: object | null = null
-  vi.stubGlobal('navigator', { locks: { request: async (name: string, options: unknown, work?: (lock: object) => unknown) => {
-    const lock: object = { name, mode: 'exclusive', signal: new AbortController().signal,
-      held: async () => !lost.has(lock), assertHeld: async () => { if (lost.has(lock)) throw new LockLostError(name) } }
-    if (name !== 'sticky-reward-bridge') return (work ?? (options as (lock: object) => unknown))(lock)
-    open = lock
-    try { return await (work ?? (options as (lock: object) => unknown))(lock) } finally { if (open === lock) open = null }
-  } } })
-  return () => { if (open) lost.add(open) }
+  const { locks, lapse, otherTab } = lapsingLocksForTests()
+  vi.stubGlobal('navigator', { locks })
+  return async () => { lapse(); await otherTab().request('sticky-reward-bridge', async () => {}) }
 }
 
 /** Another tab's write, under its own bridge lock. */
@@ -119,18 +112,18 @@ function failReturnedHashSave(failure: 'write' | 'read' = 'write') {
 }
 
 describe('permissionless collector delivery', () => {
-  it("ends the reservation of a send the wallet refused after the bridge lock lapsed, under a fresh lock", async () => {
+  it("ends the reservation of a send the wallet refused after the bridge lock lapsed, under the lock taken back", async () => {
     await review()
     const lapse = lapsingBridgeLock()
-    mocks.walletWrite.mockImplementation(async () => { lapse(); throw Object.assign(new Error('User rejected the request.'), { code: 4001 }) })
+    mocks.walletWrite.mockImplementation(async () => { await lapse(); throw Object.assign(new Error('User rejected the request.'), { code: 4001 }) })
     await press('Review delivery')
     await vi.waitFor(() => expect(localStorage.getItem(`sticky:bridge:pending:v1:${OWNER.toLowerCase()}`)).toBe('null'))
   })
-  it("keeps the wallet's hash when the bridge lock lapsed before it returned, and saves it under a fresh lock", async () => {
+  it("keeps the wallet's hash when the bridge lock lapsed before it returned, and saves it under the lock taken back", async () => {
     await review()
     const lapse = lapsingBridgeLock()
     // The wallet answers after this tab's lease lapsed: the hash cannot be saved under the old lock.
-    mocks.walletWrite.mockImplementation(async () => { lapse() })
+    mocks.walletWrite.mockImplementation(async () => { await lapse() })
     await press('Review delivery')
     await vi.waitFor(() => expect(JSON.parse(localStorage.getItem(`sticky:bridge:pending:v1:${OWNER.toLowerCase()}`)!).hash).toBe(HASH))
     expect(mocks.walletWrite).toHaveBeenCalledOnce()

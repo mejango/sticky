@@ -19,7 +19,7 @@ import { bridgeCalldata, bridgeRouteId, bridgeWriteHasUniqueReference, createSti
 import {
   adoptSettlementHash, assertPendingBridgeWrite, ensurePendingBridgeId, bridgeStorageKey, endPendingBridgeAttempt, createPendingBridgeWrite, discardBridgeDraft, readBridgeRecords, readPendingBridgeWrite, readWatchedBridgeRoutes, reconcileBridgeRecord,
   restoreBridgeWrite, retryPendingBridgeSubmission, savePendingBridgeWrite, savePendingBridgeSubmission, storeBridgeWrite, updateBridgeRecord, updateBridgeRecords, withBridgeLock,
-  type BridgeLock, type BridgeOutcome, type BridgeRecord, type PendingBridgeWrite,
+  type BridgeLock, type BridgeRecord, type PendingBridgeWrite,
 } from '@/lib/sticky-bridge-journal'
 import type { StickyProjectInfo } from '@/lib/sticky-project'
 import { readReceiver } from '@/lib/sticky-receivers'
@@ -154,7 +154,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identity])
 
-  async function run(work: (lock: LockHandle, keep: (write: BridgeOutcome) => Promise<void>) => Promise<void>) {
+  async function run(work: (lock: LockHandle) => Promise<void>) {
     if (busy) return
     setWorking(true); setError(null)
     try { await withBridgeLock(work) } catch (reason) { setError(errorLine(reason)) } finally { setWorking(false) }
@@ -246,7 +246,7 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
   /** Reviews every step left of the action once, and sends them in order, each saved as the transfer's attempt while it is out. */
   async function confirm(chosen: Review) {
     const current = { ...chosen, autoSend: false }
-    await run(async (lock, keep) => {
+    await run(async lock => {
       assertCurrent(current.identity)
       if (readPendingBridgeWrite(current.owner)) throw new ReviewLineError('Recover the pending bridge transaction before sending it again.')
       const steps = current.record ? [current.request, ...current.record.steps.slice(1).map(restoreBridgeWrite)] : [current.request]
@@ -254,11 +254,13 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
       const attempts: PendingBridgeWrite[] = []
       /** The steps whose reservation this run saved. */
       const reserved = new Set<number>()
-      // Ends only this attempt's reservation (by its id), so a write kept for a fresh lock touches no other.
-      const undo = (step: number) => keep(held => endPendingBridgeAttempt(held, current.owner, attempts[step]?.id))
+      const undo = (step: number) => endPendingBridgeAttempt(lock, current.owner, attempts[step]?.id)
       await tx.run({
         account: current.owner,
         locks: [lock],
+        // Each callback changes only this attempt's reservation (by its id) and record, so a wallet answer after a lapsed
+        // lock lands once the SDK takes the lock back.
+        attemptScoped: true,
         calls: reviewedSteps(steps, current.owner, current.confirmedAt),
         title: current.record ? 'Airdrop across chains' : current.request.label ?? 'Confirm bridge step',
         context: reviewRows(current),
@@ -283,14 +285,11 @@ export function BridgeFlow({ info, sourceChainId, delivery, onClose, onFunded }:
           // A queued Safe proposal can be adopted without reserving a new write.
           const held = attempts[step] ?? createPendingBridgeWrite({ owner: current.owner, request: storeBridgeWrite(steps[step]), intent: holdIntent(steps[step], current.owner), ...(current.record ? { metadata: current.record.metadata, recordKey: current.key } : {}) })
           if (!attempts[step]) { attempts[step] = held; setReview({ ...current, request: steps[step], attempt: held }) }
-          // The wallet's hash is kept: refused for a lost lock, it is saved under a fresh one, to this attempt only.
-          await keep(async fenced => {
-            if (!reserved.has(step) && !readPendingBridgeWrite(current.owner)) { await savePendingBridgeWrite(fenced, current.owner, held); reserved.add(step) }
-            const submitted = await savePendingBridgeSubmission(fenced, held, hash, safe)
-            if (current.record && steps[step].functionName === 'prepare') await updateBridgeRecord(fenced, current.key, current.record.metadata, record => {
-              assertPendingBridgeWrite(submitted)
-              return { ...record, submission: { hash, safeProposal: safe } }
-            })
+          if (!reserved.has(step) && !readPendingBridgeWrite(current.owner)) { await savePendingBridgeWrite(lock, current.owner, held); reserved.add(step) }
+          const submitted = await savePendingBridgeSubmission(lock, held, hash, safe)
+          if (current.record && steps[step].functionName === 'prepare') await updateBridgeRecord(lock, current.key, current.record.metadata, record => {
+            assertPendingBridgeWrite(submitted)
+            return { ...record, submission: { hash, safeProposal: safe } }
           })
         },
         // The user's exit released the SDK hold: the reservation goes, the saved transfer stays.

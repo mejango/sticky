@@ -1,7 +1,7 @@
 import { isAddress, isHash, type Hex } from 'viem'
 import type { RelayrPayment, RelayrQuote } from '@bananapus/nana-sdk-core/review/relayr'
 import { errorLine, ReviewLineError, TransactionReviewCancelledError, writeIntentKey, type SavedAttempt } from '@bananapus/nana-sdk-core/review'
-import { LockLostError, type LockHandle } from '@bananapus/nana-sdk-core/review/locks'
+import { keepOutcome, type LockHandle } from '@bananapus/nana-sdk-core/review/locks'
 import { requireSingleHomeChain, validateLaunchCall, type LaunchPlan, type LaunchTarget } from '@/lib/sticky-launch-plan'
 
 export const STICKY_LAUNCH_KEY = 'sticky-launch-pending-v1'
@@ -236,7 +236,7 @@ export type LaunchSettlement = { hash: Hex; result: 'success' | 'failed' }
 export type StickyLaunchPorts = {
   store: ReturnType<typeof createStickyLaunchStore>
   /** The launch lock's handle while a controller call holds it: every journal write checks it is still held first. */
-  held: () => Pick<LockHandle, 'assertHeld'> | null
+  held: () => LockHandle | null
   guard: (owner: `0x${string}`) => void
   quote: (plan: LaunchPlan, rememberUuid: (uuid: string) => Promise<void>, beforePublish: () => Promise<void>) => Promise<RelayrQuote>
   status: (session: StickyLaunchSession) => Promise<Record<number, Hex[]>>
@@ -265,30 +265,29 @@ export type StickyLaunchPorts = {
 export function createStickyLaunchController(ports: StickyLaunchPorts) {
   let busy = false
   /** Every journal write runs under the launch lock: it checks this tab still holds it, then writes. */
-  const fence = async () => {
-    const lock = ports.held()
+  const fence = async (lock = ports.held()) => {
     if (!lock) throw new ReviewLineError('This launch is not open in this tab. Nothing was saved.')
     await lock.assertHeld()
   }
-  const save = async (session: StickyLaunchSession) => {
-    await fence()
+  const save = async (session: StickyLaunchSession, lock = ports.held()) => {
+    await fence(lock)
     const saved = ports.store.save(session)
     ports.changed?.(saved)
     return saved
   }
-  /** Outcomes the wallet already gave that a lost lock refused: each applies later only to the same attempt. */
-  const late: ((current: StickyLaunchSession) => StickyLaunchSession | null)[] = []
   /**
-   * Saves what the wallet answered. Refused for a lost lock, `apply` is kept: `reconcileLapsed` runs it under a fresh
-   * lock on the record saved then, which it changes only while it is still this attempt's (null leaves it).
+   * What the wallet answered, merged into the record saved now under `lock` (the call's own, taken when it began),
+   * only while it is still this attempt's (null leaves it). The SDK reruns it under that lock taken back.
    */
-  const keep = async (apply: (current: StickyLaunchSession) => StickyLaunchSession | null) => {
-    const next = apply(load())
-    if (!next) return
-    try { await save(next) } catch (error) {
-      if (error instanceof LockLostError) late.push(apply)
-      throw error
-    }
+  const merge = (lock: LockHandle | null, apply: (current: StickyLaunchSession) => StickyLaunchSession | null) => async () => {
+    const current = ports.store.load()
+    const next = current && apply(current)
+    if (next) await save(next, lock)
+  }
+  /** An answer the wallet gave outside a reviewed send's callbacks, kept by the SDK if the lock was lost. */
+  const keep = (lock: LockHandle | null, apply: (current: StickyLaunchSession) => StickyLaunchSession | null) => {
+    const write = merge(lock, apply)
+    return keepOutcome(lock ? [lock] : undefined, write, write)
   }
   /** The same launch, and the same attempt of `kind` as `base`: its history unchanged (and, for a payment, its option). */
   const sameAttempt = (base: StickyLaunchSession, current: StickyLaunchSession, kind: 'direct' | 'payment') =>
@@ -307,16 +306,18 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
   }
   /** Whether the launch still has a listing to publish. */
   const unlisted = (session: StickyLaunchSession) => !session.listing.intentId && session.listing.state !== 'unavailable'
-  const listed: ListingCallbacks = {
-    published: async intentId => {
-      const { plan } = load()
-      await keep(current => current.plan.id === plan.id ? { ...current, listing: { ...current.listing, state: 'published', intentId, error: undefined } } : null)
-    },
-    failed: async message => { const session = load(); await save({ ...session, listing: { ...session.listing, state: 'unlisted', error: message } }) },
-    signed: async (message, signature) => {
-      const { plan } = load()
-      await keep(current => current.plan.id === plan.id && !current.listing.intentId ? { ...current, listing: { ...current.listing, signed: { message, signature } } } : null)
-    },
+  const listed = (): ListingCallbacks => {
+    const lock = ports.held()
+    const { plan } = load()
+    return {
+      published: async intentId => {
+        await keep(lock, current => current.plan.id === plan.id ? { ...current, listing: { ...current.listing, state: 'published', intentId, error: undefined } } : null)
+      },
+      failed: async message => { const session = load(); await save({ ...session, listing: { ...session.listing, state: 'unlisted', error: message } }, lock) },
+      signed: async (message, signature) => {
+        await keep(lock, current => current.plan.id === plan.id && !current.listing.intentId ? { ...current, listing: { ...current.listing, signed: { message, signature } } } : null)
+      },
+    }
   }
   /**
    * `session` as saved after an await: its listing (the signature, the publication) is the latest
@@ -345,11 +346,12 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
     if (!unlisted(session)) return session
     try {
       ports.guard(session.plan.owner)
-      await listed.published(await ports.publishListing(session.plan))
+      const listing = listed()
+      await listing.published(await ports.publishListing(session.plan))
     } catch (error) {
       // Closing its review is no failure of the listing: the launch stops there, as it was.
       if (error instanceof TransactionReviewCancelledError) throw error
-      await listed.failed(error instanceof Error ? errorLine(error) : 'Listing unavailable.')
+      await listed().failed(error instanceof Error ? errorLine(error) : 'Listing unavailable.')
     }
     return load()
   }
@@ -414,7 +416,15 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
       ? save({ ...session, direct: { ...session.direct, started: true, hash, settled: result }, candidates })
       : save({ ...session, payment: { ...session.payment!, started: true, hash, settled: result }, candidates })
   }
+  /**
+   * One submission's journal side. Its attempt is the one `beforeWrite` started, matched by identity, so the SDK may
+   * rerun `rejected` and `submitted` under the call's lock taken back (`attemptScoped`) without touching a newer one.
+   */
   function callbacks(kind: 'direct' | 'payment'): SubmissionCallbacks {
+    const lock = ports.held()
+    let base: StickyLaunchSession | null = null
+    const attempt = (apply: (current: StickyLaunchSession) => StickyLaunchSession | null) =>
+      merge(lock, current => base && sameAttempt(base, current, kind) ? apply(current) : null)()
     return {
       async beforeWrite() {
         const session = load()
@@ -426,19 +436,16 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
           requireSingleHomeChain(session.plan.targets)
         }
         if (session[kind]?.started) throw new ReviewLineError('This launch already has a wallet submission. Recover it before continuing.')
-        if (kind === 'direct') await save({ ...session, direct: { started: true } })
-        else if (session.payment) await save({ ...session, payment: { ...session.payment, started: true } })
+        if (kind === 'direct') base = await save({ ...session, direct: { started: true } }, lock)
+        else if (session.payment) base = await save({ ...session, payment: { ...session.payment, started: true } }, lock)
       },
       async rejected() {
         // The wallet refused: nothing was sent, so the start ends, unless a hash was saved for this attempt meanwhile.
-        const base = load()
-        await keep(current => !sameAttempt(base, current, kind) || current[kind]?.hash ? null
+        await attempt(current => current[kind]?.hash ? null
           : kind === 'direct' ? { ...current, direct: undefined } : { ...current, payment: undefined })
       },
       async submitted(hash, proposalHash) {
-        const base = load()
-        await keep(current => {
-          if (!sameAttempt(base, current, kind)) return null
+        await attempt(current => {
           if (kind === 'payment') return { ...current, payment: { ...current.payment!, started: true, hash, proposalHash } }
           const chainId = current.plan.targets[0].chainId
           return { ...current, direct: { started: true, hash, proposalHash },
@@ -449,16 +456,6 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
   }
   return {
     load: ports.store.load,
-    /** Whether a lost lock left an outcome of the wallet to apply under a fresh one. */
-    lapsed: () => late.length > 0,
-    /** Under a fresh lock: applies each kept outcome to the record saved now, only while it is still its attempt's. */
-    reconcileLapsed: () => exclusively(async () => {
-      for (const apply of late.splice(0)) {
-        const current = ports.store.load()
-        const next = current && apply(current)
-        if (next) await save(next)
-      }
-    }),
     async prepare(plan: LaunchPlan, capability: 'sponsored' | 'self-paid' | 'unavailable') {
       requireSingleHomeChain(plan.targets)
       ports.guard(plan.owner)
@@ -492,7 +489,7 @@ export function createStickyLaunchController(ports: StickyLaunchPorts) {
         }
       }
       if (session.mode === 'direct') {
-        await ports.sendDirect(session, callbacks('direct'), unlisted(session) ? listed : undefined)
+        await ports.sendDirect(session, callbacks('direct'), unlisted(session) ? listed() : undefined)
         return refreshSession(load())
       }
       if (!session.published) {
