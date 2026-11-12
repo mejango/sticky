@@ -74,3 +74,22 @@ At the parent's explicit landing-efficiency instruction, the incomplete local fu
 - [ ] Publish, pass exact-head full CI and merge with readback.
 
 Review: Preserve the exact reviewed bridge floor before every step, including approval; accept beneficial/within-bound quote changes, retain full payload/route/authority/recovery checks. New reviews still require a positive derived floor, saved floor1 remains valid against net1. Owner and independent Astra each pass111 tests/2files onNode26. Typecheck, full lint, deployment/schema/inventories, audit, production build and all five unchanged route budgets pass. Astra-approved runtimeSHA: sticky-bridge.ts6e07e1f7693517c374fdd4fd038790d0f6387394b2c611826d7a76c84fd884e2; BridgeFlow.tsx404b034303c2634f82b7d2922548c53fc5425f2eb70054fb5907acc730387189. No contract/SDK/dependency changes. Existing lock has an account peer-range mismatch also present at baseline;734 installed package versions match lock. Full clean-install exact-head CI required before authorized matched-head merge.
+
+
+# 2026-11-12: Sticky Node 26.13.1 runtime update
+
+## Plan refinement
+- **Objective:** Move all active Sticky development, CI and hosted runtime pins to Node 26.13.1 while keeping npm12.0.1 and every application dependency unchanged.
+- **System fit:** The repository owns its runtime declarations, existing CI and Docker deployment. Node updates preserve application behavior, signing authority, contract source and hosting configuration. Root owns merge and deployed verification.
+- **Reuse and simplicity:** Update the existing .nvmrc, Docker base tag/digest, engine metadata and active setup instructions. Reuse CI's unit, browser and container checks; add no runtime abstraction or speculative test. Historical verification records remain historical.
+- **Evidence and unknowns:** Current main is 6c151b2f0637177b06d09ad88ba49dd9efa73929, with Node26.12.1 application runtime and Node22.23.4 contract CI/setup instructions. Official Node release26.13.1 is a security release; Docker multi-platform digest needs fresh verification before pinning. npm12.0.1 is explicitly installed independently of the bundled npm.
+- **Verification:** Check exact runtime selection, compare lock entries to prove only owning engine metadata changes, run diff whitespace review, and require the existing full GitHub CI for the exact PR head including browser suites and Linux Docker smoke. Investigate failures without weakening assertions or deadlines.
+- **Resource budget:** Use isolated current-main checkout and the existing remote CI so local heavy service checks can run exclusively. Local validation is bounded metadata/source review unless CI failure requires reproduction; no dependency upgrade or contract deployment is in scope.
+
+- [x] Read required workspace resources and repository instructions, inspect current main and runtime flow.
+- [x] Update all active runtime declarations and matching Docker digest.
+- [x] Prove unchanged dependency graph and review focused diff.
+- [ ] Open pull request and collect exact-head CI results.
+
+## Review
+Metadata and whitespace validation passed. Comparing parsed lockfiles after normalizing only the root Node engine proves every dependency entry unchanged. Official Docker manifest digest was independently verified on 2026-11-12. Existing remote CI remains required for the exact pull request head; no local heavy checks duplicated the service test slot.
