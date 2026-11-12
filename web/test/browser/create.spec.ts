@@ -13,16 +13,24 @@ for (const viewport of viewports) {
       const traffic = await blockExternalTraffic(context)
       let releaseScripts!: () => void
       const scriptsReady = new Promise<void>(resolve => { releaseScripts = resolve })
-      await page.route('**/_next/static/**/*.js', async route => {
-        await scriptsReady
-        await route.continue()
-      })
+      let heldScripts = 0
+      await page.route(
+        url => url.pathname.startsWith('/_next/static/') && url.pathname.endsWith('.js'),
+        async route => {
+          heldScripts++
+          await scriptsReady
+          await route.continue()
+        },
+      )
       await page.goto('/?network=testnet', { waitUntil: 'commit' })
       // The dashboard entry remains available while the empty-state hero also
       // offers creation. A cold server-rendered button must not accept a click
       // until its handlers exist; host loading after that remains buffered.
       const create = page.getByRole('button', { name: 'Make your token sticky', exact: true }).first()
-      try { await expect(create).toBeDisabled() } finally { releaseScripts() }
+      try {
+        await expect.poll(() => heldScripts).toBeGreaterThan(0)
+        await expect(create).toBeDisabled()
+      } finally { releaseScripts() }
       await create.click()
 
       const dialog = page.getByRole('dialog', { name: 'Make your token sticky' })
