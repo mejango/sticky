@@ -70,9 +70,14 @@ describe('Providers', () => {
     expect(seen.client!.getDefaultOptions().queries).toMatchObject({
       staleTime: 30_000,
       gcTime: 10 * 60_000,
-      retry: 1,
       refetchOnWindowFocus: false,
     })
+    // One more try for a failure, and none for a refusal for rate, on the error or on what it wraps.
+    const retry = seen.client!.getDefaultOptions().queries!.retry as (failures: number, error: unknown) => boolean
+    expect(retry(0, new Error('node down'))).toBe(true)
+    expect(retry(1, new Error('node down'))).toBe(false)
+    expect(retry(0, Object.assign(new Error('refused'), { status: 429 }))).toBe(false)
+    expect(retry(0, new Error('wrapped', { cause: { code: 429 } }))).toBe(false)
   })
 
   it('serves all four production chains and all four testnets, and no other', async () => {

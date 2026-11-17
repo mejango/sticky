@@ -168,5 +168,9 @@ export async function verifyStickyLaunchDeployment(
   if (creation.projectId !== event.projectId || !same(creation.owner, target.deployer) || !same(creation.caller, target.controller)) return null
   // Bracket the asynchronous wrapper proof and event reads with canonicality.
   if (!includesReceipt(await client.getBlock({ blockNumber: receipt.blockNumber }))) return null
-  return { hash, projectId: event.projectId.toString(), token: event.token }
+  // Final only at or below a canonical finalized block that still includes the receipt; a node that cannot say leaves
+  // the deployment verified and not final.
+  const finalized = await atCanonicalFinalizedBlock(client, async blockNumber =>
+    receipt.blockNumber <= blockNumber && includesReceipt(await client.getBlock({ blockNumber: receipt.blockNumber })))
+  return { hash, projectId: event.projectId.toString(), token: event.token, ...(finalized?.value ? { final: true as const } : {}) }
 }

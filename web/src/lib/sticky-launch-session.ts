@@ -5,7 +5,8 @@ import { keepOutcome, type LockHandle } from '@bananapus/nana-sdk-core/review/lo
 import { requireSingleHomeChain, validateLaunchCall, type LaunchPlan, type LaunchTarget } from '@/lib/sticky-launch-plan'
 
 export const STICKY_LAUNCH_KEY = 'sticky-launch-pending-v1'
-export type LaunchResult = { hash: Hex; projectId: string; token: `0x${string}` }
+/** `final`: the deployment's block was at or below the chain's finalized block when it was last verified. */
+export type LaunchResult = { hash: Hex; projectId: string; token: `0x${string}`; final?: true }
 /** `exited`: the user took the SDK's exit for this attempt, so no later step asks for mined-failure proof of it. */
 export type LaunchSubmission = { hash?: Hex; proposalHash?: Hex; started: boolean; exited?: boolean; settled?: 'success' | 'failed' }
 export type LaunchPaymentSubmission = LaunchSubmission & { option: RelayrPayment; confirmed?: boolean }
@@ -123,7 +124,16 @@ export function createStickyLaunchStore(storage: Store) {
 export const launchComplete = (session: StickyLaunchSession) =>
   session.plan.targets.every(target => !!session.results[target.chainId])
 
-export const launchCanClear = (session: StickyLaunchSession) => launchComplete(session) ||
+/** Every pool is verified in a finalized block and nothing is left to confirm, publish, record or mend. A verified
+ * deployment a reorg can still drop is not at rest: canonical inclusion is not finality. */
+export const launchAtRest = (session: StickyLaunchSession) =>
+  session.plan.targets.every(target => !!session.results[target.chainId]?.final) &&
+  !session.error && !session.listing.error && !session.listing.signed &&
+  (!session.payment?.hash || !!session.payment.confirmed) &&
+  (!session.listing.intentId || session.plan.targets.every(target =>
+    session.listing.recorded[target.chainId] === session.results[target.chainId].hash))
+
+export const launchCanClear =(session: StickyLaunchSession) => launchComplete(session) ||
   (!session.published && !session.direct?.started && !session.payment?.started && !session.listing.requested)
 
 /**

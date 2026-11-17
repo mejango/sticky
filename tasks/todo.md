@@ -1,3 +1,23 @@
+# Lean network requests in the web client, 2026-11-16
+
+## Plan refinement
+- **Objective:** Cut redundant RPC, Bendystraw, Safe service and Center requests in web/ so a page loads once and then refreshes about every 30 seconds or on a user action, without removing or weakening any read that guards a send, an authority check or a proof. No contract, deployment or SDK version change.
+- **System fit:** web/src/lib/query-reads.ts owns the viewer refresh interval; the account and project position hooks, the Airdrops tab and the launch host consume it. The launch session keeps every proof read on its action paths (clear, run, retry, addHash refresh first); wallet prompts and their fresh pre-send reads are unaffected.
+- **Reuse and simplicity:** Reuse REFRESH_MS as the one interval (remove two private 15 s copies and the 12 s literal), the SDK's isRateLimited for the default retry rule, and the SDK's default 5 s Safe wait interval. One new predicate, launchAtRest, since a complete launch has nothing left to change.
+- **Evidence and unknowns:** Source at origin/main bda8414 with @bananapus/nana-sdk-core 6.3.1 installed; all polls are 15 s, 12 s or 1 s as measured in source. Request counts per tab are estimates from source, not a live network capture; SDK-internal polling (held writes, fee watch, Bendystraw 429 retries) is out of reach without a bump.
+- **Verification:** Each change gets a vitest regression that fails without it (interval values, refetch on return, 429 retry rule, at-rest launch does not poll, Safe wait interval), then the full `npm run check` gate in web/ with the browser suite on port 3193 until it exits 0.
+- **Resource budget:** One bounded source census (done), five small edits with tests, one full gate run plus reruns on failure. Replan only if a consumer needs a faster-changing value from a poll being slowed, or a gate step fails for a reason unrelated to this diff.
+
+- [x] One 30 s viewer refresh interval for positions, account positions and Airdrops reads; account positions refetch on return to the tab.
+- [x] Launch host checks every 30 s and not at all on the timer once the launch is at rest.
+- [x] Safe execution wait uses the SDK's 5 s interval.
+- [x] Default query retry skips a 429.
+- [x] Full gate, review notes.
+
+Review: `npm run check` exits 0 with ports 3193 to 3195: 3887 unit tests in 174 files, 54 browser tests, budgets pass. The first run failed at audit:prod on a Next advisory that origin/main has too; Next 16.4.6 mends it. Not measured on a live network; SDK-internal polling is unchanged.
+
+Resources: /Users/jango/Documents/jb/v6/evm/AGENTS.md, workflow/ponytail/SKILL.md, docs/PLAN_REFINEMENT.md, web/AGENTS.md.
+
 # Sticky client convergence, 2026-10-24
 
 ## Plan refinement

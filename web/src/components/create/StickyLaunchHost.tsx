@@ -11,7 +11,8 @@ import { displayChainName, explorerTxUrl } from '@/lib/chainDisplay'
 import type { ChainEnvironment } from '@/lib/chains'
 import { STICKY_LAUNCH_EVENT, takeStickyLaunchRequest } from '@/lib/sticky-launch-events'
 import type { LaunchPlan } from '@/lib/sticky-launch-plan'
-import { STICKY_LAUNCH_KEY, launchActions, type StickyLaunchSession } from '@/lib/sticky-launch-session'
+import { REFRESH_MS } from '@/lib/query-reads'
+import { STICKY_LAUNCH_KEY, launchActions, launchAtRest, type StickyLaunchSession } from '@/lib/sticky-launch-session'
 
 const CreateForm = dynamic(() => import('./StickyCreateForm').then(module => module.StickyCreateForm), { loading: () => <p role="status">Loading create form…</p> })
 // The SDK's saved-attempt recovery loads with the launch adapter, never on a page without a saved launch.
@@ -47,8 +48,12 @@ export function StickyLaunchHost() {
   /** A press is queued or running: a second press is ignored. */
   const pressing = useRef(false)
 
+  /** The saved launch has nothing left to confirm or record: the timer leaves it alone. */
+  const resting = useRef(false)
+
   const changed = useCallback((next: StickyLaunchSession | null) => {
     setSession(next)
+    resting.current = !!next && launchAtRest(next)
     const results = JSON.stringify(next?.results ?? {})
     if (results !== lastResults.current) {
       lastResults.current = results
@@ -111,7 +116,8 @@ export function StickyLaunchHost() {
     // The background check is skipped, never queued, while other launch work is running.
     const check = () => { if (!document.hidden && !queued.current) void action(async current => { await current.refresh(); setGeneration(value => value + 1) }, true) }
     check()
-    const interval = window.setInterval(check, 12_000)
+    // A launch at rest is still checked when it is restored, when the tab is shown again and before every action.
+    const interval = window.setInterval(() => { if (!resting.current) check() }, REFRESH_MS)
     document.addEventListener('visibilitychange', check)
     return () => { window.clearInterval(interval); document.removeEventListener('visibilitychange', check) }
   }, [savedLaunchId, corrupt, restoring, action])

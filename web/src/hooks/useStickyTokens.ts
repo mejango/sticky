@@ -25,7 +25,7 @@ type HolderTranches = TranchePage & { now: number }
  * The page `requestedPage` of `holder`'s tranches, read at the block of the holder's `position` (the Stick card's): so
  * the tranches and the stick beside them are one block's, and the block's time is what their ages are measured at.
  * Nothing is read before there is a position, which waits for the project, or while the tab's panel is hidden. The
- * position is read again every 15 seconds and when the tab is shown again, and each block it is read at is a page of its
+ * position is read again every 30 seconds and when the tab is shown again, and each block it is read at is a page of its
  * own here: the tranches follow it, and the panel, shown again, reads the page of the block the position is at. The
  * browser never keeps them: they are an account's. Another page is read while the one shown stays; another account's
  * page never does.

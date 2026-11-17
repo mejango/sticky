@@ -131,11 +131,10 @@ async function checkLaunch(plan: LaunchPlan) {
   requireSingleHomeChain(plan.targets)
 }
 
-/** A proposal hash is saved before polling and is never mistaken for an onchain receipt hash. */
+/** A proposal hash is saved before polling and is never mistaken for an onchain receipt hash. The first look is at
+ * once, and the SDK's own interval (5 s) paces the rest. */
 async function resolveSafe(chainId: number, hash: Hex, timeoutMs = 15_000): Promise<Hex> {
-  return waitForSafeExecutionHash(chainId, hash, {
-    client: clientFor(chainId), signal: AbortSignal.timeout(timeoutMs), pollingIntervalMs: 1_000,
-  })
+  return waitForSafeExecutionHash(chainId, hash, { client: clientFor(chainId), signal: AbortSignal.timeout(timeoutMs) })
 }
 
 /** A launch's saved attempt, as the SDK recovers it: which submission, the chain's client and what was saved. */

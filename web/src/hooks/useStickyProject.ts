@@ -6,7 +6,7 @@ import { useKeptQuery } from '@/hooks/useKeptQuery'
 import { untilAborted } from '@/lib/hook-logs'
 import { inTurn } from '@/lib/in-turn'
 import { PERSIST } from '@/lib/query-persist'
-import { FRESH_MS, warned } from '@/lib/query-reads'
+import { FRESH_MS, REFRESH_MS, warned } from '@/lib/query-reads'
 import { stickyDeployment } from '@/lib/sticky-addresses'
 import { scanToHead, stickyEvents, type StickyEventKind, type StickyEventsResult } from '@/lib/sticky-events'
 import { FEED_WINDOW, feedRows, terminalMoves, type FeedRow } from '@/lib/sticky-feed'
@@ -39,8 +39,6 @@ import { readStickyProject, type StickyProjectInfo } from '@/lib/sticky-project'
  * until it is read again. A kept key is written out, `projectKey`'s parts and then the version, as the persist-scope
  * test reads it. */
 const PROJECT_VERSION = 'v1'
-/** How often the viewer's stick is read again while the page is in view. */
-const POSITION_REFRESH_MS = 15_000
 
 const PROJECT_UNREADABLE = 'Could not read a Sticky project; its page offers to try again.'
 const HISTORY_UNREADABLE =
@@ -197,7 +195,7 @@ export function useProjectLatest(chainId: number, projectId: number) {
 
 /**
  * The stick of `holder` (the viewed account, or the connected one) in a project, once the project is known. It is read
- * again every 15 seconds while the tab is in view and as soon as the tab is shown again, and the browser never keeps
+ * again every 30 seconds while the tab is in view and as soon as the tab is shown again, and the browser never keeps
  * it: it is an account's.
  */
 export function useStickyPosition(
@@ -213,7 +211,7 @@ export function useStickyPosition(
         readStickyPosition(chainId, info!, holder!, { signal }),
       ),
     enabled: holder !== null && info !== undefined,
-    refetchInterval: POSITION_REFRESH_MS,
+    refetchInterval: REFRESH_MS,
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: 'always',
   })

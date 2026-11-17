@@ -20,6 +20,7 @@ import {
   type FakeChain,
 } from '../account-fixtures'
 import { POSITION_TOPICS, deployment, staked, streakStarted, topic, unstaked } from '../lib/sticky-log-fixtures'
+import { siteClient } from '../panel-fixtures'
 
 const mocks = vi.hoisted(() => ({
   positions: vi.fn(),
@@ -558,7 +559,7 @@ describe('the account\'s positions, past the block Bendystraw is indexed through
 
     // The index still has not caught up, but the chain has the new position.
     tails[8453] = [opened(24n)]
-    await act(async () => void (await vi.advanceTimersByTimeAsync(15_000)))
+    await act(async () => void (await vi.advanceTimersByTimeAsync(30_000)))
     expect(mocks.scan.mock.calls.filter(([chainId]) => chainId === 8453)).toHaveLength(2)
     expect(hrefs()).toEqual(['/base:23', '/base:24'])
   })
@@ -752,7 +753,7 @@ describe('the account\'s positions, as they are read again', () => {
   })
   const later = (ms: number) => act(async () => void (await vi.advanceTimersByTimeAsync(ms)))
 
-  it('reads every 15 seconds, from Bendystraw and from the chain, and shows the balance the chain now holds', async () => {
+  it('reads every 30 seconds, from Bendystraw and from the chain, and shows the balance the chain now holds', async () => {
     mocks.positions.mockResolvedValue(listing([positionRow(8453, 23n)]))
     world[8453] = { '23': { symbol: 'CPN', staked: E18 } }
     await act(async () => root.render(inClient(<AccountPositions address={CHECKSUMMED} network="mainnet" />)))
@@ -761,14 +762,14 @@ describe('the account\'s positions, as they are read again', () => {
     expect(balanceReads(8453)).toHaveLength(1)
 
     world[8453] = { '23': { symbol: 'CPN', staked: 3n * E18, supply: 3n * E18, backing: 3n * E18 } }
-    await later(14_999)
+    await later(29_999)
     expect(balanceReads(8453)).toHaveLength(1)
     await later(1)
     expect(balanceReads(8453)).toHaveLength(2)
     expect(mocks.positions).toHaveBeenCalledTimes(2)
     expect(cards()[0].textContent).toContain('Stuck: 3 CPN')
 
-    await later(15_000)
+    await later(30_000)
     expect(balanceReads(8453)).toHaveLength(3)
   })
 
@@ -780,11 +781,11 @@ describe('the account\'s positions, as they are read again', () => {
     expect(cards()).toHaveLength(1)
 
     mocks.positions.mockResolvedValue(listing([positionRow(8453, 23n), positionRow(8453, 24n)]))
-    await later(15_000)
+    await later(30_000)
     expect(cards().map(card => card.getAttribute('href'))).toEqual(['/base:23', '/base:24'])
   })
 
-  it('reads nothing while the tab is hidden, and again on the next 15 seconds once it is shown', async () => {
+  it('reads nothing while the tab is hidden, and again on the next 30 seconds once it is shown', async () => {
     mocks.positions.mockResolvedValue(listing([positionRow(8453, 23n)]))
     world[8453] = { '23': { staked: E18 } }
     await act(async () => root.render(inClient(<AccountPositions address={CHECKSUMMED} network="mainnet" />)))
@@ -797,8 +798,27 @@ describe('the account\'s positions, as they are read again', () => {
     expect(mocks.positions).toHaveBeenCalledTimes(1)
 
     hidden.visibility = 'visible'
-    await later(15_000)
+    await later(30_000)
     expect(balanceReads(8453)).toHaveLength(2)
+  })
+
+  it('reads again at once when the tab is shown again with stale positions', async () => {
+    mocks.positions.mockResolvedValue(listing([positionRow(8453, 23n)]))
+    world[8453] = { '23': { staked: E18 } }
+    // Providers' defaults refetch nothing on focus; the positions are read again anyway, once they are stale.
+    const site = siteClient()
+    await act(async () => root.render(<QueryClientProvider client={site}><AccountPositions address={CHECKSUMMED} network="mainnet" /></QueryClientProvider>))
+    await later(0)
+    hidden.visibility = 'hidden'
+    await act(async () => void document.dispatchEvent(new Event('visibilitychange', { bubbles: true })))
+    await later(45_000)
+    expect(balanceReads(8453)).toHaveLength(1)
+
+    hidden.visibility = 'visible'
+    await act(async () => void document.dispatchEvent(new Event('visibilitychange', { bubbles: true })))
+    await later(0)
+    expect(balanceReads(8453)).toHaveLength(2)
+    site.clear()
   })
 
   it('keeps to two chains at a time as it reads them again, and does not read a chain again while its read is under way', async () => {
@@ -807,7 +827,7 @@ describe('the account\'s positions, as they are read again', () => {
     world[10] = { '4': { staked: E18 } }
     await act(async () => root.render(inClient(<AccountPositions address={CHECKSUMMED} network="mainnet" />)))
     await later(0)
-    await later(15_000)
+    await later(30_000)
     expect(chainsOf(calls)).toEqual(MAINNET)
     expect(mostChainsAtOnce(calls)).toBe(2)
     expect(balanceReads(1)).toHaveLength(2)
@@ -822,7 +842,7 @@ describe('the account\'s positions, as they are read again', () => {
       const multicall = chain.multicall.bind(chain)
       return { ...chain, multicall: async (parameters: never) => (started.push(chainId), await stuck.promise, multicall(parameters)) }
     })
-    await later(15_000)
+    await later(30_000)
     await later(60_000)
     expect(started).toEqual([1, 10])
 
