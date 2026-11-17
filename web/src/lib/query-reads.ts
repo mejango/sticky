@@ -10,12 +10,14 @@ export const FRESH_MS = 30_000
 export const REFRESH_MS = 30_000
 
 /**
- * Viewer evidence is reused for one refresh interval when a panel or tab is shown again. Polling and explicit
- * post-transaction invalidation still refresh it, and final send guards read live state independently. These
- * account-scoped queries stay in memory only; query persistence never stores them in the browser.
+ * Viewer evidence is reused for half a refresh interval when a panel or tab is shown again: a panel reopened on
+ * fresh evidence starts a new interval without reading, so reuse for a whole interval would let it show evidence two
+ * intervals old. Polling and explicit post-transaction invalidation still refresh it, and final send guards read
+ * live state independently. These account-scoped queries stay in memory only; query persistence never stores them
+ * in the browser.
  */
 export const VIEWER_REFRESH = {
-  staleTime: REFRESH_MS,
+  staleTime: REFRESH_MS / 2,
   refetchInterval: REFRESH_MS,
   refetchIntervalInBackground: false,
   refetchOnWindowFocus: true,
