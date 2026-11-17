@@ -655,11 +655,13 @@ describe('durable Sticky launch controller', () => {
 })
 
 describe('launchAtRest', () => {
-  const result = { hash: H1, projectId: '9', token: TOKEN }
+  const result = { hash: H1, projectId: '9', token: TOKEN, final: true as const }
   const done = (overrides: Partial<StickyLaunchSession> = {}): StickyLaunchSession => ({ version: 1, plan: plan(), mode: 'direct', published: false,
     candidates: {}, results: { 84532: result }, listing: { state: 'pending', recorded: {} }, ...overrides })
-  it('rests only once every pool is verified and nothing is left to confirm, publish, record or mend', () => {
+  it('rests only once every pool is verified in a finalized block and nothing is left to confirm, publish, record or mend', () => {
     expect(launchAtRest(done())).toBe(true)
+    // A verified receipt that a reorg can still drop keeps the launch on the timer.
+    expect(launchAtRest(done({ results: { 84532: { hash: H1, projectId: '9', token: TOKEN } } }))).toBe(false)
     expect(launchAtRest(done({ listing: { state: 'published', intentId: 'i', recorded: { 84532: H1 } } }))).toBe(true)
     expect(launchAtRest(done({ payment: { started: true, hash: H2, confirmed: true } as StickyLaunchSession['payment'] }))).toBe(true)
     expect(launchAtRest(done({ results: {} }))).toBe(false)

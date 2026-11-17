@@ -67,10 +67,29 @@ function fixture(mode: StickyLaunchSession['mode'] = 'direct') {
 beforeEach(() => { safe.read.mockResolvedValue({ status: 'success' }) })
 
 describe('canonical Sticky launch proof', () => {
+  it('marks a deployment final only at or below a canonical finalized block that still includes it', async () => {
+    const included = { hash: BLOCK, number: 42n, timestamp: 100n, transactions: [HASH] }
+    const at = (number: bigint) => ({ hash: OTHER_HASH, number, timestamp: 200n, transactions: [] as Hex[] })
+    const withFinalized = (finalized: bigint, late: object = included) => {
+      const proof = fixture()
+      let reads = 0
+      proof.reader.getBlock.mockImplementation((async (args: { blockNumber?: bigint; blockTag?: string }) =>
+        args.blockTag === 'finalized' ? (finalized === 42n ? included : at(finalized))
+          : args.blockNumber === 42n ? (++reads > 2 ? late : included) : at(args.blockNumber!)) as never)
+      return proof.verify()
+    }
+    expect(await withFinalized(100n)).toEqual({ hash: HASH, projectId: '5', token: STICKY, final: true })
+    expect(await withFinalized(42n)).toEqual({ hash: HASH, projectId: '5', token: STICKY, final: true })
+    expect(await withFinalized(41n)).toEqual({ hash: HASH, projectId: '5', token: STICKY })
+    // The block left the chain between the proof and the finalized read: verified as read, never final.
+    expect(await withFinalized(100n, { ...included, hash: OTHER_HASH })).toEqual({ hash: HASH, projectId: '5', token: STICKY })
+  })
+
   it('proves the raw reviewed call and both creation events, with canonicality checked twice', async () => {
     const proof = fixture()
     expect(await proof.verify()).toEqual({ hash: HASH, projectId: '5', token: STICKY })
-    expect(proof.reader.getBlock).toHaveBeenCalledTimes(2)
+    // Twice for canonicality, and once for the finalized block, which this node does not serve.
+    expect(proof.reader.getBlock.mock.calls).toEqual([[{ blockNumber: 42n }], [{ blockNumber: 42n }], [{ blockTag: 'finalized' }]])
     expect(safe.read).not.toHaveBeenCalled()
     for (const mode of ['relayr', 'center'] as const) {
       const sponsored = fixture(mode)

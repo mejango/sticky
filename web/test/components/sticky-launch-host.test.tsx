@@ -336,12 +336,35 @@ describe('global Sticky launch host', () => {
     expect(mocks.prepare).not.toHaveBeenCalled()
   })
 
+  it('keeps a verified launch on the timer until its deployment is final, so a reorg shows while the tab stays open', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    localStorage.setItem(STICKY_LAUNCH_KEY, 'saved')
+    mocks.load.mockReturnValue(saved())
+    const verified = { hash: HASH, projectId: '9', token: ADDRESS }
+    mocks.refresh.mockImplementation(async () => mocks.changed?.(saved({ results: { 84532: verified } })))
+    await mount()
+    expect(mocks.refresh).toHaveBeenCalledOnce()
+    expect(container.textContent).toContain('pool confirmed')
+    // The block is reorged out: the next check finds no deployment, and the launch reads as pending again.
+    mocks.refresh.mockImplementation(async () => mocks.changed?.(saved({ direct: { started: true, hash: HASH } })))
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(mocks.refresh).toHaveBeenCalledTimes(2)
+    expect(container.textContent).toContain('pool pending')
+    // Verified again and now final: one more check, then none.
+    mocks.refresh.mockImplementation(async () => mocks.changed?.(saved({ results: { 84532: { ...verified, final: true } } })))
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(mocks.refresh).toHaveBeenCalledTimes(3)
+    await act(async () => { await vi.advanceTimersByTimeAsync(120_000) })
+    expect(mocks.refresh).toHaveBeenCalledTimes(3)
+  })
+
   it('leaves a launch at rest off the timer, and checks it again when the tab is shown again', async () => {
     vi.useFakeTimers()
     const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
     localStorage.setItem(STICKY_LAUNCH_KEY, 'saved')
     mocks.load.mockReturnValue(saved())
-    mocks.refresh.mockImplementation(async () => mocks.changed?.(saved({ results: { 84532: { hash: HASH, projectId: '9', token: ADDRESS } } })))
+    mocks.refresh.mockImplementation(async () => mocks.changed?.(saved({ results: { 84532: { hash: HASH, projectId: '9', token: ADDRESS, final: true } } })))
     await mount()
     expect(mocks.refresh).toHaveBeenCalledOnce()
     await act(async () => { await vi.advanceTimersByTimeAsync(120_000) })
