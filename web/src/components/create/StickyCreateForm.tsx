@@ -66,7 +66,7 @@ export function StickyCreateForm({ environment, busy, prepare, working, failed }
       </div>
       <p className="text-xs text-muted">Blank names use the backing token’s name and symbol.</p>
       <label className="block space-y-1 text-sm font-medium">Stickiness bonus
-        <select className={inputClass} value={bonus} onChange={event => setBonus(event.target.value)}>
+        <select className={`${inputClass} select-caret pr-9`} value={bonus} onChange={event => setBonus(event.target.value)}>
           {BONUS_PRESETS.map(value => <option key={value} value={value}>{value}%</option>)}
           <option value="custom">Custom</option>
         </select>
@@ -76,7 +76,7 @@ export function StickyCreateForm({ environment, busy, prepare, working, failed }
       </label> : null}
       <p className="text-xs text-muted">A higher bonus leaves more backing for holders who remain. The exact amount depends on the share of total supply being unstuck.</p>
       <label className="block space-y-1 text-sm font-medium">Networks
-        <select className={inputClass} value={network} onChange={event => {
+        <select className={`${inputClass} select-caret pr-9`} value={network} onChange={event => {
           const next = event.target.value as ChainEnvironment
           setNetwork(next); setHomeChainId(defaultChain(next))
         }}><option value="production">Mainnets</option><option value="testnet">Testnets</option></select>

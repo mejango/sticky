@@ -167,7 +167,7 @@ export function StickyLaunchHost() {
             {!complete ? <details className="text-sm"><summary className="cursor-pointer font-medium">Recover with a transaction hash</summary>
               <p className="my-2 text-muted">Use the mined deployment transaction. It will be checked against this saved launch before it counts as confirmed.</p>
               <form className="flex flex-wrap gap-2" onSubmit={event => { event.preventDefault(); if (chainId && isHash(hash)) void action(current => current.addHash(chainId, hash as Hex)) }}>
-                <select aria-label="Recovery chain" className="rounded border border-line bg-card p-2" value={chainId} disabled={busy} onChange={event => setHashChain(Number(event.target.value))}>{session.plan.targets.map(target => <option key={target.chainId} value={target.chainId}>{displayChainName(target.chainId)}</option>)}</select>
+                <select aria-label="Recovery chain" className="select-caret rounded border border-line bg-card p-2 pr-9" value={chainId} disabled={busy} onChange={event => setHashChain(Number(event.target.value))}>{session.plan.targets.map(target => <option key={target.chainId} value={target.chainId}>{displayChainName(target.chainId)}</option>)}</select>
                 <input aria-label="Deployment transaction hash" className="min-w-0 flex-1 rounded border border-line bg-card p-2" value={hash} onChange={event => setHash(event.target.value)} placeholder="0x…" disabled={busy} />
                 <button className="btn-secondary px-3 py-2" disabled={busy || !isHash(hash)}>Check transaction</button>
               </form>

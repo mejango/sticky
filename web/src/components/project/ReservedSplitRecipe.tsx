@@ -77,7 +77,7 @@ function ReservedSplitForm({ info, onFunded }: { info: StickyProjectInfo; onFund
         <p className="text-muted">Route a Juicebox V6 project’s reserved tokens to this pool on {chainName(info.chainId)}. Anyone can deliver queued rewards; source owners configure the split.</p>
         <div>
           <label htmlFor={`${id}-source`} className={FIELD_LABEL}>Source chain</label>
-          <select id={`${id}-source`} className={FIELD_INPUT} value={sourceChainId} onChange={event => { invalidate(); setSourceChainId(Number(event.target.value)) }}>
+          <select id={`${id}-source`} className={`${FIELD_INPUT} select-caret pr-9`} value={sourceChainId} onChange={event => { invalidate(); setSourceChainId(Number(event.target.value)) }}>
             {choices.map(chain => <option key={chain.id} value={chain.id}>{chainName(chain.id)}</option>)}
           </select>
         </div>
@@ -91,8 +91,8 @@ function ReservedSplitForm({ info, onFunded }: { info: StickyProjectInfo; onFund
         {error ? <p role="alert" className="text-err">{error}</p> : null}
         {sources.length > 1 ? <div>
           <label htmlFor={`${id}-route`} className={FIELD_LABEL}>Direct route</label>
-          <select id={`${id}-route`} className={FIELD_INPUT} value={selectedIndex} onChange={event => setSelectedIndex(Number(event.target.value))}>
-            {sources.map((source, index) => <option key={source.bridgeRoute ? bridgeRouteId(source.bridgeRoute) : 'local'} value={index}>{source.bridgeRoute?.backingMeta.symbol} · {source.bridgeRoute?.sourceSucker}</option>)}
+          <select id={`${id}-route`} className={`${FIELD_INPUT} select-caret pr-9`} value={selectedIndex} onChange={event => setSelectedIndex(Number(event.target.value))}>
+            {sources.map((source, index) => <option key={source.bridgeRoute ? bridgeRouteId(source.bridgeRoute) : 'local'} value={index}>{source.bridgeRoute?.backingMeta.symbol}, {source.bridgeRoute?.sourceSucker}</option>)}
           </select>
         </div> : null}
         {selected ? <>
