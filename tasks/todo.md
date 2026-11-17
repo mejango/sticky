@@ -8,11 +8,13 @@
 - **Verification:** Each change gets a vitest regression that fails without it (interval values, refetch on return, 429 retry rule, at-rest launch does not poll, Safe wait interval), then the full `npm run check` gate in web/ with the browser suite on port 3193 until it exits 0.
 - **Resource budget:** One bounded source census (done), five small edits with tests, one full gate run plus reruns on failure. Replan only if a consumer needs a faster-changing value from a poll being slowed, or a gate step fails for a reason unrelated to this diff.
 
-- [ ] One 30 s viewer refresh interval for positions, account positions and Airdrops reads; account positions refetch on return to the tab.
-- [ ] Launch host checks every 30 s and not at all on the timer once the launch is at rest.
-- [ ] Safe execution wait uses the SDK's 5 s interval.
-- [ ] Default query retry skips a 429.
-- [ ] Full gate, review notes.
+- [x] One 30 s viewer refresh interval for positions, account positions and Airdrops reads; account positions refetch on return to the tab.
+- [x] Launch host checks every 30 s and not at all on the timer once the launch is at rest.
+- [x] Safe execution wait uses the SDK's 5 s interval.
+- [x] Default query retry skips a 429.
+- [x] Full gate, review notes.
+
+Review: `npm run check` exits 0 with ports 3193 to 3195: 3887 unit tests in 174 files, 54 browser tests, budgets pass. The first run failed at audit:prod on a Next advisory that origin/main has too; Next 16.4.6 mends it. Not measured on a live network; SDK-internal polling is unchanged.
 
 Resources: /Users/jango/Documents/jb/v6/evm/AGENTS.md, workflow/ponytail/SKILL.md, docs/PLAN_REFINEMENT.md, web/AGENTS.md.
 
