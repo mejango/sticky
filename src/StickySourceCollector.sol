@@ -432,7 +432,7 @@ contract StickySourceCollector is IStickySourceCollector, ReentrancyGuard {
         });
 
         // The child has no source allowance; fee-triggered reserve callbacks can only add attributed parent custody.
-        (uint256 feeTokenCount, uint256 refundedTransportPayment) = FEE_PAYER.send{value: msg.value}({
+        uint256 refundedTransportPayment = FEE_PAYER.send{value: msg.value}({
             sucker: sucker,
             backingToken: backingToken,
             beneficiary: payable(msg.sender),
@@ -455,7 +455,6 @@ contract StickySourceCollector is IStickySourceCollector, ReentrancyGuard {
             index: leafIndex,
             projectTokenCount: amount,
             minimumReclaimed: minimumReclaimed,
-            feeTokenCount: feeTokenCount,
             refundedTransportPayment: refundedTransportPayment,
             caller: msg.sender
         });

@@ -33,20 +33,11 @@ interface IStickySourceFeePayer {
     /// @return amount The native balance contributed, in wei.
     function addFeeRefundToBalance(IJBTerminal terminal) external returns (uint256 amount);
 
-    /// @notice Submits the parent's prepared outbox and returns its fee tokens and source-chain native refunds.
-    /// @dev Only the configured collector can call and must authenticate the route first. Native value covers the
-    /// registry fee, with any excess supplied to the transport. A positive registry fee requires its project's ERC-20;
-    /// a zero fee skips payment and can use a project without an ERC-20. LINK payment is not provided. This child
-    /// rejects direct native refunds, causing supported suckers to retain them as source-chain credit; it claims that
-    /// fresh credit directly to the beneficiary. This call does not attribute or return an asynchronous destination
-    /// refund. A matching destination-family collector can separately contribute a raw native balance to the protocol
-    /// fee project; aliased gateway balances remain outside this child. A rejected token transfer, source-chain refund
-    /// or credit postcondition reverts the parent's complete preparation and submission. The parent's send guard spans
-    /// every callback.
+    /// @notice Submits the parent's prepared outbox and returns the source-chain transport refund.
+    /// @dev Only the bound collector can call. The sucker pays the registry fee's tokens to `beneficiary` directly.
     /// @param sucker The registered sucker authenticated by the parent for this submission.
     /// @param backingToken The mapped backing asset whose prepared outbox the parent is submitting.
-    /// @param beneficiary The original caller of the parent's atomic send.
-    /// @return feeTokenCount The fee-project tokens received during submission and returned, in fee-token decimals.
+    /// @param beneficiary The original caller of the parent's atomic send, who receives the fee project's tokens.
     /// @param messagingGasLimit The destination gas limit the sucker requests from the bridge.
     /// @return refundedTransportPayment The excess transport payment retained on the source sucker and returned during
     /// this call, in wei.
@@ -58,7 +49,7 @@ interface IStickySourceFeePayer {
     )
         external
         payable
-        returns (uint256 feeTokenCount, uint256 refundedTransportPayment);
+        returns (uint256 refundedTransportPayment);
 
     /// @notice Permanently binds the deployed collector authorized to operate this fee payer.
     /// @dev Only the explicit deployment authority can call once. The collector must have deployed code and

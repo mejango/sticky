@@ -47,7 +47,6 @@ interface IStickySourceCollector is IJBSplitHook {
     /// @param index The prepared leaf index used with the sucker's leaf event to construct a destination claim.
     /// @param projectTokenCount The project-token atoms debited from the selected bucket.
     /// @param minimumReclaimed The fresh fee-adjusted reclaim minimum, in backing-token atoms; it can be zero.
-    /// @param feeTokenCount The fee-project token atoms returned to the caller for this payment.
     /// @param refundedTransportPayment The excess transport value retained on the source sucker and returned during
     /// this call, in wei.
     /// @param caller The account that funded the source submission.
@@ -60,7 +59,6 @@ interface IStickySourceCollector is IJBSplitHook {
         uint256 index,
         uint256 projectTokenCount,
         uint256 minimumReclaimed,
-        uint256 feeTokenCount,
         uint256 refundedTransportPayment,
         address caller
     );
