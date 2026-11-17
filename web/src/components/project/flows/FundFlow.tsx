@@ -275,7 +275,7 @@ function SameChainFundFlow({
             <label htmlFor={ids.from} className={FIELD_LABEL}>
               From chain
             </label>
-            <select id={ids.from} value={chainId} disabled={sending || preparing || !!plan} onChange={event => onSourceChain(Number(event.target.value) as JBChainId)} className={FIELD_INPUT}>
+            <select id={ids.from} value={chainId} disabled={sending || preparing || !!plan} onChange={event => onSourceChain(Number(event.target.value) as JBChainId)} className={`${FIELD_INPUT} select-caret pr-9`}>
               {chainsForEnvironment(environmentForChainIds([chainId])).map(chain => <option key={chain.id} value={chain.id}>{chainName(chain.id)}</option>)}
             </select>
           </div>
