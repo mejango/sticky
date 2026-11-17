@@ -16,6 +16,7 @@ import { lazyCenterConnector } from './lazy-center-connector'
 import { externalWalletConnectors } from './wallet-connectors'
 import { CENTER_WALLET_ENABLED } from './wallet-config'
 import { ProjectRouteProvider } from './ProjectRouteContext'
+import { isRateLimited } from '@bananapus/nana-sdk-core/jbcenter'
 import { arbitrum, arbitrumSepolia, base, baseSepolia, mainnet, optimism, optimismSepolia, sepolia } from '@bananapus/nana-sdk-core/chains'
 
 // The sign-in dialog loads when it is first opened; the wallet button fetches it as the pointer arrives (preload-center).
@@ -45,9 +46,12 @@ export const wagmiConfig = createConfig({ chains: SUPPORTED_CHAINS, transports,
     ...(CENTER_WALLET_ENABLED ? [lazyCenterConnector()] : []), ...externalWalletConnectors()],
   multiInjectedProviderDiscovery: !IS_DETERMINISTIC_BROWSER, ssr: true })
 
+/** A read that fails is tried once more, unless it was refused for its rate: asking again lands in the same window. */
+export const retryOnce = (failures: number, error: unknown) => failures < 1 && !isRateLimited(error)
+
 export function Providers({ children }: PropsWithChildren) {
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: {
-    staleTime: 30_000, gcTime: 10 * 60_000, retry: 1, refetchOnWindowFocus: false,
+    staleTime: 30_000, gcTime: 10 * 60_000, retry: retryOnce, refetchOnWindowFocus: false,
   } } }))
   // What the browser kept of earlier visits is restored at once. Its reads go through useKeptQuery, which renders what
   // the server rendered until the component has hydrated, whatever the cache holds, and the kept copy right after.
