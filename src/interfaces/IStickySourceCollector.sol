@@ -48,7 +48,6 @@ interface IStickySourceCollector is IJBSplitHook {
     /// @param projectTokenCount The project-token atoms debited from the selected bucket.
     /// @param minimumReclaimed The fresh fee-adjusted reclaim minimum, in backing-token atoms; it can be zero.
     /// @param feeTokenCount The fee-project token atoms returned to the caller for this payment.
-    /// @param refundedFee The failed registry fee retained on the source sucker and returned during this call, in wei.
     /// @param refundedTransportPayment The excess transport value retained on the source sucker and returned during
     /// this call, in wei.
     /// @param caller The account that funded the source submission.
@@ -62,7 +61,6 @@ interface IStickySourceCollector is IJBSplitHook {
         uint256 projectTokenCount,
         uint256 minimumReclaimed,
         uint256 feeTokenCount,
-        uint256 refundedFee,
         uint256 refundedTransportPayment,
         address caller
     );
@@ -151,6 +149,8 @@ interface IStickySourceCollector is IJBSplitHook {
     /// @param sucker The project's registered source sucker with a peer on the configured home chain and usable
     /// backing mapping.
     /// @param backingToken The source terminal token to cash out and bridge, including a supported mapped ERC-20.
+    /// @param messagingGasLimit The destination gas limit the sucker requests from the bridge. There is no protocol
+    /// default; size it by simulating the home chain's `fromRemote`.
     /// @return leafIndex The newly prepared leaf's index in the selected backing asset's source outbox.
     function send(
         uint256 sourceProjectId,
@@ -158,7 +158,8 @@ interface IStickySourceCollector is IJBSplitHook {
         uint256 groupId,
         uint256 amount,
         IJBSucker sucker,
-        address backingToken
+        address backingToken,
+        uint256 messagingGasLimit
     )
         external
         payable

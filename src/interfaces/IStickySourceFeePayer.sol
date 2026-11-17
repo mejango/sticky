@@ -47,17 +47,18 @@ interface IStickySourceFeePayer {
     /// @param backingToken The mapped backing asset whose prepared outbox the parent is submitting.
     /// @param beneficiary The original caller of the parent's atomic send.
     /// @return feeTokenCount The fee-project tokens received during submission and returned, in fee-token decimals.
-    /// @return refundedFee The failed registry fee retained on the source sucker and returned during this call, in wei.
+    /// @param messagingGasLimit The destination gas limit the sucker requests from the bridge.
     /// @return refundedTransportPayment The excess transport payment retained on the source sucker and returned during
     /// this call, in wei.
     function send(
         IJBSucker sucker,
         address backingToken,
-        address payable beneficiary
+        address payable beneficiary,
+        uint256 messagingGasLimit
     )
         external
         payable
-        returns (uint256 feeTokenCount, uint256 refundedFee, uint256 refundedTransportPayment);
+        returns (uint256 feeTokenCount, uint256 refundedTransportPayment);
 
     /// @notice Permanently binds the deployed collector authorized to operate this fee payer.
     /// @dev Only the explicit deployment authority can call once. The collector must have deployed code and

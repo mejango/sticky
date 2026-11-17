@@ -403,7 +403,8 @@ contract StickySourceCollector is IStickySourceCollector, ReentrancyGuard {
         uint256 groupId,
         uint256 amount,
         IJBSucker sucker,
-        address backingToken
+        address backingToken,
+        uint256 messagingGasLimit
     )
         external
         payable
@@ -431,10 +432,11 @@ contract StickySourceCollector is IStickySourceCollector, ReentrancyGuard {
         });
 
         // The child has no source allowance; fee-triggered reserve callbacks can only add attributed parent custody.
-        (uint256 feeTokenCount, uint256 refundedFee, uint256 refundedTransportPayment) = FEE_PAYER.send{
-            value: msg.value
-        }({
-            sucker: sucker, backingToken: backingToken, beneficiary: payable(msg.sender)
+        (uint256 feeTokenCount, uint256 refundedTransportPayment) = FEE_PAYER.send{value: msg.value}({
+            sucker: sucker,
+            backingToken: backingToken,
+            beneficiary: payable(msg.sender),
+            messagingGasLimit: messagingGasLimit
         });
         uint256 sentCount = sucker.outboxOf(backingToken).numberOfClaimsSent;
         if (sentCount <= leafIndex) {
@@ -454,7 +456,6 @@ contract StickySourceCollector is IStickySourceCollector, ReentrancyGuard {
             projectTokenCount: amount,
             minimumReclaimed: minimumReclaimed,
             feeTokenCount: feeTokenCount,
-            refundedFee: refundedFee,
             refundedTransportPayment: refundedTransportPayment,
             caller: msg.sender
         });
@@ -593,11 +594,8 @@ contract StickySourceCollector is IStickySourceCollector, ReentrancyGuard {
         // Claim only what this delivery needs; core authenticates this contract as the holder of the credits.
         IJBController(address(DIRECTORY.controllerOf(sourceProjectId)))
             .claimTokensFor({
-                holder: address(this),
-                projectId: sourceProjectId,
-                tokenCount: amount - balance,
-                beneficiary: address(this)
-            });
+            holder: address(this), projectId: sourceProjectId, tokenCount: amount - balance, beneficiary: address(this)
+        });
         uint256 afterBalance = token.balanceOf(address(this));
         if (afterBalance < amount) {
             revert StickySourceCollector_UnexpectedClaimBalance({
@@ -636,13 +634,13 @@ contract StickySourceCollector is IStickySourceCollector, ReentrancyGuard {
         // slither-disable-next-line unused-return
         (, uint256 grossReclaimed,,) = IJBCashOutTerminal(address(terminal))
             .previewCashOutFrom({
-                holder: address(sucker),
-                projectId: sourceProjectId,
-                cashOutCount: amount,
-                tokenToReclaim: backingToken,
-                beneficiary: payable(address(sucker)),
-                metadata: ""
-            });
+            holder: address(sucker),
+            projectId: sourceProjectId,
+            cashOutCount: amount,
+            tokenToReclaim: backingToken,
+            beneficiary: payable(address(sucker)),
+            metadata: ""
+        });
         minimumReclaimed = grossReclaimed - JBFees.standardFeeAmountFrom(grossReclaimed);
 
         // Bound both custody spend and leaf identity, then leave no allowance for a later external call.
