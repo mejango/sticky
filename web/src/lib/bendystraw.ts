@@ -4,7 +4,8 @@
  * it goes to the indexer of its network. Documents are static strings built
  * from module constants, and `npm run bendystraw:registry` registers them.
  * A caller's `signal` cancels the request under way, and the transport does
- * not retry a request that was cancelled.
+ * not retry a request that was cancelled. A request the indexer refused for
+ * its rate fails as a 429, which no caller's retry rule asks again.
  */
 
 import {
@@ -54,6 +55,8 @@ export async function bendystraw<T>(
     network?: BendystrawNetwork
     /** `'no-store'` bypasses Next's fetch cache, which keeps a disk file for every distinct request. */
     policy?: BendystrawCachePolicy | 'no-store'
+    /** Ask the indexer once. The relay passes it: the browser's request behind it does the retrying. */
+    once?: boolean
     signal?: AbortSignal
   } = {},
 ): Promise<T> {
@@ -85,23 +88,39 @@ export async function bendystraw<T>(
               revalidate: bendystrawCacheTtl(opts.policy ?? 'stable') / 1_000,
             },
           }
-  return requestBendystraw<T, Record<string, unknown>>(
-    selectBendystrawEndpoint(
-      { mainnet: MAINNET_URL, testnet: TESTNET_URL },
+  let refused: Response | undefined
+  try {
+    return await requestBendystraw<T, Record<string, unknown>>(
+      selectBendystrawEndpoint(
+        { mainnet: MAINNET_URL, testnet: TESTNET_URL },
+        {
+          chainId: opts.chainId,
+          network,
+          variables,
+        },
+      ),
+      query,
+      variables,
       {
-        chainId: opts.chainId,
-        network,
-        variables,
+        fetch: async (input, init) => {
+          const response = await fetch(input, { ...init, ...cacheOptions })
+          refused = response.status === 429 ? response : undefined
+          return response
+        },
+        operationName: contract.operationName,
+        signal: opts.signal,
+        validateData: (value): value is T => contract.validateData(value),
+        validateVariables: contract.validateVariables,
+        ...(opts.once ? { retryDelaysMs: [] } : {}),
       },
-    ),
-    query,
-    variables,
-    {
-      fetch: (input, init) => fetch(input, { ...init, ...cacheOptions }),
-      operationName: contract.operationName,
-      signal: opts.signal,
-      validateData: (value): value is T => contract.validateData(value),
-      validateVariables: contract.validateVariables,
-    },
-  )
+    )
+  } catch (error) {
+    // The indexer refuses in plain text, which the SDK reports as an invalid answer (502). Its last answer says it was
+    // the rate, with the seconds it asked for when it gave them.
+    if (!refused) throw error
+    throw Object.assign(new Error('Bendystraw refused the request for its rate', { cause: error }), {
+      status: 429,
+      retryAfter: Number(refused.headers.get('retry-after')) || undefined,
+    })
+  }
 }
