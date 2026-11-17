@@ -18,13 +18,12 @@ import {
   type AccountIndex,
   type AccountPosition,
 } from '@/lib/sticky-account'
+import { REFRESH_MS } from '@/lib/query-reads'
 import { FEED_WINDOW, type FeedRow } from '@/lib/sticky-feed'
 import { accountKey, deployedKey } from '@/lib/sticky-keys'
 
 // None of these queries is kept in the browser: each is about one account's positions or activity.
 
-/** How often a position is read again while the page is in view. */
-const POSITIONS_REFRESH_MS = 15_000
 /** How long what Bendystraw says of the account stays fresh: one read of it serves every chain's, and a refresh of the
  * positions reads it again, so that the scan past its block stays short. */
 const INDEX_FRESH_MS = 10_000
@@ -89,9 +88,9 @@ export type AccountPositionsRead = {
  * The positions an account holds on the chains of a network, read two chains at a time and drawn as each arrives.
  * Bendystraw lists them, once for the network, and each chain reads them again from StickyHook, adding the projects
  * the account's position events show past the block the listing is indexed through; when Bendystraw cannot list a
- * chain's, or those events are more than a scan may read, every Sticky project of the chain is asked. Every 15 s,
- * until the tab is hidden, they are read again. A chain whose read fails is named in `failedChains`, and the console
- * hears why; the others still show.
+ * chain's, or those events are more than a scan may read, every Sticky project of the chain is asked. Every 30 s,
+ * until the tab is hidden, they are read again, and when the tab is shown again if they are stale. A chain whose read
+ * fails is named in `failedChains`, and the console hears why; the others still show.
  */
 export function useAccountPositions(network: BendystrawNetwork, address: Address): AccountPositionsRead {
   const client = useQueryClient()
@@ -119,8 +118,9 @@ export function useAccountPositions(network: BendystrawNetwork, address: Address
         }),
       // Each request of a chain's read is retried already; a second go would only repeat its reads.
       retry: false,
-      refetchInterval: POSITIONS_REFRESH_MS,
+      refetchInterval: REFRESH_MS,
       refetchIntervalInBackground: false,
+      refetchOnWindowFocus: true,
     })),
     combine: positionsRead,
   })

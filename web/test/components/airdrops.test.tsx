@@ -16,7 +16,7 @@ import { FakeObserver, siteClient } from '../panel-fixtures'
 
 // The Airdrops tab: the viewer's rewards, their auto-stick and who they trust to stick for them. Every read is a mock;
 // the reads have tests of their own (test/lib/sticky-rewards.test.ts and sticky-autostick.test.ts). The clock is
-// fake, so the 15-second refresh happens only when a test moves it.
+// fake, so the 30-second refresh happens only when a test moves it.
 
 const mocks = vi.hoisted(() => ({
   project: vi.fn(),
@@ -612,7 +612,7 @@ describe('the rewards', () => {
 
       // Collected: the pot holds nothing more, and was never funded.
       mocks.rewards.mockResolvedValue([underlying(), { ...full, position: nothing }])
-      await settle(15_000)
+      await settle(30_000)
       await settled()
       expect(flowOf()).not.toBeNull()
 
@@ -828,12 +828,12 @@ describe('the reads behind the rewards', () => {
     expect(pots()).toHaveLength(1)
   })
 
-  it('read the cards again every 15 seconds, and not while the tab is hidden', async () => {
+  it('read the cards again every 30 seconds, and not while the tab is hidden', async () => {
     await renderTab()
     expect(mocks.rewards).toHaveBeenCalledTimes(1)
     expect(mocks.autoStick).toHaveBeenCalledTimes(1)
 
-    await settle(15_000)
+    await settle(30_000)
     expect(mocks.rewards).toHaveBeenCalledTimes(2)
     expect(mocks.autoStick).toHaveBeenCalledTimes(2)
 
@@ -845,7 +845,7 @@ describe('the reads behind the rewards', () => {
 
     hidden.mockReturnValue(false)
     state.mockReturnValue('visible')
-    await settle(15_000)
+    await settle(30_000)
     expect(mocks.rewards).toHaveBeenCalledTimes(3)
     expect(mocks.autoStick).toHaveBeenCalledTimes(3)
   })
@@ -854,7 +854,7 @@ describe('the reads behind the rewards', () => {
     await renderTab()
     const failure = new Error('429')
     mocks.rewards.mockRejectedValue(failure)
-    await settle(15_000)
+    await settle(30_000)
     expect(pots()).toHaveLength(1)
     expect(rewards().querySelector('[role="alert"]')).toBeNull()
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('rewards'), { chainId: CHAIN, projectId: 23 }, failure)
@@ -937,7 +937,7 @@ describe('the reads when the tab is shown again', () => {
 
     state.mockReturnValue('hidden')
     await act(async () => document.dispatchEvent(new Event('visibilitychange', { bubbles: true })))
-    await settle(15_001)
+    await settle(30_001)
     expect(counts()).toEqual([1, 1, 1])
     state.mockReturnValue('visible')
     await act(async () => document.dispatchEvent(new Event('visibilitychange', { bubbles: true })))
@@ -965,7 +965,7 @@ describe('a panel that is hidden', () => {
     expect(host.firstElementChild?.contains(rewards())).toBe(true)
   })
 
-  it('reads nothing of the viewer\'s, and shows what it had, and reads at once and then every 15 seconds when it is shown', async () => {
+  it('reads nothing of the viewer\'s, and shows what it had, and reads at once and then every 30 seconds when it is shown', async () => {
     await renderTab()
     expect(counts()).toEqual([1, 1, 1])
 
@@ -977,7 +977,7 @@ describe('a panel that is hidden', () => {
     await act(async () => FakeObserver.tell(true))
     await settled()
     expect(counts()).toEqual([2, 2, 2])
-    await settle(15_000)
+    await settle(30_000)
     expect(counts()).toEqual([3, 3, 3])
   })
 
@@ -997,7 +997,7 @@ describe('a panel that is hidden', () => {
     await settled()
     expect(counts()).toEqual([1, 1, 1])
     await act(async () => FakeObserver.tell(false))
-    await settle(15_001)
+    await settle(30_001)
     await act(async () => FakeObserver.tell(true))
     await settled()
     expect(counts()).toEqual([2, 2, 2])
@@ -1149,7 +1149,7 @@ describe('auto-stick', () => {
     await renderTab()
     const failure = new Error('429')
     mocks.autoStick.mockRejectedValue(failure)
-    await settle(15_000)
+    await settle(30_000)
     expect(autoStick()!.querySelector('h2')?.textContent).toBe('Auto-stick SLOPSHOP rewards')
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('auto-stick'), { chainId: CHAIN, projectId: 23 }, failure)
   })
@@ -1266,12 +1266,12 @@ describe('who can stick for the viewer', () => {
     expect(mocks.trusted).not.toHaveBeenCalled()
   })
 
-  it('reads the confirmations again every 15 seconds, and again at once when the senders the events name change', async () => {
+  it('reads the confirmations again every 30 seconds, and again at once when the senders the events name change', async () => {
     mocks.events.mockResolvedValue({ events: [trust(SENDER)], source: 'indexed', degraded: null })
     mocks.trusted.mockResolvedValue([SENDER])
     await renderTab()
     expect(mocks.trusted).toHaveBeenCalledTimes(1)
-    await settle(15_000)
+    await settle(30_000)
     expect(mocks.trusted).toHaveBeenCalledTimes(2)
 
     mocks.events.mockResolvedValue({ events: [trust(SENDER), trust(OTHER)], source: 'indexed', degraded: null })

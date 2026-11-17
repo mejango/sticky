@@ -13,7 +13,7 @@ import { E18, E6, HOLDER, stickyInfo } from '../home-fixtures'
 import { memoryStorage } from '../memory-storage'
 
 // The project page: its route, its header, its Stick card and its tabs. Every read is a mock; the real read model has
-// tests of its own. The clock is fake, so the persister's one-second write and the Stick card's 15-second refresh
+// tests of its own. The clock is fake, so the persister's one-second write and the Stick card's 30-second refresh
 // happen only when a test moves it.
 
 const mocks = vi.hoisted(() => ({
@@ -693,13 +693,13 @@ describe('the Stick card', () => {
     expect(mocks.position).toHaveBeenCalledWith(8453, expect.anything(), expect.stringMatching(new RegExp(HOLDER, 'i')), expect.anything())
   })
 
-  it('reads the viewer\'s stick again every 15 seconds, and not while the tab is hidden', async () => {
+  it('reads the viewer\'s stick again every 30 seconds, and not while the tab is hidden', async () => {
     mocks.address = VIEWER
     await renderPage('base:23')
     expect(mocks.position).toHaveBeenCalledTimes(1)
 
     mocks.position.mockResolvedValue({ ...position, wallet: 30n * E6 })
-    await settle(15_000)
+    await settle(30_000)
     expect(mocks.position).toHaveBeenCalledTimes(2)
     expect(walletLine()).toBe('30 SLOPSHOP in wallet')
 
@@ -710,7 +710,7 @@ describe('the Stick card', () => {
 
     hidden.mockReturnValue(false)
     state.mockReturnValue('visible')
-    await settle(15_000)
+    await settle(30_000)
     expect(mocks.position).toHaveBeenCalledTimes(3)
   })
 
@@ -739,7 +739,7 @@ describe('the Stick card', () => {
     await renderPage('base:23')
     const failure = new Error('429')
     mocks.position.mockRejectedValue(failure)
-    await settle(15_000)
+    await settle(30_000)
     expect(walletLine()).toBe('25 SLOPSHOP in wallet')
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('stick'), { chainId: 8453, projectId: 23 }, failure)
   })

@@ -13,7 +13,7 @@ import { memoryStorage } from '../memory-storage'
 import { FakeObserver, siteClient } from '../panel-fixtures'
 
 // The Tokens tab: what the viewer has stuck, their tranches, everyone's holdings and the stickiness bonus. Every read
-// is a mock; the read model has tests of its own (sticky-holders, sticky-tranches). The clock is fake, so the 15-second
+// is a mock; the read model has tests of its own (sticky-holders, sticky-tranches). The clock is fake, so the 30-second
 // refresh and the persister's one-second write happen only when a test moves it.
 
 const mocks = vi.hoisted(() => ({
@@ -285,7 +285,7 @@ describe('You', () => {
     expect(mocks.tranches).toHaveBeenCalledWith(8453, 23n, expect.stringMatching(new RegExp(A, 'i')), 0, 100n, expect.anything())
   })
 
-  it('reads the stick again every 15 seconds and the tranches at each block it is read at, and neither while the browser tab is hidden', async () => {
+  it('reads the stick again every 30 seconds and the tranches at each block it is read at, and neither while the browser tab is hidden', async () => {
     mocks.address = VIEWER
     let block = 100n
     mocks.position.mockImplementation(async () => ({ ...position, blockNumber: (block += 1n) }))
@@ -294,7 +294,7 @@ describe('You', () => {
     expect(mocks.tranches).toHaveBeenCalledTimes(1)
     expect(mocks.tranches).toHaveBeenLastCalledWith(8453, 23n, VIEWER, 0, 101n, expect.anything())
 
-    await settle(15_000)
+    await settle(30_000)
     expect(mocks.position).toHaveBeenCalledTimes(2)
     expect(mocks.tranches).toHaveBeenCalledTimes(2)
     expect(mocks.tranches).toHaveBeenLastCalledWith(8453, 23n, VIEWER, 0, 102n, expect.anything())
@@ -307,7 +307,7 @@ describe('You', () => {
 
     hidden.mockReturnValue(false)
     state.mockReturnValue('visible')
-    await settle(15_000)
+    await settle(30_000)
     expect(mocks.position).toHaveBeenCalledTimes(3)
     expect(mocks.tranches).toHaveBeenCalledTimes(3)
   })
@@ -340,13 +340,13 @@ describe('You', () => {
     mocks.address = VIEWER
     await renderTab()
     mocks.position.mockResolvedValueOnce({ ...position, staked: 700n * E18, current: 2 * DAY, longest: 3 * DAY })
-    await settle(15_000)
+    await settle(30_000)
     expect(stat('Stuck')?.textContent).toBe('707 SLOPSHOP')
     expect(stat('Active oldest')?.textContent).toBe('2d 0h')
 
     const failure = new Error('429')
     mocks.position.mockRejectedValue(failure)
-    await settle(15_000)
+    await settle(30_000)
     expect(stat('Stuck')?.textContent).toBe('707 SLOPSHOP')
     expect(you().querySelector('[role="alert"]')).toBeNull()
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('stick'), { chainId: 8453, projectId: 23 }, failure)
@@ -593,12 +593,12 @@ describe('the tranche table', () => {
 
     // The holder unsticks most of them: 30 remain, and the page asked for is beyond the last.
     mocks.tranches.mockImplementation(async (_c: number, _p: bigint, _h: Address, requested: number) => pageOf(30, requested))
-    await settle(15_000)
+    await settle(30_000)
     expect(trancheRows()).toHaveLength(30)
     expect(trancheLabel()).toBeUndefined()
     // A later read asks for the first page, not the one that was asked for before.
     mocks.tranches.mockImplementation(async (_c: number, _p: bigint, _h: Address, requested: number) => pageOf(120, requested))
-    await settle(15_000)
+    await settle(30_000)
     expect(mocks.tranches.mock.calls.at(-1)?.[3]).toBe(0)
     expect(trancheLabel()).toBe('Tranches 71–120 of 120')
   })
@@ -714,15 +714,15 @@ describe('a panel that is hidden', () => {
     expect(trancheRows()).toHaveLength(3)
     expect(you().querySelector('[aria-busy="true"]')).toBeNull()
     // The stick is the page's: the Stick card beside every tab reads it, so it is read on.
-    expect(mocks.position).toHaveBeenCalledTimes(5)
+    expect(mocks.position).toHaveBeenCalledTimes(3)
 
     await act(async () => FakeObserver.tell(true))
     await settle()
     expect(mocks.tranches).toHaveBeenCalledTimes(2)
-    expect(mocks.tranches).toHaveBeenLastCalledWith(8453, 23n, VIEWER, 0, 105n, expect.anything())
-    await settle(15_000)
+    expect(mocks.tranches).toHaveBeenLastCalledWith(8453, 23n, VIEWER, 0, 103n, expect.anything())
+    await settle(30_000)
     expect(mocks.tranches).toHaveBeenCalledTimes(3)
-    expect(mocks.tranches).toHaveBeenLastCalledWith(8453, 23n, VIEWER, 0, 106n, expect.anything())
+    expect(mocks.tranches).toHaveBeenLastCalledWith(8453, 23n, VIEWER, 0, 104n, expect.anything())
   })
 
   it('is not read when the browser tab is shown again while it is hidden, and is when it is shown', async () => {
@@ -1182,7 +1182,7 @@ describe('the project page', () => {
     expect(mocks.holders).toHaveBeenCalledTimes(1)
     expect(mocks.events).toHaveBeenCalledTimes(1)
 
-    await settle(15_000)
+    await settle(30_000)
     expect(mocks.position).toHaveBeenCalledTimes(2)
   })
 })

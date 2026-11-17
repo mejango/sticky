@@ -7,7 +7,7 @@
 export const FRESH_MS = 30_000
 
 /** How often what belongs to the viewer is read again while the page is in view. */
-export const REFRESH_MS = 15_000
+export const REFRESH_MS = 30_000
 
 /**
  * Viewer evidence is reused for one refresh interval when a panel or tab is shown again. Polling and explicit

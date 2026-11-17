@@ -131,7 +131,7 @@ function CheckToken({ onCheck }: { onCheck: (token: Address) => void }) {
 /**
  * The viewer's rewards: for each pot the distributor was funded for, and the staked token's under every group, what is
  * claimable now, vesting, and earned in finished rounds and not vesting yet, and what was funded. A stake-age group
- * pays only stake still held, so those pots come with a warning. The cards are read again every 15 seconds. Each pot's
+ * pays only stake still held, so those pots come with a warning. The cards are read again every 30 seconds. Each pot's
  * actions, collecting, starting vesting and claiming and sticking, are its `ClaimFlow`'s.
  */
 export function RewardsCard({

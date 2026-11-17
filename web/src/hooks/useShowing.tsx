@@ -4,7 +4,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 
 /**
  * Whether the tab panel a read is made for is showing. The tabs keep a panel mounted once it has been shown and only
- * hide it, so a read that goes on every 15 seconds would go on for a panel nobody sees. A hidden panel is not laid out,
+ * hide it, so a read that goes on every 30 seconds would go on for a panel nobody sees. A hidden panel is not laid out,
  * and an element that is not laid out never intersects the viewport, which is how `ShowingPanel` tells: it observes its
  * own element. A panel that is only off the screen counts as showing while it is within `MARGIN` of it, so it has read
  * by the time it is scrolled to. Where there is no IntersectionObserver to ask, every panel is showing.

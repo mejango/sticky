@@ -46,7 +46,7 @@ import { deploySticky } from './lib/sticky-log-fixtures'
 
 /** How long every request takes, Center's and Bendystraw's alike: one step of a page's sequential depth. It is the round
  * trip staging measured (task A.2: 0.35 to 0.5 s to Center), so the reads that go by the clock (an index that is no
- * longer fresh, the account's 15-second refresh) come when they would. */
+ * longer fresh, the account's 30-second refresh) come when they would. */
 export const STEP_MS = 400
 
 export const E18 = 10n ** 18n
