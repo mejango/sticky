@@ -1,3 +1,20 @@
+# SDK core 6.10.2: leaner polling, one retry of a rate-limited query (2026-11-17)
+
+Read: the SDK changelog 6.4.0 to 6.10.2 and the dist diff of 6.3.1 against 6.10.2.
+
+- [x] 1. Pin `@bananapus/nana-sdk-core` 6.10.2 exact (Node 26.13.1, npm 12). Types and the 3,890 unit tests pass unchanged: no Sticky test fakes `setInterval` for a held-write view, and no Sticky code calls a changed signature (`lookAtSafeProposalEnd`, `listPendingSafeTransactions`, the Safe API key, the proposal nonce).
+- [x] 2. Rate limit: the SDK now asks a refused query once more itself. The indexer refuses in plain text, which the SDK reports as a 502, and the relay answered 502 for everything, so `retryOnce` never saw a 429 and asked again on top (indexer 2, browser request 3, query 2: 12 requests for one refused query). `bendystraw()` now fails a rate refusal as a 429 with the wait the indexer named; the relay asks the indexer once and answers 429 with `Retry-After`. The browser's SDK request is the one retry (no sooner than the wait), and `retryOnce` stops: 2 requests.
+- [x] 3. Tests: the relay answers 429 with the wait and asks once; a refused query through the SDK's browser request and the real relay reaches the indexer twice and fails as rate limited.
+- [x] 4. Full `npm run check` with browser tests. Commit, no push.
+
+## Plan refinement
+- **Objective:** Sticky runs on SDK 6.10.2 and gets its leaner polling; a rate-limited indexer query is asked twice in all, not twelve times. No UI change.
+- **System fit:** The SDK owns the poll and the retry (held-write follower, Safe service reads, `requestBendystraw`); Sticky owns the relay and the query rule `retryOnce`. The relay becomes a pass-through for retries, so one owner retries each request. Send, sign, journals and recovery are unaffected.
+- **Reuse and simplicity:** `isRateLimited` and `retryAfterOf` from the SDK, `retryDelaysMs` as the SDK's own option; no new retry code. `retryOnce` is unchanged.
+- **Evidence and unknowns:** The 6.10.2 dist (`utils/bendystraw.js`, `review/heldWrite.js`, `safeService.js`) and Bendystraw's limiter source (plain-text 429, no `Retry-After` of its own). Behavior change: a down indexer was asked 3 times by the relay per browser attempt; it is now asked once per browser attempt (the browser still asks 3 times, the query once more). Not observed against the live indexer's limit.
+- **Verification:** The relay tests above, the unit suite, full `npm run check` including browser tests.
+- **Resource budget:** One worktree, one commit; replan only if the gate shows a flow that needs redesign.
+
 # SDK core 6.3.0: lapse keeping moves to the SDK, queued confirmations, shared lines (2026-11-10)
 
 Brief: adopt-630-brief.md and the 6.3.0 deletion map (Sticky: `withBridgeLock`'s keep and late become plain `locks` plus `attemptScoped: true`). Stacks on the 6.2.0 entry below, same PR (#88).

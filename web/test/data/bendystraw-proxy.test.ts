@@ -4,8 +4,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { POST } from '@/app/api/bendystraw/[net]/query/route'
 import {
   bendystrawOperationId,
+  compileBendystrawDocument,
   compileBendystrawOperation,
+  requestPersistedBendystraw,
 } from '@bananapus/nana-sdk-core/bendystraw-operations'
+import { isRateLimited } from '@bananapus/nana-sdk-core/jbcenter'
+import { parse } from 'graphql'
 import registry from '@/lib/bendystraw-operation-registry.json'
 import { resolvePersistedBendystrawRequest } from '@/lib/bendystraw-proxy'
 // Tests write documents of their own; the build registers only the site's.
@@ -389,6 +393,40 @@ describe('same-origin relay route', () => {
     expect(console.error).toHaveBeenCalledExactlyOnceWith(CAUSE_LABEL, cause)
   })
 
+  const projectRequest = () => relayRequest({ operation: projectOperation, variables: { chainId: 8453, projectId: 11 } })
+  /** The indexer's own refusal: plain text, with no wait named unless `headers` names one. */
+  const tooMany = (headers: Record<string, string> = {}) => new Response('Too many requests', { status: 429, headers })
+
+  it('answers 429 when the indexer refused for its rate, with the wait it asked for', async () => {
+    const fetcher = indexer(() => tooMany({ 'retry-after': '3' }))
+
+    const response = await POST(projectRequest(), network('mainnet'))
+
+    expect(response.status).toBe(429)
+    expect(response.headers.get('retry-after')).toBe('3')
+    expect(await response.json()).toEqual({ error: 'Bendystraw rate limited' })
+    expect(fetcher).toHaveBeenCalledTimes(1)
+
+    indexer(() => tooMany())
+    expect((await POST(projectRequest(), network('mainnet'))).headers.get('retry-after')).toBeNull()
+  })
+
+  it('a rate-limited query reaches the indexer twice in all, and fails as a refusal no query retries', async () => {
+    const asked = vi.fn(() => tooMany())
+    // The browser's request reaches the relay, and the relay's reaches the indexer.
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (input, init) => String(input) === RELAY_URL
+      ? POST(new Request(RELAY_URL, { method: 'POST', headers: init?.headers, body: init?.body }), network('mainnet'))
+      : asked()))
+
+    const failure = await requestPersistedBendystraw({
+      contract: compileBendystrawDocument(parse(documents.project)), endpoint: RELAY_URL, network: 'mainnet',
+      query: documents.project, variables: { chainId: 8453, projectId: 11 },
+    }).then(() => null, error => error)
+
+    expect(asked).toHaveBeenCalledTimes(2)
+    expect(isRateLimited(failure)).toBe(true)
+  })
+
   it('logs a cause on one line, whatever line breaks the indexer put in it', async () => {
     indexer(() => json({ errors: [{ message: 'first line\r\n2026-09-29 ERROR forged line\n\tindented' }] }))
 
@@ -426,7 +464,7 @@ describe('same-origin relay route', () => {
     )
   })
 
-  it('answers 502, not an empty result, when the indexer stays down through the retries', async () => {
+  it('answers 502, not an empty result, when the indexer is down, asking once: the browser request behind the relay retries', async () => {
     const fetcher = indexer(() => json({ error: 'offline' }, 503))
 
     const response = await POST(
@@ -439,7 +477,7 @@ describe('same-origin relay route', () => {
 
     expect(response.status).toBe(502)
     expect(await response.json()).toEqual({ error: 'Bendystraw unavailable' })
-    expect(fetcher).toHaveBeenCalledTimes(3)
+    expect(fetcher).toHaveBeenCalledTimes(1)
     expect(console.error).toHaveBeenCalledExactlyOnceWith(
       CAUSE_LABEL,
       'BendystrawRequestError: Bendystraw request failed (503)',
