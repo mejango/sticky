@@ -589,6 +589,8 @@ describe('Sticky launch browser boundaries', () => {
     await fake.ports.sendDirect(session(), noted)
     expect(noted.submitted.mock.calls).toEqual([[PROPOSAL, PROPOSAL], [HASH, PROPOSAL]])
     expect(fake.resolveSafe).toHaveBeenCalledWith(8453, PROPOSAL, expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    // The wait keeps the SDK's own pace: no faster interval of the app's.
+    expect(fake.resolveSafe.mock.calls[0][2]).not.toHaveProperty('pollingIntervalMs')
     expect(fake.receipt).toHaveBeenCalledWith(expect.objectContaining({ hash: HASH }))
     // The SDK hold may probe the proposal hash as an at-once execution; the app never waits on it as a receipt.
     expect(fake.receipt).not.toHaveBeenCalledWith(expect.objectContaining({ hash: PROPOSAL, timeout: expect.anything() }))

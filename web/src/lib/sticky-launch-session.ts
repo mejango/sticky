@@ -123,7 +123,15 @@ export function createStickyLaunchStore(storage: Store) {
 export const launchComplete = (session: StickyLaunchSession) =>
   session.plan.targets.every(target => !!session.results[target.chainId])
 
-export const launchCanClear = (session: StickyLaunchSession) => launchComplete(session) ||
+/** Every pool is verified and nothing is left to confirm, publish, record or mend: only a reorg could change it, which
+ * each action and each return to the page still checks for. */
+export const launchAtRest = (session: StickyLaunchSession) => launchComplete(session) &&
+  !session.error && !session.listing.error && !session.listing.signed &&
+  (!session.payment?.hash || !!session.payment.confirmed) &&
+  (!session.listing.intentId || session.plan.targets.every(target =>
+    session.listing.recorded[target.chainId] === session.results[target.chainId].hash))
+
+export const launchCanClear =(session: StickyLaunchSession) => launchComplete(session) ||
   (!session.published && !session.direct?.started && !session.payment?.started && !session.listing.requested)
 
 /**

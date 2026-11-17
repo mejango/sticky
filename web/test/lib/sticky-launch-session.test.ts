@@ -5,7 +5,7 @@ import type { RelayrQuote } from '@bananapus/nana-sdk-core/review/relayr'
 import { encodeFunctionData, type Address, type Hex } from 'viem'
 import { describe, expect, it, vi } from 'vitest'
 import type { LaunchPlan } from '@/lib/sticky-launch-plan'
-import { STICKY_LAUNCH_KEY, createStickyLaunchController, createStickyLaunchStore, launchActions, launchCanClear, launchComplete, sponsorUnresolved, validateStickyLaunch,
+import { STICKY_LAUNCH_KEY, createStickyLaunchController, createStickyLaunchStore, launchActions, launchAtRest, launchCanClear, launchComplete, sponsorUnresolved, validateStickyLaunch,
   type StickyLaunchPorts, type StickyLaunchSession } from '@/lib/sticky-launch-session'
 import { memoryStorage } from '../memory-storage'
 
@@ -651,6 +651,24 @@ describe('durable Sticky launch controller', () => {
     for (const history of [[{ started: true }], [{ started: false, hash: H1 }], [{ started: true, hash: 'bad' }], {}]) {
       expect(() => validateStickyLaunch({ ...f.prepared, directAttempts: history })).toThrow()
     }
+  })
+})
+
+describe('launchAtRest', () => {
+  const result = { hash: H1, projectId: '9', token: TOKEN }
+  const done = (overrides: Partial<StickyLaunchSession> = {}): StickyLaunchSession => ({ version: 1, plan: plan(), mode: 'direct', published: false,
+    candidates: {}, results: { 84532: result }, listing: { state: 'pending', recorded: {} }, ...overrides })
+  it('rests only once every pool is verified and nothing is left to confirm, publish, record or mend', () => {
+    expect(launchAtRest(done())).toBe(true)
+    expect(launchAtRest(done({ listing: { state: 'published', intentId: 'i', recorded: { 84532: H1 } } }))).toBe(true)
+    expect(launchAtRest(done({ payment: { started: true, hash: H2, confirmed: true } as StickyLaunchSession['payment'] }))).toBe(true)
+    expect(launchAtRest(done({ results: {} }))).toBe(false)
+    expect(launchAtRest(done({ error: 'Could not check the saved launch.' }))).toBe(false)
+    expect(launchAtRest(done({ listing: { state: 'pending', recorded: {}, error: 'Listing will need another check.' } }))).toBe(false)
+    expect(launchAtRest(done({ listing: { state: 'pending', recorded: {}, signed: { message: 'm', signature: '0x12' } } }))).toBe(false)
+    expect(launchAtRest(done({ listing: { state: 'published', intentId: 'i', recorded: {} } }))).toBe(false)
+    expect(launchAtRest(done({ listing: { state: 'published', intentId: 'i', recorded: { 84532: H2 } } }))).toBe(false)
+    expect(launchAtRest(done({ payment: { started: true, hash: H2 } as StickyLaunchSession['payment'] }))).toBe(false)
   })
 })
 
